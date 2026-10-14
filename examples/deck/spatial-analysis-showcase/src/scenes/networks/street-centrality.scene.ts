@@ -376,45 +376,45 @@ export default defineScene<CentralityOptions>({
   GPUNetworkSubgraphFilter,
   GPUNetworkStatistics,
   getGPUNetworkSubgraphFilterParameterValues,
-  encodeGPUNetworkStatisticsParameters
+  getGPUNetworkStatisticsParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 // 1. Node columns for styling. No reverse CSR = undirected (symmetric CSR required).
 analyticsGraph.add(new GPUNetworkAnalyticsColumns({
-  offsets, neighbors,${state.oneWay ? '\n  reverseOffsets, reverseNeighbors,        // presence makes it directed\n  inDegree: {output: inDegree, normalized: inDegreeNormalized},' : ''}
+  topology: {offsets, neighbors},${state.oneWay ? '\n  reverseTopology: {offsets: reverseOffsets, neighbors: reverseNeighbors},  // presence makes it directed\n  inDegree: {output: inDegree, normalized: inDegreeNormalized},' : ''}
   degree: {output: degree, normalized: degreeNormalized},
   pageRank: {output: pageRank, normalized: pageRankNormalized,
-             damping: ${state.damping}, iterations: ${state.pageRankIterations}, residual},       // compile-time
+             damping: ${state.damping}, iterationCount: ${state.pageRankIterations}, residual},       // compile-time
   coreNumber: {output: core, normalized: coreNormalized, degeneracy, converged},
-  components: {output: components, iterations: ${state.componentIterations}},
-  communities: {output: communities, iterations: ${state.communityIterations}}
+  components: {output: components, maximumIterations: ${state.componentIterations}},
+  communities: {output: communities, maximumIterations: ${state.communityIterations}}
 }));
 
 // 2. Predicates on the analytics output and on edge attributes -> masks.
 graph.add(new GPUNetworkSubgraphFilter({
-  offsets, neighbors, directed: ${state.oneWay}, dropIsolated: ${state.dropIsolated}, pairUndirectedSlots: ${state.pairSlots},
-  vertexColumns: [pageRankNormalized],
+  topology: {offsets, neighbors}, directed: ${state.oneWay}, dropIsolated: ${state.dropIsolated}, pairUndirectedSlots: ${state.pairSlots},
+  nodeColumns: [pageRankNormalized],
   edgeColumns: [speed, length, roadClass],
   parameters: filterParameters,
-  output: {vertexMask, edgeMask, counts}
+  output: {nodeMask, edgeMask, counts}
 }));
 
 // 3. Statistics of the live network (masks in, one packed summary out).
 graph.add(new GPUNetworkStatistics({
-  offsets, neighbors, directed: ${state.oneWay}, vertexMask, edgeMask, communities,
-  degreeBinning: '${state.degreeBinning}', degreeBinCount: 12, componentIterations: ${state.componentIterations},
+  topology: {offsets, neighbors}, directed: ${state.oneWay}, nodeMask, edgeMask, communities,
+  degreeBinning: '${state.degreeBinning}', degreeBinCount: 12, maximumComponentIterations: ${state.componentIterations},
   parameters: statisticsParameters, output: statistics
 }));
 
 // Ranges are half-open [min, max) float parameters: no recompile.
 filterParameters.write(getGPUNetworkSubgraphFilterParameterValues(layout, {
-  vertexRanges: [[pageRankThreshold, Infinity]],
+  nodeRanges: [[pageRankThreshold, Infinity]],
   edgeRanges: [[${state.speedRange[0]}, ${state.speedRange[1] >= SPEED_MAXIMUM ? 'Infinity' : state.speedRange[1]}], null, [${state.classRange[0]}, ${state.classRange[1] + 1}]]
 }));
-statisticsParameters.write(encodeGPUNetworkStatisticsParameters({resolution: ${state.resolution}}));`,
+statisticsParameters.write(getGPUNetworkStatisticsParameterValues({resolution: ${state.resolution}}));`,
 
   about: {
-    what: '`GPUNetworkAnalyticsColumns` runs gpu-graph algorithms on a CSR and publishes node columns: degree, in-degree, PageRank, k-core number, weak components and label-propagation communities, each optionally normalized to [0, 1]. `GPUNetworkSubgraphFilter` turns attribute ranges on vertex and edge columns into live masks. `GPUNetworkStatistics` reduces the masked network to one summary: counts, components, isolated vertices, degree histograms and modularity.',
+    what: '`GPUNetworkAnalyticsColumns` runs gpu-graph algorithms on a CSR and publishes node columns: degree, in-degree, PageRank, k-core number, weak components and label-propagation communities, each optionally normalized to [0, 1]. `GPUNetworkSubgraphFilter` turns attribute ranges on node and edge columns into live masks. `GPUNetworkStatistics` reduces the masked network to one summary: counts, components, isolated nodes, degree histograms and modularity.',
     why: 'Which streets does a network depend on, and what is left of it when you keep only fast roads or long blocks? The same three tools answer that for roads, transit, airlines or social graphs, and the columns feed deck.gl styling directly with no readback.',
     howToRead:
       'Streets are colored by the chosen column. The filter draws live streets in color over a faint copy of everything else. The statistics readouts always describe the live network; the community, component and PageRank readouts describe the full network.'

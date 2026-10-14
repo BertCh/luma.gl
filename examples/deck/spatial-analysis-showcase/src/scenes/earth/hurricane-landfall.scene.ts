@@ -166,7 +166,7 @@ export default defineScene<HurricaneLandfallOptions>({
       step: 100,
       default: 1500,
       unit: 'km',
-      help: 'Cells farther than this from every coast get no distance and are left transparent. It is the maxDistance setting of the distance field (a parameter write that re-runs the field) and the end of the color ramp. The limit is applied in ground kilometers on each row, because a map meter shrinks with latitude.'
+      help: 'Cells farther than this from every coast get no distance and are left transparent. It is the maximumDistance setting of the distance field (a parameter write that re-runs the field) and the end of the color ramp. The limit is applied in ground kilometers on each row, because a map meter shrinks with latitude.'
     },
     {
       kind: 'select',
@@ -370,32 +370,36 @@ export default defineScene<HurricaneLandfallOptions>({
 import {
   GPULineDensity, GPUZoneEvents, getGPULineDensityParameterValues, GPU_ZONE_EVENT_TYPE
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma.gl/experimental/gpu-raster';
+import {GPUDistanceField, getGPUDistanceFieldParameterValues, makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 
 // Where tracks pass: one density node per wind threshold (paths split where wind < threshold)
 for (const [index, threshold] of [0, 34, 64, 96].entries()) {
   densityGraph.add(new GPULineDensity({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-    id: 'density-' + index, positions: pathsAbove[index], pathOffsets: offsetsAbove[index],
+    id: 'density-' + index, positions: pathsAbove[index], lineOffsets: offsetsAbove[index],
     columns: ${360}, rows: ${232}, parameters: gridParameters,   // [west, south, cellWidth, cellHeight] in degrees
-    output: {lengths: lengths[index], densities: densities[index], overflow}   // densities: length / exact spherical cell area
+    output: {lengths: lengths[index], densities: densities[index], status: {overflow}}   // densities: length / exact spherical cell area
   }));
 }
 
 // Distance to the coast: seeds are coastline vertices (map meters; the search limit is divided by each row's scale)
+const coastGrid = makeGPURasterMetadata({     // storm-frame meters, row 0 = south, rows advance north
+  width: ${360}, height: ${232}, cellSize: [cellWidth, cellHeight], origin: [bounds[0], bounds[1]], rowDirection: 'north'
+});
 coastGraph.add(new GPUDistanceField({
-  width: ${360}, height: ${232}, mode: '${state.distanceMode}',   // compile-time
-  settings: coastSettings, seedPositions: coastSeeds, seedCount,
+  grid: coastGrid, mode: '${state.distanceMode}',   // compile-time
+  parameters: coastSettings, seedPositions: coastSeeds, seedCount,
   output: {distances}
 }));
 coastSettings.write(getGPUDistanceFieldParameterValues({
-  bounds, gridSize: [${360}, ${232}], maxDistance: ${state.coastSearchKm * 1000}   // per frame
-}));
+  maximumDistance: ${state.coastSearchKm * 1000}   // per frame
+}, coastGrid));
 
 // Landfalls: every state boundary edge tagged with its state, one thread per storm
 eventGraph.add(new GPUZoneEvents({
-  positions, timestamps, trackOffsets, edgeStarts, edgeEnds, edgeZones, zoneCount: 49,
-  candidateCapacity: ${1 << 19}, maxEventsPerTrack: ${state.eventsPerStorm},
-  events: {output: {ids, count, overflow}, eventZones, eventTypes, eventTimes, eventRows, eventPositions}
+  tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
+  zones: {kind: 'polygons', positions: statePositions, featureOffsets, polygonOffsets, ringOffsets},   // 49 states, one feature each
+  candidateCapacity: ${1 << 19}, trackEventCapacity: ${state.eventsPerStorm},
+  output: {events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes, eventRows, eventPositions}}
 }));
 // CPU: keep GPU_ZONE_EVENT_TYPE.enter events whose approach (a few km back) is not inside a state,
 // then interpolate the wind between the two fixes of eventRows[i] with the crossing time.`,

@@ -17,6 +17,7 @@ import {
   GPU_LINE_SEGMENTIZE_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -82,7 +83,7 @@ function getTotalLength(paths: PathSet): number {
  * `GPULineChunk` (chunk and substring modes) and `GPULineLocate` (events by distance or fraction).
  * Each tool and coordinate system is compiled on first use and cached.
  */
-export function createReshapeView(env: CityLineEnvironment): GeometryView<Options> {
+export async function createReshapeView(env: CityLineEnvironment): Promise<GeometryView<Options>> {
   const {ctx, rail} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'reshape');
@@ -123,7 +124,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
   const tools = new Map<string, Tool>();
   let active: Tool | null = null;
 
-  const buildDensify = (options: Options): Tool => {
+  const buildDensify = async (options: Options): Promise<Tool> => {
     const spherical = options.lineSystem === 'spherical';
     let capacity = inputVertices;
     for (let path = 0; path < pathCount; path++) {
@@ -153,13 +154,13 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
           'float32x2',
           inputVertices
         ),
-        pathOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
+        lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
         spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         parameters: parameters.importToGraph(graph),
         output: importPathOutput(graph, output, {measures: true})
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `densify-${spherical}`,
@@ -259,7 +260,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
       widthPixels: 4
     });
 
-  const buildChunk = (options: Options, mode: 'chunk' | 'substring'): Tool => {
+  const buildChunk = async (options: Options, mode: 'chunk' | 'substring'): Promise<Tool> => {
     const spherical = options.lineSystem === 'spherical';
     const chunkMode = mode === 'chunk';
     const pieceCapacity = Math.ceil(totalLength / MINIMUM_CHUNK_LENGTH) + pathCount + 16;
@@ -286,14 +287,14 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
           'float32x2',
           inputVertices
         ),
-        pathOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
+        lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
         mode,
         spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         parameters: parameters.importToGraph(graph),
-        output: importPathOutput(graph, output, {pathCount: true, sourcePaths: chunkMode})
+        output: importPathOutput(graph, output, {lineCount: true, sourceLineIndices: chunkMode})
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `${mode}-${spherical}`,
@@ -366,7 +367,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
     return tool;
   };
 
-  const buildLocate = (options: Options): Tool => {
+  const buildLocate = async (options: Options): Promise<Tool> => {
     const fraction = options.locateMode === 'fraction';
     const eventCount = pathCount * EVENTS_PER_LINE;
     const eventPaths = new Uint32Array(eventCount);
@@ -396,8 +397,8 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
       new GPULineLocate({
         id: 'locate',
         positions: imp('positions', localPositions, 'float32x2', inputVertices),
-        pathOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
-        eventPaths: imp('event-paths', pathBuffer, 'uint32', eventCount),
+        lineOffsets: imp('offsets', railOffsets, 'uint32', pathCount + 1),
+        eventLineIndices: imp('event-paths', pathBuffer, 'uint32', eventCount),
         eventMeasures: imp('event-measures', measureBuffer, 'float32', eventCount),
         eventOffsets: imp('event-offsets', offsetBuffer, 'float32', eventCount),
         measureMode: fraction ? 'fraction' : 'distance',
@@ -409,7 +410,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
         }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `locate-${fraction}`,
@@ -490,7 +491,8 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
     return tool;
   };
 
-  const select = (options: Options): Tool => {
+  /** Returns the cached tool for `options`, compiling it on first use. */
+  const getTool = async (options: Options): Promise<Tool> => {
     const spherical = options.lineSystem === 'spherical';
     const key =
       options.lineTool === 'locate'
@@ -500,12 +502,16 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
     if (!tool) {
       tool =
         options.lineTool === 'densify'
-          ? buildDensify(options)
+          ? await buildDensify(options)
           : options.lineTool === 'locate'
-            ? buildLocate(options)
-            : buildChunk(options, options.lineTool);
+            ? await buildLocate(options)
+            : await buildChunk(options, options.lineTool);
       tools.set(key, tool);
     }
+    return tool;
+  };
+
+  const activate = (tool: Tool, options: Options) => {
     tool.write(options);
     active = tool;
     ctx.setReadout(
@@ -517,16 +523,24 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
     ctx.setReadout('reshapePieces', null);
     ctx.setReadout('reshapeOverflow', null);
     tool.dirty = true;
-    return tool;
   };
-  select(ctx.options);
+  // Tools stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
+  activate(await getTool(ctx.options), ctx.options);
 
   return {
     getCompiledGraphs: () =>
       [...tools.values()].map(tool => tool.compiled as CompiledGPUCommandGraph<never>),
     setOption(id, options) {
       if (id === 'lineTool' || id === 'lineSystem' || id === 'locateMode' || id === 'view') {
-        select(options);
+        // The previous tool keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => getTool(ctx.options),
+          commit: tool => {
+            activate(tool, ctx.options);
+            ctx.requestLayers();
+          }
+        });
       } else {
         active?.write(options);
       }
@@ -552,7 +566,7 @@ export function createReshapeView(env: CityLineEnvironment): GeometryView<Option
  * Eligible community places snapped to the nearest street polyline. The source has no asserted street
  * edge, so this is a nearest-segment demonstration rather than an address-match benchmark.
  */
-export function createSnapView(env: CityLineEnvironment): GeometryView<Options> {
+export async function createSnapView(env: CityLineEnvironment): Promise<GeometryView<Options>> {
   const {ctx, streets, places} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'snap');
@@ -583,9 +597,9 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
   graph.add(
     new GPULinearReferencing({
       id: 'snap',
-      points: imp('points', points, 'float32x2', pointCount),
+      queryPositions: imp('points', points, 'float32x2', pointCount),
       positions: imp('positions', streetPositions, 'float32x2', vertexCount),
-      pathOffsets: imp('offsets', streetOffsets, 'uint32', pathCount + 1),
+      lineOffsets: imp('offsets', streetOffsets, 'uint32', pathCount + 1),
       radius: radius.importToGraph(graph),
       candidateCapacity,
       spatialSort: true,
@@ -594,13 +608,15 @@ export function createSnapView(env: CityLineEnvironment): GeometryView<Options> 
         distances: imp('distances', distances, 'float32', pointCount),
         measures: imp('measures', measures, 'float32', pointCount),
         signedOffsets: imp('signed-offsets', signedOffsets, 'float32', pointCount),
-        pathIndices: imp('path-indices', pathIndices, 'uint32', pointCount)
-      },
-      overflow: imp('overflow', overflow, 'uint32', 1),
-      candidateCount: imp('candidate-count', candidateCount, 'uint32', 1)
+        lineIndices: imp('path-indices', pathIndices, 'uint32', pointCount),
+        status: {
+          overflow: imp('overflow', overflow, 'uint32', 1),
+          candidateCount: imp('candidate-count', candidateCount, 'uint32', 1)
+        }
+      }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const categoryCodes: Record<Exclude<Options['placeCategory'], 'all'>, number> = {
     grocery: 2,

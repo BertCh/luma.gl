@@ -37,6 +37,7 @@ import {squareMileFrame} from '../../cartography/reference-geometry';
 import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import type {GeoJsonCollection} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPolygonLayer,
   SpatialAnalysisRasterLayer,
@@ -151,7 +152,7 @@ type RoadBuffers = {
   positionsMeters: Buf;
   positionsDegrees: Buf;
   pathOffsets: Buf;
-  pathWeights: Buf;
+  lineWeights: Buf;
 };
 
 type DensityVariant = {compiled: CompiledGPUCommandGraph<void>};
@@ -397,7 +398,7 @@ export async function createStreetDensity(
       positionsMeters: resources.createBuffer(`${roadClass}-positions-m`, set.positionsMeters),
       positionsDegrees: resources.createBuffer(`${roadClass}-positions-deg`, set.positionsDegrees),
       pathOffsets: resources.createBuffer(`${roadClass}-path-offsets`, set.pathOffsets),
-      pathWeights: resources.createBuffer(
+      lineWeights: resources.createBuffer(
         `${roadClass}-path-weights`,
         set.weights[ctx.options.weight]
       )
@@ -430,13 +431,13 @@ export async function createStreetDensity(
     return Math.max(1024, 4 * road.vertexCount);
   }
 
-  function buildDensityGraph(
+  async function buildDensityGraph(
     id: string,
     roadClass: RoadClass,
     system: StreetDensityOptions['system'],
     parameters: GPUParameterBuffer<'float32'>,
     outputs: {lengths: Buf; densities: Buf; overflow: Buf; totalRecords: Buf}
-  ): CompiledGPUCommandGraph<void> {
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const road = getRoadSet(roadClass);
     const buffers = getRoadBuffers(roadClass);
     const spherical = system === 'spherical';
@@ -451,7 +452,7 @@ export async function createStreetDensity(
           'float32x2',
           road.vertexCount
         ),
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           graph,
           'path-offsets',
           buffers.pathOffsets,
@@ -464,7 +465,7 @@ export async function createStreetDensity(
           system === 'spherical'
             ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
             : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
-        maximumRecords: getMaximumRecords(road),
+        recordCapacity: getMaximumRecords(road),
         parameters: parameters.importToGraph(graph),
         output: {
           lengths: importGraphBuffer(graph, 'lengths', outputs.lengths, 'float32', CELL_COUNT),
@@ -475,26 +476,40 @@ export async function createStreetDensity(
             'float32',
             CELL_COUNT
           ),
-          overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
-          totalRecords: importGraphBuffer(graph, 'total-records', outputs.totalRecords, 'uint32', 1)
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', outputs.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(
+              graph,
+              'total-records',
+              outputs.totalRecords,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   }
 
-  function getDensityVariant(options: StreetDensityOptions): DensityVariant {
+  async function getDensityVariant(options: StreetDensityOptions): Promise<DensityVariant> {
     const key = `${options.roadClass}|${options.system}`;
     let variant = densityVariants.get(key);
     if (variant) return variant;
-    variant = {
-      compiled: buildDensityGraph(key, options.roadClass, options.system, densityParameters, {
-        lengths,
-        densities,
-        overflow: densityOverflow,
-        totalRecords
-      })
-    };
+    const compiled = await buildDensityGraph(
+      key,
+      options.roadClass,
+      options.system,
+      densityParameters,
+      {lengths, densities, overflow: densityOverflow, totalRecords}
+    );
+    // A variant swap and a timing run may have compiled the same key meanwhile.
+    variant = densityVariants.get(key);
+    if (variant) {
+      resources.release(compiled);
+      return variant;
+    }
+    variant = {compiled};
     densityVariants.set(key, variant);
     return variant;
   }
@@ -594,7 +609,7 @@ export async function createStreetDensity(
     return next;
   }
 
-  function getPolygonVariant(options: StreetDensityOptions): PolygonVariant {
+  async function getPolygonVariant(options: StreetDensityOptions): Promise<PolygonVariant> {
     const key = `${options.polygonSet}|${options.roadClass}|${options.system}`;
     let variant = polygonVariants.get(key);
     if (variant) return variant;
@@ -621,8 +636,8 @@ export async function createStreetDensity(
           'float32x2',
           road.vertexCount
         ),
-        pathOffsets: view('path-offsets', buffers.pathOffsets, 'uint32', road.pathCount + 1),
-        pathWeights: view('path-weights', buffers.pathWeights, 'float32', road.pathCount),
+        lineOffsets: view('path-offsets', buffers.pathOffsets, 'uint32', road.pathCount + 1),
+        lineWeights: view('line-weights', buffers.lineWeights, 'float32', road.pathCount),
         spatialContext: spherical
           ? {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}
           : {coordinateSpace: 'planar', metric: 'native', units: 'native'},
@@ -648,12 +663,12 @@ export async function createStreetDensity(
           ),
           ringOffsets: view('ring-offsets', state.ringOffsets, 'uint32', set.ringOffsets.length)
         },
-        maximumCandidatePairs: Math.max(1024, 3 * road.vertexCount),
+        pairCapacity: Math.max(1024, 3 * road.vertexCount),
         output: {
           lengths: lengthView,
           weightedLengths: weightedView,
           segmentCounts: view('counts', state.counts, 'uint32', featureCount),
-          overflow: view('overflow', state.overflow, 'uint32', 1)
+          status: {overflow: view('overflow', state.overflow, 'uint32', 1)}
         }
       })
     );
@@ -705,7 +720,13 @@ export async function createStreetDensity(
   perResident[perResidentOffset + index] = select(noData, length / residents, residents >= ${SUPPRESSION_RESIDENTS}.0 && length > 0.0);
   meanAttribute[meanAttributeOffset + index] = select(noData, weighted[weightedOffset + index] / length, length > 0.0);`
     });
-    variant = {compiled: resources.track(graph.compile())};
+    const compiled = resources.track(await graph.compileAsync());
+    variant = polygonVariants.get(key);
+    if (variant) {
+      resources.release(compiled);
+      return variant;
+    }
+    variant = {compiled};
     polygonVariants.set(key, variant);
     return variant;
   }
@@ -1322,25 +1343,44 @@ export async function createStreetDensity(
   }
 
   // ---- Variants ----
-  function ensureVariants(): void {
-    const options = ctx.options;
-    displayedDensity = getDensityVariant(options);
-    if (options.view === 'polygons') displayedPolygons = getPolygonVariant(options);
-    else
-      displayedPolygons =
-        polygonVariants.get(`${options.polygonSet}|${options.roadClass}|${options.system}`) ?? null;
-    const road = getRoadSet(options.roadClass);
-    const buffers = getRoadBuffers(options.roadClass);
-    ctx.setReadout(
-      'segments',
-      `${formatCount(road.pathCount)} streets, ${formatCount(buffers.arterialCount + buffers.localCount)} segments`
-    );
-    ctx.setCost({
-      records: buffers.arterialCount + buffers.localCount,
-      passes: (options.view === 'polygons' ? displayedPolygons : displayedDensity)?.compiled.stats
-        .nodeOrder.length
+  const variantSwap = resources.track(new GraphSwap());
+
+  /**
+   * Selects the density and polygon variants for the current options once they are compiled
+   * (cached in `densityVariants` and `polygonVariants`, which `resources` owns). The displayed
+   * variants keep encoding until then.
+   */
+  function requestVariants(): Promise<boolean> {
+    const options = {...ctx.options};
+    return variantSwap.request({
+      build: async () => {
+        const density = await getDensityVariant(options);
+        const polygons =
+          options.view === 'polygons'
+            ? await getPolygonVariant(options)
+            : (polygonVariants.get(
+                `${options.polygonSet}|${options.roadClass}|${options.system}`
+              ) ?? null);
+        return {density, polygons};
+      },
+      commit: next => {
+        displayedDensity = next.density;
+        displayedPolygons = next.polygons;
+        const road = getRoadSet(options.roadClass);
+        const buffers = getRoadBuffers(options.roadClass);
+        ctx.setReadout(
+          'segments',
+          `${formatCount(road.pathCount)} streets, ${formatCount(buffers.arterialCount + buffers.localCount)} segments`
+        );
+        ctx.setCost({
+          records: buffers.arterialCount + buffers.localCount,
+          passes: (options.view === 'polygons' ? displayedPolygons : displayedDensity)?.compiled
+            .stats.nodeOrder.length
+        });
+        markDirty();
+        ctx.requestLayers();
+      }
     });
-    markDirty();
   }
 
   function markDirty(): void {
@@ -1348,7 +1388,7 @@ export async function createStreetDensity(
     polygonDirty = true;
   }
 
-  ensureVariants();
+  await requestVariants();
   publishPolygons();
   updateEdgeAnnotations();
   updateSquareMile();
@@ -1378,7 +1418,7 @@ export async function createStreetDensity(
   function startSweep(): void {
     if (sweepState !== 'idle' || destroyed) return;
     sweepState = 'compiling';
-    setTimeout(() => {
+    setTimeout(async () => {
       if (destroyed) return;
       const parameters = resources.createParameterBuffer(
         'sweep-parameters',
@@ -1389,12 +1429,13 @@ export async function createStreetDensity(
       const sweepDensities = resources.createBuffer('sweep-densities', CELL_COUNT * 4);
       const sweepOverflow = resources.createBuffer('sweep-overflow', 4);
       const sweepRecords = resources.createBuffer('sweep-records', 4);
-      const graph = buildDensityGraph('sweep', 'all', 'planar', parameters, {
+      const graph = await buildDensityGraph('sweep', 'all', 'planar', parameters, {
         lengths: sweepLengths,
         densities: sweepDensities,
         overflow: sweepOverflow,
         totalRecords: sweepRecords
       });
+      if (destroyed) return;
       const reader = new SummaryReader(
         resources,
         'sweep',
@@ -1515,8 +1556,8 @@ export async function createStreetDensity(
     ctx.setReadout('timing', 'measuring…');
     try {
       const options = ctx.options;
-      const planar = getDensityVariant({...options, system: 'planar'});
-      const spherical = getDensityVariant({...options, system: 'spherical'});
+      const planar = await getDensityVariant({...options, system: 'planar'});
+      const spherical = await getDensityVariant({...options, system: 'spherical'});
       const measureOptions = {
         parameters: undefined,
         completionBuffer: densityOverflow,
@@ -1699,7 +1740,7 @@ export async function createStreetDensity(
 
     setOption(id, _value, state) {
       if (id === 'roadClass' || id === 'system' || id === 'polygonSet' || id === 'view') {
-        ensureVariants();
+        void requestVariants();
         publishPolygons();
         lastSignature = '';
         if (id === 'view') {
@@ -1708,7 +1749,7 @@ export async function createStreetDensity(
         }
       } else if (id === 'weight') {
         for (const [roadClass, buffers] of roadBuffers)
-          buffers.pathWeights.write(getRoadSet(roadClass).weights[state.weight]);
+          buffers.lineWeights.write(getRoadSet(roadClass).weights[state.weight]);
         markDirty();
         publishPolygons();
       } else if (id === 'cellSize') {

@@ -180,10 +180,10 @@ function getSnippet(state: HotSpotsOptions): string {
 graph.add(new GPULocalPermutationTest({
   weights, values, mask,
   statistic: '${isGi ? (state.selfWeight === 'include' ? 'localGStar' : 'localG') : 'localMoran'}', alternative: '${state.alternative}',
-  parameters: permutationParameters,       // seed, permutations, significance: buffer writes
+  parameters: permutationParameters,       // seed, permutationCount, significance: buffer writes
   maximumPermutations: 999, maximumNeighbors: ${state.maximumNeighbors},
   multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
-  exceedances, pseudoPValues, significant
+  output: {exceedances, pseudoPValues, significant, status: {overflow}}
 }));`
       : '';
   if (isCells(state)) {
@@ -194,7 +194,7 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
   source: {
     kind: 'points', positions, mask,           // lon/lat degrees; the mask is a category and hour filter
     family: '${state.family}', resolution: ${state.family === 'quadbin' ? state.resolution : state.h3Resolution},
-    studyArea,                              // tract polygons: every cell inside is a row, empty ones too
+    studyArea,                              // tract polygon port (+ candidateCapacity): every cell inside is a row, empty ones too
     cellCapacity: 16384,
     distanceBand: {                         // great-circle neighbours, radius in meters
       spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
@@ -203,7 +203,8 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
     }
   },
   analyze: 'density',                       // records per km2
-  parameters,                               // significance level
+  settings: {significanceLevel, seed, permutationCount},   // the recipe packs them; result.setSettings repacks
+  parameters,                               // GPUParameterBuffer the recipe fills from settings
   selfWeight: ${state.selfWeight === 'include' ? 1 : 0},                         // 1 is Gi*, 0 is Gi
   multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
   zScores, bins, pValues, weights${
@@ -211,7 +212,7 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
       ? `,
   permutation: {parameters: permutationParameters, maximumPermutations: 999,
     alternative: '${state.alternative}', maximumNeighbors: ${state.maximumNeighbors}, significant,
-    falseDiscoveryRate: ${state.falseDiscoveryRate}}   // the permutation's own switch (BH when true)`
+    multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}'}   // the permutation's own correction`
       : ''
   }
 });
@@ -221,7 +222,7 @@ ${
     : `
 // Local Moran on the recipe's cell weights.
 graph.add(new GPULocalMoran({
-  weights: hotSpots.weights, values, mask, parameters, zScores, quadrants,
+  weights: hotSpots.weights, values, mask, parameters, output: {zScores, quadrants},
   quadrantGating: '${state.inference === 'analytic' ? 'analytic' : 'none'}'
 }));${permutation}`
 }`;
@@ -235,10 +236,10 @@ ${
   weights, values, mask, parameters,
   selfWeight: ${state.selfWeight === 'include' ? 1 : 0},                         // 1 is Gi*, 0 is Gi
   multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',
-  zScores, bins, pValues
+  output: {zScores, bins, pValues}
 }));`
     : `graph.add(new GPULocalMoran({
-  weights, values, mask, parameters, zScores, pValues, quadrants,
+  weights, values, mask, parameters, output: {zScores, pValues, quadrants},
   quadrantGating: '${state.inference === 'analytic' ? 'analytic' : 'none'}'${
     state.inference === 'analytic'
       ? `,

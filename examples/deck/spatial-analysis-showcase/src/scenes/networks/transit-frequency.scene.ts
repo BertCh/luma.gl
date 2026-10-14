@@ -219,16 +219,16 @@ export default defineScene<TransitFrequencyOptions>({
 import {GPULineDensity, getGPULineDensityParameterValues, GPUTrajectoryMetrics} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
 
-// positions: planar meters of every vertex of every trip, pathOffsets: one path per trip
+// positions: planar meters of every vertex of every trip, lineOffsets: one path per trip
 const graph = new GPUCommandGraph(device, {id: 'frequency'});
 graph.add(new GPULineDensity({
-  positions, pathOffsets,
+  positions, lineOffsets,
   columns: 384, rows: 384,                 // compile time
   spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   parameters: gridParameters.importToGraph(graph),
-  output: {lengths, overflow, totalRecords}
+  output: {lengths, status: {overflow, requiredCount: totalRecords}}
 }));
-const compiled = graph.compile();          // once per mode: ${state.modeFilter}
+const compiled = await graph.compileAsync();  // once per mode: ${state.modeFilter}
 
 // per frame (or per change): the grid is a parameter write
 gridParameters.write(getGPULineDensityParameterValues({
@@ -239,12 +239,12 @@ compiled.encode(commandEncoder, {parameters: undefined});
 // vehicles per hour in a cell = lengths[cell] / ${state.cellMeters} / 2 hours
 
 // per-trip metrics, then statistics per line
-graph2.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},positions, timestamps, trackOffsets, trackLengths, trackDurations, averageSpeeds}));
+graph2.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},positions, timestamps, trackOffsets, output: {trackLengths, trackDurations, averageSpeeds}}));
 graph2.add(new GPUGroupStatistics({
   keys: lineIds, keyCount: lineCount,       // dense: row k is line k
   columns: [{values: trackLengths, statistics: ['sum'], output: {sumValues}},
             {values: averageSpeeds, statistics: ['mean', 'median'], output: {means, medians}}],
-  output: {keys, counts: tripsPerLine, count, overflow}
+  output: {keys, counts: tripsPerLine, status: {count, overflow}}
 }));`,
 
   about: {

@@ -227,12 +227,12 @@ export type AnalysisSettings = {
  * modularity of the propagation and of the continent partitions. Damping, iteration counts and
  * round counts are baked into the shaders, so changing them builds a new graph.
  */
-export function buildAnalysisGraph(
+export async function buildAnalysisGraph(
   device: Device,
   stack: NetworkStack,
   settings: AnalysisSettings,
   id: string
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const {topology} = stack;
   const graph = new GPUCommandGraph<void>(device, {id});
   topology.addToGraph(graph);
@@ -276,7 +276,7 @@ export function buildAnalysisGraph(
     resolution: 1,
     valid: stack.continentValid
   }).addToGraph(graph);
-  return graph.compile();
+  return await graph.compileAsync();
 }
 
 /** Byte layout of the analysis summary: one block of per-airport columns, then the scalars. */
@@ -379,13 +379,13 @@ export type OptimizationResult = {
  * partitions at the same resolution so all three numbers are comparable. The resolution is a
  * shader constant, so each value is its own compiled graph.
  */
-export function buildOptimizationRun(
+export async function buildOptimizationRun(
   device: Device,
   stack: NetworkStack,
   settings: OptimizationSettings,
   id: string,
   onResult: (result: OptimizationResult) => void
-): OptimizationRun {
+): Promise<OptimizationRun> {
   const resources = new SpatialAnalysisResources(device, id);
   const factory = resources.track(new GraphVectorFactory(device, id));
   const {vertexCount} = stack;
@@ -422,7 +422,13 @@ export function buildOptimizationRun(
     output: continentScore,
     resolution: settings.resolution
   }).addToGraph(graph);
-  const compiled = resources.track(graph.compile());
+  let compiled: CompiledGPUCommandGraph<void>;
+  try {
+    compiled = resources.track(await graph.compileAsync());
+  } catch (error) {
+    resources.destroy();
+    throw error;
+  }
   // The optimizer synchronizes after every accepted single-vertex move. Encoding every round into
   // one command buffer can produce thousands of passes and trip a browser GPU watchdog.
   // Node-count budgeting works here even though these graph kernels predate workload annotations.

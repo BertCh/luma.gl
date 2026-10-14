@@ -374,8 +374,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
         mask: cellMaskView,
         parameters: searchParameters.importToGraph(analysisGraph),
         gridSize: [64, 64],
-        weights,
-        overflow: view('overflow', overflowBuffer, 'uint32', 1)
+        output: {...weights, status: {overflow: view('overflow', overflowBuffer, 'uint32', 1)}}
       })
     );
     analysisGraph.add(
@@ -403,8 +402,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
       new GPUTransitionMatrix({
         id: 'markov-matrix',
         classes: classesView,
-        rows: rowCount,
-        periods: PERIOD_COUNT,
+        periodCount: PERIOD_COUNT,
         classCount: MAXIMUM_CLASS_COUNT,
         mask: cellMaskView,
         output: {
@@ -427,8 +425,8 @@ export const markovMode: SpatialAnalysisModeDefinition = {
         classes: classesView,
         classCount: MAXIMUM_CLASS_COUNT,
         weights,
-        periods: PERIOD_COUNT,
-        lagMaximumClassCount: LAG_CLASS_COUNT,
+        periodCount: PERIOD_COUNT,
+        maximumLagClassCount: LAG_CLASS_COUNT,
         lagParameters: lagParameters.importToGraph(analysisGraph),
         lagMethods: ['equal-interval'],
         mask: cellMaskView,
@@ -457,7 +455,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
         id: 'markov-lisa',
         values: valuesView,
         weights,
-        periods: PERIOD_COUNT,
+        periodCount: PERIOD_COUNT,
         parameters: lisaParameters.importToGraph(analysisGraph),
         mask: cellMaskView,
         // The library default is 'none' (giddy parity: four quadrant states). This mode maps
@@ -476,7 +474,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const analysis = resources.track(analysisGraph.compile());
+    const analysis = resources.track(await analysisGraph.compileAsync());
 
     // Display graph: gathers one period of the chosen classification, masked cells hidden.
     const displayGraph = new GPUCommandGraph<void>(device, {id: 'markov-display'});
@@ -543,7 +541,7 @@ export const markovMode: SpatialAnalysisModeDefinition = {
   }
   shown[shownOffset + index] = value;`
     });
-    const displayCompiled = resources.track(displayGraph.compile());
+    const displayCompiled = resources.track(await displayGraph.compileAsync());
 
     // Summary readback.
     const sources = [

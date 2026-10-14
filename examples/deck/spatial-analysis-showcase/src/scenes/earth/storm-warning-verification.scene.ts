@@ -329,7 +329,7 @@ export default defineScene<StormWarningVerificationOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUSpatialJoinPrepared, GPUSpatialPredicateJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // reports: points; warnings: polygon versions in an azimuthal-equidistant frame (meters)
 const graph = new GPUCommandGraph(device, {id: 'verify'});
@@ -340,7 +340,7 @@ graph.add(new GPUSpatialPredicateJoin({
   right: warningPolygons,
   predicate: '${state.spatialTest}',${state.spatialTest === 'dwithin' ? `\n  distance: tolerance.importToGraph(graph),     // ${state.toleranceKm} km, a parameter buffer` : ''}
   candidateCapacity: 600000, prepared,
-  pairs: {leftIds, rightIds, count, overflow}    // every (report, polygon) that touches in space
+  output: {pairs: {leftIds, rightIds, status: {count, overflow}}}    // every (report, polygon) that touches in space
 }));
 
 // The time and hazard tests run on the pairs: one thread per report.
@@ -353,9 +353,9 @@ addKernelPass(graph, {id: 'verify-reports', invocationCount: reportCount, bindin
 display.add(new GPUTimeWindowFilter({
   timestamps: validFrom, endTimestamps: validUntil,
   window: window.importToGraph(display),
-  output: {ids, count, overflow}, outputMask
+  output: {ids, status: {count, overflow}, outputMask}
 }));
-window.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));`,
+window.write(getGPUTimeWindowFilterParameterValues({start: playhead, end: playhead}));`,
 
   about: {
     what: '`GPUSpatialPredicateJoin` pairs every storm report with every warning polygon version that touches it in space, in one pass over a prepared index of the polygons. Two small kernels then add the time test (is the polygon valid at the report time?) and the hazard test (does the warning type fit the report kind?), and keep the earliest matching issue time for the lead time. `GPUTimeWindowFilter` picks the warnings valid at the playhead and the reports seen so far.',

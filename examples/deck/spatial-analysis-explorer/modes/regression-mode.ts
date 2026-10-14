@@ -215,22 +215,22 @@ export const regressionMode: SpatialAnalysisModeDefinition = {
     let instance: Omit<SpatialAnalysisModeInstance, 'destroy'>;
     switch (view) {
       case 'ols':
-        instance = createOlsView(context, resources, study);
+        instance = await createOlsView(context, resources, study);
         break;
       case 'spatial':
-        instance = createSpatialView(context, resources, study);
+        instance = await createSpatialView(context, resources, study);
         break;
       case 'error':
-        instance = createErrorView(context, resources, study);
+        instance = await createErrorView(context, resources, study);
         break;
       case 'gwr':
-        instance = createGwrView(context, resources, study);
+        instance = await createGwrView(context, resources, study);
         break;
       case 'composite':
-        instance = createCompositeView(context, resources, study);
+        instance = await createCompositeView(context, resources, study);
         break;
       case 'inequality':
-        instance = createInequalityView(context, resources, study);
+        instance = await createInequalityView(context, resources, study);
         break;
     }
     return {...instance, destroy: () => resources.destroy()};
@@ -453,11 +453,11 @@ type ViewInstance = Omit<SpatialAnalysisModeInstance, 'destroy'>;
 
 type OlsMap = 'residuals' | 'fitted' | 'response';
 
-function createOlsView(
+async function createOlsView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   let logRidge = -2;
   let mapKind: OlsMap = 'residuals';
@@ -499,17 +499,17 @@ function createOlsView(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'status', status, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'status', status, 'uint32', 1)},
         residuals: importGraphBuffer(graph, 'residuals', residuals, 'float32', rowCount),
         fitted: importGraphBuffer(graph, 'fitted', fitted, 'float32', rowCount)
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeRidge = () => {
     parameters.write(
-      getGPUOrdinaryLeastSquaresParameterValues(logRidge <= -2 ? 0 : 10 ** logRidge)
+      getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: logRidge <= -2 ? 0 : 10 ** logRidge})
     );
     dirty = true;
   };
@@ -649,11 +649,11 @@ const CONDITION_NUMBER_WARNING = 30;
 
 type GwrMap = 'coefficient' | 'localR2';
 
-function createGwrView(
+async function createGwrView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   let kernel: GPUGeographicallyWeightedRegressionKernel = 'bisquare';
   let bandwidthMode: GPUGeographicallyWeightedRegressionBandwidthMode = 'adaptive';
@@ -762,7 +762,7 @@ function createGwrView(
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const olsGraph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr-ols'});
   olsGraph.add(
@@ -788,11 +788,11 @@ function createGwrView(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(olsGraph, 'status', olsStatus, 'uint32', 1)
+        status: {code: importGraphBuffer(olsGraph, 'status', olsStatus, 'uint32', 1)}
       }
     })
   );
-  const compiledOls = resources.track(olsGraph.compile());
+  const compiledOls = resources.track(await olsGraph.compileAsync());
 
   // The Monte Carlo test reads the regression's inputs and outputs from its own compiled graph.
   const testGraph = new GPUCommandGraph<void>(context.device, {id: 'regression-gwr-test'});
@@ -834,9 +834,11 @@ function createGwrView(
       }
     })
   );
-  const compiledTest = resources.track(testGraph.compile());
+  const compiledTest = resources.track(await testGraph.compileAsync());
   const writePermutations = () => {
-    permutationParameters.write(getGPUPermutationParameterValues({seed: 20260, permutations}));
+    permutationParameters.write(
+      getGPUPermutationParameterValues({seed: 20260, permutationCount: permutations})
+    );
   };
   writePermutations();
 
@@ -1072,7 +1074,7 @@ function createGwrView(
           ? `${formatNumber(getQuantile(finiteConditions, 0.5), 2)} / ${formatNumber(getQuantile(finiteConditions, 1), 2)} / ${formatCount(flagged)}`
           : 'n/a'
       );
-      const testPermutations = testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.permutations];
+      const testPermutations = testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.permutationCount];
       if (testEncoded && testPermutations > 0) {
         testReadouts.forEach((readout, index) => {
           const base = index * GPU_GWR_NONSTATIONARITY_TABLE_STRIDE;
@@ -1176,11 +1178,11 @@ function createGwrView(
 
 const INDICATOR_NAMES = ['POI density', 'Road length', 'Intersections', 'Taxi activity'];
 
-function createCompositeView(
+async function createCompositeView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   const indicatorCount = INDICATOR_NAMES.length;
   const weights = [1, 1, 1, 1];
@@ -1249,7 +1251,7 @@ function createCompositeView(
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeParameters = () => {
     parameters.write(
@@ -1406,11 +1408,11 @@ function createCompositeView(
 type InequalityColumn = 'poi' | 'taxi' | 'road';
 type InequalityMetric = 'gini' | 'theilT' | 'atkinson' | 'hoover' | 'palma';
 
-function createInequalityView(
+async function createInequalityView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   let column: InequalityColumn = 'poi';
   let metric: InequalityMetric = 'gini';
@@ -1468,7 +1470,7 @@ function createInequalityView(
         atkinson: importGraphBuffer(graph, 'atkinson', outputs.atkinson, 'float32', BAND_COUNT),
         hoover: importGraphBuffer(graph, 'hoover', outputs.hoover, 'float32', BAND_COUNT),
         palma: importGraphBuffer(graph, 'palma', outputs.palma, 'float32', BAND_COUNT),
-        count: importGraphBuffer(graph, 'count', outputs.count, 'uint32', BAND_COUNT),
+        counts: importGraphBuffer(graph, 'count', outputs.count, 'uint32', BAND_COUNT),
         lorenzKnots: importGraphBuffer(
           graph,
           'lorenz-knots',
@@ -1486,7 +1488,7 @@ function createInequalityView(
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeParameters = () => {
     parameters.write(getGPUInequalityParameterValues({epsilon, palmaTopShare: palmaTop}));
@@ -1779,9 +1781,13 @@ function createSpatialStage(
       gridSize: [64, 64],
       positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
       parameters: searchParameters.importToGraph(graph),
-      weights,
-      overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
-      totalNeighbors: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
+      output: {
+        ...weights,
+        status: {
+          overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
+        }
+      }
     })
   );
 
@@ -1904,7 +1910,7 @@ function addSpatialOls(
     'ols-parameters',
     'float32',
     GPU_ORDINARY_LEAST_SQUARES_PARAMETER_LENGTH,
-    getGPUOrdinaryLeastSquaresParameterValues(0)
+    getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: 0})
   );
   const residualView = importGraphBuffer(graph, 'ols-residuals', olsResiduals, 'float32', rowCount);
   graph.add(
@@ -1925,7 +1931,7 @@ function addSpatialOls(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'ols-status', olsStatus, 'uint32', 1)},
         residuals: residualView
       }
     })
@@ -1980,18 +1986,20 @@ function addSpatialDiagnostics(
           'float32',
           GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'diagnostics-status', diagnosticsStatus, 'uint32', 1)
+        status: {
+          code: importGraphBuffer(graph, 'diagnostics-status', diagnosticsStatus, 'uint32', 1)
+        }
       }
     })
   );
   return {tests, diagnosticsSummary, diagnosticsStatus};
 }
 
-function createSpatialView(
+async function createSpatialView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   const predictorCount = 3;
   let mapKind: SpatialMap = 'ols';
@@ -2035,7 +2043,7 @@ function createSpatialView(
           'float32',
           GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'two-stage-status', twoStageStatus, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'two-stage-status', twoStageStatus, 'uint32', 1)},
         residuals: importGraphBuffer(
           graph,
           'two-stage-residuals',
@@ -2046,7 +2054,7 @@ function createSpatialView(
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   stage.addControls();
   context.controls.addSelect<string>({
@@ -2214,11 +2222,11 @@ function createSpatialView(
 
 type ErrorMap = 'ols' | 'error' | 'response';
 
-function createErrorView(
+async function createErrorView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   study: CellStudy
-): ViewInstance {
+): Promise<ViewInstance> {
   const {rowCount} = study;
   const predictorCount = 3;
   let mapKind: ErrorMap = 'error';
@@ -2260,12 +2268,12 @@ function createErrorView(
           'float32',
           GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(graph, 'error-status', errorStatus, 'uint32', 1),
+        status: {code: importGraphBuffer(graph, 'error-status', errorStatus, 'uint32', 1)},
         residuals: importGraphBuffer(graph, 'error-residuals', errorResiduals, 'float32', rowCount)
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   stage.addControls();
   context.controls.addSelect<ErrorMap>({

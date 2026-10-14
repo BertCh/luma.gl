@@ -26,6 +26,7 @@ import {
   type GPUShapeType
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -142,33 +143,56 @@ export async function createBuffersAndShapes(
     }
   };
   const views = new Map<Options['view'], View>();
-  const factories: Record<Options['view'], (env: ViewEnvironment) => View> = {
+  const factories: Record<Options['view'], (env: ViewEnvironment) => Promise<View>> = {
     buffers: createBuffersView,
     shapes: createShapesView,
     grid: createGridView,
     clip: createClipView
   };
   let destroyed = false;
-  const getView = (): View => {
-    const name = ctx.options.view;
-    let view = views.get(name);
-    if (!view) {
-      view = factories[name](env);
-      views.set(name, view);
-    }
-    return view;
+  const graphSwap = new GraphSwap();
+  let active = await factories[ctx.options.view](env);
+  views.set(ctx.options.view, active);
+  let activeName = ctx.options.view;
+  // Option changes that a view missed while it was inactive or still being built; replayed on commit.
+  const missed = new Map<Options['view'], Set<keyof Options>>();
+  const getView = (): View => active;
+  const showView = (name: Options['view']) => {
+    // The previous view keeps encoding until the new one has been created.
+    void graphSwap.request({
+      build: async () => views.get(name) ?? (await factories[name](env)),
+      commit: view => {
+        views.set(name, view);
+        active = view;
+        activeName = name;
+        for (const id of missed.get(name) ?? []) view.setOption(id, ctx.options);
+        missed.delete(name);
+        ctx.requestLayers();
+      },
+      discard: view => {
+        if (views.get(name) !== view) view.destroy();
+      }
+    });
   };
-  getView();
+
+  const setActiveOption = (id: keyof Options, options: Options) => {
+    getView().setOption(id, options);
+    for (const name of Object.keys(factories) as Options['view'][]) {
+      if (name === activeName) continue;
+      const set = missed.get(name) ?? new Set<keyof Options>();
+      set.add(id);
+      missed.set(name, set);
+    }
+  };
 
   return {
     getCompiledGraphs: () => getView().getCompiledGraphs(),
     setOption(id, _value, options) {
       if (id === 'view') {
-        getView();
-        ctx.requestLayers();
+        showView(options.view);
         return;
       }
-      getView().setOption(id, options);
+      setActiveOption(id, options);
       ctx.requestLayers();
     },
     onThemeChange: () => ctx.requestLayers(),
@@ -183,6 +207,7 @@ export async function createBuffersAndShapes(
     getLayers: () => getView().getLayers(),
     destroy() {
       destroyed = true;
+      graphSwap.destroy();
       for (const view of views.values()) view.destroy();
       views.clear();
     }
@@ -193,7 +218,7 @@ export async function createBuffersAndShapes(
 // View: buffers (GPUOutlineGeometry)
 // ---------------------------------------------------------------------------------------------
 
-function createBuffersView(env: ViewEnvironment): View {
+async function createBuffersView(env: ViewEnvironment): Promise<View> {
   const {ctx, city} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'buffers');
@@ -207,6 +232,8 @@ function createBuffersView(env: ViewEnvironment): View {
       lngLat: resources.createBuffer('stations-lnglat', city.railStations.lngLat),
       count: city.railStations.count,
       offsets: null as Buffer | null,
+      polygonOffsets: null as Buffer | null,
+      featureOffsets: null as Buffer | null,
       pathCount: 0
     },
     lines: {
@@ -215,14 +242,18 @@ function createBuffersView(env: ViewEnvironment): View {
       lngLat: resources.createBuffer('lines-lnglat', city.railLines.lngLat),
       count: city.railLines.vertexCount,
       offsets: resources.createBuffer('lines-offsets', city.railLines.offsets),
+      polygonOffsets: null as Buffer | null,
+      featureOffsets: null as Buffer | null,
       pathCount: city.railLines.pathCount
     },
     rings: {
-      type: 'rings' as const,
+      type: 'polygons' as const,
       local: resources.createBuffer('rings-local', city.areas.local),
       lngLat: resources.createBuffer('rings-lnglat', city.areas.lngLat),
       count: city.areas.vertexCount,
       offsets: resources.createBuffer('rings-offsets', city.areas.ringOffsets),
+      polygonOffsets: resources.createBuffer('rings-polygon-offsets', city.areas.polygonOffsets),
+      featureOffsets: resources.createBuffer('rings-feature-offsets', city.areas.featureOffsets),
       pathCount: city.areas.ringCount
     }
   };
@@ -252,10 +283,9 @@ function createBuffersView(env: ViewEnvironment): View {
   } | null = null;
   let dirty = true;
 
-  const build = (options: Options) => {
+  const build = async (options: Options): Promise<NonNullable<typeof built> | null> => {
     const key = `${options.bufferSource}|${options.bufferSystem}|${options.joinSegments}`;
-    if (built?.key === key) return;
-    if (built) resources.release(built.compiled);
+    if (built?.key === key) return null;
     const source = sources[options.bufferSource];
     const spherical = options.bufferSystem === 'spherical';
     const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(options.joinSegments);
@@ -263,32 +293,68 @@ function createBuffersView(env: ViewEnvironment): View {
     const triangles = resources.createBuffer(`triangles-${key}`, outputCount * 8);
     const graph = new GPUCommandGraph<void>(device, {id: `outline-${key}`});
     const imp = createGraphImporter(graph);
+    const sourcePositions = imp(
+      'positions',
+      spherical ? source.lngLat : source.local,
+      'float32x2',
+      source.count
+    );
+    const sourceGeometry =
+      source.type === 'points'
+        ? {geometryType: 'points' as const, positions: sourcePositions}
+        : source.type === 'lines'
+          ? {
+              geometryType: 'lines' as const,
+              positions: sourcePositions,
+              lineOffsets: imp('offsets', source.offsets, 'uint32', source.pathCount + 1)
+            }
+          : {
+              geometryType: 'polygons' as const,
+              positions: sourcePositions,
+              featureOffsets: imp(
+                'feature-offsets',
+                source.featureOffsets,
+                'uint32',
+                city.areas.featureCount + 1
+              ),
+              polygonOffsets: imp(
+                'polygon-offsets',
+                source.polygonOffsets,
+                'uint32',
+                city.areas.partCount + 1
+              ),
+              ringOffsets: imp('offsets', source.offsets, 'uint32', source.pathCount + 1)
+            };
     graph.add(
       new GPUOutlineGeometry({
         id: 'outline',
-        positions: imp(
-          'positions',
-          spherical ? source.lngLat : source.local,
-          'float32x2',
-          source.count
-        ),
-        geometryType: source.type,
-        pathOffsets: source.offsets
-          ? imp('offsets', source.offsets, 'uint32', source.pathCount + 1)
-          : undefined,
+        ...sourceGeometry,
         spatialContext: spherical ? GREAT_CIRCLE_CONTEXT : PLANAR_CONTEXT,
         joinSegments: options.joinSegments,
         parameters: parameters.importToGraph(graph),
         output: {positions: imp('triangles', triangles, 'float32x2', outputCount)}
       })
     );
-    built = {
+    const next = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       triangles,
       triangleCount: outputCount / 3
     };
+    return next;
+  };
+  const commit = (next: NonNullable<typeof built> | null, options: Options) => {
+    if (!next) return;
+    const previous = built;
+    built = next;
+    if (previous) {
+      resources.release(previous.compiled);
+      resources.release(previous.triangles);
+    }
     dirty = true;
+    const source = sources[options.bufferSource];
+    const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(options.joinSegments);
+    const outputCount = source.count * verticesPerInput;
     ctx.setReadout('bufferInputs', `${formatCount(source.count)} vertices`);
     ctx.setReadout(
       'bufferTriangles',
@@ -305,13 +371,29 @@ function createBuffersView(env: ViewEnvironment): View {
     );
     dirty = true;
   };
-  build(ctx.options);
+  commit(await build(ctx.options), ctx.options);
   writeDistance(ctx.options);
+  const graphSwap = resources.track(new GraphSwap());
 
   return {
     getCompiledGraphs: () => (built ? [built.compiled as CompiledGPUCommandGraph<never>] : []),
     setOption(id, options) {
-      if (id === 'bufferSource' || id === 'bufferSystem' || id === 'joinSegments') build(options);
+      if (id === 'bufferSource' || id === 'bufferSystem' || id === 'joinSegments') {
+        // The previous graph keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => build(options),
+          commit: next => {
+            commit(next, options);
+            ctx.requestLayers();
+          },
+          discard: next => {
+            if (next) {
+              resources.release(next.compiled);
+              resources.release(next.triangles);
+            }
+          }
+        });
+      }
       if (id === 'bufferDistance' || id === 'joinSegments') writeDistance(options);
     },
     encode(commandEncoder) {
@@ -379,7 +461,7 @@ function createBuffersView(env: ViewEnvironment): View {
 // View: shapes (GPUShapeGenerator)
 // ---------------------------------------------------------------------------------------------
 
-function createShapesView(env: ViewEnvironment): View {
+async function createShapesView(env: ViewEnvironment): Promise<View> {
   const {ctx, city} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'shapes');
@@ -418,6 +500,9 @@ function createShapesView(env: ViewEnvironment): View {
 
   type Built = {
     key: string;
+    /** Compile-time options this graph was built with; layers follow them until a swap commits. */
+    shapeKind: Options['shapeKind'];
+    shapeSystem: Options['shapeSystem'];
     compiled: CompiledGPUCommandGraph<void>;
     positions: Buffer;
     corners: Buffer;
@@ -457,7 +542,7 @@ function createShapesView(env: ViewEnvironment): View {
     dirty = true;
   };
 
-  const build = (options: Options) => {
+  const build = async (options: Options): Promise<Built> => {
     const maximumSegments = Number(options.maxSegments);
     const key = `${options.shapeKind}|${options.shapeSystem}|${options.ellipseSpacing}|${maximumSegments}`;
     let built = cache.get(key);
@@ -546,7 +631,9 @@ function createShapesView(env: ViewEnvironment): View {
       });
       built = {
         key,
-        compiled: resources.track(graph.compile()),
+        shapeKind: options.shapeKind,
+        shapeSystem: options.shapeSystem,
+        compiled: resources.track(await graph.compileAsync()),
         positions,
         corners,
         featureRows,
@@ -555,6 +642,9 @@ function createShapesView(env: ViewEnvironment): View {
       };
       cache.set(key, built);
     }
+    return built;
+  };
+  const activate = (built: Built) => {
     active = built;
     dirty = true;
   };
@@ -562,8 +652,10 @@ function createShapesView(env: ViewEnvironment): View {
   writeBearings(ctx.options);
   writeEllipse(ctx.options);
   writeParameters(ctx.options);
-  build(ctx.options);
+  activate(await build(ctx.options));
   ctx.setReadout('shapeCount', count);
+  // Variants stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
 
   const updateReadouts = (options: Options) => {
     const kind = options.shapeKind;
@@ -603,7 +695,15 @@ function createShapesView(env: ViewEnvironment): View {
         id === 'ellipseSpacing' ||
         id === 'maxSegments'
       ) {
-        build(options);
+        // The previous variant keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => build(options),
+          commit: built => {
+            activate(built);
+            updateReadouts(ctx.options);
+            ctx.requestLayers();
+          }
+        });
       }
       updateReadouts(options);
     },
@@ -615,7 +715,11 @@ function createShapesView(env: ViewEnvironment): View {
     },
     getLayers() {
       if (!active) return [];
-      const options = ctx.options;
+      const options = {
+        ...ctx.options,
+        shapeKind: active.shapeKind,
+        shapeSystem: active.shapeSystem
+      };
       const geodesic = options.shapeSystem === 'geodesic';
       const system = geodesic ? LNGLAT : LOCAL;
       const segments = clampSegments(options, options.shapeKind, active.maximumSegments);
@@ -676,7 +780,7 @@ function createShapesView(env: ViewEnvironment): View {
 const GRID_COLUMNS = 56;
 const GRID_ROWS = 72;
 
-function createGridView(env: ViewEnvironment): View {
+async function createGridView(env: ViewEnvironment): Promise<View> {
   const {ctx, city} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'grid');
@@ -706,6 +810,7 @@ function createGridView(env: ViewEnvironment): View {
     curveEnds: Buffer;
     keys: Buffer;
     rows: Buffer;
+    curveValues: Buffer;
   };
   type StopsBuild = {
     key: string;
@@ -714,6 +819,8 @@ function createGridView(env: ViewEnvironment): View {
     curveStarts: Buffer;
     curveEnds: Buffer;
     rows: Buffer;
+    keys: Buffer;
+    curveValues: Buffer;
   };
   let grid: GridBuild | null = null;
   let stops: StopsBuild | null = null;
@@ -792,10 +899,43 @@ function createGridView(env: ViewEnvironment): View {
     });
   };
 
-  const buildGrid = (options: Options) => {
+  /** Releases a grid build's graph and every buffer it owns. */
+  const releaseGrid = (build: GridBuild) => {
+    resources.release(build.compiled);
+    for (const buffer of [
+      build.positions,
+      build.centers,
+      build.values,
+      build.fanCorners,
+      build.fanRows,
+      build.curveStarts,
+      build.curveEnds,
+      build.keys,
+      build.rows,
+      build.curveValues
+    ]) {
+      if (buffer) resources.release(buffer);
+    }
+  };
+  /** Releases a stops build's graph and every buffer it owns. */
+  const releaseStops = (build: StopsBuild) => {
+    resources.release(build.compiled);
+    for (const buffer of [
+      build.values,
+      build.curveStarts,
+      build.curveEnds,
+      build.rows,
+      build.keys,
+      build.curveValues
+    ]) {
+      resources.release(buffer);
+    }
+  };
+
+  /** Compiles the grid graph for `options`, or returns null when the live one already matches. */
+  const buildGrid = async (options: Options): Promise<GridBuild | null> => {
     const key = `${options.gridType}|${options.hilbertOrder}`;
-    if (grid?.key === key) return;
-    if (grid) resources.release(grid.compiled);
+    if (grid?.key === key) return null;
     const type = options.gridType as GPUGridType;
     const verticesPerCell = getGPUGridVerticesPerCell(type);
     const cellCount = GRID_COLUMNS * GRID_ROWS * (type === 'triangle' ? 2 : 1);
@@ -843,7 +983,7 @@ function createGridView(env: ViewEnvironment): View {
       new GPUHilbertKeys({
         id: 'hilbert',
         order: options.hilbertOrder,
-        points: centersView,
+        positions: centersView,
         bounds: gridHilbertBounds.importToGraph(graph),
         output: {keys: keysView, sortedRows: rowsView}
       })
@@ -909,9 +1049,10 @@ function createGridView(env: ViewEnvironment): View {
   corners[cornersOffset + index * 6u + 5u] = b.y;`
       });
     }
-    grid = {
+    return {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
+      curveValues: values,
       cellCount,
       verticesPerCell,
       positions,
@@ -925,8 +1066,14 @@ function createGridView(env: ViewEnvironment): View {
       keys,
       rows
     };
-    // Curve color uses the sorted-order values (key fraction by curve position).
-    (grid as GridBuild & {curveValues: Buffer}).curveValues = values;
+  };
+  const commitGrid = (next: GridBuild | null, options: Options) => {
+    if (!next) return;
+    const previous = grid;
+    grid = next;
+    if (previous) releaseGrid(previous);
+    const type = options.gridType as GPUGridType;
+    const cellCount = next.cellCount;
     dirty = true;
     ctx.setReadout(
       'gridCells',
@@ -938,11 +1085,11 @@ function createGridView(env: ViewEnvironment): View {
     );
   };
 
-  const buildStops = (options: Options) => {
+  type StopsResult = {build: StopsBuild; reader: SummaryReader};
+  /** Compiles the stops graph for `options`, or returns null when the live one already matches. */
+  const buildStops = async (options: Options): Promise<StopsResult | null> => {
     const key = `${options.hilbertOrder}`;
-    if (stops?.key === key) return;
-    if (stops) resources.release(stops.compiled);
-    stopsReader?.stop();
+    if (stops?.key === key) return null;
     const keys = resources.createBuffer(`stops-keys-${key}`, stopCount * 4);
     const rows = resources.createBuffer(`stops-rows-${key}`, stopCount * 4);
     const values = resources.createBuffer(`stops-values-${key}`, stopCount * 4);
@@ -958,7 +1105,7 @@ function createGridView(env: ViewEnvironment): View {
       new GPUHilbertKeys({
         id: 'stops-hilbert',
         order: options.hilbertOrder,
-        points,
+        positions: points,
         bounds: stopsHilbertBounds.importToGraph(graph),
         output: {keys: keysView, sortedRows: rowsView}
       })
@@ -988,15 +1135,17 @@ function createGridView(env: ViewEnvironment): View {
       declarations: `const CELLS: f32 = ${(4 ** options.hilbertOrder).toFixed(1)};`,
       body: /* wgsl */ `out[outOffset + index] = f32(keys[keysOffset + index]) / CELLS;`
     });
-    stops = {
+    const next: StopsBuild = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       values: pointValues,
       curveStarts,
       curveEnds,
-      rows
+      rows,
+      keys,
+      curveValues: values
     };
-    stopsReader = new SummaryReader(
+    const nextReader = new SummaryReader(
       resources,
       `stops-rows-${key}`,
       [{buffer: rows, size: stopCount * 4}],
@@ -1022,6 +1171,15 @@ function createGridView(env: ViewEnvironment): View {
         );
       }
     );
+    return {build: next, reader: nextReader};
+  };
+  const commitStops = (next: StopsResult | null) => {
+    if (!next) return;
+    const previous = stops;
+    stopsReader?.stop();
+    stops = next.build;
+    stopsReader = next.reader;
+    if (previous) releaseStops(previous);
     stopsDirty = true;
   };
 
@@ -1046,9 +1204,10 @@ function createGridView(env: ViewEnvironment): View {
     dirty = true;
   };
 
-  buildGrid(ctx.options);
-  buildStops(ctx.options);
+  commitGrid(await buildGrid(ctx.options), ctx.options);
+  commitStops(await buildStops(ctx.options));
   writeGrid(ctx.options);
+  const graphSwap = resources.track(new GraphSwap());
 
   return {
     getCompiledGraphs() {
@@ -1059,10 +1218,25 @@ function createGridView(env: ViewEnvironment): View {
     },
     setOption(id, options) {
       if (id === 'gridType' || id === 'hilbertOrder') {
-        buildGrid(options);
-        writeGrid(options);
+        // The previous graphs keep encoding until the new ones have compiled.
+        void graphSwap.request({
+          build: async () => ({
+            nextGrid: await buildGrid(options),
+            nextStops: await buildStops(options)
+          }),
+          commit: ({nextGrid, nextStops}) => {
+            commitGrid(nextGrid, options);
+            commitStops(nextStops);
+            writeGrid(options);
+            ctx.requestLayers();
+          },
+          discard: ({nextGrid, nextStops}) => {
+            if (nextGrid) releaseGrid(nextGrid);
+            nextStops?.reader.stop();
+            if (nextStops) releaseStops(nextStops.build);
+          }
+        });
       }
-      if (id === 'hilbertOrder') buildStops(options);
       if (id === 'cellSize') writeGrid(options);
     },
     encode(commandEncoder) {
@@ -1138,7 +1312,7 @@ function createGridView(env: ViewEnvironment): View {
               starts: grid.curveStarts,
               ends: grid.curveEnds,
               instanceCount: grid.cellCount - 1,
-              values: (grid as GridBuild & {curveValues: Buffer}).curveValues,
+              values: grid.curveValues,
               colormap: 'ylorbr',
               valueRange: [0, 1],
               color: [255, 255, 255, 255],
@@ -1193,7 +1367,7 @@ function createGridView(env: ViewEnvironment): View {
 // View: clip (GPURectangleClip)
 // ---------------------------------------------------------------------------------------------
 
-function createClipView(env: ViewEnvironment): View {
+async function createClipView(env: ViewEnvironment): Promise<View> {
   const {ctx, city} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'clip');
@@ -1227,6 +1401,14 @@ function createClipView(env: ViewEnvironment): View {
   const streetOffsets = resources.createBuffer('street-offsets', streets.offsets);
   const areaPositions = resources.createBuffer('area-positions', city.areas.local);
   const areaOffsets = resources.createBuffer('area-offsets', city.areas.ringOffsets);
+  const areaPolygonOffsets = resources.createBuffer(
+    'area-polygon-offsets',
+    city.areas.polygonOffsets
+  );
+  const areaFeatureOffsets = resources.createBuffer(
+    'area-feature-offsets',
+    city.areas.featureOffsets
+  );
   const streetClasses = resources.createBuffer(
     'street-classes',
     Float32Array.from(streets.classes ?? [])
@@ -1240,7 +1422,7 @@ function createClipView(env: ViewEnvironment): View {
   };
   const builds = new Map<Options['clipGeometry'], ClipBuild>();
 
-  const build = (geometry: Options['clipGeometry']): ClipBuild => {
+  const build = async (geometry: Options['clipGeometry']): Promise<ClipBuild> => {
     let existing = builds.get(geometry);
     if (existing) return existing;
     const lines = geometry === 'roads';
@@ -1257,18 +1439,43 @@ function createClipView(env: ViewEnvironment): View {
     const pathValues = lines ? resources.createBuffer('clip-path-values', pathCapacity * 4) : null;
     const graph = new GPUCommandGraph<void>(device, {id: `clip-${geometry}`});
     const imp = createGraphImporter(graph);
-    const outputViews = importPathOutput(graph, output, {sourcePaths: lines, pathCount: lines});
+    const outputViews = importPathOutput(graph, output, {
+      sourceLineIndices: lines,
+      lineCount: lines
+    });
+    const clipPositions = imp(
+      'positions',
+      lines ? streetPositions : areaPositions,
+      'float32x2',
+      vertexCount
+    );
+    const clipGeometry = lines
+      ? {
+          geometryType: 'lines' as const,
+          positions: clipPositions,
+          lineOffsets: imp('offsets', streetOffsets, 'uint32', pathCount + 1)
+        }
+      : {
+          geometryType: 'polygons' as const,
+          positions: clipPositions,
+          featureOffsets: imp(
+            'feature-offsets',
+            areaFeatureOffsets,
+            'uint32',
+            city.areas.featureCount + 1
+          ),
+          polygonOffsets: imp(
+            'polygon-offsets',
+            areaPolygonOffsets,
+            'uint32',
+            city.areas.partCount + 1
+          ),
+          ringOffsets: imp('offsets', areaOffsets, 'uint32', pathCount + 1)
+        };
     graph.add(
       new GPURectangleClip({
         id: 'clip',
-        positions: imp(
-          'positions',
-          lines ? streetPositions : areaPositions,
-          'float32x2',
-          vertexCount
-        ),
-        geometryType: lines ? 'lines' : 'polygons',
-        pathOffsets: imp('offsets', lines ? streetOffsets : areaOffsets, 'uint32', pathCount + 1),
+        ...clipGeometry,
         parameters: parameters.importToGraph(graph),
         output: outputViews
       })
@@ -1279,7 +1486,7 @@ function createClipView(env: ViewEnvironment): View {
         id: 'source-classes',
         invocationCount: pathCapacity,
         bindings: [
-          {name: 'sources', view: outputViews.sourcePaths!, type: 'u32', access: 'read'},
+          {name: 'sources', view: outputViews.sourceLineIndices!, type: 'u32', access: 'read'},
           {
             name: 'classes',
             view: imp('classes', streetClasses, 'float32', pathCount),
@@ -1329,7 +1536,7 @@ function createClipView(env: ViewEnvironment): View {
         );
       }
     );
-    existing = {compiled: resources.track(graph.compile()), output, pathValues, reader};
+    existing = {compiled: resources.track(await graph.compileAsync()), output, pathValues, reader};
     builds.set(geometry, existing);
     return existing;
   };
@@ -1371,7 +1578,11 @@ function createClipView(env: ViewEnvironment): View {
     );
     dirty = true;
   };
-  build(ctx.options.clipGeometry);
+  await build(ctx.options.clipGeometry);
+  // The geometry shown; it follows the option only once that geometry's graph has compiled.
+  let activeGeometry = ctx.options.clipGeometry;
+  // Builds stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
   writeRectangle(ctx.options);
 
   const toLocal = (event: ScenePointerEvent): [number, number] | null =>
@@ -1386,8 +1597,15 @@ function createClipView(env: ViewEnvironment): View {
       [...builds.values()].map(entry => entry.compiled as CompiledGPUCommandGraph<never>),
     setOption(id, options) {
       if (id === 'clipGeometry') {
-        build(options.clipGeometry);
-        dirty = true;
+        // The previous geometry keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => build(options.clipGeometry),
+          commit: () => {
+            activeGeometry = options.clipGeometry;
+            dirty = true;
+            ctx.requestLayers();
+          }
+        });
       }
       if (id === 'clipSize') writeRectangle(options);
     },
@@ -1417,7 +1635,7 @@ function createClipView(env: ViewEnvironment): View {
       ctx.setMapDragEnabled(true);
     },
     encode(commandEncoder) {
-      const entry = builds.get(ctx.options.clipGeometry);
+      const entry = builds.get(activeGeometry);
       if (!entry) return;
       if (dirty) {
         entry.compiled.encode(commandEncoder, {parameters: undefined});
@@ -1430,10 +1648,10 @@ function createClipView(env: ViewEnvironment): View {
     },
     getLayers() {
       const options = ctx.options;
-      const entry = builds.get(options.clipGeometry);
+      const entry = builds.get(activeGeometry);
       if (!entry) return [];
       const dark = ctx.theme() === 'dark';
-      const lines = options.clipGeometry === 'roads';
+      const lines = activeGeometry === 'roads';
       const layers: Layer[] = [];
       if (options.showOriginal) {
         const paths = lines ? staticStreets : staticAreas;

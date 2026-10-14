@@ -14,6 +14,7 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
+import type {GPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import type {GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   GPUTerrainContours,
@@ -62,8 +63,7 @@ export function createSummitBuffers(
 /** What a summit graph needs to be built. */
 export type SummitGraphConfig = {
   name: string;
-  width: number;
-  height: number;
+  grid: GPURasterMetadata;
   pixelCount: number;
   elevation: Buffer;
   validity: Buffer;
@@ -77,17 +77,16 @@ export type SummitGraphConfig = {
 };
 
 /** Compiles `GPUTerrainSummits` with a compact list of ids and drops. */
-export function compileSummitGraph(
+export async function compileSummitGraph(
   resources: SpatialAnalysisResources,
   config: SummitGraphConfig
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const {buffers, capacity} = config;
   const graph = new GPUCommandGraph<void>(resources.device, {id: config.name});
   graph.add(
     new GPUTerrainSummits({
       id: 'summits',
-      width: config.width,
-      height: config.height,
+      grid: config.grid,
       elevation: createElevationBand(
         graph,
         'summits',
@@ -98,18 +97,24 @@ export function compileSummitGraph(
       cellSizeMode: 'web-mercator',
       maximumRadiusPixels: config.maximumRadiusPixels,
       incompleteNeighborhood: config.incompleteNeighborhood,
-      settings: config.settings.importToGraph(graph),
+      parameters: config.settings.importToGraph(graph),
       output: {
-        ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', capacity),
-        count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
-      },
-      outputDrop: importGraphBuffer(graph, 'drops', buffers.drops, 'float32', capacity),
-      overflow: importGraphBuffer(graph, 'clamped', buffers.clamped, 'uint32', 1)
+        summits: {
+          ids: importGraphBuffer(graph, 'ids', buffers.ids, 'uint32', capacity),
+          status: {
+            count: importGraphBuffer(graph, 'count', buffers.count, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', buffers.total, 'uint32', 1)
+          }
+        },
+        summitDrop: importGraphBuffer(graph, 'drops', buffers.drops, 'float32', capacity),
+        status: {
+          radiusClamped: importGraphBuffer(graph, 'clamped', buffers.clamped, 'uint32', 1)
+        }
+      }
     })
   );
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }
 
 /** The buffers of the peak-snap graph. */
@@ -139,25 +144,23 @@ export function createSnapBuffers(resources: SpatialAnalysisResources): SnapBuff
 }
 
 /** Compiles `GPUTerrainPeakSnap` over the catalogue buffers. */
-export function compileSnapGraph(
+export async function compileSnapGraph(
   resources: SpatialAnalysisResources,
   config: {
-    width: number;
-    height: number;
+    grid: GPURasterMetadata;
     pixelCount: number;
     elevation: Buffer;
     validity: Buffer;
     settings: GPUParameterBuffer<'float32'>;
     buffers: SnapBuffers;
   }
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const {buffers} = config;
   const graph = new GPUCommandGraph<void>(resources.device, {id: 'summits-snap'});
   graph.add(
     new GPUTerrainPeakSnap({
       id: 'snap',
-      width: config.width,
-      height: config.height,
+      grid: config.grid,
       elevation: createElevationBand(
         graph,
         'snap',
@@ -188,35 +191,50 @@ export function compileSnapGraph(
         'float32',
         CANDIDATE_CAPACITY
       ),
-      settings: config.settings.importToGraph(graph),
-      positions: importGraphBuffer(
-        graph,
-        'positions',
-        buffers.positions,
-        'float32x2',
-        CANDIDATE_CAPACITY
-      ),
-      heights: importGraphBuffer(graph, 'heights', buffers.heights, 'float32', CANDIDATE_CAPACITY),
-      status: importGraphBuffer(graph, 'status', buffers.status, 'uint32', CANDIDATE_CAPACITY),
-      snapDistance: importGraphBuffer(
-        graph,
-        'distance',
-        buffers.distance,
-        'float32',
-        CANDIDATE_CAPACITY
-      ),
-      overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+      parameters: config.settings.importToGraph(graph),
+      output: {
+        positions: importGraphBuffer(
+          graph,
+          'positions',
+          buffers.positions,
+          'float32x2',
+          CANDIDATE_CAPACITY
+        ),
+        heights: importGraphBuffer(
+          graph,
+          'heights',
+          buffers.heights,
+          'float32',
+          CANDIDATE_CAPACITY
+        ),
+        snapStatus: importGraphBuffer(
+          graph,
+          'status',
+          buffers.status,
+          'uint32',
+          CANDIDATE_CAPACITY
+        ),
+        snapDistance: importGraphBuffer(
+          graph,
+          'distance',
+          buffers.distance,
+          'float32',
+          CANDIDATE_CAPACITY
+        ),
+        status: {
+          radiusClamped: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)
+        }
+      }
     })
   );
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }
 
 /** Compiles `GPUTerrainCriticalPoints` for a ring of 8 or 6 neighbours. */
-export function compileCriticalGraph(
+export async function compileCriticalGraph(
   resources: SpatialAnalysisResources,
   config: {
-    width: number;
-    height: number;
+    grid: GPURasterMetadata;
     pixelCount: number;
     elevation: Buffer;
     validity: Buffer;
@@ -225,15 +243,14 @@ export function compileCriticalGraph(
     signChanges: Buffer;
     counts: Buffer;
   }
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const graph = new GPUCommandGraph<void>(resources.device, {
     id: `summits-critical-${config.connectivity}`
   });
   graph.add(
     new GPUTerrainCriticalPoints({
       id: 'critical',
-      width: config.width,
-      height: config.height,
+      grid: config.grid,
       elevation: createElevationBand(
         graph,
         'critical',
@@ -242,24 +259,26 @@ export function compileCriticalGraph(
         config.pixelCount
       ),
       connectivity: config.connectivity,
-      classes: importGraphBuffer(graph, 'classes', config.classes, 'uint32', config.pixelCount),
-      signChanges: importGraphBuffer(
-        graph,
-        'signs',
-        config.signChanges,
-        'uint32',
-        config.pixelCount
-      ),
-      counts: importGraphBuffer(
-        graph,
-        'counts',
-        config.counts,
-        'uint32',
-        GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
-      )
+      output: {
+        classes: importGraphBuffer(graph, 'classes', config.classes, 'uint32', config.pixelCount),
+        signChanges: importGraphBuffer(
+          graph,
+          'signs',
+          config.signChanges,
+          'uint32',
+          config.pixelCount
+        ),
+        counts: importGraphBuffer(
+          graph,
+          'counts',
+          config.counts,
+          'uint32',
+          GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
+        )
+      }
     })
   );
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }
 
 /** The buffers of the contour graph. */
@@ -300,17 +319,16 @@ export function createContourBuffers(resources: SpatialAnalysisResources): Conto
 }
 
 /** Compiles `GPUTerrainContours` over the full-resolution DEM, one slot per level. */
-export function compileContourGraph(
+export async function compileContourGraph(
   resources: SpatialAnalysisResources,
   config: {
-    width: number;
-    height: number;
+    grid: GPURasterMetadata;
     pixelCount: number;
     elevation: Buffer;
     validity: Buffer;
     buffers: ContourBuffers;
   }
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const {buffers} = config;
   const graph = new GPUCommandGraph<void>(resources.device, {id: 'summits-contours'});
   const levelsView = buffers.levels.importToGraph(graph);
@@ -318,8 +336,7 @@ export function compileContourGraph(
   graph.add(
     new GPUTerrainContours({
       id: 'contours',
-      width: config.width,
-      height: config.height,
+      grid: config.grid,
       elevation: createElevationBand(
         graph,
         'contours',
@@ -327,7 +344,9 @@ export function compileContourGraph(
         config.validity,
         config.pixelCount
       ),
-      overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+      output: {
+        status: {overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1)}
+      },
       levels: Array.from({length: CONTOUR_LEVEL_COUNT}, (_, level) => ({
         level: graph.createDataView(levelsView.buffer, {
           format: 'float32',
@@ -341,14 +360,10 @@ export function compileContourGraph(
           'float32x2',
           CONTOUR_SEGMENT_CAPACITY * 2
         ),
-        segmentCount: importGraphBuffer(
-          graph,
-          `count-${level}`,
-          buffers.counts[level],
-          'uint32',
-          1
-        ),
-        // The contributor rewrites [verticesPerInstance, segmentCount, 0, 0] on the GPU, so the
+        status: {
+          count: importGraphBuffer(graph, `count-${level}`, buffers.counts[level], 'uint32', 1)
+        },
+        // The contributor rewrites [verticesPerInstance, status.count, 0, 0] on the GPU, so the
         // segment layer draws exactly the segments found, with no readback.
         draw: drawView,
         drawCommandIndex: level,
@@ -358,5 +373,5 @@ export function compileContourGraph(
       }))
     })
   );
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }

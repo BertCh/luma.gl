@@ -22,6 +22,7 @@
  * the frame and compares every output bit for bit.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
@@ -31,21 +32,22 @@ import {
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
   getGPURasterExtremaPyramidLayout,
-  GPURasterExtremaPyramid
+  GPURasterExtremaPyramid,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUTerrainCurvatureCoefficient,
   getGPUTerrainDerivativesParameterValues,
-  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainLineOfSightParameterValues,
   getGPUTerrainViewshedParameterValues,
-  getGPUTerrainVisibilityToleranceParameterValues,
-  GPU_POINT_HORIZON_PARAMETER_LENGTH,
+  getGPUTerrainViewshedToleranceParameterValues,
+  GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH,
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
-  GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH,
+  GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH,
   GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
   GPU_TERRAIN_VISIBILITY,
-  GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH,
+  GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH,
   GPUPointHorizonProfile,
   GPUTerrainCumulativeViewshed,
   GPUTerrainDerivatives,
@@ -178,7 +180,14 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
       },
       validity: importGraphBuffer(setupGraph, 'validity', validityBuffer, 'uint32', pixelCount)
     };
-    const pyramidLayout = getGPURasterExtremaPyramidLayout(width, height, {
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
+    const pyramidLayout = getGPURasterExtremaPyramidLayout(grid, {
       firstBlockSize: 4,
       footprint: 'bilinear'
     });
@@ -188,17 +197,18 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     setupGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation: setupElevation,
-        settings: derivativesSettings.importToGraph(setupGraph),
-        hillshade: importGraphBuffer(
-          setupGraph,
-          'hillshade',
-          hillshadeBuffer,
-          'float32',
-          pixelCount
-        ),
+        parameters: derivativesSettings.importToGraph(setupGraph),
+        output: {
+          hillshade: importGraphBuffer(
+            setupGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            pixelCount
+          )
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -206,27 +216,27 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     setupGraph.add(
       new GPURasterExtremaPyramid({
         id: 'extrema-pyramid',
-        width,
-        height,
+        grid,
         input: setupElevation,
         firstBlockSize: 4,
         footprint: 'bilinear',
-        combined: importGraphBuffer(
-          setupGraph,
-          'pyramid-combined',
-          pyramidCombined,
-          'float32',
-          2 * pyramidLayout.length
-        )
+        output: {
+          combined: importGraphBuffer(
+            setupGraph,
+            'pyramid-combined',
+            pyramidCombined,
+            'float32',
+            2 * pyramidLayout.length
+          )
+        }
       })
     );
-    const compiledSetup = resources.track(setupGraph.compile());
+    const compiledSetup = resources.track(await setupGraph.compileAsync());
     derivativesSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize,
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {azimuthDegrees: SUN_AZIMUTH_DEGREES, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+        grid
+      )
     );
     // One coarse maximum raster per pyramid level, copied once after the setup graph runs.
     const levelBuffers = pyramidLayout.levels.map(level =>
@@ -242,17 +252,17 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     const toleranceSettings = resources.createParameterBuffer(
       'tolerance-settings',
       'float32',
-      GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH
+      GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH
     );
     const horizonSettings = resources.createParameterBuffer(
       'horizon-settings',
       'float32',
-      GPU_POINT_HORIZON_PARAMETER_LENGTH
+      GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH
     );
     const sightSettings = resources.createParameterBuffer(
       'sight-settings',
       'float32',
-      GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH
+      GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH
     );
     const horizonObserver = resources.createBuffer('horizon-observer', new Float32Array(4));
     const sightPair = resources.createBuffer('sight-pair', new Float32Array(4));
@@ -262,7 +272,7 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     );
 
     // --- One pair of graphs per traversal, with its own outputs --------------------------------
-    function buildTraversalGraphs(traversal: Traversal): TraversalGraphs {
+    async function buildTraversalGraphs(traversal: Traversal): Promise<TraversalGraphs> {
       // The pyramid traversal reads the setup graph's pyramid instead of building five of its own.
       const sharedPyramids = new Map<GPUCommandGraph<void>, SharedPyramid>();
       const getSharedPyramid = (graph: GPUCommandGraph<void>) => {
@@ -304,21 +314,21 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
       main.add(
         new GPUTerrainViewshed({
           id: 'viewshed',
-          width,
-          height,
+          grid,
           elevation,
           traversal,
           pyramid: getSharedPyramid(main),
-          settings: viewshedSettings.importToGraph(main),
-          tolerance: toleranceSettings.importToGraph(main),
-          visibility: importGraphBuffer(main, 'visibility', visibility, 'uint32', pixelCount)
+          parameters: viewshedSettings.importToGraph(main),
+          toleranceParameters: toleranceSettings.importToGraph(main),
+          output: {
+            visibility: importGraphBuffer(main, 'visibility', visibility, 'uint32', pixelCount)
+          }
         })
       );
       main.add(
         new GPUPointHorizonProfile({
           id: 'horizon',
-          width,
-          height,
+          grid,
           elevation,
           traversal,
           pyramid: getSharedPyramid(main),
@@ -326,30 +336,39 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
           maximumDistance: HORIZON_MAXIMUM_DISTANCE,
           cellSize: cellSize[0],
           observers: importGraphBuffer(main, 'horizon-observer', horizonObserver, 'float32x4', 1),
-          settings: horizonSettings.importToGraph(main),
-          skylineAngle: importGraphBuffer(main, 'skyline-angle', skylineAngle, 'float32', rayCount),
-          distance: importGraphBuffer(
-            main,
-            'skyline-distance',
-            skylineDistance,
-            'float32',
-            rayCount
-          ),
-          samples: importGraphBuffer(main, 'skyline-samples', samples, 'uint32', rayCount)
+          parameters: horizonSettings.importToGraph(main),
+          output: {
+            skylineAngle: importGraphBuffer(
+              main,
+              'skyline-angle',
+              skylineAngle,
+              'float32',
+              rayCount
+            ),
+            distance: importGraphBuffer(
+              main,
+              'skyline-distance',
+              skylineDistance,
+              'float32',
+              rayCount
+            ),
+            samples: importGraphBuffer(main, 'skyline-samples', samples, 'uint32', rayCount)
+          }
         })
       );
       main.add(
         new GPUTerrainLineOfSight({
           id: 'line-of-sight',
-          width,
-          height,
+          grid,
           elevation,
           traversal,
           pyramid: getSharedPyramid(main),
           pairs: importGraphBuffer(main, 'sight-pair', sightPair, 'float32x4', 1),
-          settings: sightSettings.importToGraph(main),
-          visibility: importGraphBuffer(main, 'los-code', lineOfSightCode, 'uint32', 1),
-          clearance: importGraphBuffer(main, 'los-clearance', lineOfSightClearance, 'float32', 1)
+          parameters: sightSettings.importToGraph(main),
+          output: {
+            visibility: importGraphBuffer(main, 'los-code', lineOfSightCode, 'uint32', 1),
+            clearance: importGraphBuffer(main, 'los-clearance', lineOfSightClearance, 'float32', 1)
+          }
         })
       );
 
@@ -368,8 +387,7 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
       cumulative.add(
         new GPUTerrainCumulativeViewshed({
           id: 'cumulative',
-          width,
-          height,
+          grid,
           elevation: cumulativeElevation,
           traversal,
           pyramid: getSharedPyramid(cumulative),
@@ -380,20 +398,22 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
             'float32x2',
             CUMULATIVE_OBSERVER_COUNT
           ),
-          settings: sightSettings.importToGraph(cumulative),
-          visibleCount: importGraphBuffer(
-            cumulative,
-            'cumulative-count',
-            cumulativeCount,
-            'uint32',
-            pixelCount
-          )
+          parameters: sightSettings.importToGraph(cumulative),
+          output: {
+            visibleCount: importGraphBuffer(
+              cumulative,
+              'cumulative-count',
+              cumulativeCount,
+              'uint32',
+              pixelCount
+            )
+          }
         })
       );
       return {
         traversal,
-        main: resources.track(main.compile()),
-        cumulative: resources.track(cumulative.compile()),
+        main: resources.track(await main.compileAsync()),
+        cumulative: resources.track(await cumulative.compileAsync()),
         visibility,
         skylineAngle,
         skylineDistance,
@@ -403,8 +423,8 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
         cumulativeCount
       };
     }
-    const marchGraphs = buildTraversalGraphs('march');
-    const pyramidGraphs = buildTraversalGraphs('pyramid');
+    const marchGraphs = await buildTraversalGraphs('march');
+    const pyramidGraphs = await buildTraversalGraphs('pyramid');
     const graphsByTraversal: Record<Traversal, TraversalGraphs> = {
       march: marchGraphs,
       pyramid: pyramidGraphs
@@ -554,35 +574,29 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
     function writeParameters(): void {
       const curvatureCoefficient = getCurvature();
       viewshedSettings.write(
-        getGPUTerrainViewshedParameterValues({
-          observer,
-          observerHeight,
-          targetHeight,
-          maxDistance: maximumDistance,
-          cellSize,
-          curvatureCoefficient
-        })
+        getGPUTerrainViewshedParameterValues(
+          {observer, observerHeight, targetHeight, maximumDistance, curvatureCoefficient},
+          grid
+        )
       );
       toleranceSettings.write(
-        getGPUTerrainVisibilityToleranceParameterValues({toleranceMeters, tolerancePerKilometer})
+        getGPUTerrainViewshedToleranceParameterValues({toleranceMeters, tolerancePerKilometer})
       );
       horizonSettings.write(
-        getGPUPointHorizonParameterValues({
-          curvatureCoefficient,
-          maximumDistance,
-          cellSize
-        })
+        getGPUPointHorizonProfileParameterValues({curvatureCoefficient, maximumDistance}, grid)
       );
       sightSettings.write(
-        getGPUTerrainSightLineParameterValues({
-          observerHeight,
-          targetHeight,
-          maxDistance: maximumDistance,
-          cellSize,
-          curvatureCoefficient,
-          toleranceMeters,
-          tolerancePerKilometer
-        })
+        getGPUTerrainLineOfSightParameterValues(
+          {
+            observerHeight,
+            targetHeight,
+            maximumDistance,
+            curvatureCoefficient,
+            toleranceMeters,
+            tolerancePerKilometer
+          },
+          grid
+        )
       );
       horizonObserver.write(Float32Array.of(observer[0], observer[1], observerHeight, 0));
       sightPair.write(Float32Array.of(observer[0], observer[1], target[0], target[1]));
@@ -996,7 +1010,7 @@ export const visibilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: offset});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.slice(0, offset).buffer);
         applySkyline(new Float32Array(words.buffer), words);

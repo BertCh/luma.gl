@@ -26,6 +26,7 @@ import {
   type GPUSimilarLocationsStandardization
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
@@ -198,7 +199,9 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
     }
     selectedCells.push(highest);
 
-    function buildGraph(): CompiledGPUCommandGraph<void> {
+    async function buildGraph(
+      standardization: GPUSimilarLocationsStandardization
+    ): Promise<CompiledGPUCommandGraph<void>> {
       const graph = new GPUCommandGraph<void>(device, {id: 'similar-locations'});
       const view = <Format extends 'float32' | 'uint32'>(
         name: string,
@@ -214,13 +217,13 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUSimilarLocations({
           id: 'similar',
-          attributes: view('attributes', attributesBuffer, 'float32', CELL_COUNT * ATTRIBUTE_COUNT),
-          attributeCount: ATTRIBUTE_COUNT,
-          selection: view('selection', selectionBuffer, 'uint32', CELL_COUNT),
+          values: view('attributes', attributesBuffer, 'float32', CELL_COUNT * ATTRIBUTE_COUNT),
+          columnCount: ATTRIBUTE_COUNT,
+          referenceMask: view('selection', selectionBuffer, 'uint32', CELL_COUNT),
           parameters: parameterView,
           standardization,
-          maximumResultCount: MAXIMUM_RESULT_COUNT,
-          output: {ranks, distances, topIds, count}
+          resultCapacity: MAXIMUM_RESULT_COUNT,
+          output: {ranks, distances, topIds, status: {count}}
         })
       );
       const topDistances = view(
@@ -277,7 +280,7 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
   var nan = 0x7fc00000u;
   display[displayOffset + index] = select(bitcast<f32>(nan), exp(-distance / scale), isRanked);`
       });
-      return graph.compile();
+      return await graph.compileAsync();
     }
 
     function writeParameters(): void {
@@ -339,7 +342,8 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
 
     writeParameters();
     writeSelection();
-    compiled = resources.track(buildGraph());
+    compiled = resources.track(await buildGraph(standardization));
+    const graphSwap = resources.track(new GraphSwap());
 
     function describeCell(cell: number): string {
       return ATTRIBUTES.map(
@@ -374,10 +378,18 @@ export const similarLocationsMode: SpatialAnalysisModeDefinition = {
       value: standardization,
       onChange: value => {
         standardization = value;
-        resources.release(compiled!);
-        compiled = resources.track(buildGraph());
-        summary.markStale();
-        context.setStatus(`Standardization: ${value} (graph rebuilt)`);
+        // The current graph keeps encoding until the replacement has compiled.
+        void graphSwap.request({
+          build: async () => resources.track(await buildGraph(value)),
+          commit: next => {
+            const previous = compiled;
+            compiled = next;
+            if (previous) resources.release(previous);
+            summary.markStale();
+            context.setStatus(`Standardization: ${value} (graph rebuilt)`);
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     context.controls.addSlider({

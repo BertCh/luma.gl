@@ -543,15 +543,17 @@ import {
   getGPUTrajectoryMetricsParameterValues, getGPUTrajectoryPlayheadParameterValues,
   getGPUOutlineGeometryParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // Longitude/latitude positions with a great-circle context: speeds in m/s, headings are initial bearings.
 const metrics = new GPUCommandGraph(device, {id: 'metrics'});
 metrics.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions: lngLat, timestamps, trackOffsets,
   parameters: stallParameters.importToGraph(metrics),
-  stepSpeeds, stepHeadings, trackStopCounts,
-  stops: {output: {ids, count, overflow}, startRows, endRows, durations}
+  output: {
+    stepSpeeds, stepHeadings, trackStopCounts,
+    stops: {ids, status: {count, overflow}, startRows, endRows, durations}
+  }
 }));
 
 // Cells at the playhead: positions in degrees, plus the segment row each cell is on.
@@ -559,14 +561,14 @@ const play = new GPUCommandGraph(device, {id: 'playhead'});
 play.add(new GPUTrajectoryPlayhead({
   positions: lngLat, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(play),
-  currentPositions, status, segmentRows, activeTracks: {ids, count, overflow}
+  output: {currentPositions, trackStatus: status, segmentRows, activeTracks: {ids, status: {count, overflow}}}
 }));
 ${
   state.showSwath
     ? `
 // Buffer the tracks by meters on the sphere (drawing only; overlaps are not merged).
 swath.add(new GPUOutlineGeometry({
-  positions: lngLat, geometryType: 'lines', pathOffsets: trackOffsets,
+  positions: lngLat, geometryType: 'lines', lineOffsets: trackOffsets,
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, joinSegments: ${state.swathJoin},      // compile-time
   parameters: swathDistance.importToGraph(swath),                       // per-frame
   output: {positions: triangles}
@@ -579,7 +581,7 @@ ${
 // Flashes in a window feed the density as a mask.
 flashes.add(new GPUTimeWindowFilter({
   timestamps: flashTimes, window: flashWindow.importToGraph(flashes),
-  output: {ids, count, overflow}, outputMask: mask
+  output: {ids, status: {count, overflow}, outputMask: mask}
 }));
 density.add(new GPUPointDensity({
   positions: flashEqualAreaMeters, mask, bounds: viewBounds.importToGraph(density),   // Lambert equal-area meters
@@ -590,13 +592,13 @@ density.add(new GPUPointDensity({
     : ''
 }
 // every frame: parameters are plain buffer writes
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: 0}));
 stallParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${(state.stallSpeedKmh / 3.6).toFixed(2)},   // m/s (${state.stallSpeedKmh} km/h)
   stopMinimumDuration: ${state.stallMinutes * 60}                   // s
 }));
 swathDistance.write(getGPUOutlineGeometryParameterValues({distance: ${state.swathKm * 1000}}));
-flashWindow.write(getGPUTimeWindowParameterValues({start: playhead - ${state.lightningMinutes * 60}, end: playhead}));
+flashWindow.write(getGPUTimeWindowFilterParameterValues({start: playhead - ${state.lightningMinutes * 60}, end: playhead}));
 play.encode(commandEncoder, {parameters: undefined});`,
 
   about: {

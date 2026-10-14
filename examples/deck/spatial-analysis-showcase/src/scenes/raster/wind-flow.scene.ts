@@ -518,7 +518,7 @@ licParameters.write(getGPULineIntegralConvolutionParameterValues({
   fieldExtent, outputExtent: viewportExtent, stepLength: ${state.licStep}, phase, period: ${state.licPeriod}}));
 streamParameters.write(getGPUStreamlinesParameterValues({
   fieldExtent, gridExtent: [x0, y0, cell, cell], stepLength: 0.4 * cell}));
-particleGraph.compile().encode(commandEncoder, {parameters: undefined});`,
+(await particleGraph.compileAsync()).encode(commandEncoder, {parameters: undefined});`,
 
   about: {
     what: 'One velocity buffer feeds three contributors. `GPUParticleAdvection` moves tens of thousands of particles with a midpoint (RK2) step and keeps a ring buffer of their last positions; `GPULineIntegralConvolution` smears a seeded white-noise texture along the flow; `GPUStreamlines` extracts evenly spaced streamlines as polylines. The layers draw straight from the output buffers.',

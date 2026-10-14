@@ -562,24 +562,24 @@ export default defineScene<BixiBundlesOptions>({
   },
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPUEdgeBundling, createGPUEdgeBundlingParameterValues} from '@luma.gl/experimental/gpu-network';
+import {GPUEdgeBundling, getGPUEdgeBundlingParameterValues} from '@luma.gl/experimental/gpu-network';
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'bundling'});
 graph.add(new GPUEdgeBundling({
-  positions, sourceVertices, targetVertices,   // 905 stations, the busiest pairs by rides
+  nodePositions, sourceNodes, targetNodes,     // 905 stations, the busiest pairs by rides
   edgeMask,                                    // busiest ${state.edges}, at least ${state.minRides} rides
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},  // longitude scaled by cos(latitude): a round kernel
   pointsPerEdge: ${state.pointsPerEdge},
-  iterations: 32,                              // compiled maximum
+  maximumIterations: 32,                       // compiled maximum
   densityResolution: ${state.densityResolution},
   parameters: params.importToGraph(graph),
-  paths                                        // float32x2 polylines, drawn as is
+  output: {paths}                              // float32x2 polylines, drawn as is
 }));
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 
 // kernelRadius is a share of the square work box around the live pairs
-params.write(createGPUEdgeBundlingParameterValues(
+params.write(getGPUEdgeBundlingParameterValues(
   {activeIterations: ${state.iterations}, kernelRadius: ${state.kernelRadius}, lambda: ${state.decay}, smoothing: ${state.stiffness}, stepScale: ${state.stepScale}}, 'uint32'));
 compiled.encode(commandEncoder, {parameters: undefined});
 
@@ -587,7 +587,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
 width = 0.5 + 5.5 * sqrt(rides / maxRides);
 
 // rides: one more graph, parameters per frame
-playheadParams.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds, maxGap: 0}));`,
+playheadParams.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds, maximumGap: 0}));`,
 
   basemap: ground('night'),
   furniture: {

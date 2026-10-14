@@ -25,6 +25,7 @@ import {
   type SpatialAnalysisColormap
 } from '../../engine/layers';
 import {RAMP_STOPS, type RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -45,16 +46,6 @@ import {
   type ZoneRaster
 } from './b2-graph';
 import {PackedZoneFillLayer, ZoneFillLayer} from './b2-layers';
-
-/**
- * `GPUZonalStatistics` and the choropleth recipe take a boolean: `true` is the closed rule, `false`
- * the open rule, and leaving it out gives the half-open default.
- */
-function getZonalBoundary(rule: ObservationsByTractOptions['boundaryRule']): {
-  includeBoundary?: boolean;
-} {
-  return rule === 'half-open' ? {} : {includeBoundary: rule === 'closed'};
-}
 
 /** Option state of the observations-by-tract scene. */
 export type ObservationsByTractOptions = {
@@ -261,10 +252,10 @@ export async function createObservationsByTract(
     `${state.backend}|${getRecipeStatistic(state)}|${state.boundaryRule}`;
 
   /** Builds the assignment join (and its prepared handle) for the compile-time choices. */
-  function buildAssignGraph(
+  async function buildAssignGraph(
     state: Pick<ObservationsByTractOptions, 'prepared' | 'spatialSort' | 'boundaryRule'>,
     idSuffix = ''
-  ): AssignGraph {
+  ): Promise<AssignGraph> {
     const graph = new GPUCommandGraph<void>(device, {id: `observations-assign${idSuffix}`});
     const views = importPolygons(graph, 'tracts', polygons);
     const prepared = state.prepared
@@ -278,51 +269,61 @@ export async function createObservationsByTract(
     graph.add(
       new GPUPointInPolygonJoin({
         id: 'tract-join',
-        points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
-        polygonPositions: views.positions,
-        featureOffsets: views.featureOffsets,
-        polygonOffsets: views.polygonOffsets,
-        ringOffsets: views.ringOffsets,
+        points: {
+          kind: 'points',
+          positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+        },
+        polygons: views,
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
         boundaryRule: state.boundaryRule,
         ...(prepared ? {prepared} : {spatialSort: state.spatialSort}),
-        pointFeatureIds: importGraphBuffer(
-          graph,
-          'point-features',
-          pointFeatures,
-          'uint32',
-          pointCount
-        ),
-        featureCounts: importGraphBuffer(
-          graph,
-          'assign-counts',
-          assignCounts,
-          'uint32',
-          featureCount
-        ),
-        overflow: importGraphBuffer(graph, 'assign-overflow', assignOverflow, 'uint32', 1),
-        candidateCount: importGraphBuffer(
-          graph,
-          'assign-candidates',
-          assignCandidates,
-          'uint32',
-          1
-        ),
-        uncertainCount: importGraphBuffer(graph, 'assign-uncertain', assignUncertain, 'uint32', 1)
+        output: {
+          pointFeatureIds: importGraphBuffer(
+            graph,
+            'point-features',
+            pointFeatures,
+            'uint32',
+            pointCount
+          ),
+          featureCounts: importGraphBuffer(
+            graph,
+            'assign-counts',
+            assignCounts,
+            'uint32',
+            featureCount
+          ),
+          status: {
+            overflow: importGraphBuffer(graph, 'assign-overflow', assignOverflow, 'uint32', 1),
+            candidateCount: importGraphBuffer(
+              graph,
+              'assign-candidates',
+              assignCandidates,
+              'uint32',
+              1
+            ),
+            uncertainCount: importGraphBuffer(
+              graph,
+              'assign-uncertain',
+              assignUncertain,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
     return {
       key: getAssignKey(state),
-      compiled: graph.compile(),
+      compiled: await graph.compileAsync(),
       prepared
     };
   }
 
-  function getAssignGraph(state: ObservationsByTractOptions): AssignGraph {
+  async function getAssignGraph(state: ObservationsByTractOptions): Promise<AssignGraph> {
     const key = getAssignKey(state);
     let built = assignCache.get(key);
     if (!built) {
-      built = buildAssignGraph(state);
+      built = await buildAssignGraph(state);
       assignCache.set(key, built);
       // Destroy the compiled graph before the prepared handle whose buffers it imports.
       const handle = built;
@@ -333,7 +334,7 @@ export async function createObservationsByTract(
   }
 
   /** Builds the zonal reduction: the statistic selects which outputs exist (compile-time). */
-  function getZonalGraph(state: ObservationsByTractOptions): ZonalGraph {
+  async function getZonalGraph(state: ObservationsByTractOptions): Promise<ZonalGraph> {
     const key = getZonalKey(state);
     let built = zonalCache.get(key);
     if (built) return built;
@@ -358,8 +359,10 @@ export async function createObservationsByTract(
             : statistic === 'mean'
               ? 'mean'
               : statistic) as GPUZonalStatisticsExtentStatistic,
-      overflow: importGraphBuffer(graph, 'zonal-overflow', zonalOverflow, 'uint32', 1),
-      uncertainCount: importGraphBuffer(graph, 'zonal-uncertain', zonalUncertain, 'uint32', 1)
+      status: {
+        overflow: importGraphBuffer(graph, 'zonal-overflow', zonalOverflow, 'uint32', 1),
+        uncertainCount: importGraphBuffer(graph, 'zonal-uncertain', zonalUncertain, 'uint32', 1)
+      }
     };
     let statisticBuffer = zonalCounts;
     let statisticFormat: 'uint32' | 'float32' = 'uint32';
@@ -391,15 +394,11 @@ export async function createObservationsByTract(
       new GPUZonalStatistics({
         id: 'tract-zonal',
         features: {
-          kind: 'polygons',
-          polygonPositions: views.positions,
-          featureOffsets: views.featureOffsets,
-          polygonOffsets: views.polygonOffsets,
-          ringOffsets: views.ringOffsets,
+          ...views,
           candidateCapacity: pointCount * CANDIDATES_PER_POINT,
-          ...getZonalBoundary(state.boundaryRule)
+          boundaryRule: state.boundaryRule
         },
-        points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
+        positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
         ...(usesValues
           ? {values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount)}
           : {}),
@@ -412,7 +411,7 @@ export async function createObservationsByTract(
     );
     built = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       statistic: statisticBuffer,
       statisticFormat
     };
@@ -421,7 +420,7 @@ export async function createObservationsByTract(
   }
 
   /** Builds the choropleth recipe: zonal or join + group statistics, class breaks, color scale. */
-  function getRecipeGraph(state: ObservationsByTractOptions): RecipeGraph {
+  async function getRecipeGraph(state: ObservationsByTractOptions): Promise<RecipeGraph> {
     const key = getRecipeKey(state);
     let built = recipeCache.get(key);
     if (built) return built;
@@ -431,18 +430,18 @@ export async function createObservationsByTract(
     recipeResultInfo = addPointsInPolygonsChoroplethRecipe(graph, {
       id: 'tract-choropleth',
       backend: state.backend,
-      points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
+      points: {
+        kind: 'points',
+        positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+      },
       ...(statistic === 'count'
         ? {}
         : {values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount)}),
       statistic,
       polygons: {
-        polygonPositions: views.positions,
-        featureOffsets: views.featureOffsets,
-        polygonOffsets: views.polygonOffsets,
-        ringOffsets: views.ringOffsets,
+        ...views,
         candidateCapacity: pointCount * CANDIDATES_PER_POINT,
-        ...getZonalBoundary(state.boundaryRule)
+        boundaryRule: state.boundaryRule
       },
       outputs: {
         counts: importGraphBuffer(graph, 'recipe-counts', recipeCounts, 'uint32', featureCount),
@@ -457,7 +456,9 @@ export async function createObservationsByTract(
                 featureCount
               )
             }),
-        overflow: importGraphBuffer(graph, 'recipe-overflow', recipeOverflow, 'uint32', 1),
+        status: {
+          overflow: importGraphBuffer(graph, 'recipe-overflow', recipeOverflow, 'uint32', 1)
+        },
         color: {
           breaks: importGraphBuffer(
             graph,
@@ -479,7 +480,7 @@ export async function createObservationsByTract(
         maximumPaletteCount: MAXIMUM_CLASSES
       }
     });
-    built = {key, compiled: resources.track(graph.compile()), usedClasses: 0};
+    built = {key, compiled: resources.track(await graph.compileAsync()), usedClasses: 0};
     recipeCache.set(key, built);
     return built;
   }
@@ -733,10 +734,10 @@ export async function createObservationsByTract(
   writeValues(initial);
   writeAreas();
   writeClassification(initial);
-  assign = getAssignGraph(initial);
-  zonal = getZonalGraph(initial);
+  assign = await getAssignGraph(initial);
+  zonal = await getZonalGraph(initial);
   activeReader = makeStatisticReader(zonal);
-  if (initial.display === 'classes') recipe = getRecipeGraph(initial);
+  if (initial.display === 'classes') recipe = await getRecipeGraph(initial);
   ctx.setReadout('points', pointCount);
   ctx.setReadout('tracts', featureCount);
   ctx.setReadout('zoneRaster', `${zoneRaster.width} x ${zoneRaster.height} cells (fill only)`);
@@ -750,6 +751,44 @@ export async function createObservationsByTract(
     const graphs = [assign.compiled, zonal.compiled];
     if (state.display === 'classes' && recipe) graphs.push(recipe.compiled);
     return graphs as CompiledGPUCommandGraph<never>[];
+  }
+
+  /** The graphs the current options select; compiled ones come from the variant caches. */
+  type GraphSelection = {assign: AssignGraph; zonal: ZonalGraph; recipe: RecipeGraph | null};
+
+  async function fetchSelection(state: ObservationsByTractOptions): Promise<GraphSelection> {
+    const nextAssign = await getAssignGraph(state);
+    const nextZonal = await getZonalGraph(state);
+    const nextRecipe = state.display === 'classes' ? await getRecipeGraph(state) : null;
+    return {assign: nextAssign, zonal: nextZonal, recipe: nextRecipe};
+  }
+
+  /** Makes a fetched selection live and redoes what depends on it. */
+  function commitSelection(next: GraphSelection): void {
+    const state = ctx.options;
+    assign = next.assign;
+    zonal = next.zonal;
+    if (next.recipe) recipe = next.recipe;
+    activeReader?.stop();
+    activeReader = makeStatisticReader(zonal);
+    updateScale(state);
+    writeClassification(state);
+    if (valuesDirty) writeValues(state);
+    dirty = true;
+    ctx.requestLayers();
+  }
+
+  const selectionSwap = resources.track(new GraphSwap());
+  /**
+   * Selects the graphs for `state`. Every request covers the whole selection, so a superseded
+   * request loses nothing; the variant caches own the graphs.
+   */
+  function requestSelection(state: ObservationsByTractOptions): Promise<boolean> {
+    const wanted = {...state};
+    return selectionSwap.request({
+      build: () => fetchSelection(wanted),
+      commit: commitSelection
+    });
   }
 
   function releaseLater(release: () => void): void {
@@ -772,7 +811,7 @@ export async function createObservationsByTract(
     ] as const;
     try {
       for (const variant of variants) {
-        const built = buildAssignGraph(
+        const built = await buildAssignGraph(
           {...variant.state, boundaryRule: ctx.options.boundaryRule},
           `-time-${variant.id}`
         );
@@ -807,22 +846,12 @@ export async function createObservationsByTract(
         case 'boundaryRule':
         case 'prepared':
         case 'spatialSort':
-          assign = getAssignGraph(state);
-          zonal = getZonalGraph(state);
-          activeReader?.stop();
-          activeReader = makeStatisticReader(zonal);
-          if (state.display === 'classes') recipe = getRecipeGraph(state);
-          dirty = true;
+          void requestSelection(state);
           break;
         case 'statistic':
         case 'sumOrder':
         case 'denominator':
-          zonal = getZonalGraph(state);
-          activeReader?.stop();
-          activeReader = makeStatisticReader(zonal);
-          if (state.display === 'classes') recipe = getRecipeGraph(state);
-          updateScale(state);
-          dirty = true;
+          void requestSelection(state);
           break;
         case 'valueKind':
         case 'groupType':
@@ -831,9 +860,7 @@ export async function createObservationsByTract(
           break;
         case 'display':
         case 'backend':
-          if (state.display === 'classes') recipe = getRecipeGraph(state);
-          writeClassification(state);
-          dirty = true;
+          void requestSelection(state);
           break;
         case 'classMethod':
         case 'classCount':

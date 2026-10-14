@@ -87,7 +87,7 @@ export type ColorizeInput = {
  * @param palette Class colors, index 0 is class 1. Used when `mode` is `'classes'`; class 0 (and
  *   non-finite floats) are transparent.
  */
-export function createColorizeGraph(
+export async function createColorizeGraph(
   resources: SpatialAnalysisResources,
   device: Device,
   id: string,
@@ -95,7 +95,7 @@ export function createColorizeGraph(
   parameters: GPUParameterBuffer<'float32'>,
   colors: Buffer,
   palette: readonly Rgb[] = []
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const graph = new GPUCommandGraph<void>(device, {id: `${id}-paint`});
   const isFloat = input.format === 'float32';
   const paletteSize = Math.max(1, palette.length);
@@ -185,5 +185,5 @@ fn aspectChannel(n: f32, hue: f32) -> f32 {
   }
   colors[colorsOffset + index] = pack4x8unorm(color);`
   });
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }

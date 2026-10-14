@@ -14,6 +14,7 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -110,9 +111,10 @@ export async function createSatelliteGroundTracks(
   let destroyed = false;
 
   // Latitude bands as rectangles wider than the world, so only their horizontal edges are crossed.
-  const edgeStarts = new Float32Array(BAND_COUNT * 4 * 2);
-  const edgeEnds = new Float32Array(BAND_COUNT * 4 * 2);
-  const edgeZones = new Uint32Array(BAND_COUNT * 4);
+  // One polygon feature per band with one four-vertex ring; the zone edges follow from the ring.
+  const bandCorners = new Float32Array(BAND_COUNT * 4 * 2);
+  const bandOffsets = Uint32Array.from({length: BAND_COUNT + 1}, (_, band) => band);
+  const bandRingOffsets = Uint32Array.from({length: BAND_COUNT + 1}, (_, band) => band * 4);
   for (let band = 0; band < BAND_COUNT; band++) {
     const south = BAND_MIN_LATITUDE + band * BAND_HEIGHT;
     const north = south + BAND_HEIGHT;
@@ -124,16 +126,14 @@ export async function createSatelliteGroundTracks(
       [east, north],
       [west, north]
     ];
-    for (let edge = 0; edge < 4; edge++) {
-      const row = band * 4 + edge;
-      edgeStarts.set(corners[edge], row * 2);
-      edgeEnds.set(corners[(edge + 1) % 4], row * 2);
-      edgeZones[row] = band;
+    for (let corner = 0; corner < 4; corner++) {
+      bandCorners.set(corners[corner], (band * 4 + corner) * 2);
     }
   }
-  const edgeStartBuffer = resources.createBuffer('edge-starts', edgeStarts);
-  const edgeEndBuffer = resources.createBuffer('edge-ends', edgeEnds);
-  const edgeZoneBuffer = resources.createBuffer('edge-zones', edgeZones);
+  const bandCornerBuffer = resources.createBuffer('band-corners', bandCorners);
+  const bandFeatureOffsetBuffer = resources.createBuffer('band-feature-offsets', bandOffsets);
+  const bandPolygonOffsetBuffer = resources.createBuffer('band-polygon-offsets', bandOffsets);
+  const bandRingOffsetBuffer = resources.createBuffer('band-ring-offsets', bandRingOffsets);
 
   // ---- Backdrop segments (all tracks, masked by family) -----------------------------------------
   const segmentsBuffer = resources.createBuffer('segments', tracks.segments);
@@ -221,7 +221,7 @@ export async function createSatelliteGroundTracks(
   const graphs = new Map<string, GroundGraph>();
   let active: GroundGraph;
 
-  function getGraph(key: string): GroundGraph {
+  async function getGraph(key: string): Promise<GroundGraph> {
     const existing = graphs.get(key);
     if (existing) return existing;
     const [groupValue, cellSizeValue] = key.split('@');
@@ -288,7 +288,7 @@ export async function createSatelliteGroundTracks(
       new GPULineDensity({
         id: 'density',
         positions: positionsView,
-        pathOffsets: offsetsView,
+        lineOffsets: offsetsView,
         columns: grid.columns,
         rows: grid.rows,
         spatialContext: {
@@ -296,82 +296,116 @@ export async function createSatelliteGroundTracks(
           metric: 'great-circle',
           units: 'meters'
         },
-        maximumRecords: Math.max(1024, subset.vertexCount * 2),
+        recordCapacity: Math.max(1024, subset.vertexCount * 2),
         parameters: densityParameters.importToGraph(graph),
         output: {
           lengths: importGraphBuffer(graph, 'lengths', lengths, 'float32', cellCount),
           densities: importGraphBuffer(graph, 'densities', densities, 'float32', cellCount),
-          overflow: importGraphBuffer(graph, 'density-overflow', densityOverflow, 'uint32', 1),
-          totalRecords: importGraphBuffer(graph, 'density-total', densityTotal, 'uint32', 1)
+          status: {
+            overflow: importGraphBuffer(graph, 'density-overflow', densityOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'density-total', densityTotal, 'uint32', 1)
+          }
         }
       })
     );
     graph.add(
       new GPUZoneEvents({
         id: 'bands',
-        positions: positionsView,
-        timestamps: importGraphBuffer(
-          graph,
-          'timestamps',
-          timestamps,
-          'float32',
-          subset.vertexCount
-        ),
-        trackOffsets: offsetsView,
-        edgeStarts: importGraphBuffer(
-          graph,
-          'edge-starts',
-          edgeStartBuffer,
-          'float32x2',
-          edgeZones.length
-        ),
-        edgeEnds: importGraphBuffer(
-          graph,
-          'edge-ends',
-          edgeEndBuffer,
-          'float32x2',
-          edgeZones.length
-        ),
-        edgeZones: importGraphBuffer(
-          graph,
-          'edge-zones',
-          edgeZoneBuffer,
-          'uint32',
-          edgeZones.length
-        ),
-        zoneCount: BAND_COUNT,
         candidateCapacity: CANDIDATE_CAPACITY,
-        maxEventsPerTrack: MAX_EVENTS_PER_TRACK,
-        events: {
-          output: {
-            ids: importGraphBuffer(graph, 'event-ids', eventIds, 'uint32', EVENT_CAPACITY),
-            count: importGraphBuffer(graph, 'event-count', eventCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'event-overflow', eventOverflow, 'uint32', 1)
-          },
-          eventZones: importGraphBuffer(graph, 'event-zones', eventZones, 'uint32', EVENT_CAPACITY),
-          eventTypes: importGraphBuffer(graph, 'event-types', eventTypes, 'uint32', EVENT_CAPACITY)
-        },
-        diagnostics: {
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1),
-          candidateOverflow: importGraphBuffer(
+        zones: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
             graph,
-            'candidate-overflow',
-            candidateOverflow,
-            'uint32',
-            1
+            'band-corners',
+            bandCornerBuffer,
+            'float32x2',
+            BAND_COUNT * 4
           ),
-          trackOverflow: importGraphBuffer(graph, 'track-overflow', trackOverflow, 'uint32', 1),
-          eventOverflow: importGraphBuffer(
+          featureOffsets: importGraphBuffer(
             graph,
-            'event-diagnostic',
-            eventOverflowDiagnostic,
+            'band-feature-offsets',
+            bandFeatureOffsetBuffer,
             'uint32',
-            1
+            BAND_COUNT + 1
+          ),
+          polygonOffsets: importGraphBuffer(
+            graph,
+            'band-polygon-offsets',
+            bandPolygonOffsetBuffer,
+            'uint32',
+            BAND_COUNT + 1
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'band-ring-offsets',
+            bandRingOffsetBuffer,
+            'uint32',
+            BAND_COUNT + 1
           )
+        },
+        output: {
+          events: {
+            ids: importGraphBuffer(graph, 'event-ids', eventIds, 'uint32', EVENT_CAPACITY),
+            eventZones: importGraphBuffer(
+              graph,
+              'event-zones',
+              eventZones,
+              'uint32',
+              EVENT_CAPACITY
+            ),
+            eventTypes: importGraphBuffer(
+              graph,
+              'event-types',
+              eventTypes,
+              'uint32',
+              EVENT_CAPACITY
+            ),
+            status: {
+              count: importGraphBuffer(graph, 'event-count', eventCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'event-overflow', eventOverflow, 'uint32', 1)
+            }
+          },
+          status: {
+            candidateCount: importGraphBuffer(
+              graph,
+              'candidate-count',
+              candidateCount,
+              'uint32',
+              1
+            ),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              candidateOverflow,
+              'uint32',
+              1
+            ),
+            trackOverflow: importGraphBuffer(graph, 'track-overflow', trackOverflow, 'uint32', 1),
+            eventOverflow: importGraphBuffer(
+              graph,
+              'event-diagnostic',
+              eventOverflowDiagnostic,
+              'uint32',
+              1
+            )
+          }
+        },
+        trackEventCapacity: MAX_EVENTS_PER_TRACK,
+        tracks: {
+          kind: 'trajectories',
+          positions: positionsView,
+          timestamps: importGraphBuffer(
+            graph,
+            'timestamps',
+            timestamps,
+            'float32',
+            subset.vertexCount
+          ),
+          trackOffsets: offsetsView
         }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
     const reader = new SummaryReader(
       resources,
@@ -438,7 +472,8 @@ export async function createSatelliteGroundTracks(
           eventOverflow: words[3] !== 0 || words[7] !== 0,
           trackOverflow: words[6] !== 0
         };
-        if (graph_ === active || graph_.key.startsWith(`${ctx.options.group}@`)) applyResult();
+        // Other variants keep their result until a commit makes them active.
+        if (graph_ === active) applyResult();
       }
     );
     const graph_: GroundGraph = {
@@ -457,8 +492,9 @@ export async function createSatelliteGroundTracks(
     return graph_;
   }
 
-  active = getGraph(`${ctx.options.group}@${ctx.options.cellSize}`);
-  for (const size of ['1', '2', '5']) getGraph(`${ctx.options.group}@${size}`);
+  const graphSwap = resources.track(new GraphSwap());
+  active = await getGraph(`${ctx.options.group}@${ctx.options.cellSize}`);
+  for (const size of ['1', '2', '5']) await getGraph(`${ctx.options.group}@${size}`);
   ctx.setReadout(
     'tracks',
     `${formatCount(tracks.satelliteCount)} satellites, ${formatCount(tracks.vertexCount)} positions`
@@ -588,11 +624,20 @@ export async function createSatelliteGroundTracks(
       switch (id) {
         case 'group':
         case 'cellSize':
-          active = getGraph(`${state.group}@${state.cellSize}`);
-          for (const size of ['1', '2', '5']) getGraph(`${state.group}@${size}`);
-          writeTrackMask();
-          if (active.result) applyResult();
-          ctx.requestLayers();
+          // The variant cache is destroyed with the resources, so a superseded build is kept.
+          void graphSwap.request({
+            build: async () => {
+              const next = await getGraph(`${state.group}@${state.cellSize}`);
+              for (const size of ['1', '2', '5']) await getGraph(`${state.group}@${size}`);
+              return next;
+            },
+            commit: next => {
+              active = next;
+              writeTrackMask();
+              if (active.result) applyResult();
+              ctx.requestLayers();
+            }
+          });
           break;
         case 'band':
         case 'perSatellite':

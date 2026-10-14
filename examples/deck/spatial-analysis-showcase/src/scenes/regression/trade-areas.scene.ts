@@ -322,22 +322,24 @@ export default defineScene<TradeAreasOptions>({
 // Weights of both directions: demand rows list facilities in reach, facility rows list demand.
 // Decay (${state.decay}) and radius (${state.bandwidth} m) live in a parameter buffer.
 graph.add(new GPUNeighborSearch({mode: 'radius', positions: facilities, queryPositions: demand,
-  mask: facilityMask, parameters, gridSize: [64, 64], weights: demandWeights, overflow}));
+  mask: facilityMask, parameters, gridSize: [64, 64], output: {...demandWeights, status: {overflow}}}));
 graph.add(new GPUNeighborSearch({mode: 'radius', positions: demand, queryPositions: facilities,
-  queryMask: facilityMask, parameters, gridSize: [64, 64], weights: facilityWeights, overflow}));
+  queryMask: facilityMask, parameters, gridSize: [64, 64], output: {...facilityWeights, status: {overflow}}}));
 
 // Two- and three-step floating catchment accessibility (access.two_step_fca)
 graph.add(new GPUCatchmentAccessibility({
   method: '2sfca', supply, demand, facilityWeights, demandWeights,
-  accessibility, ratios, reachableFacilities
+  output: {accessibility, ratios, reachableFacilities}
 }));
-graph.add(new GPUCatchmentAccessibility({method: '3sfca', supply, demand, facilityWeights, demandWeights, accessibility: access3}));
+graph.add(new GPUCatchmentAccessibility({
+  method: '3sfca', supply, demand, facilityWeights, demandWeights, output: {accessibility: access3}
+}));
 
 // Huff trade areas: p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik
 graph.add(new GPUHuffTradeAreas({
   attractiveness: supply, demandWeights, facilityWeights, demand,
-  parameters: alphaParameter,           // [${state.alpha}]: a one-float per-frame buffer
-  tradeArea, tradeAreaProbability, expectedDemand
+  parameters: alphaParameter,           // getGPUHuffTradeAreasParameterValues({exponent: ${state.alpha}}): a per-frame buffer
+  output: {tradeArea, tradeAreaProbability, expectedDemand}
 }));
 
 parameters.write(getGPUNeighborSearchParameterValues({

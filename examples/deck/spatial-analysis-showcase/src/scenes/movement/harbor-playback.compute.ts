@@ -5,8 +5,8 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -27,6 +27,7 @@ import {
 import {NYC, nearestPlaceLabel} from '../../cartography/gazetteer';
 import {formatCount, formatDistance, formatPercent, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
@@ -266,28 +267,38 @@ export async function createHarborPlayback(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
-      speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
+        speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -299,7 +310,7 @@ export async function createHarborPlayback(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -341,44 +352,46 @@ export async function createHarborPlayback(
       ],
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        trackVisibleCounts: importGraphBuffer(
+          trailGraph,
+          'track-visible-counts',
+          trackVisibleCounts,
+          'uint32',
+          trackCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
       },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
       trackIds: importGraphBuffer(
         trailGraph,
         'segment-tracks',
         segmentTracksBuffer,
         'uint32',
         segmentCount
-      ),
-      trackVisibleCounts: importGraphBuffer(
-        trailGraph,
-        'track-visible-counts',
-        trackVisibleCounts,
-        'uint32',
-        trackCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
       )
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Metrics graph (stops, per-track and per-step columns) -----------------------------------
   const trackLengths = resources.createBuffer('track-lengths', trackCount * 4);
@@ -432,87 +445,95 @@ export async function createHarborPlayback(
         trackCount + 1
       ),
       parameters: metricsParameters.importToGraph(metricsGraph),
-      trackLengths: importGraphBuffer(
-        metricsGraph,
-        'track-lengths',
-        trackLengths,
-        'float32',
-        trackCount
-      ),
-      trackDurations: importGraphBuffer(
-        metricsGraph,
-        'track-durations',
-        trackDurations,
-        'float32',
-        trackCount
-      ),
-      averageSpeeds: importGraphBuffer(
-        metricsGraph,
-        'average-speeds',
-        averageSpeeds,
-        'float32',
-        trackCount
-      ),
-      maximumSpeeds: importGraphBuffer(
-        metricsGraph,
-        'maximum-speeds',
-        maximumSpeeds,
-        'float32',
-        trackCount
-      ),
-      stepSpeeds: importGraphBuffer(
-        metricsGraph,
-        'step-speeds',
-        stepSpeeds,
-        'float32',
-        vertexCount
-      ),
-      trackStopCounts: importGraphBuffer(
-        metricsGraph,
-        'track-stop-counts',
-        trackStopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
-          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
-          overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
-        },
-        drawInstanceCount: metricsGraph.importGPUData(
-          'stop-draw-count',
-          stopDraw.getInstanceCountData(0)
-        ),
-        centroids: importGraphBuffer(
+      output: {
+        trackLengths: importGraphBuffer(
           metricsGraph,
-          'stop-centroids',
-          stopCentroids,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        durations: importGraphBuffer(
-          metricsGraph,
-          'stop-durations',
-          stopDurations,
+          'track-lengths',
+          trackLengths,
           'float32',
-          STOP_CAPACITY
-        )
+          trackCount
+        ),
+        trackDurations: importGraphBuffer(
+          metricsGraph,
+          'track-durations',
+          trackDurations,
+          'float32',
+          trackCount
+        ),
+        averageSpeeds: importGraphBuffer(
+          metricsGraph,
+          'average-speeds',
+          averageSpeeds,
+          'float32',
+          trackCount
+        ),
+        maximumSpeeds: importGraphBuffer(
+          metricsGraph,
+          'maximum-speeds',
+          maximumSpeeds,
+          'float32',
+          trackCount
+        ),
+        stepSpeeds: importGraphBuffer(
+          metricsGraph,
+          'step-speeds',
+          stepSpeeds,
+          'float32',
+          vertexCount
+        ),
+        trackStopCounts: importGraphBuffer(
+          metricsGraph,
+          'track-stop-counts',
+          trackStopCounts,
+          'uint32',
+          trackCount
+        ),
+        stops: {
+          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
+          drawInstanceCount: metricsGraph.importGPUData(
+            'stop-draw-count',
+            stopDraw.getInstanceCountData(0)
+          ),
+          centroids: importGraphBuffer(
+            metricsGraph,
+            'stop-centroids',
+            stopCentroids,
+            'float32x2',
+            STOP_CAPACITY
+          ),
+          durations: importGraphBuffer(
+            metricsGraph,
+            'stop-durations',
+            stopDurations,
+            'float32',
+            STOP_CAPACITY
+          ),
+          status: {
+            count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
+            overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          }
+        }
       }
     })
   );
-  const metricsCompiled = resources.track(metricsGraph.compile());
+  const metricsCompiled = resources.track(await metricsGraph.compileAsync());
 
   // ---- Resample graph (compile-time sample count and spacing) -----------------------------------
   let resample: ResampleGraph | null = null;
+  const resampleSwap = resources.track(new GraphSwap());
 
-  function buildResample(sampleCount: number, spacing: 'arc-length' | 'time'): ResampleGraph {
-    if (resample) {
-      resources.release(resample.compiled);
-      resources.release(resample.samples);
-      resources.release(resample.routeSegments);
-    }
+  function releaseResample(graph: ResampleGraph): void {
+    resources.release(graph.compiled);
+    resources.release(graph.samples);
+    resources.release(graph.routeSegments);
+  }
+
+  /** Builds and compiles a resample graph with its own buffers; the live one is untouched. */
+  async function buildResample(
+    sampleCount: number,
+    spacing: 'arc-length' | 'time'
+  ): Promise<ResampleGraph> {
     const segmentsPerRoute = sampleCount - 1;
     const samples = resources.createBuffer(`samples-${sampleCount}`, trackCount * sampleCount * 8);
     const routeSegments = resources.createBuffer(
@@ -548,7 +569,7 @@ export async function createHarborPlayback(
         trackOffsets: offsetsView,
         sampleCount,
         spacing,
-        samples: samplesView
+        output: {samples: samplesView}
       })
     );
     // Polyline segments between consecutive samples of one track, for drawing.
@@ -593,7 +614,7 @@ export async function createHarborPlayback(
   segments[segmentsOffset + index * 4u + 3u] = select(nan, samples[samplesOffset + row + 3u], valid);`
     });
     return {
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       samples,
       routeSegments,
       sampleCount,
@@ -736,7 +757,7 @@ export async function createHarborPlayback(
 
   writeMetricsParameters();
   writeSegmentMask();
-  resample = buildResample(Number(ctx.options.routeSamples), ctx.options.routeSpacing);
+  resample = await buildResample(Number(ctx.options.routeSamples), ctx.options.routeSpacing);
   updateResampledReadout();
 
   function updateResampledReadout(): void {
@@ -1369,13 +1390,24 @@ export async function createHarborPlayback(
           ctx.requestLayers();
           break;
         case 'routeSamples':
-        case 'routeSpacing':
-          resample = buildResample(Number(state.routeSamples), state.routeSpacing);
-          updateResampledReadout();
-          if (transitTrack >= 0) writeTransitSampleIds();
-          updateTransitNote();
-          ctx.requestLayers();
+        case 'routeSpacing': {
+          const sampleCount = Number(state.routeSamples);
+          const spacing = state.routeSpacing;
+          void resampleSwap.request({
+            build: () => buildResample(sampleCount, spacing),
+            commit: next => {
+              const previous = resample;
+              resample = next;
+              if (previous) releaseResample(previous);
+              updateResampledReadout();
+              if (transitTrack >= 0) writeTransitSampleIds();
+              updateTransitNote();
+              ctx.requestLayers();
+            },
+            discard: releaseResample
+          });
           break;
+        }
         case 'focus':
           onFocusChanged(state);
           break;
@@ -1460,7 +1492,7 @@ export async function createHarborPlayback(
       playheadParameters.write(
         getGPUTrajectoryPlayheadParameterValues({
           playhead,
-          maxGap: options.maxGapMinutes * 60
+          maximumGap: options.maxGapMinutes * 60
         })
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
@@ -1468,7 +1500,7 @@ export async function createHarborPlayback(
       if (options.showTrails) {
         const trailSeconds = options.trailMinutes * 60;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds * options.tailFade

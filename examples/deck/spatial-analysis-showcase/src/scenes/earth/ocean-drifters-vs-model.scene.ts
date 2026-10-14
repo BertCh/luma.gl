@@ -445,7 +445,7 @@ export default defineScene<OceanDriftersVsModelOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
-  GPUParticleAdvection, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionWordParameterValues
+  GPUParticleAdvection, getGPUParticleAdvectionParameterValues, getGPUParticleAdvectionUint32ParameterValues
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUGeodesicPairs, GPULineDensity} from '@luma.gl/experimental/gpu-spatial-analysis';
 
@@ -454,11 +454,11 @@ import {GPUGeodesicPairs, GPULineDensity} from '@luma.gl/experimental/gpu-spatia
 const advect = new GPUCommandGraph(device, {id: 'advection'});
 advect.add(new GPUParticleAdvection({
   velocities, fieldWidth: 720, fieldHeight: 320,
-  parameters: params.importToGraph(advect), wordParameters: words.importToGraph(advect),
+  parameters: params.importToGraph(advect), uint32Parameters: words.importToGraph(advect),
   state: {positions, ages, generations}
 }));
 // (a small kernel copies positions into snapshots[track * 31 + day] after every step)
-const stepAdvection = advect.compile();
+const stepAdvection = await advect.compileAsync();
 
 const pairs = new GPUCommandGraph(device, {id: 'pairs'});
 pairs.add(new GPUGeodesicPairs({spatialContext: {coordinateSpace: 'longitude-latitude', metric: '${state.distanceModel}' === 'wgs84' ? 'ellipsoidal' : '${state.distanceModel}' === 'rhumb' ? 'rhumb' : 'great-circle', units: 'meters'},
@@ -471,9 +471,9 @@ pairs.add(new GPUGeodesicPairs({spatialContext: {coordinateSpace: 'longitude-lat
 const density = new GPUCommandGraph(device, {id: 'density'});
 for (const [positions, pathOffsets] of [[realTrack, realOffsets], [snapshots, snapshotOffsets]]) {
   density.add(new GPULineDensity({
-    positions, pathOffsets, columns: 720, rows: 320, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
+    positions, lineOffsets: pathOffsets, columns: 720, rows: 320, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
     parameters: grid.importToGraph(density),     // [west, south, cellWidth, cellHeight]
-    output: {lengths, densities, overflow}
+    output: {lengths, densities, status: {overflow}}
   }));
 }
 
@@ -483,7 +483,7 @@ params.write(getGPUParticleAdvectionParameterValues({
   spawnBounds: [0, 89.95, 0, 89.95]          // lost particles park outside the field
 }, [720, 320]));
 for (let day = 1; day <= 30; day++) {
-  words.write(getGPUParticleAdvectionWordParameterValues({seed: 1, frame: day, maximumAge: 0}));
+  words.write(getGPUParticleAdvectionUint32ParameterValues({seed: 1, frame: day, maximumAge: 0}));
   const encoder = device.createCommandEncoder();
   stepAdvection.encode(encoder, {parameters: undefined});
   device.submit(encoder.finish());

@@ -4,8 +4,8 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUGeometryMeasures} from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -13,6 +13,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -84,7 +85,8 @@ export async function createWildfireSeasons(
   const planarBuffer = resources.createBuffer('planar', data.mercator);
   const acreageValues = resources.createBuffer('agency-acres', data.acres);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', layout.ringOffsets);
-  const featureRingsBuffer = resources.createBuffer('feature-rings', layout.featureRingOffsets);
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', layout.polygonOffsets);
+  const featureOffsetsBuffer = resources.createBuffer('feature-offsets', layout.featureOffsets);
   const groupIdsBuffer = resources.createBuffer('group-ids', Uint32Array.from(data.yearIndex));
   const daysBuffer = resources.createBuffer('days', data.days);
   const yearFloat = resources.createBuffer('year-f', Float32Array.from(data.yearIndex));
@@ -128,17 +130,22 @@ export async function createWildfireSeasons(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const modeParameters = resources.createParameterBuffer('mode', 'float32', 4);
 
   // ---- Graphs -------------------------------------------------------------------------------------
   /** Per-fire area and the area per group; the centroids always come from the WGS84 node. */
-  const buildMeasures = (options: WildfireSeasonsOptions): CompiledGPUCommandGraph<void> => {
+  const buildMeasures = async (
+    options: WildfireSeasonsOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'seasons-measures'});
     const imp = createGraphImporter(graph);
-    const ringOffsets = imp('ring-offsets', ringOffsetsBuffer, 'uint32', layout.ringCount + 1);
-    const featureRings = imp('feature-rings', featureRingsBuffer, 'uint32', count + 1);
+    const polygonStructure = {
+      featureOffsets: imp('feature-offsets', featureOffsetsBuffer, 'uint32', count + 1),
+      polygonOffsets: imp('polygon-offsets', polygonOffsetsBuffer, 'uint32', layout.partCount + 1),
+      ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', layout.ringCount + 1)
+    };
     const lngLat = imp('lnglat', lngLatBuffer, 'float32x2', layout.vertexCount);
     graph.add(
       new GPUGeometryMeasures({
@@ -158,10 +165,8 @@ export async function createWildfireSeasons(
           options.areaSystem === 'planar'
             ? imp('planar', planarBuffer, 'float32x2', layout.vertexCount)
             : lngLat,
-        ringOffsets,
-        featureRingOffsets: featureRings,
         geometryType: 'polygons',
-
+        ...polygonStructure,
         groupIds: imp('group-ids', groupIdsBuffer, 'uint32', count),
         groupCount: 4,
         output: {areas: imp('areas', areas, 'float32', count)},
@@ -181,18 +186,16 @@ export async function createWildfireSeasons(
         ellipsoidalEdgeModel: 'coordinate-linear',
         id: 'seasons-centroids',
         positions: lngLat,
-        ringOffsets,
-        featureRingOffsets: featureRings,
         geometryType: 'polygons',
-
+        ...polygonStructure,
         output: {centroids: imp('centroids', centroids, 'float32x2', count)}
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
   /** Time window filter and the display columns it feeds. Encoded whenever the playhead moves. */
-  const buildWindow = (): CompiledGPUCommandGraph<void> => {
+  const buildWindow = async (): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'seasons-window'});
     const imp = createGraphImporter(graph);
     const maskView = imp('accepted-mask', acceptedMask, 'uint32', count);
@@ -204,11 +207,13 @@ export async function createWildfireSeasons(
         window: windowParameters.importToGraph(graph),
         output: {
           ids: imp('filter-ids', filterIds, 'uint32', count),
-          count: imp('filter-count', filterCount, 'uint32', 1),
-          overflow: imp('filter-overflow', filterOverflow, 'uint32', 1)
-        },
-        outputMask: maskView,
-        fadeWeights: weightView
+          status: {
+            count: imp('filter-count', filterCount, 'uint32', 1),
+            overflow: imp('filter-overflow', filterOverflow, 'uint32', 1)
+          },
+          outputMask: maskView,
+          fadeWeights: weightView
+        }
       })
     );
     addKernelPass(graph, {
@@ -261,11 +266,11 @@ export async function createWildfireSeasons(
   shown[shownOffset + index] = value;
   shownCategory[shownCategoryOffset + index] = category;`
     });
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
-  let measures = buildMeasures(ctx.options);
-  const windowGraph = buildWindow();
+  let measures = await buildMeasures(ctx.options);
+  const windowGraph = await buildWindow();
   const clock = createPlaybackClock<WildfireSeasonsOptions>(
     ctx,
     {time: 'time', play: 'play', speed: 'speed', loop: 'loop'},
@@ -290,7 +295,7 @@ export async function createWildfireSeasons(
 
   const writeWindow = (time: number, options: WildfireSeasonsOptions) => {
     windowParameters.write(
-      getGPUTimeWindowParameterValues({
+      getGPUTimeWindowFilterParameterValues({
         start: time - options.trailDays,
         end: time,
         startFadeDuration: options.trailDays * options.tailFade
@@ -503,14 +508,25 @@ export async function createWildfireSeasons(
   ctx.setReadout('newest', 'none yet');
   writeWindow(clock.time, ctx.options);
 
+  const graphSwap = resources.track(new GraphSwap());
+
   return {
     getCompiledGraphs: () => [measures, windowGraph],
 
     setOption(id, _value, options) {
       if (id === 'areaSystem') {
-        resources.release(measures);
-        measures = buildMeasures(options);
-        dirty.measures = true;
+        // The previous graph keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => buildMeasures(options),
+          commit: next => {
+            const previous = measures;
+            measures = next;
+            resources.release(previous);
+            dirty.measures = true;
+            ctx.requestLayers();
+          },
+          discard: next => resources.release(next)
+        });
       } else if (id === 'groupBy') {
         groupIdsBuffer.write(
           Uint32Array.from(options.groupBy === 'year' ? data.yearIndex : data.sizeClass)

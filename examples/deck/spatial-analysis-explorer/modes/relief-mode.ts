@@ -21,6 +21,7 @@
  * Colors and illumination are drawn by a mode-local layer that unpacks the contributor's RGBA8 output.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import {
   GPUCommandGraph,
   GPUReadbackRing,
@@ -50,6 +51,7 @@ import {
   type GPUReliefShadingLight,
   type GPUReliefShadingStop
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
@@ -215,17 +217,25 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
       validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', pixelCount)
     });
 
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
     const setupGraph = new GPUCommandGraph<void>(device, {id: 'relief-setup'});
     const setupElevation = importElevation(setupGraph);
     setupGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation: setupElevation,
-        settings: derivativesSettings.importToGraph(setupGraph),
-        slope: importGraphBuffer(setupGraph, 'slope', slopeBuffer, 'float32', pixelCount),
-        aspect: importGraphBuffer(setupGraph, 'aspect', aspectBuffer, 'float32', pixelCount),
+        parameters: derivativesSettings.importToGraph(setupGraph),
+        output: {
+          slope: importGraphBuffer(setupGraph, 'slope', slopeBuffer, 'float32', pixelCount),
+          aspect: importGraphBuffer(setupGraph, 'aspect', aspectBuffer, 'float32', pixelCount)
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -233,49 +243,53 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
     setupGraph.add(
       new GPUTerrainHorizon({
         id: 'horizon',
-        width,
-        height,
+        grid,
         elevation: setupElevation,
-        settings: horizonSettings.importToGraph(setupGraph),
+        parameters: horizonSettings.importToGraph(setupGraph),
         directionCount: DIRECTION_COUNT,
         maximumRadius: HORIZON_RADIUS_PIXELS,
         stepGrowth: HORIZON_STEP_GROWTH,
         cellSizeMode: 'uniform',
         rowDirection: 'south',
-        horizon: importGraphBuffer(
-          setupGraph,
-          'horizon',
-          horizonBuffer,
-          'float32',
-          pixelCount * DIRECTION_COUNT
-        ),
-        skyViewFactor: importGraphBuffer(
-          setupGraph,
-          'sky-view',
-          skyViewBuffer,
-          'float32',
-          pixelCount
-        )
+        output: {
+          horizon: importGraphBuffer(
+            setupGraph,
+            'horizon',
+            horizonBuffer,
+            'float32',
+            pixelCount * DIRECTION_COUNT
+          ),
+          skyViewFactor: importGraphBuffer(
+            setupGraph,
+            'sky-view',
+            skyViewBuffer,
+            'float32',
+            pixelCount
+          )
+        }
       })
     );
-    const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(setupGraph.compile());
+    const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(
+      await setupGraph.compileAsync()
+    );
 
     const sunGraph = new GPUCommandGraph<void>(device, {id: 'relief-sun'});
     sunGraph.add(
       new GPUSolarPosition({
         id: 'solar-position',
         positions: importGraphBuffer(sunGraph, 'sun-location', sunLocationBuffer, 'float32x2', 1),
-        settings: solarSettings.importToGraph(sunGraph),
-        azimuth: importGraphBuffer(sunGraph, 'sun-azimuth', sunAzimuthBuffer, 'float32', 1),
-        altitude: importGraphBuffer(sunGraph, 'sun-altitude', sunAltitudeBuffer, 'float32', 1),
-        daylight: importGraphBuffer(sunGraph, 'sun-daylight', sunDaylightBuffer, 'uint32', 1)
+        parameters: solarSettings.importToGraph(sunGraph),
+        output: {
+          azimuth: importGraphBuffer(sunGraph, 'sun-azimuth', sunAzimuthBuffer, 'float32', 1),
+          altitude: importGraphBuffer(sunGraph, 'sun-altitude', sunAltitudeBuffer, 'float32', 1),
+          daylight: importGraphBuffer(sunGraph, 'sun-daylight', sunDaylightBuffer, 'uint32', 1)
+        }
       })
     );
     sunGraph.add(
       new GPUSolarShadowMask({
         id: 'shadow-mask',
-        width,
-        height,
+        grid,
         directionCount: DIRECTION_COUNT,
         horizon: importGraphBuffer(
           sunGraph,
@@ -284,7 +298,7 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
           'float32',
           pixelCount * DIRECTION_COUNT
         ),
-        settings: shadowSettings.importToGraph(sunGraph),
+        parameters: shadowSettings.importToGraph(sunGraph),
         slope: importGraphBuffer(sunGraph, 'slope', slopeBuffer, 'float32', pixelCount),
         aspect: importGraphBuffer(sunGraph, 'aspect', aspectBuffer, 'float32', pixelCount),
         skyViewFactor: importGraphBuffer(
@@ -294,23 +308,27 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
           'float32',
           pixelCount
         ),
-        sunVisibility: importGraphBuffer(
-          sunGraph,
-          'sun-visibility',
-          sunVisibilityBuffer,
-          'float32',
-          pixelCount
-        ),
-        illumination: importGraphBuffer(
-          sunGraph,
-          'illumination',
-          illuminationBuffer,
-          'float32',
-          pixelCount
-        )
+        output: {
+          sunVisibility: importGraphBuffer(
+            sunGraph,
+            'sun-visibility',
+            sunVisibilityBuffer,
+            'float32',
+            pixelCount
+          ),
+          illumination: importGraphBuffer(
+            sunGraph,
+            'illumination',
+            illuminationBuffer,
+            'float32',
+            pixelCount
+          )
+        }
       })
     );
-    const compiledSun: CompiledGPUCommandGraph<void> = resources.track(sunGraph.compile());
+    const compiledSun: CompiledGPUCommandGraph<void> = resources.track(
+      await sunGraph.compileAsync()
+    );
 
     const lookGraph = new GPUCommandGraph<void>(device, {id: 'relief-look'});
     const lookElevation = importElevation(lookGraph);
@@ -324,22 +342,20 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
     lookGraph.add(
       new GPUTextureShading({
         id: 'texture-shading',
-        width,
-        height,
+        grid,
         elevation: lookElevation,
-        settings: textureSettings.importToGraph(lookGraph),
+        parameters: textureSettings.importToGraph(lookGraph),
         levelCount: TEXTURE_LEVEL_COUNT,
         baseSigma: 1,
-        textureShade: textureShadeView
+        output: {textureShade: textureShadeView}
       })
     );
     lookGraph.add(
       new GPUReliefShading({
         id: 'relief-shading',
-        width,
-        height,
+        grid,
         elevation: lookElevation,
-        settings: reliefSettings.importToGraph(lookGraph),
+        parameters: reliefSettings.importToGraph(lookGraph),
         skyViewFactor: importGraphBuffer(
           lookGraph,
           'sky-view',
@@ -350,17 +366,27 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
         textureShade: textureShadeView,
         cellSizeMode: 'uniform',
         rowDirection: 'south',
-        hillshade: importGraphBuffer(
-          lookGraph,
-          'hillshade',
-          hillshadeBuffer,
-          'float32',
-          pixelCount
-        ),
-        color: importGraphBuffer(lookGraph, 'relief-color', reliefColorBuffer, 'uint32', pixelCount)
+        output: {
+          hillshade: importGraphBuffer(
+            lookGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            pixelCount
+          ),
+          color: importGraphBuffer(
+            lookGraph,
+            'relief-color',
+            reliefColorBuffer,
+            'uint32',
+            pixelCount
+          )
+        }
       })
     );
-    const compiledLook: CompiledGPUCommandGraph<void> = resources.track(lookGraph.compile());
+    const compiledLook: CompiledGPUCommandGraph<void> = resources.track(
+      await lookGraph.compileAsync()
+    );
 
     // --- State ---------------------------------------------------------------------------------
     let display: Display = 'composite';
@@ -407,13 +433,9 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
 
     function writeStatic(): void {
       derivativesSettings.write(
-        getGPUTerrainDerivativesParameterValues({
-          cellSize,
-          azimuthDegrees: 315,
-          altitudeDegrees: 45
-        })
+        getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315, altitudeDegrees: 45}, grid)
       );
-      horizonSettings.write(getGPUTerrainHorizonParameterValues({cellSize}));
+      horizonSettings.write(getGPUTerrainHorizonParameterValues({}, grid));
     }
 
     function writeSun(): void {
@@ -441,16 +463,18 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
             ? {lights: MULTIDIRECTIONAL_LIGHTS, lightWeighting: 'fixed' as const}
             : {lights: 'mdow' as const, lightWeighting: 'aspect' as const};
       reliefSettings.write(
-        getGPUReliefShadingParameterValues({
-          cellSize,
-          ...lightSettings,
-          hillshadeStrength: 1,
-          skyViewStrength: skyViewShading ? 1 : 0,
-          textureShadeStrength: textureShading ? textureStrength : 0,
-          exposure,
-          tintStrength: aspectTint ? 0.35 : 0,
-          elevationStops: elevationTint ? ELEVATION_STOPS : []
-        })
+        getGPUReliefShadingParameterValues(
+          {
+            ...lightSettings,
+            hillshadeStrength: 1,
+            skyViewStrength: skyViewShading ? 1 : 0,
+            textureShadeStrength: textureShading ? textureStrength : 0,
+            exposure,
+            tintStrength: aspectTint ? 0.35 : 0,
+            elevationStops: elevationTint ? ELEVATION_STOPS : []
+          },
+          grid
+        )
       );
       textureSettings.write(
         getGPUTextureShadingParameterValues({detail: textureDetail, gain: TEXTURE_GAIN})
@@ -801,7 +825,7 @@ export const reliefMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: 12});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const floats = new Float32Array(bytes.buffer, bytes.byteOffset, 2);
         const daylight = new Uint32Array(bytes.buffer, bytes.byteOffset + 8, 1)[0];

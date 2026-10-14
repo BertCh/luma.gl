@@ -41,7 +41,7 @@ export type StatVariant = {
   /** Benjamini-Hochberg false discovery rate control (`multipleTesting`: BH when set, none otherwise). */
   falseDiscoveryRate: boolean;
   alternative: GPUInferenceAlternative;
-  /** The weights are row-standardized (`weights.info.transform: 'row'`), so masked neighbours are re-standardized out. */
+  /** The weights are row-standardized (`weights.information.transform: 'row'`), so masked neighbours are re-standardized out. */
   rowStandardized: boolean;
   maximumNeighbors: number;
   /** The Gi* z-scores, bins and permutation were already produced (by `addHotSpotAnalysisRecipe`). */
@@ -114,14 +114,16 @@ export type StatGraphProps = {
  * classes and the extent of the values. With `precomputed`, the Gi* and the permutation test came
  * from `addHotSpotAnalysisRecipe` and only the gate, the histogram and the extent are added.
  */
-export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph<void> {
+export async function compileStatGraph(
+  props: StatGraphProps
+): Promise<CompiledGPUCommandGraph<void>> {
   const {device, resources, rows, slots, buffers, variant} = props;
   const graph = new GPUCommandGraph<void>(device, {id: props.id});
   const weights = {
     offsets: importGraphBuffer(graph, 'offsets', props.weights.offsets, 'uint32', rows + 1),
     neighbors: importGraphBuffer(graph, 'neighbors', props.weights.neighbors, 'uint32', slots),
     weights: importGraphBuffer(graph, 'weights', props.weights.weights, 'float32', slots),
-    info: getWeightsInfo(rows, variant.rowStandardized)
+    information: getWeightsInfo(rows, variant.rowStandardized)
   };
   const values = importGraphBuffer(graph, 'values', props.values, 'float32', rows);
   const mask = importGraphBuffer(graph, 'mask', props.mask, 'uint32', rows);
@@ -161,11 +163,13 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           values,
           mask,
           parameters,
-          zScores,
-          bins: base as ReturnType<typeof importGraphBuffer<'sint32', void>>,
-          pValues,
-          neighborCounts,
-          globalStatistics: statistics,
+          output: {
+            zScores,
+            bins: base as ReturnType<typeof importGraphBuffer<'sint32', void>>,
+            pValues,
+            neighborCounts,
+            globalStatistics: statistics
+          },
           selfWeight: variant.selfWeight,
           multipleTesting
         })
@@ -178,11 +182,13 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           values,
           mask,
           parameters,
-          zScores,
-          pValues,
-          quadrants: base as ReturnType<typeof importGraphBuffer<'uint32', void>>,
-          neighborCounts,
-          globalStatistics: statistics,
+          output: {
+            zScores,
+            pValues,
+            quadrants: base as ReturnType<typeof importGraphBuffer<'uint32', void>>,
+            neighborCounts,
+            globalStatistics: statistics
+          },
           quadrantGating: variant.inference === 'analytic' ? 'analytic' : 'none',
           multipleTesting: variant.inference === 'analytic' ? multipleTesting : 'none'
         })
@@ -201,22 +207,32 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
           maximumPermutations: MAXIMUM_PERMUTATIONS,
           maximumNeighbors: variant.maximumNeighbors,
           multipleTesting,
-          exceedances: importGraphBuffer(graph, 'exceedances', buffers.exceedances, 'uint32', rows),
-          pseudoPValues: importGraphBuffer(
-            graph,
-            'pseudo-p-values',
-            buffers.pseudoPValues,
-            'float32',
-            rows
-          ),
-          significant,
-          overflow: importGraphBuffer(
-            graph,
-            'permutation-overflow',
-            buffers.permutationOverflow,
-            'uint32',
-            1
-          )
+          output: {
+            exceedances: importGraphBuffer(
+              graph,
+              'exceedances',
+              buffers.exceedances,
+              'uint32',
+              rows
+            ),
+            pseudoPValues: importGraphBuffer(
+              graph,
+              'pseudo-p-values',
+              buffers.pseudoPValues,
+              'float32',
+              rows
+            ),
+            significant,
+            status: {
+              overflow: importGraphBuffer(
+                graph,
+                'permutation-overflow',
+                buffers.permutationOverflow,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
     }
@@ -281,5 +297,5 @@ export function compileStatGraph(props: StatGraphProps): CompiledGPUCommandGraph
       operation: 'extent'
     })
   );
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }

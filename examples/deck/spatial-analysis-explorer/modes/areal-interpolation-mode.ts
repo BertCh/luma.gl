@@ -28,9 +28,10 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   GPUPolygonRasterization,
-  getGPUPolygonRasterizationExtentValues
+  getGPUPolygonRasterizationParameterValues,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
   GPU_GRID_GENERATOR_PARAMETER_LENGTH,
@@ -129,6 +130,14 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       rasterOriginX + RASTER_WIDTH * rasterCellSize,
       rasterOriginY + RASTER_HEIGHT * rasterCellSize
     ] as const;
+    // Row 0 is at the minimum y and rows step toward +y.
+    const rasterGrid = makeGPURasterMetadata({
+      width: RASTER_WIDTH,
+      height: RASTER_HEIGHT,
+      cellSize: rasterCellSize,
+      origin: [rasterOriginX, rasterOriginY],
+      rowDirection: 'north'
+    });
     const centerX = (bounds[0] + bounds[2]) / 2;
     const centerY = (bounds[1] + bounds[3]) / 2;
 
@@ -182,13 +191,8 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
     const extentParameter = resources.createParameterBuffer(
       'extent',
       'float32',
-      GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-      getGPUPolygonRasterizationExtentValues(
-        rasterOriginX,
-        rasterOriginY,
-        rasterCellSize,
-        rasterCellSize
-      )
+      GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+      getGPUPolygonRasterizationParameterValues(rasterGrid)
     );
     const gridParameter = resources.createParameterBuffer(
       'grid',
@@ -199,7 +203,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
 
     // --- Graphs ----------------------------------------------------------------------------------
     const importPolygons = (graph: GPUCommandGraph<void>) => ({
-      polygonPositions: importGraphBuffer(
+      positions: importGraphBuffer(
         graph,
         'polygon-positions',
         polygonPositions,
@@ -233,20 +237,31 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
     sourceGraph.add(
       new GPUPolygonRasterization({
         id: 'source-raster',
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
-        extent: extentParameter.importToGraph(sourceGraph),
+        grid: rasterGrid,
+        parameters: extentParameter.importToGraph(sourceGraph),
         ...importPolygons(sourceGraph),
         crossingCapacity: CROSSING_CAPACITY,
-        zones: importGraphBuffer(sourceGraph, 'zones', sourceZones, 'uint32', cellCount),
-        overflow: importGraphBuffer(sourceGraph, 'overflow', sourceRasterOverflow, 'uint32', 1),
-        crossingCount: importGraphBuffer(sourceGraph, 'crossings', sourceCrossingCount, 'uint32', 1)
+        output: {
+          zones: importGraphBuffer(sourceGraph, 'zones', sourceZones, 'uint32', cellCount),
+          status: {
+            overflow: importGraphBuffer(sourceGraph, 'overflow', sourceRasterOverflow, 'uint32', 1),
+            crossingCount: importGraphBuffer(
+              sourceGraph,
+              'crossings',
+              sourceCrossingCount,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
-    const sourceCompiled = resources.track(sourceGraph.compile());
+    const sourceCompiled = resources.track(await sourceGraph.compileAsync());
 
     // One target graph per grid type: grid vertices, target raster, area weights, both lags.
-    const buildTargetGraph = (gridType: GPUGridType): CompiledGPUCommandGraph<void> => {
+    const buildTargetGraph = async (
+      gridType: GPUGridType
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const verticesPerCell = getGPUGridVerticesPerCell(gridType);
       const gridVertices = resources.createBuffer(
         `${gridType}-vertices`,
@@ -287,10 +302,9 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUPolygonRasterization({
           id: 'target-raster',
-          width: RASTER_WIDTH,
-          height: RASTER_HEIGHT,
-          extent: extentParameter.importToGraph(graph),
-          polygonPositions: vertices,
+          grid: rasterGrid,
+          parameters: extentParameter.importToGraph(graph),
+          positions: vertices,
           featureOffsets: importGraphBuffer(
             graph,
             'target-features',
@@ -313,9 +327,13 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
             targetCount + 1
           ),
           crossingCapacity: CROSSING_CAPACITY,
-          zones: targetZonesView,
-          overflow: importGraphBuffer(graph, 'overflow', targetRasterOverflow, 'uint32', 1),
-          crossingCount: importGraphBuffer(graph, 'crossings', targetCrossingCount, 'uint32', 1)
+          output: {
+            zones: targetZonesView,
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', targetRasterOverflow, 'uint32', 1),
+              crossingCount: importGraphBuffer(graph, 'crossings', targetCrossingCount, 'uint32', 1)
+            }
+          }
         })
       );
       const offsetsView = importGraphBuffer(
@@ -349,16 +367,21 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUArealInterpolation({
           id: 'areal',
+          grid: rasterGrid,
           sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
           targetZones: targetZonesView,
-          sourceCount,
-          targetCount,
+          sourceZoneCount: sourceCount,
+          targetZoneCount: targetCount,
           denominator: 'overlap',
           mode: 'extensive',
-          weights: {offsets: offsetsView, neighbors: neighborsView, weights: extensiveView},
-          alternateWeights: intensiveView,
-          overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-          totalPairs: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+          output: {
+            weights: {offsets: offsetsView, neighbors: neighborsView, weights: extensiveView},
+            alternateWeights: intensiveView,
+            status: {
+              overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              requiredPairCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+            }
+          }
         })
       );
       // Cross weights: rows are targets, neighbors index the sourceCount ZIP values.
@@ -366,7 +389,6 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         new GPUSpatialLag({
           id: 'lag-extensive',
           weights: {offsets: offsetsView, neighbors: neighborsView, weights: extensiveView},
-          sourceCount,
           values: importGraphBuffer(graph, 'totals', sourceTotalsBuffer, 'float32', sourceCount),
           output: importGraphBuffer(
             graph,
@@ -381,7 +403,6 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
         new GPUSpatialLag({
           id: 'lag-intensive',
           weights: {offsets: offsetsView, neighbors: neighborsView, weights: intensiveView},
-          sourceCount,
           values: importGraphBuffer(
             graph,
             'densities',
@@ -398,11 +419,11 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
           )
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
     const targetGraphs: Record<TargetSystem, CompiledGPUCommandGraph<void>> = {
-      hex: buildTargetGraph('hex'),
-      square: buildTargetGraph('square')
+      hex: await buildTargetGraph('hex'),
+      square: await buildTargetGraph('square')
     };
 
     // Fast path A/B: the same areal interpolation over the current zone rasters, compiled with and
@@ -412,54 +433,61 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
     const scratchExtensive = resources.createBuffer('timing-extensive', PAIR_CAPACITY * 4);
     const scratchIntensive = resources.createBuffer('timing-intensive', PAIR_CAPACITY * 4);
     const scratchOverflow = resources.createBuffer('timing-overflow', 4);
-    const buildTimingGraph = (unweightedFastPath: boolean): CompiledGPUCommandGraph<void> => {
+    const buildTimingGraph = async (
+      unweightedFastPath: boolean
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `areal-timing-${unweightedFastPath ? 'fast' : 'generic'}`
       });
       graph.add(
         new GPUArealInterpolation({
           id: 'areal-timing',
+          grid: rasterGrid,
           sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
           targetZones: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', cellCount),
-          sourceCount,
-          targetCount,
+          sourceZoneCount: sourceCount,
+          targetZoneCount: targetCount,
           denominator: 'overlap',
           mode: 'extensive',
           unweightedFastPath,
-          weights: {
-            offsets: importGraphBuffer(
+          output: {
+            weights: {
+              offsets: importGraphBuffer(
+                graph,
+                'pair-offsets',
+                scratchOffsets,
+                'uint32',
+                targetCount + 1
+              ),
+              neighbors: importGraphBuffer(
+                graph,
+                'pair-neighbors',
+                scratchNeighbors,
+                'uint32',
+                PAIR_CAPACITY
+              ),
+              weights: importGraphBuffer(
+                graph,
+                'pair-extensive',
+                scratchExtensive,
+                'float32',
+                PAIR_CAPACITY
+              )
+            },
+            alternateWeights: importGraphBuffer(
               graph,
-              'pair-offsets',
-              scratchOffsets,
-              'uint32',
-              targetCount + 1
-            ),
-            neighbors: importGraphBuffer(
-              graph,
-              'pair-neighbors',
-              scratchNeighbors,
-              'uint32',
-              PAIR_CAPACITY
-            ),
-            weights: importGraphBuffer(
-              graph,
-              'pair-extensive',
-              scratchExtensive,
+              'pair-intensive',
+              scratchIntensive,
               'float32',
               PAIR_CAPACITY
-            )
-          },
-          alternateWeights: importGraphBuffer(
-            graph,
-            'pair-intensive',
-            scratchIntensive,
-            'float32',
-            PAIR_CAPACITY
-          ),
-          overflow: importGraphBuffer(graph, 'pair-overflow', scratchOverflow, 'uint32', 1)
+            ),
+            status: {
+              overflow: importGraphBuffer(graph, 'pair-overflow', scratchOverflow, 'uint32', 1)
+            }
+          }
         })
       );
-      return graph.compile();
+      return await graph.compileAsync();
     };
     let measuring = false;
     let destroyed = false;
@@ -467,9 +495,11 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       if (measuring || destroyed) return;
       measuring = true;
       fastPathButton.setDisabled(true);
-      const fast = buildTimingGraph(true);
-      const generic = buildTimingGraph(false);
+      let fast: CompiledGPUCommandGraph<void> | null = null;
+      let generic: CompiledGPUCommandGraph<void> | null = null;
       try {
+        fast = await buildTimingGraph(true);
+        generic = await buildTimingGraph(false);
         const options = {parameters: undefined, completionBuffer: scratchOverflow};
         const fastTiming = await measureCompiledGraph(device, fast, options);
         const genericTiming = await measureCompiledGraph(device, generic, options);
@@ -486,8 +516,8 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
       } catch {
         // Device destroyed or measurement aborted.
       } finally {
-        fast.destroy();
-        generic.destroy();
+        fast?.destroy();
+        generic?.destroy();
         measuring = false;
         if (!destroyed) fastPathButton.setDisabled(false);
       }
@@ -495,23 +525,24 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
     let measuredOnce = false;
 
     // Pycnophylactic ladder: iterations are compile-time, the slider picks a rung.
-    const pycnoGraphs = ITERATION_LADDER.map(iterations => {
-      const graph = new GPUCommandGraph<void>(device, {id: `areal-pycno-${iterations}`});
-      graph.add(
-        new GPUPycnophylactic({
-          id: 'pycnophylactic',
-          width: RASTER_WIDTH,
-          height: RASTER_HEIGHT,
-          zones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
-          zoneCount: sourceCount,
-          totals: importGraphBuffer(graph, 'totals', sourceTotalsBuffer, 'float32', sourceCount),
-          iterations,
-          kernel: 'rook',
-          output: importGraphBuffer(graph, 'surface', surface, 'float32', cellCount)
-        })
-      );
-      return resources.track(graph.compile());
-    });
+    const pycnoGraphs = await Promise.all(
+      ITERATION_LADDER.map(async iterations => {
+        const graph = new GPUCommandGraph<void>(device, {id: `areal-pycno-${iterations}`});
+        graph.add(
+          new GPUPycnophylactic({
+            id: 'pycnophylactic',
+            grid: rasterGrid,
+            zones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', cellCount),
+            zoneCount: sourceCount,
+            totals: importGraphBuffer(graph, 'totals', sourceTotalsBuffer, 'float32', sourceCount),
+            maximumIterations: iterations,
+            kernel: 'rook',
+            output: {mass: importGraphBuffer(graph, 'surface', surface, 'float32', cellCount)}
+          })
+        );
+        return resources.track(await graph.compileAsync());
+      })
+    );
 
     // Display: a small pass picks the variable per zone, then one value per raster cell is drawn.
     const sourceSelected = resources.createBuffer('source-selected', sourceCount * 4);
@@ -629,7 +660,7 @@ export const arealInterpolationMode: SpatialAnalysisModeDefinition = {
   }
   display[displayOffset + index] = value;`
     });
-    const displayCompiled = resources.track(displayGraph.compile());
+    const displayCompiled = resources.track(await displayGraph.compileAsync());
 
     // --- State and readbacks ---------------------------------------------------------------------
     let targetSystem: TargetSystem = 'hex';

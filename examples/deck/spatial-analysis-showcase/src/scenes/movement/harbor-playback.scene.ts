@@ -501,18 +501,20 @@ import {
   GPUTrajectoryPlayhead, GPUTrajectoryMetrics, GPUTrajectoryResample,
   getGPUTrajectoryPlayheadParameterValues, getGPUTrajectoryMetricsParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // positions: float32x2 planar meters, timestamps: float32 seconds, trackOffsets: uint32 (tracks + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});
 playGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playGraph),
-  currentPositions, headings, speeds, status,
-  activeTracks: {ids: activeIds, count: activeCount, overflow: activeOverflow},
-  drawInstanceCount                       // indirect draw record: no readback to draw
+  output: {
+    currentPositions, headings, speeds, trackStatus: status,
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow: activeOverflow}},
+    drawInstanceCount                     // indirect draw record: no readback to draw
+  }
 }));
-const play = playGraph.compile();         // once
+const play = await playGraph.compileAsync();  // once
 ${
   state.showTrails
     ? `
@@ -520,8 +522,10 @@ const trailGraph = new GPUCommandGraph(device, {id: 'trails'});
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStarts, endTimestamps: segmentEnds,   // interval mode: one row per segment
   window: windowParameters.importToGraph(trailGraph),
-  output: {ids: trailIds, count: trailCount, overflow: trailOverflow},
-  fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  }
 }));
 `
     : ''
@@ -532,8 +536,10 @@ const stopGraph = new GPUCommandGraph(device, {id: 'stops'});
 stopGraph.add(new GPUTrajectoryMetrics({spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   positions, timestamps, trackOffsets,
   parameters: stopParameters.importToGraph(stopGraph),
-  stepSpeeds, averageSpeeds, maximumSpeeds, trackStopCounts,
-  stops: {output: {ids, count, overflow}, centroids, durations, drawInstanceCount: stopDrawCount}
+  output: {
+    stepSpeeds, averageSpeeds, maximumSpeeds, trackStopCounts,
+    stops: {ids, status: {count, overflow}, centroids, durations, drawInstanceCount: stopDrawCount}
+  }
 }));
 `
     : ''
@@ -544,18 +550,18 @@ const routeGraph = new GPUCommandGraph(device, {id: 'routes'});
 routeGraph.add(new GPUTrajectoryResample({
   positions, timestamps, trackOffsets,
   sampleCount: ${state.routeSamples}, spacing: '${state.routeSpacing}',   // compile-time
-  samples                                   // tracks x ${state.routeSamples} float32x2 rows
+  output: {samples}                         // tracks x ${state.routeSamples} float32x2 rows
 }));
 `
     : ''
 }
 // every frame: parameters are plain buffer writes
 playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({
-  playhead, maxGap: ${state.maxGapMinutes * 60}${state.maxGapMinutes === 0 ? '   // 0 turns the gap test off' : ''}
+  playhead, maximumGap: ${state.maxGapMinutes * 60}${state.maxGapMinutes === 0 ? '   // 0 turns the gap test off' : ''}
 }));${
       state.showTrails
         ? `
-windowParameters.write(getGPUTimeWindowParameterValues({
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: playhead - ${state.trailMinutes * 60}, end: playhead, startFadeDuration: ${Math.round(state.trailMinutes * 60 * state.tailFade)}
 }));`
         : ''

@@ -235,19 +235,21 @@ export async function createMigrationTiming(
       bucketCount: BUCKET_COUNT,
       output: {
         counts: view(temporalGraph, 'counts', counts, 'uint32', slotCount),
-        min: view(temporalGraph, 'min', minima, 'float32', slotCount),
-        max: view(temporalGraph, 'max', maxima, 'float32', slotCount),
+        minimums: view(temporalGraph, 'min', minima, 'float32', slotCount),
+        maximums: view(temporalGraph, 'max', maxima, 'float32', slotCount),
         first: view(temporalGraph, 'first', firsts, 'float32', slotCount),
         last: view(temporalGraph, 'last', lasts, 'float32', slotCount),
         occupiedSlots: {
           ids: view(temporalGraph, 'occupied', occupiedIds, 'uint32', slotCount),
-          count: view(temporalGraph, 'occupied-count', occupiedCount, 'uint32', 1),
-          overflow: view(temporalGraph, 'occupied-overflow', occupiedOverflow, 'uint32', 1)
+          status: {
+            count: view(temporalGraph, 'occupied-count', occupiedCount, 'uint32', 1),
+            overflow: view(temporalGraph, 'occupied-overflow', occupiedOverflow, 'uint32', 1)
+          }
         }
       }
     })
   );
-  const temporalCompiled = resources.track(temporalGraph.compile());
+  const temporalCompiled = resources.track(await temporalGraph.compileAsync());
 
   // ---- Display graph: the species you pick, folded into a band-by-bucket matrix --------------------
   // The matrix is laid out with the valid bucket count as its row stride, so the raster layer's grid
@@ -343,7 +345,7 @@ const SPECIES: u32 = ${SPECIES_COUNT}u;`,
   matrix[matrixOffset + index] = result;
   thinCells[thinCellsOffset + index] = isThin;`
   });
-  const displayCompiled = resources.track(displayGraph.compile());
+  const displayCompiled = resources.track(await displayGraph.compileAsync());
 
   // ---- Overlay segment sets ------------------------------------------------------------------------
   const createSegmentSet = (name: string, capacity: number): SegmentSet => {

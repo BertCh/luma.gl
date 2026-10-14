@@ -5,6 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import {
   getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata,
   GPU_DISTANCE_FIELD_NONE,
   GPUDistanceField,
   type GPUDistanceFieldMode
@@ -89,6 +90,15 @@ export const distanceFieldMode: SpatialAnalysisModeDefinition = {
     let seedCount = Math.min(INITIAL_SEED_COUNT, seedCapacity);
     const bounds = getSquareBounds(seedPositions);
     const cellSize = (bounds[2] - bounds[0]) / GRID_SIZE;
+    // Row 0 is the minimum-y row and rows step toward +y, so the grid is north-up in the sense of
+    // increasing row coordinate: `rowDirection: 'north'`.
+    const grid = makeGPURasterMetadata({
+      width: GRID_SIZE,
+      height: GRID_SIZE,
+      cellSize: [cellSize, (bounds[3] - bounds[1]) / GRID_SIZE],
+      origin: [bounds[0], bounds[1]],
+      rowDirection: 'north'
+    });
 
     let view: View = 'distance';
     let algorithm: AlgorithmChoice = 'auto';
@@ -116,15 +126,16 @@ export const distanceFieldMode: SpatialAnalysisModeDefinition = {
     const distances = resources.createBuffer('distances', cellCount * 4);
     const allocation = resources.createBuffer('allocation', cellCount * 4);
 
-    const compileGraph = (mode: GPUDistanceFieldMode): CompiledGPUCommandGraph<void> => {
+    const compileGraph = async (
+      mode: GPUDistanceFieldMode
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id: `distance-field-${mode}`});
       graph.add(
         new GPUDistanceField({
           id: `distance-field-${mode}`,
-          width: GRID_SIZE,
-          height: GRID_SIZE,
+          grid,
           mode,
-          settings: settingsBuffer.importToGraph(graph),
+          parameters: settingsBuffer.importToGraph(graph),
           seedPositions: importGraphBuffer(
             graph,
             'seed-positions',
@@ -140,11 +151,11 @@ export const distanceFieldMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
     const compiledGraphs: Record<GPUDistanceFieldMode, CompiledGPUCommandGraph<void>> = {
-      exact: compileGraph('exact'),
-      'jump-flood': compileGraph('jump-flood')
+      exact: await compileGraph('exact'),
+      'jump-flood': await compileGraph('jump-flood')
     };
 
     const getMaximumDistance = () =>
@@ -154,11 +165,7 @@ export const distanceFieldMode: SpatialAnalysisModeDefinition = {
 
     const writeSettings = () => {
       settingsBuffer.write(
-        getGPUDistanceFieldParameterValues({
-          bounds,
-          gridSize: [GRID_SIZE, GRID_SIZE],
-          maxDistance: getMaximumDistance()
-        })
+        getGPUDistanceFieldParameterValues({maximumDistance: getMaximumDistance()}, grid)
       );
       dirty = true;
     };

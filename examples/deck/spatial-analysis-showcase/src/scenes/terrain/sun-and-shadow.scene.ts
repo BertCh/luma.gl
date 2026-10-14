@@ -663,20 +663,23 @@ export default defineScene<SunOptions>({
   GPUSolarPosition, GPUTerrainHorizon, GPUSolarShadowMask, GPUTerrainCastShadow, GPUSolarIrradiance
 } from '@luma.gl/experimental/gpu-terrain';
 
+// grid: EPSG:3857 meters (origin [minX, maxY], cellSize the Mercator pixel size)
 graph.add(new GPUTerrainHorizon({
-  width, height, elevation, directionCount: ${state.horizonDirections},
-  maximumRadius: ${state.horizonRadius}, horizon, skyViewFactor
+  grid, elevation, parameters: horizonSettings, directionCount: ${state.horizonDirections},
+  maximumRadius: ${state.horizonRadius}, cellSizeMode: 'web-mercator', output: {horizon, skyViewFactor}
 }));
-graph.add(new GPUSolarPosition({positions, settings: sunSettings, azimuth, altitude, daylight}));
+graph.add(new GPUSolarPosition({
+  positions, parameters: sunSettings, output: {azimuth, altitude, daylight}
+}));
 graph.add(new GPUSolarShadowMask({
-  width, height, directionCount: ${state.horizonDirections}, horizon,
-  settings: maskSettings, slope, aspect, skyViewFactor, sunVisibility, illumination
+  grid, directionCount: ${state.horizonDirections}, horizon, parameters: maskSettings,
+  slope, aspect, skyViewFactor, output: {sunVisibility, illumination}
 }));
 graph.add(new GPUSolarIrradiance({
-  width, height, directionCount: ${state.horizonDirections}, horizon, sunTable,
-  settings: irradianceSettings, slope, aspect, skyViewFactor, sunHours, insolation
+  grid, directionCount: ${state.horizonDirections}, horizon, sunTable, parameters: irradianceSettings,
+  slope, aspect, skyViewFactor, output: {sunHours, insolation}
 }));
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 sunSettings.write({timestamp});
 maskSettings.write({azimuthDegrees, altitudeDegrees, angularRadiusDegrees});
 sunTable.write(daySamples);

@@ -23,6 +23,7 @@
  * output buffers.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -32,20 +33,21 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH,
+  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
   GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_WORD_PARAMETER_LENGTH,
+  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH,
   GPULineIntegralConvolution,
   GPUParticleAdvection,
-  GPUStreamlines
+  GPUStreamlines,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import type {SpatialAnalysisTerrain} from '../spatial-analysis-data';
@@ -149,7 +151,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
     const particleWords = resources.createParameterBuffer(
       'particle-words',
       'uint32',
-      GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+      GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
     );
 
     const licValueBuffer = resources.createBuffer('lic-values', LIC_WIDTH * LIC_HEIGHT * 4);
@@ -162,7 +164,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
     const licWords = resources.createParameterBuffer(
       'lic-words',
       'uint32',
-      GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
+      GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH
     );
 
     const streamlineIds = resources.createBuffer('streamline-ids', STREAMLINE_LINE_CAPACITY * 4);
@@ -186,7 +188,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
     const streamlineWords = resources.createParameterBuffer(
       'streamline-words',
       'uint32',
-      GPU_STREAMLINES_WORD_PARAMETER_LENGTH
+      GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
     );
     const streamlineDraw = resources.track(
       new DrawCommandBuffer(device, {
@@ -211,7 +213,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         fieldWidth,
         fieldHeight,
         parameters: particleParameters.importToGraph(particleGraph),
-        wordParameters: particleWords.importToGraph(particleGraph),
+        uint32Parameters: particleWords.importToGraph(particleGraph),
         state: {
           positions: importGraphBuffer(
             particleGraph,
@@ -229,21 +231,29 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
             PARTICLE_COUNT
           )
         },
-        speeds: importGraphBuffer(particleGraph, 'speeds', speedBuffer, 'float32', PARTICLE_COUNT),
-        trails: {
-          positions: importGraphBuffer(
+        output: {
+          speeds: importGraphBuffer(
             particleGraph,
-            'trails',
-            trailBuffer,
-            'float32x2',
-            PARTICLE_COUNT * TRAIL_LENGTH
+            'speeds',
+            speedBuffer,
+            'float32',
+            PARTICLE_COUNT
           ),
-          length: TRAIL_LENGTH
+          trails: {
+            positions: importGraphBuffer(
+              particleGraph,
+              'trails',
+              trailBuffer,
+              'float32x2',
+              PARTICLE_COUNT * TRAIL_LENGTH
+            ),
+            length: TRAIL_LENGTH
+          }
         }
       })
     );
     const compiledParticles: CompiledGPUCommandGraph<void> = resources.track(
-      particleGraph.compile()
+      await particleGraph.compileAsync()
     );
 
     const licGraph = new GPUCommandGraph<void>(device, {id: 'flow-lic'});
@@ -253,11 +263,10 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         velocities: velocityView(licGraph),
         fieldWidth,
         fieldHeight,
-        width: LIC_WIDTH,
-        height: LIC_HEIGHT,
+        grid: makeGPURasterMetadata({width: LIC_WIDTH, height: LIC_HEIGHT}),
         stepCount: LIC_STEP_COUNT,
         parameters: licParameters.importToGraph(licGraph),
-        wordParameters: licWords.importToGraph(licGraph),
+        uint32Parameters: licWords.importToGraph(licGraph),
         output: {
           values: importGraphBuffer(
             licGraph,
@@ -276,7 +285,9 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const compiledLic: CompiledGPUCommandGraph<void> = resources.track(licGraph.compile());
+    const compiledLic: CompiledGPUCommandGraph<void> = resources.track(
+      await licGraph.compileAsync()
+    );
 
     const streamlineGraph = new GPUCommandGraph<void>(device, {id: 'flow-streamlines'});
     streamlineGraph.add(
@@ -290,9 +301,9 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         seedColumns: STREAMLINE_SEED_COLUMNS,
         seedRows: STREAMLINE_SEED_ROWS,
         stepsPerDirection: STREAMLINE_STEPS,
-        roundCount: STREAMLINE_ROUNDS,
+        maximumIterations: STREAMLINE_ROUNDS,
         parameters: streamlineParameters.importToGraph(streamlineGraph),
-        wordParameters: streamlineWords.importToGraph(streamlineGraph),
+        uint32Parameters: streamlineWords.importToGraph(streamlineGraph),
         output: {
           lines: {
             ids: importGraphBuffer(
@@ -302,48 +313,52 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
               'uint32',
               STREAMLINE_LINE_CAPACITY
             ),
-            count: importGraphBuffer(streamlineGraph, 'count', streamlineCount, 'uint32', 1),
-            overflow: importGraphBuffer(
-              streamlineGraph,
-              'overflow',
-              streamlineOverflow,
-              'uint32',
-              1
-            )
+            status: {
+              count: importGraphBuffer(streamlineGraph, 'count', streamlineCount, 'uint32', 1),
+              overflow: importGraphBuffer(
+                streamlineGraph,
+                'overflow',
+                streamlineOverflow,
+                'uint32',
+                1
+              )
+            }
           },
-          pathOffsets: importGraphBuffer(
+          lineOffsets: importGraphBuffer(
             streamlineGraph,
             'offsets',
             streamlineOffsets,
             'uint32',
             STREAMLINE_LINE_CAPACITY + 1
           ),
-          points: importGraphBuffer(
+          positions: importGraphBuffer(
             streamlineGraph,
             'points',
             streamlinePoints,
             'float32x2',
             STREAMLINE_POINT_CAPACITY
           ),
-          pointCount: importGraphBuffer(
+          positionCount: importGraphBuffer(
             streamlineGraph,
             'point-count',
             streamlinePointCount,
             'uint32',
             1
           ),
-          unconverged: importGraphBuffer(
-            streamlineGraph,
-            'unconverged',
-            streamlineUnconverged,
-            'uint32',
-            1
-          )
+          status: {
+            iterationLimitReached: importGraphBuffer(
+              streamlineGraph,
+              'unconverged',
+              streamlineUnconverged,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
     const compiledStreamlines: CompiledGPUCommandGraph<void> = resources.track(
-      streamlineGraph.compile()
+      await streamlineGraph.compileAsync()
     );
 
     // --- State ---------------------------------------------------------------------------------
@@ -401,7 +416,10 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
         })
       );
       streamlineWords.write(
-        getGPUStreamlinesWordParameterValues({seed: SEED, minimumPoints: STREAMLINE_MINIMUM_POINTS})
+        getGPUStreamlinesUint32ParameterValues({
+          seed: SEED,
+          minimumPoints: STREAMLINE_MINIMUM_POINTS
+        })
       );
       streamlinesDirty = true;
     }
@@ -416,7 +434,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
 
     writeLicParameters(0);
     writeStreamlineParameters();
-    licWords.write(getGPULineIntegralConvolutionWordParameterValues({seed: SEED}));
+    licWords.write(getGPULineIntegralConvolutionUint32ParameterValues({seed: SEED}));
 
     // --- Controls ------------------------------------------------------------------------------
     context.controls.addSelect<FieldKind>({
@@ -628,7 +646,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: 16});
       summaryPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 4);
         streamlineReadout.setValue(
@@ -660,7 +678,7 @@ export const flowFieldMode: SpatialAnalysisModeDefinition = {
           )
         );
         particleWords.write(
-          getGPUParticleAdvectionWordParameterValues({
+          getGPUParticleAdvectionUint32ParameterValues({
             seed: SEED,
             frame: particleFrame,
             maximumAge,

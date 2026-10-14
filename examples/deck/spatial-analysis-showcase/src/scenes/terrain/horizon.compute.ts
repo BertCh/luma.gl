@@ -18,12 +18,12 @@ import {
   GPUPointHorizonVisibility,
   GPUProfilePeaks,
   GPUTerrainHorizon,
-  GPU_POINT_HORIZON_PARAMETER_LENGTH,
+  GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH,
   GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH,
   GPU_PROFILE_PEAKS_PARAMETER_LENGTH,
   GPU_TERRAIN_HORIZON_PARAMETER_LENGTH,
   GPU_TERRAIN_VISIBILITY,
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonVisibilityParameterValues,
   getGPUProfilePeaksParameterValues,
   getGPUTerrainCurvatureCoefficient,
@@ -33,6 +33,7 @@ import {getClassTableLayerProps} from '../../cartography/class-table';
 import {hexToRgba, MAP_INK} from '../../cartography/hue-registry';
 import type {MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -228,7 +229,7 @@ export async function createHorizon(
   const horizonSettings = resources.createParameterBuffer(
     'horizon-settings',
     'float32',
-    GPU_POINT_HORIZON_PARAMETER_LENGTH
+    GPU_POINT_HORIZON_PROFILE_PARAMETER_LENGTH
   );
   const visibilitySettings = resources.createParameterBuffer(
     'visibility-settings',
@@ -259,7 +260,7 @@ export async function createHorizon(
     validityBuffer,
     pixelCount
   );
-  const pyramidLayout = getGPURasterExtremaPyramidLayout(width, height, {
+  const pyramidLayout = getGPURasterExtremaPyramidLayout(terrain.grid, {
     firstBlockSize: 4,
     footprint: 'bilinear'
   });
@@ -267,21 +268,22 @@ export async function createHorizon(
   setupGraph.add(
     new GPURasterExtremaPyramid({
       id: 'extrema-pyramid',
-      width,
-      height,
+      grid: terrain.grid,
       input: setupElevation,
       firstBlockSize: 4,
       footprint: 'bilinear',
-      combined: importGraphBuffer(
-        setupGraph,
-        'pyramid',
-        pyramidCombined,
-        'float32',
-        2 * pyramidLayout.length
-      )
+      output: {
+        combined: importGraphBuffer(
+          setupGraph,
+          'pyramid',
+          pyramidCombined,
+          'float32',
+          2 * pyramidLayout.length
+        )
+      }
     })
   );
-  const setupCompiled = resources.track(setupGraph.compile());
+  const setupCompiled = resources.track(await setupGraph.compileAsync());
 
   // --- The eye and the catalogue ----------------------------------------------------------------
   const home = terrain.observers.find(place => place.name === 'Gornergrat');
@@ -382,31 +384,9 @@ export async function createHorizon(
     );
   }
 
-  function destroySkyline(): void {
-    if (!skyline) return;
-    skyline.reader.stop();
-    resources.release(skyline.compiled);
-    for (const buffer of [
-      skyline.angle,
-      skyline.distance,
-      skyline.samples,
-      skyline.prominence,
-      skyline.refinedIndex,
-      skyline.refinedValue,
-      skyline.peakMask,
-      skyline.converged,
-      skyline.ring,
-      skyline.weights,
-      skyline.fan,
-      skyline.peakMarkers
-    ]) {
-      resources.release(buffer);
-    }
-    skyline = null;
-  }
-
-  function buildSkyline(): Skyline {
+  async function buildSkyline(): Promise<Skyline> {
     const options = ctx.options;
+    const key = getSkylineKey();
     const azimuthCount = Number(options.azimuthCount);
     const window = Number(options.peakWindow);
     const angle = resources.createBuffer('skyline-angle', azimuthCount * 4);
@@ -427,8 +407,7 @@ export async function createHorizon(
     graph.add(
       new GPUPointHorizonProfile({
         id: 'skyline',
-        width,
-        height,
+        grid: getModelGrid(options.projection),
         elevation: createElevationBand(
           graph,
           'skyline',
@@ -443,10 +422,12 @@ export async function createHorizon(
         maximumDistance: HORIZON_MAXIMUM_DISTANCE,
         cellSize: terrain.groundCellSize,
         observers: importGraphBuffer(graph, 'observer', observerRow, 'float32x4', 1),
-        settings: horizonSettings.importToGraph(graph),
-        skylineAngle: angleView,
-        distance: importGraphBuffer(graph, 'distance', distance, 'float32', azimuthCount),
-        samples: importGraphBuffer(graph, 'samples', samples, 'uint32', azimuthCount)
+        parameters: horizonSettings.importToGraph(graph),
+        output: {
+          skylineAngle: angleView,
+          distance: importGraphBuffer(graph, 'distance', distance, 'float32', azimuthCount),
+          samples: importGraphBuffer(graph, 'samples', samples, 'uint32', azimuthCount)
+        }
       })
     );
     graph.add(
@@ -454,30 +435,32 @@ export async function createHorizon(
         id: 'skyline-peaks',
         values: angleView,
         offsets: importGraphBuffer(graph, 'offsets', offsets, 'uint32', 2),
-        settings: peakSettings.importToGraph(graph),
+        parameters: peakSettings.importToGraph(graph),
         // The skyline is a full circle: its ends wrap.
         wrap: true,
         window,
-        prominence: importGraphBuffer(graph, 'prominence', prominence, 'float32', azimuthCount),
-        refinedIndex: importGraphBuffer(
-          graph,
-          'refined-index',
-          refinedIndex,
-          'float32',
-          azimuthCount
-        ),
-        refinedValue: importGraphBuffer(
-          graph,
-          'refined-value',
-          refinedValue,
-          'float32',
-          azimuthCount
-        ),
-        peakMask: importGraphBuffer(graph, 'peak-mask', peakMask, 'uint32', azimuthCount),
-        converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+        output: {
+          prominence: importGraphBuffer(graph, 'prominence', prominence, 'float32', azimuthCount),
+          refinedIndex: importGraphBuffer(
+            graph,
+            'refined-index',
+            refinedIndex,
+            'float32',
+            azimuthCount
+          ),
+          refinedValue: importGraphBuffer(
+            graph,
+            'refined-value',
+            refinedValue,
+            'float32',
+            azimuthCount
+          ),
+          peakMask: importGraphBuffer(graph, 'peak-mask', peakMask, 'uint32', azimuthCount),
+          status: {converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)}
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       'skyline',
@@ -492,7 +475,7 @@ export async function createHorizon(
       bytes => applySkyline(bytes)
     );
     return {
-      key: getSkylineKey(),
+      key,
       azimuthCount,
       compiled,
       angle,
@@ -516,14 +499,14 @@ export async function createHorizon(
     return [options.projection, options.traversal].join('|');
   }
 
-  function buildVisibility(): VisibilityGraph {
+  async function buildVisibility(): Promise<VisibilityGraph> {
     const options = ctx.options;
+    const key = getVisibilityKey();
     const graph = new GPUCommandGraph<void>(device, {id: 'horizon-visibility'});
     graph.add(
       new GPUPointHorizonVisibility({
         id: 'visibility',
-        width,
-        height,
+        grid: getModelGrid(options.projection),
         elevation: createElevationBand(
           graph,
           'visibility',
@@ -538,12 +521,20 @@ export async function createHorizon(
         cellSize: terrain.groundCellSize,
         observers: importGraphBuffer(graph, 'observer', observerRow, 'float32x4', 1),
         targets: importGraphBuffer(graph, 'targets', targetBuffer, 'float32x4', targetCount),
-        settings: visibilitySettings.importToGraph(graph),
-        visibility: importGraphBuffer(graph, 'visibility', targetVisibility, 'uint32', targetCount),
-        details: importGraphBuffer(graph, 'details', targetDetails, 'float32x4', targetCount)
+        parameters: visibilitySettings.importToGraph(graph),
+        output: {
+          visibility: importGraphBuffer(
+            graph,
+            'visibility',
+            targetVisibility,
+            'uint32',
+            targetCount
+          ),
+          details: importGraphBuffer(graph, 'details', targetDetails, 'float32x4', targetCount)
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       'visibility',
@@ -553,7 +544,7 @@ export async function createHorizon(
       ],
       bytes => applyVisibility(bytes)
     );
-    return {key: getVisibilityKey(), compiled, reader};
+    return {key, compiled, reader};
   }
 
   function getGridKey(): string {
@@ -561,8 +552,9 @@ export async function createHorizon(
     return [options.gridDirections, options.gridRadius, options.gridAlgorithm].join('|');
   }
 
-  function buildGrid(): GridGraph {
+  async function buildGrid(): Promise<GridGraph> {
     const options = ctx.options;
+    const key = getGridKey();
     const directions = Number(options.gridDirections);
     const graph = new GPUCommandGraph<void>(device, {id: 'horizon-grid'});
     const horizon = resources.createBuffer(
@@ -572,8 +564,7 @@ export async function createHorizon(
     graph.add(
       new GPUTerrainHorizon({
         id: 'terrain-horizon',
-        width: coarse.width,
-        height: coarse.height,
+        grid: coarse.grid,
         elevation: createElevationBand(
           graph,
           'grid',
@@ -581,78 +572,147 @@ export async function createHorizon(
           coarseValidity,
           coarse.pixelCount
         ),
-        settings: gridSettings.importToGraph(graph),
+        parameters: gridSettings.importToGraph(graph),
         directionCount: directions,
         maximumRadius: Number(options.gridRadius),
         algorithm: options.gridAlgorithm,
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
-        horizon: importGraphBuffer(
-          graph,
-          'horizon',
-          horizon,
-          'float32',
-          coarse.pixelCount * directions
-        ),
-        skyViewFactor: importGraphBuffer(
-          graph,
-          'sky-view',
-          skyViewBuffer,
-          'float32',
-          coarse.pixelCount
-        )
+        output: {
+          horizon: importGraphBuffer(
+            graph,
+            'horizon',
+            horizon,
+            'float32',
+            coarse.pixelCount * directions
+          ),
+          skyViewFactor: importGraphBuffer(
+            graph,
+            'sky-view',
+            skyViewBuffer,
+            'float32',
+            coarse.pixelCount
+          )
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
-    return {key: getGridKey(), directions, compiled, horizon};
+    const compiled = resources.track(await graph.compileAsync());
+    return {key, directions, compiled, horizon};
   }
 
-  function ensureGraphs(): void {
-    const key = getSkylineKey();
-    if (!skyline || skyline.key !== key) {
-      destroySkyline();
-      skyline = buildSkyline();
+  /** The graphs whose compile-time keys changed, built but not yet swapped in. */
+  type GraphRebuild = {
+    skyline: Skyline | null;
+    visibility: VisibilityGraph | null;
+    grid: GridGraph | null;
+  };
+  const graphSwap = resources.track(new GraphSwap());
+
+  function releaseSkyline(target: Skyline): void {
+    target.reader.stop();
+    resources.release(target.compiled);
+    for (const buffer of [
+      target.angle,
+      target.distance,
+      target.samples,
+      target.prominence,
+      target.refinedIndex,
+      target.refinedValue,
+      target.peakMask,
+      target.converged,
+      target.ring,
+      target.weights,
+      target.fan,
+      target.peakMarkers
+    ]) {
+      resources.release(buffer);
+    }
+  }
+
+  function releaseVisibility(target: VisibilityGraph): void {
+    target.reader.stop();
+    resources.release(target.compiled);
+  }
+
+  function releaseGrid(target: GridGraph): void {
+    resources.release(target.compiled);
+    resources.release(target.horizon);
+  }
+
+  function discardRebuild(next: GraphRebuild): void {
+    if (next.skyline) releaseSkyline(next.skyline);
+    if (next.visibility) releaseVisibility(next.visibility);
+    if (next.grid) releaseGrid(next.grid);
+  }
+
+  /**
+   * Builds the graphs whose keys differ from the live ones; the live graphs keep encoding. The
+   * grid horizon is compiled and run only while the sky-view is the view.
+   */
+  async function buildRebuild(): Promise<GraphRebuild> {
+    const next: GraphRebuild = {skyline: null, visibility: null, grid: null};
+    try {
+      if (!skyline || skyline.key !== getSkylineKey()) next.skyline = await buildSkyline();
+      if (!visibilityGraph || visibilityGraph.key !== getVisibilityKey()) {
+        next.visibility = await buildVisibility();
+      }
+      if (ctx.options.view === 'sky-view' && (!gridGraph || gridGraph.key !== getGridKey())) {
+        next.grid = await buildGrid();
+      }
+    } catch (error) {
+      discardRebuild(next);
+      throw error;
+    }
+    return next;
+  }
+
+  /** Swaps the rebuilt graphs in, then releases the ones they replace. */
+  function commitRebuild(next: GraphRebuild): void {
+    if (next.skyline) {
+      const previous = skyline;
+      skyline = next.skyline;
+      if (previous) releaseSkyline(previous);
       skylineDirty = true;
       peakMarkerCount = 0;
       angles = new Float32Array(0);
     }
-    const visibilityKey = getVisibilityKey();
-    if (!visibilityGraph || visibilityGraph.key !== visibilityKey) {
-      if (visibilityGraph) {
-        visibilityGraph.reader.stop();
-        resources.release(visibilityGraph.compiled);
-      }
-      visibilityGraph = buildVisibility();
+    if (next.visibility) {
+      const previous = visibilityGraph;
+      visibilityGraph = next.visibility;
+      if (previous) releaseVisibility(previous);
       visibilityDirty = true;
     }
-  }
-
-  /** The grid horizon is compiled and run only while the sky-view is the view. */
-  function ensureGrid(): void {
-    if (ctx.options.view !== 'sky-view') return;
-    const key = getGridKey();
-    if (!gridGraph || gridGraph.key !== key) {
-      if (gridGraph) {
-        resources.release(gridGraph.compiled);
-        resources.release(gridGraph.horizon);
-      }
-      gridGraph = buildGrid();
+    if (next.grid) {
+      const previous = gridGraph;
+      gridGraph = next.grid;
+      if (previous) releaseGrid(previous);
       gridDirty = true;
       gridReady = false;
       gridValues = new Float32Array(0);
+      gridReadNeeded = true;
     }
+    schedulePublish();
+    ctx.requestLayers();
+  }
+
+  /** Requests the graphs that the current options need; the promise settles at the swap. */
+  function requestRebuild(): Promise<boolean> {
+    return graphSwap.request({build: buildRebuild, commit: commitRebuild, discard: discardRebuild});
   }
 
   // --- Parameters -------------------------------------------------------------------------------
+  /** The grid the point-horizon contributors read: Mercator meters, or one planar ground size. */
+  function getModelGrid(projection: 'planar' | 'web-mercator') {
+    return projection === 'web-mercator' ? terrain.grid : terrain.groundGrid;
+  }
+
   function getModelSettings() {
     const options = ctx.options;
-    const common = {
+    return {
+      projection: options.projection,
       curvatureCoefficient: getCurvature(),
       maximumDistance: options.maxDistance * 1000
     };
-    return options.projection === 'web-mercator'
-      ? {...common, worldPixelSize: terrain.worldPixelSize, originY: terrain.originY}
-      : {...common, cellSize: [terrain.groundCellSize, terrain.groundCellSize] as const};
   }
 
   function writeObserver(): void {
@@ -666,25 +726,27 @@ export async function createHorizon(
 
   function writeParameters(): void {
     const options = ctx.options;
-    horizonSettings.write(getGPUPointHorizonParameterValues(getModelSettings()));
-    visibilitySettings.write(
-      getGPUPointHorizonVisibilityParameterValues({
-        ...getModelSettings(),
-        toleranceDegrees: options.toleranceDegrees,
-        sigmaZ: options.sigmaZ,
-        skylineToleranceDegrees: options.skylineToleranceDegrees,
-        targetIgnoreDistance: options.targetIgnoreDistance,
-        targetIgnoreFraction: options.targetIgnoreFraction
-      })
+    horizonSettings.write(
+      getGPUPointHorizonProfileParameterValues(getModelSettings(), getModelGrid(options.projection))
     );
-    peakSettings.write(getGPUProfilePeaksParameterValues({minProminence: options.minProminence}));
+    visibilitySettings.write(
+      getGPUPointHorizonVisibilityParameterValues(
+        {
+          ...getModelSettings(),
+          toleranceDegrees: options.toleranceDegrees,
+          sigmaZ: options.sigmaZ,
+          skylineToleranceDegrees: options.skylineToleranceDegrees,
+          targetIgnoreDistance: options.targetIgnoreDistance,
+          targetIgnoreFraction: options.targetIgnoreFraction
+        },
+        getModelGrid(options.projection)
+      )
+    );
+    peakSettings.write(
+      getGPUProfilePeaksParameterValues({minimumProminence: options.minProminence})
+    );
     gridSettings.write(
-      getGPUTerrainHorizonParameterValues({
-        cellSize: coarse.mercatorCellSettings.cellSize,
-        northEdge: coarse.northEdge,
-        southEdge: coarse.southEdge,
-        curvatureCoefficient: getCurvature()
-      })
+      getGPUTerrainHorizonParameterValues({curvatureCoefficient: getCurvature()}, coarse.grid)
     );
     ctx.setReadout(
       'drop',
@@ -885,8 +947,9 @@ export async function createHorizon(
     ticket.markEncoded({byteOffset: 0, byteLength: 132});
     gridReadPending = true;
     gridReadNeeded = false;
-    void ticket
-      .read()
+    // Deck submits this frame's encoder synchronously before the next task maps the slot.
+    void new Promise<void>(resolve => setTimeout(resolve, 0))
+      .then(() => ticket.read())
       .then(bytes => {
         if (destroyed) return;
         gridDirectionCount = directions;
@@ -1514,8 +1577,7 @@ export async function createHorizon(
     device.submit(encoder.finish());
     setupDone = true;
   }
-  ensureGraphs();
-  ensureGrid();
+  await requestRebuild();
   schedulePublish();
 
   const COMPILE_OPTIONS = new Set([
@@ -1539,7 +1601,7 @@ export async function createHorizon(
 
     setOption(id) {
       if (id === 'view') {
-        ensureGrid();
+        void requestRebuild();
         gridReadNeeded = true;
         schedulePublish();
         ctx.requestLayers();
@@ -1553,8 +1615,7 @@ export async function createHorizon(
       }
       if (COMPILE_OPTIONS.has(id)) {
         writeParameters();
-        ensureGraphs();
-        ensureGrid();
+        void requestRebuild();
         schedulePublish();
         ctx.requestLayers();
         return;

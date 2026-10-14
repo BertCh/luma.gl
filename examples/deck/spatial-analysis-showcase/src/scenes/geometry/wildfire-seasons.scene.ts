@@ -357,7 +357,7 @@ export default defineScene<WildfireSeasonsOptions>({
   ],
 
   snippet: state => `import {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUGeometryMeasures} from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -365,19 +365,20 @@ import {GPUGeometryMeasures} from '@luma.gl/experimental/gpu-spatial-analysis';
 // Perimeter dates are float32 days since 2020-01-01 (exact below 2^24).
 graph.add(new GPUTimeWindowFilter({
   timestamps: days, window,
-  output: {ids, count, overflow},
-  outputMask,                          // 1 for fires in the window
-  fadeWeights                          // 0..1, dims toward the old end
+  output: {
+    ids, status: {count, overflow},
+    outputMask,                        // 1 for fires in the window
+    fadeWeights                        // 0..1, dims toward the old end
+  }
 }));
 graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
-  positions, ringOffsets, featureRingOffsets,
-  geometryType: 'polygons',
+  geometryType: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
   groupIds, groupCount: 4,             // ${state.groupBy}
   output: {areas},
   groupOutput: {areas: groupAreas, featureCounts}
 }));
 // per frame, no recompile
-windowParameters.write(getGPUTimeWindowParameterValues({
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: playhead - ${state.trailDays}, end: playhead,
   startFadeDuration: ${Math.round(state.trailDays * state.tailFade)}
 }));`,

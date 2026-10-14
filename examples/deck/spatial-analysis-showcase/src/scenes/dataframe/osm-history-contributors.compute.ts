@@ -119,12 +119,14 @@ export async function createOsmContributors(
       output: {
         keys: s('group-keys', groupKeys, 'uint32', keyCount),
         counts: s('group-counts', groupCounts, 'uint32', keyCount),
-        count: s('group-count', groupCount, 'uint32', 1),
-        overflow: s('group-overflow', groupOverflow, 'uint32', 1)
+        status: {
+          count: s('group-count', groupCount, 'uint32', 1),
+          overflow: s('group-overflow', groupOverflow, 'uint32', 1)
+        }
       }
     })
   );
-  const statsCompiled = resources.track(statsGraph.compile());
+  const statsCompiled = resources.track(await statsGraph.compileAsync());
 
   // ---- Graph 2: per-node state for the map (cheap; runs when the threshold moves) -------------------
   const stateGraph = new GPUCommandGraph<void>(device, {id: 'osm-who-state'});
@@ -172,7 +174,7 @@ export async function createOsmContributors(
   let nan = bitcast<f32>(0x7fc00000u | (index & 0u));
   rankValues[rankValuesOffset + index] = select(nan, f32(rank), inside);`
   });
-  const stateCompiled = resources.track(stateGraph.compile());
+  const stateCompiled = resources.track(await stateGraph.compileAsync());
 
   // ---- Readback and CPU summary ---------------------------------------------------------------------
   let latest: {

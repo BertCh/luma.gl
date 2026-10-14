@@ -31,11 +31,12 @@ import {
   GPUPointInPolygonJoin
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
-  getGPUNetworkIsochroneParameterValues,
+  getGPUNetworkIsochronesParameterValues,
   GPUNetworkIsochrones,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -288,10 +289,10 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     );
 
     let compiled: CompiledGPUCommandGraph<void> | null = null;
-    function buildGraph(): void {
-      if (compiled) resources.release(compiled);
-      const choice = CELL_CHOICES[cellChoice];
-      const graph = new GPUCommandGraph<void>(device, {id: `isochrones-${cellChoice}`});
+    const graphSwap = resources.track(new GraphSwap());
+    async function buildGraph(choiceKey: CellChoice): Promise<CompiledGPUCommandGraph<void>> {
+      const choice = CELL_CHOICES[choiceKey];
+      const graph = new GPUCommandGraph<void>(device, {id: `isochrones-${choiceKey}`});
       const csrOffsets = createTransientView(graph, 'csr-offsets', 'uint32', nodeCount + 1);
       const csrNeighbors = createTransientView(graph, 'csr-neighbors', 'uint32', edgeCount);
       const csrWeights = createTransientView(graph, 'csr-weights', 'float32', edgeCount);
@@ -348,25 +349,31 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUNetworkIsochrones({
           id: 'isochrones-raster',
-          offsets: csrOffsets,
-          neighbors: csrNeighbors,
-          weights: csrWeights,
-          nodePositions: importGraphBuffer(
-            graph,
-            'node-positions',
-            nodePositionsBuffer,
-            'float32x2',
-            nodeCount
-          ),
+          topology: {
+            offsets: csrOffsets,
+            neighbors: csrNeighbors,
+            weights: csrWeights,
+            nodePositions: importGraphBuffer(
+              graph,
+              'node-positions',
+              nodePositionsBuffer,
+              'float32x2',
+              nodeCount
+            )
+          },
           costs: costsView,
-          sources: sources.importToGraph(graph),
-          // 0 when maxIterations cut the search short: every isochrone is then too small.
-          converged: importGraphBuffer(graph, 'search-converged', searchConverged, 'uint32', 1),
-          sourceCount: sourceCount.importToGraph(graph),
+          startNodes: sources.importToGraph(graph),
+          // 0 when maximumIterations cut the search short: every isochrone is then too small.
+          output: {
+            status: {
+              converged: importGraphBuffer(graph, 'search-converged', searchConverged, 'uint32', 1)
+            }
+          },
+          startCount: sourceCount.importToGraph(graph),
           assignments: assignmentsView,
           costLimit: costLimit.importToGraph(graph),
-          maxIterations: MAXIMUM_ITERATIONS,
-          breaks: breaksView,
+          maximumIterations: MAXIMUM_ITERATIONS,
+          costBreaks: breaksView,
           parameters: parametersView,
           raster: {
             width: RASTER_WIDTH,
@@ -403,21 +410,23 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                 'uint32',
                 TRIANGLE_CAPACITY
               ),
-              count: importGraphBuffer(graph, 'triangle-count', triangleCount, 'uint32', 1),
-              overflow: importGraphBuffer(
-                graph,
-                'triangle-overflow',
-                triangleOverflow,
-                'uint32',
-                1
-              ),
-              vertexCount: importGraphBuffer(
-                graph,
-                'band-vertex-count',
-                bandVertexCount,
-                'uint32',
-                1
-              )
+              status: {
+                overflow: importGraphBuffer(
+                  graph,
+                  'triangle-overflow',
+                  triangleOverflow,
+                  'uint32',
+                  1
+                ),
+                count: importGraphBuffer(graph, 'triangle-count', triangleCount, 'uint32', 1),
+                vertexCount: importGraphBuffer(
+                  graph,
+                  'band-vertex-count',
+                  bandVertexCount,
+                  'uint32',
+                  1
+                )
+              }
             }
           }
         })
@@ -426,19 +435,21 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUNetworkIsochrones({
           id: 'isochrones-cells',
-          offsets: csrOffsets,
-          neighbors: csrNeighbors,
-          weights: csrWeights,
-          nodePositions: importGraphBuffer(
-            graph,
-            'node-lnglat',
-            nodeLngLatBuffer,
-            'float32x2',
-            nodeCount
-          ),
+          topology: {
+            offsets: csrOffsets,
+            neighbors: csrNeighbors,
+            weights: csrWeights,
+            nodePositions: importGraphBuffer(
+              graph,
+              'node-lnglat',
+              nodeLngLatBuffer,
+              'float32x2',
+              nodeCount
+            )
+          },
           costs: costsView,
           assignments: assignmentsView,
-          breaks: breaksView,
+          costBreaks: breaksView,
           parameters: parametersView,
           cellOutline: {
             family: choice.family,
@@ -447,8 +458,10 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
             table: {
               cells: importGraphBuffer(graph, 'table-cells', tableCells, 'uint32x2', nodeCount),
               counts: importGraphBuffer(graph, 'table-counts', tableCounts, 'uint32', nodeCount),
-              count: importGraphBuffer(graph, 'table-count', tableCount, 'uint32', 1),
-              overflow: importGraphBuffer(graph, 'table-overflow', tableOverflow, 'uint32', 1)
+              status: {
+                count: importGraphBuffer(graph, 'table-count', tableCount, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'table-overflow', tableOverflow, 'uint32', 1)
+              }
             },
             rings: {
               normalizeWinding: true,
@@ -488,23 +501,25 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                   'uint32',
                   RING_CAPACITY
                 ),
-                count: importGraphBuffer(graph, 'ring-count', ringCount, 'uint32', 1),
-                overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflow, 'uint32', 1),
-                requiredCount: importGraphBuffer(graph, 'ring-total', ringTotal, 'uint32', 1),
-                openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpen, 'uint32', 1),
-                touchingSegmentCount: importGraphBuffer(
-                  graph,
-                  'ring-touching',
-                  ringTouching,
-                  'uint32',
-                  1
-                ),
                 polygons: {
                   kind: 'polygons',
                   positions: polygonPositionsView,
                   ringOffsets: polygonRingOffsetsView,
                   polygonOffsets: polygonOffsetsView,
                   featureOffsets: polygonFeatureOffsetsView
+                },
+                status: {
+                  count: importGraphBuffer(graph, 'ring-count', ringCount, 'uint32', 1),
+                  overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflow, 'uint32', 1),
+                  requiredCount: importGraphBuffer(graph, 'ring-total', ringTotal, 'uint32', 1),
+                  openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpen, 'uint32', 1),
+                  touchingSegmentCount: importGraphBuffer(
+                    graph,
+                    'ring-touching',
+                    ringTouching,
+                    'uint32',
+                    1
+                  )
                 }
               }
             },
@@ -544,9 +559,17 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
                 'uint32',
                 SEGMENT_CAPACITY
               ),
-              count: importGraphBuffer(graph, 'outline-count', outlineCount, 'uint32', 1),
-              overflow: importGraphBuffer(graph, 'outline-overflow', outlineOverflow, 'uint32', 1),
-              requiredCount: importGraphBuffer(graph, 'outline-total', outlineTotal, 'uint32', 1)
+              status: {
+                count: importGraphBuffer(graph, 'outline-count', outlineCount, 'uint32', 1),
+                overflow: importGraphBuffer(
+                  graph,
+                  'outline-overflow',
+                  outlineOverflow,
+                  'uint32',
+                  1
+                ),
+                requiredCount: importGraphBuffer(graph, 'outline-total', outlineTotal, 'uint32', 1)
+              }
             }
           }
         })
@@ -555,18 +578,33 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUPointInPolygonJoin({
           id: 'isochrones-demand-join',
-          points: importGraphBuffer(graph, 'poi-lnglat', poiLngLatBuffer, 'float32x2', poiCount),
-          polygonPositions: polygonPositionsView,
-          featureOffsets: polygonFeatureOffsetsView,
-          polygonOffsets: polygonOffsetsView,
-          ringOffsets: polygonRingOffsetsView,
+          points: {
+            kind: 'points',
+            positions: importGraphBuffer(
+              graph,
+              'poi-lnglat',
+              poiLngLatBuffer,
+              'float32x2',
+              poiCount
+            )
+          },
+          polygons: {
+            kind: 'polygons',
+            positions: polygonPositionsView,
+            featureOffsets: polygonFeatureOffsetsView,
+            polygonOffsets: polygonOffsetsView,
+            ringOffsets: polygonRingOffsetsView
+          },
           candidateCapacity: Math.max(65536, poiCount * 8),
-          pointFeatureIds: importGraphBuffer(graph, 'poi-inside', poiInside, 'uint32', poiCount),
-          overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
+          output: {
+            pointFeatureIds: importGraphBuffer(graph, 'poi-inside', poiInside, 'uint32', poiCount),
+            status: {
+              overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
+            }
+          }
         })
       );
-      compiled = resources.track(graph.compile());
-      dirty = true;
+      return resources.track(await graph.compileAsync());
     }
 
     const writeWeights = () => {
@@ -696,9 +734,20 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
       })),
       value: cellChoice,
       onChange: value => {
-        cellChoice = value;
-        buildGraph();
-        context.updateLayers();
+        void graphSwap
+          .request({
+            build: () => buildGraph(value),
+            commit: next => {
+              const previous = compiled;
+              compiled = next;
+              cellChoice = value;
+              if (previous) resources.release(previous);
+              dirty = true;
+              context.updateLayers();
+            },
+            discard: next => resources.release(next)
+          })
+          .catch(error => context.setStatus(`Error: ${(error as Error).message}`));
       }
     });
     context.controls.addToggle({
@@ -819,7 +868,8 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
     writeWeights();
     writeBudget();
     writeFacilities();
-    buildGraph();
+    compiled = await buildGraph(cellChoice);
+    dirty = true;
     summary.markStale();
 
     const instance: SpatialAnalysisModeInstance = {
@@ -853,7 +903,7 @@ export const isochronesMode: SpatialAnalysisModeDefinition = {
           const maximumBuffer = MAXIMUM_BUFFER_PIXELS * pixelSize;
           const effectiveBuffer = Math.min(bufferMeters, maximumBuffer);
           parameters.write(
-            getGPUNetworkIsochroneParameterValues({
+            getGPUNetworkIsochronesParameterValues({
               breakCount: bandCount,
               extent,
               bufferRadius: effectiveBuffer,

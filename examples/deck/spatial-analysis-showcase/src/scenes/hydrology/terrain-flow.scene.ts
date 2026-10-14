@@ -378,34 +378,34 @@ export default defineScene<TerrainFlowOptions>({
 } from '@luma.gl/experimental/gpu-terrain';
 import {
   GPUParticleAdvection, getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues
+  getGPUParticleAdvectionUint32ParameterValues
 } from '@luma.gl/experimental/gpu-raster';
 
 // Wind field: one kernel; raster is south-first so +y is north.
 windGraph.add(new GPUTerrainFlowField({
-  width, height, elevation, settings: windSettings.importToGraph(windGraph),
-  cellSizeMode: 'web-mercator', velocities        // float32x2 (u, v) in m/s
+  grid: southFirstGrid, elevation, parameters: windSettings.importToGraph(windGraph),
+  cellSizeMode: 'web-mercator',
+  output: {velocities}                            // float32x2 (u, v) in m/s
 }));
 particleGraph.add(new GPUParticleAdvection({
   velocities, fieldWidth: width, fieldHeight: height,
-  parameters, wordParameters,
+  parameters, uint32Parameters,
   state: {positions, ages, generations},
-  speeds, trails: {positions: trailPositions, length: 24}   // ring: frame f writes slot f % 24
+  output: {speeds, trails: {positions: trailPositions, length: 24}}   // ring: frame f writes slot f % 24
 }));
 
 // Per frame: parameter writes only.
 const bearing = ${state.windBearing} * Math.PI / 180;
 windSettings.write(getGPUTerrainFlowFieldParameterValues({
-  cellSize, northEdge, southEdge,
   wind: [${state.windSpeed} * Math.sin(bearing), ${state.windSpeed} * Math.cos(bearing)],
   verticalExaggeration: ${state.exaggeration}
-}));
+}, southFirstGrid));    // grid: EPSG:3857 meters, origin at the bottom-left, rowDirection 'north'
 particleParameters.write(getGPUParticleAdvectionParameterValues({
   fieldExtent: [minX, minY, cellWidth, cellHeight], timeStep: ${state.timeStep},
   speedScale: ${state.speedScale}, dropRate: ${state.dropRate}, minimumSpeed: ${state.minimumSpeed},
   spawnBounds: ${state.spawnRegion === 'view' ? 'visibleMapBounds' : 'undefined /* whole field */'}
 }, [width, height]));
-particleWords.write(getGPUParticleAdvectionWordParameterValues({
+particleWords.write(getGPUParticleAdvectionUint32ParameterValues({
   seed: ${state.seed}, frame, maximumAge: ${state.maximumAge}, reset: frame === 0
 }));
 compiledWind.encode(commandEncoder, {parameters: undefined});      // when the wind changed

@@ -129,7 +129,7 @@ function getSnippet(state: RateSmoothingOptions): string {
   const permutation =
     state.gating === 'permutation'
       ? `  permutation: {                              // GPULocalPermutationTest
-    parameters: permutationParameters,        // seed ${state.seed}, ${state.permutations} permutations
+    parameters: permutationParameters,        // GPUParameterBuffer, filled from settings
     maximumPermutations: 999,
     alternative: '${state.alternative}'
   },
@@ -140,14 +140,15 @@ function getSnippet(state: RateSmoothingOptions): string {
   GPUSpatialEmpiricalBayesRates
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// births and womenYears are float32 views; vertices, ringOffsets and
-// featureRingOffsets are the county polygons in GeoArrow layout.
+// births and womenYears are float32 views; vertices, featureOffsets, polygonOffsets and
+// ringOffsets are the county polygons in GeoArrow layout (rows are counties, multipart or not).
 const rates = addRateClusterMapRecipe(graph, {
   events: births, populations: womenYears,
-  positions: vertices, ringOffsets, polygonOffsets: featureRingOffsets,
+  polygons: {kind: 'polygons', positions: vertices, featureOffsets, polygonOffsets, ringOffsets},
   criterion: '${state.criterion}',            // GPUContiguityWeights
   analyze: '${state.analyze}',                // GPUEmpiricalBayesRates output
-  neighborCapacity, parameters, palette,
+  neighborCapacity, parameters, palette,     // parameters: GPUParameterBuffer
+  settings: {significanceLevel: ${state.significance}, seed: ${state.seed}, permutationCount: ${state.permutations}},
   multipleTesting: '${state.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'}',  // the recipe default is 'benjamini-hochberg'
 ${permutation}  standardizedRates, smoothedRates, rawRates, summary
 });
@@ -155,7 +156,7 @@ ${permutation}  standardizedRates, smoothedRates, rawRates, summary
 // Spatial EB reuses the recipe's weights.
 graph.add(new GPUSpatialEmpiricalBayesRates({
   events: births, populations: womenYears,
-  weights: rates.weights, smoothedRates: spatialRates
+  weights: rates.weights, output: {smoothedRates: spatialRates}
 }));
 
 // summary holds the pooled rate m and the prior variance a; the weight

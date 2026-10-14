@@ -421,35 +421,37 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'summits'});
 graph.add(new GPUTerrainSummits({
-  width, height, elevation,                       // the DEM averaged 4 x 4
-  cellSizeMode: 'web-mercator',                   // cellSize + northEdge / southEdge, per row
+  grid, elevation,                                // the DEM averaged 4 x 4, EPSG:3857 meters
+  cellSizeMode: 'web-mercator',                   // the grid's Mercator cell size, per row
   maximumRadiusPixels: ${state.summitMaximumRadius},                     // compile-time loop bound
   incompleteNeighborhood: '${state.incompleteNeighborhood}',
-  settings: summitSettings.importToGraph(graph),
-  output: {ids, count, overflow, requiredCount},     // compact list of disc maxima
-  outputDrop                                      // drop of each listed maximum
+  parameters: summitSettings.importToGraph(graph),
+  output: {
+    summits: {ids, status: {count, overflow, requiredCount}},  // compact list of disc maxima
+    summitDrop,                                   // drop of each listed maximum
+    status: {radiusClamped}                       // 1 when the radius hit the compile-time bound
+  }
 }));
 graph.add(new GPUTerrainPeakSnap({
-  width, height, elevation, cellSizeMode: 'web-mercator', maximumRadiusPixels: 16,
+  grid, elevation, cellSizeMode: 'web-mercator', maximumRadiusPixels: 16,
   candidates, candidateHeights, candidateRadii,   // catalogue positions, elevations, radii
-  settings: snapSettings.importToGraph(graph),
-  positions, heights, status, snapDistance, overflow
+  parameters: snapSettings.importToGraph(graph),
+  output: {positions, heights, snapStatus, snapDistance, status: {radiusClamped}}
 }));
 graph.add(new GPUTerrainCriticalPoints({
-  width, height, elevation, connectivity: ${state.connectivity}, classes, signChanges, counts
+  grid, elevation, connectivity: ${state.connectivity}, output: {classes, signChanges, counts}
 }));
-const compiled = graph.compile();                 // once
+const compiled = await graph.compileAsync();      // once
 
 // minimumDrop 0: list every disc maximum, then threshold the read-back list on the CPU
 summitSettings.write(getGPUTerrainSummitsParameterValues({
-  radius: ${state.summitRadius}, minimumDrop: 0,
-  cellSize: [mercatorCell, mercatorCell], northEdge, southEdge   // Web Mercator: equatorial metres
-}));
+  radius: ${state.summitRadius}, minimumDrop: 0
+}, grid));                                        // Web Mercator: the grid holds the cell size
 const summits = candidates.filter(candidate => candidate.drop >= ${state.summitMinimumDrop});
 snapSettings.write(getGPUTerrainPeakSnapParameterValues({
   radius: ${state.snapRadius}, maximumMove: ${state.snapMaximumMove}, maximumHeightChange: ${state.snapMaximumHeightChange},
-  interior: ${state.snapInterior}, cellSize: [mercatorCell, mercatorCell], northEdge, southEdge
-}));
+  interior: ${state.snapInterior}
+}, grid));
 compiled.encode(commandEncoder, {parameters: undefined}); // when a parameter changed`,
 
   about: {

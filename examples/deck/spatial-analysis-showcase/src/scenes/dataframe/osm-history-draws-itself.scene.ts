@@ -397,11 +397,11 @@ export default defineScene<OsmDrawsItselfOptions>({
   values: ones,
   parameters: bucketParameters.importToGraph(graph),
   cellCount, bucketCount: 80,
-  output: {counts, min, max, first, last, occupiedSlots}
+  output: {counts, minimums, maximums, first, last, occupiedSlots}
 });
 // per frame, no recompile
 bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucket === 'year' ? '365.2425' : state.bucket === 'half' ? '182.62' : '91.31'}));
-windowParameters.write(getGPUTimeWindowParameterValues({start: -1, end: playhead}));`,
+windowParameters.write(getGPUTimeWindowFilterParameterValues({start: -1, end: playhead}));`,
 
   about: {
     what: 'A playback of every sampled node creation in OpenStreetMap New York City from 2007 to 2026. GPUTimeWindowFilter selects the nodes created before the playhead; GPUTemporalReduction counts nodes per (cell, time bucket) in one dense table.',

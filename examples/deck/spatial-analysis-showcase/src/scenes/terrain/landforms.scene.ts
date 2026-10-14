@@ -952,35 +952,36 @@ export default defineScene<LandformOptions>({
   GPUGeomorphons, GPUTerrainCurvature, GPUTerrainTopographicPosition, GPUTerrainWeissLandforms,
   getGPUGeomorphonsParameterValues, getGPUTerrainWeissLandformsParameterValues
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 
-// the tile is Web Mercator: cellSize is equatorial Mercator meters, edges are normalized Mercator y
-const cell = {cellSize: [9.5546, 9.5546], northEdge: 0.3556, southEdge: 0.3112};
+// the tile is Web Mercator: the grid is in EPSG:3857 meters, cellSize the equatorial pixel size
+const grid = makeGPURasterMetadata({width, height, cellSize: 9.5546, origin: [minX, maxY]});
 graph.add(new GPUGeomorphons({
-  width, height, elevation, settings: geomorphonSettings.importToGraph(graph),
+  grid, elevation, parameters: geomorphonSettings.importToGraph(graph),
   searchRadius: ${state.geomorphonRadius}, skipRadius: ${state.geomorphonSkip}, comparison: '${state.geomorphonComparison}',
-  forms, cellSizeMode: 'web-mercator'
+  output: {forms}, cellSizeMode: 'web-mercator'
 }));
 graph.add(new GPUTerrainCurvature({
-  width, height, elevation, settings: curvatureSettings.importToGraph(graph),
-  method: '${state.curvatureMethod}', curvatures: {profile, plan}, cellSizeMode: 'web-mercator'
+  grid, elevation, parameters: curvatureSettings.importToGraph(graph),
+  method: '${state.curvatureMethod}', output: {curvatures: {profile, plan}}, cellSizeMode: 'web-mercator'
 }));
 graph.add(new GPUTerrainTopographicPosition({
-  width, height, elevation, scales: [${SCALE_PRESETS[state.scalePreset].map(radius => `{radius: ${radius}}`).join(', ')}],
-  topographicPositionIndex, deviationFromMean, maximumDeviation, maximumDeviationRadius
+  grid, elevation, scales: [${SCALE_PRESETS[state.scalePreset].map(radius => `{radius: ${radius}}`).join(', ')}],
+  output: {topographicPositionIndex, deviationFromMean, maximumDeviation, maximumDeviationRadius}
 }));
 graph.add(new GPUTerrainWeissLandforms({
-  width, height, elevation, settings: weissSettings.importToGraph(graph),
+  grid, elevation, parameters: weissSettings.importToGraph(graph),
   smallScale: {radius: ${state.weissSmall}}, largeScale: {radius: ${state.weissLarge}},
-  standardization: '${state.weissStandardization}', landforms, cellSizeMode: 'web-mercator'
+  standardization: '${state.weissStandardization}', output: {landforms}, cellSizeMode: 'web-mercator'
 }));
-const compiled = graph.compile(); // once
+const compiled = await graph.compileAsync(); // once
 
 // per frame: parameter writes, then one encode
 geomorphonSettings.write(getGPUGeomorphonsParameterValues({
-  ...cell, flatThresholdDegrees: ${state.geomorphonFlatAngle}, flatDistance: ${state.geomorphonFlatDistance}
-}));
+  flatThresholdDegrees: ${state.geomorphonFlatAngle}, flatDistance: ${state.geomorphonFlatDistance}
+}, grid));
 weissSettings.write(getGPUTerrainWeissLandformsParameterValues({
-  ...cell, standardThreshold: ${state.weissThreshold}, slopeThresholdDegrees: ${state.weissSlope}
-}));
+  standardThreshold: ${state.weissThreshold}, slopeThresholdDegrees: ${state.weissSlope}
+}, grid));
 compiled.encode(commandEncoder, {parameters: undefined});`
 });

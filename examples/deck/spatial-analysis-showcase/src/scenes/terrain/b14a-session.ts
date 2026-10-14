@@ -226,9 +226,14 @@ export class ProductBuilder {
   }
 
   /** Compiles the graphs into a stage (the stage releases the graphs and this builder's buffers). */
-  finishStage(options: Omit<FinishOptions, 'value' | 'format' | 'palette'>): Stage {
+  async finishStage(options: Omit<FinishOptions, 'value' | 'format' | 'palette'>): Promise<Stage> {
     const {resources} = this.session;
-    const graphs = (options.graphs ?? [this.graph]).map(graph => resources.track(graph.compile()));
+    // Graphs compile concurrently; each is tracked as soon as it is ready.
+    const graphs = await Promise.all(
+      (options.graphs ?? [this.graph]).map(async graph =>
+        resources.track(await graph.compileAsync())
+      )
+    );
     const stage = new Stage(
       this.id,
       graphs,
@@ -252,8 +257,8 @@ export class ProductBuilder {
   }
 
   /** Compiles the graphs and returns a build that displays buffer `options.value`. */
-  finish(options: FinishOptions): ProductBuild {
-    const stage = this.finishStage(options);
+  async finish(options: FinishOptions): Promise<ProductBuild> {
+    const stage = await this.finishStage(options);
     const buffer = this.getBuffer(options.value);
     return {
       id: this.id,
@@ -310,8 +315,9 @@ class RangeReader {
     }
     ticket.markEncoded({byteOffset: 0, byteLength: destinationOffset});
     this.pendingFlag = true;
-    void ticket
-      .read()
+    // Deck submits this frame's encoder synchronously before the next task maps the slot.
+    void new Promise<void>(resolve => setTimeout(resolve, 0))
+      .then(() => ticket.read())
       .then(bytes => {
         if (!this.stopped) onBytes(bytes.slice());
       })
@@ -531,11 +537,19 @@ export class TerrainSession {
     build.release();
   }
 
-  /** Makes a product the displayed one. */
-  activate(build: ProductBuild, paint: Partial<PaintSpec>): void {
+  /** Releases a build that was never registered, or that a newer build replaced. */
+  discardBuild(build: ProductBuild): void {
+    this.releaseBuild(build);
+  }
+
+  /**
+   * Compiles the colorize pass of a build that has none yet. Await it before
+   * {@link TerrainSession.activate}, which is synchronous and must not wait for a compile.
+   */
+  async prepareBuild(build: ProductBuild): Promise<void> {
     if (!build.paintGraph && build.value.format !== 'rgba8') {
       const format = build.value.format;
-      build.paintGraph = createColorizeGraph(
+      build.paintGraph = await createColorizeGraph(
         this.resources,
         this.device,
         build.id,
@@ -549,6 +563,10 @@ export class TerrainSession {
         build.palette
       );
     }
+  }
+
+  /** Makes a prepared product the displayed one (see {@link TerrainSession.prepareBuild}). */
+  activate(build: ProductBuild, paint: Partial<PaintSpec>): void {
     this.current = build;
     this.hoverCache = null;
     this.setPaint(paint);
@@ -594,7 +612,7 @@ export class TerrainSession {
   }
 
   /** Builds the hillshade underlay: relief shading is computed once per elevation version. */
-  enableUnderlay(): void {
+  async enableUnderlay(): Promise<void> {
     if (this.underlay) return;
     const {grid, resources, device} = this;
     const settings = resources.createParameterBuffer(
@@ -603,17 +621,19 @@ export class TerrainSession {
       GPU_RELIEF_SHADING_PARAMETER_LENGTH
     );
     settings.write(
-      getGPUReliefShadingParameterValues({
-        ...grid.cellSettings,
-        lights: 'mdow',
-        lightWeighting: 'aspect',
-        hillshadeStrength: 1,
-        skyViewStrength: 0,
-        textureShadeStrength: 0,
-        tintStrength: 0,
-        exposure: 1,
-        elevationStops: []
-      })
+      getGPUReliefShadingParameterValues(
+        {
+          lights: 'mdow',
+          lightWeighting: 'aspect',
+          hillshadeStrength: 1,
+          skyViewStrength: 0,
+          textureShadeStrength: 0,
+          tintStrength: 0,
+          exposure: 1,
+          elevationStops: []
+        },
+        grid.grid
+      )
     );
     const hillshade = resources.createBuffer('underlay-hillshade', grid.pixelCount * 4);
     const colors = resources.createBuffer('underlay-colors', grid.pixelCount * 4);
@@ -627,17 +647,18 @@ export class TerrainSession {
     graph.add(
       new GPUReliefShading({
         id: 'underlay-shading',
-        width: grid.width,
-        height: grid.height,
+        grid: grid.grid,
         elevation: this.importElevation(graph),
-        settings: settings.importToGraph(graph),
+        parameters: settings.importToGraph(graph),
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
-        hillshade: importGraphBuffer(graph, 'hillshade', hillshade, 'float32', grid.pixelCount)
+        output: {
+          hillshade: importGraphBuffer(graph, 'hillshade', hillshade, 'float32', grid.pixelCount)
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
-    const paintGraph = createColorizeGraph(
+    const compiled = resources.track(await graph.compileAsync());
+    const paintGraph = await createColorizeGraph(
       resources,
       device,
       'underlay',

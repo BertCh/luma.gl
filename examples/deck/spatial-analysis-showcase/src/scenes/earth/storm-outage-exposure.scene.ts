@@ -281,40 +281,40 @@ export default defineScene<StormOutageExposureOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPULineLengthPerPolygon, GPUZonalStatistics} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUGroupStatistics, GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // Once: join every flash to its county and keep the point-to-county rows.
 staticGraph.add(new GPUZonalStatistics({
-  features: {kind: 'polygons', polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
-  points: flashMeters,
-  output: {counts: flashTotals, pointFeatureRows}
+  features: {kind: 'polygons', positions: countyPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
+  positions: flashMeters,
+  output: {counts: flashTotals, pointFeatureRows, status: {overflow}}
 }));
 // Once: the peak customers out per county, dense keys = county rows.
 staticGraph.add(new GPUGroupStatistics({
   keys: snapshotCounty, keyCount: countyCount,
   columns: [{values: customersOut, statistics: ['maximum'], output: {maximums: peakOutage}}],
-  output: {keys, counts, count, overflow}
+  output: {keys, counts, status: {count, overflow}}
 }));
 
 // When the playhead moves five minutes:
 graph.add(new GPUTimeWindowFilter({timestamps: flashTimes, window: flashWindow.importToGraph(graph),
-  output: {ids, count, overflow}, fadeWeights: flashWeights}));      // 1 inside the window, 0 outside
+  output: {ids, status: {count, overflow}, fadeWeights: flashWeights}}));      // 1 inside the window, 0 outside
 graph.add(new GPUZonalStatistics({
   features: {kind: 'feature-rows', pointFeatureRows, featureCount: countyCount},
   values: ones, weights: flashWeights, sumOrder: '${state.sumOrder}',  // compile-time
   output: {sums: flashSums}                                           // flashes in the window per county
 }));
 graph.add(new GPULineLengthPerPolygon({
-  positions: tracksClippedAtPlayhead, pathOffsets, pathWeights: peakDbz,
+  positions: tracksClippedAtPlayhead, lineOffsets: pathOffsets, lineWeights: peakDbz,
   polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-  output: {lengths: trackLengths, weightedLengths, overflow}          // meters of track inside each county
+  output: {lengths: trackLengths, weightedLengths, status: {overflow}}        // meters of track inside each county
 }));
 graph.add(new GPUGroupStatistics({
   keys: snapshotCounty, mask: snapshotInWindow, keyCount: countyCount,
   columns: [{values: customersOut, statistics: ['sum'], output: {sumValues: outageNow}}],
-  output: {keys, counts, count, overflow}
+  output: {keys, counts, status: {count, overflow}}
 }));
-flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: ${state.exposureWindow === 'so-far' ? 'playhead' : 'eventEnd'}}));`,
+flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: ${state.exposureWindow === 'so-far' ? 'playhead' : 'eventEnd'}}));`,
 
   about: {
     what: '`GPULineLengthPerPolygon` cuts every storm-cell track where it crosses a county boundary and sums the length inside each county. `GPUZonalStatistics` joins the lightning flashes to counties once, then sums the flashes of a time window per county from the stored rows. `GPUGroupStatistics` reduces the 40,000-row outage table to a peak and to the latest snapshot per county, and `GPUTimeWindowFilter` picks the flashes and the outage snapshots that belong to the playhead.',

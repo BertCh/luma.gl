@@ -109,7 +109,7 @@ function getSnippet(state: NycTaxiTidesOptions): string {
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
 
 // departures gate on the pickup time, arrivals on the dropoff time: same trips, two graphs
-const make = (gateTimes) => {
+const make = async (gateTimes) => {
   const graph = new GPUCommandGraph(device);
   graph.add(new GPUFlowAggregation({
     zones: {kind: '${state.zones}', bounds, gridSize: capacity,   // capacity fixed for 400 m
@@ -120,17 +120,19 @@ const make = (gateTimes) => {
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: 524288,
-    output: {ids, count, overflow, requiredCount},
-    zoneOutCounts, zoneInCounts,
-    flowOriginZoneIds, flowDestinationZoneIds, flowWeights   // top-K flows
+    output: {
+      ids, status: {count, overflow, requiredCount},
+      zoneOutCounts, zoneInCounts,
+      flowOriginZoneIds, flowDestinationZoneIds, flowWeights   // top-K flows
+    }
   }));
-  return graph.compile();
+  return graph.compileAsync();
 };
-const departures = make(pickupHours);
-const arrivals = make(dropoffHours);
+const departures = await make(pickupHours);
+const arrivals = await make(dropoffHours);
 
 // every frame: move the window (no recompile), run both graphs
-window.write(getGPUTimeWindowParameterValues({start: hour, end: hour + ${state.windowHours}}));
+window.write(getGPUTimeWindowFilterParameterValues({start: hour, end: hour + ${state.windowHours}}));
 departures.encode(commandEncoder, {parameters: undefined});
 arrivals.encode(commandEncoder, {parameters: undefined});
 

@@ -180,7 +180,7 @@ export const crossingsMode: SpatialAnalysisModeDefinition = {
         commands: [{vertexCount: 6, instanceCount: 0}]
       })
     );
-    const roadGraph = (() => {
+    const roadGraph = await (async () => {
       const graph = new GPUCommandGraph<void>(device, {id: 'crossings-roads'});
       graph.add(
         new GPUSegmentIntersection({
@@ -202,19 +202,31 @@ export const crossingsMode: SpatialAnalysisModeDefinition = {
               roadLineCount + 1
             )
           },
-          pairs: {
-            leftIds: importGraphBuffer(graph, 'pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
-            rightIds: importGraphBuffer(graph, 'pair-right', pairRight, 'uint32', PAIR_CAPACITY),
-            count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
-          },
-          kinds: importGraphBuffer(graph, 'pair-kinds', pairKinds, 'uint32', PAIR_CAPACITY),
-          points: importGraphBuffer(graph, 'pair-points', pairPoints, 'float32x2', PAIR_CAPACITY),
-          uncertainCount: importGraphBuffer(graph, 'uncertain-count', uncertainCount, 'uint32', 1)
+          output: {
+            pairs: {
+              leftIds: importGraphBuffer(graph, 'pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
+              rightIds: importGraphBuffer(graph, 'pair-right', pairRight, 'uint32', PAIR_CAPACITY),
+              status: {
+                count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+                requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+              }
+            },
+            kinds: importGraphBuffer(graph, 'pair-kinds', pairKinds, 'uint32', PAIR_CAPACITY),
+            points: importGraphBuffer(graph, 'pair-points', pairPoints, 'float32x2', PAIR_CAPACITY),
+            status: {
+              uncertainCount: importGraphBuffer(
+                graph,
+                'uncertain-count',
+                uncertainCount,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     })();
 
     // ------------------------------------------------------------------ state and controls

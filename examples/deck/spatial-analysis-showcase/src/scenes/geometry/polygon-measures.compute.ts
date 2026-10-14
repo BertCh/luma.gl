@@ -5,9 +5,11 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
+  getGPUMapColoringParameterValues,
   getGPUShapeDescriptorsParameterValues,
   GPU_GEOMETRY_VALIDITY_BIT,
   GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK,
+  GPU_MAP_COLORING_PARAMETER_LENGTH,
   GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
   GPUContiguityWeights,
@@ -20,6 +22,7 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {makeClassTable} from '../../cartography/class-table';
@@ -62,7 +65,7 @@ export type PolygonMeasuresOptions = {
   dataset: PolygonDatasetId;
   metric: PolygonMetric;
   areaSystem: 'planar' | 'spherical' | 'wgs84';
-  holeRule: 'winding' | 'first-ring-exterior';
+  ringGrouping: 'parts' | 'merged';
   opacity: number;
   showOutlines: boolean;
   showLabels: boolean;
@@ -128,7 +131,7 @@ export const POLYGON_VALIDITY_CLASSES = makeClassTable({
     [230, 159, 0, 255],
     [213, 94, 0, 255]
   ],
-  labels: ['No bits set', 'Orientation convention only', 'Structural defect'],
+  labels: ['Valid', 'Orientation convention only', 'Structural defect'],
   method: 'Amber convention, vermilion structure'
 });
 
@@ -214,7 +217,6 @@ type DatasetState = {
     sourceCorners: Float32Array;
     sourceFeatureRows: Uint32Array;
     featureRows: Buffer;
-    partRows: Buffer;
     triangleCount: number;
   };
   edges: {starts: Buffer; ends: Buffer; edgeCount: number};
@@ -258,16 +260,17 @@ type DatasetState = {
   validityOverflow: number;
   selectedEdgeCapacity: number;
   builders: {
-    measures: (options: PolygonMeasuresOptions) => CompiledGPUCommandGraph<void>;
-    shape: (options: PolygonMeasuresOptions) => CompiledGPUCommandGraph<void>;
-    validity: (options: PolygonMeasuresOptions) => CompiledGPUCommandGraph<void>;
-    coloring: (options: PolygonMeasuresOptions) => CompiledGPUCommandGraph<void>;
+    measures: (options: PolygonMeasuresOptions) => Promise<CompiledGPUCommandGraph<void>>;
+    shape: (options: PolygonMeasuresOptions) => Promise<CompiledGPUCommandGraph<void>>;
+    validity: (options: PolygonMeasuresOptions) => Promise<CompiledGPUCommandGraph<void>>;
+    coloring: (options: PolygonMeasuresOptions) => Promise<CompiledGPUCommandGraph<void>>;
   };
   measures: CompiledGPUCommandGraph<void>;
   shape: CompiledGPUCommandGraph<void> | null;
   validity: CompiledGPUCommandGraph<void> | null;
   coloring: CompiledGPUCommandGraph<void> | null;
   shapeParameters: ReturnType<SpatialAnalysisResources['createParameterBuffer']>;
+  coloringParameters: ReturnType<SpatialAnalysisResources['createParameterBuffer']>;
   validityPositions: Buffer;
   tableReader: SummaryReader | null;
   coloringReader: SummaryReader | null;
@@ -305,7 +308,7 @@ export async function createPolygonMeasures(
   // Building
   // -------------------------------------------------------------------------------------------
 
-  function buildDataset(id: PolygonDatasetId): DatasetState {
+  async function buildDataset(id: PolygonDatasetId): Promise<DatasetState> {
     const dataset = ctx.datasets.get(id);
     const spec = DATASET_SPECS[id];
     const layout = getLayout(id);
@@ -351,6 +354,11 @@ export async function createPolygonMeasures(
     const featureRingsBuffer = resources.createBuffer('feature-rings', layout.featureRingOffsets);
     const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', layout.polygonOffsets);
     const featureOffsetsBuffer = resources.createBuffer('feature-offsets', layout.featureOffsets);
+    // One polygon per feature: every ring of a feature joins one polygon (the 'merged' grouping).
+    const mergedFeatureOffsetsBuffer = resources.createBuffer(
+      'merged-feature-offsets',
+      Uint32Array.from({length: featureCount + 1}, (_, feature) => feature)
+    );
     const groupIdsBuffer = resources.createBuffer('group-ids', groupIds);
     const validityPositions = resources.createBuffer('validity-positions', layout.lngLat);
 
@@ -366,7 +374,6 @@ export async function createPolygonMeasures(
       sourceCorners: triangulated.corners,
       sourceFeatureRows: triangulated.featureRows,
       featureRows: resources.createBuffer('fill-feature-rows', triangulated.featureRows),
-      partRows: resources.createBuffer('fill-part-rows', triangulated.partRows),
       triangleCount: triangulated.triangleCount
     };
     const edges = {
@@ -400,8 +407,8 @@ export async function createPolygonMeasures(
       convexity: makeColumn('convexity'),
       sliverF: makeColumn('sliver-f'),
       validityF: makeColumn('validity-f'),
-      colorF: makeColumn('color-f', partCount),
-      naiveColorF: makeColumn('naive-color-f', partCount)
+      colorF: makeColumn('color-f'),
+      naiveColorF: makeColumn('naive-color-f')
     };
     const centroidsPlanar = makeColumn('centroids-planar', featureCount * 2);
     const centroidsWgs84 = makeColumn('centroids-wgs84', featureCount * 2);
@@ -429,18 +436,11 @@ export async function createPolygonMeasures(
     const labelGridStarts = makeColumn('label-grid-starts', 132 * 2);
     const labelGridEnds = makeColumn('label-grid-ends', 132 * 2);
     const fips = id === 'us-counties' ? dataset.column<Uint32Array>('fips') : null;
-    const naivePartColors = new Float32Array(partCount);
+    const naiveFeatureColors = new Float32Array(featureCount);
     for (let feature = 0; feature < featureCount; feature++) {
-      const color = (fips?.[feature] ?? feature) % B3_PALETTE.length;
-      for (
-        let part = layout.featureOffsets[feature];
-        part < layout.featureOffsets[feature + 1];
-        part++
-      ) {
-        naivePartColors[part] = color;
-      }
+      naiveFeatureColors[feature] = (fips?.[feature] ?? feature) % B3_PALETTE.length;
     }
-    (columns.naiveColorF as Buffer).write(naivePartColors);
+    (columns.naiveColorF as Buffer).write(naiveFeatureColors);
     const mask = makeColumn('validity-mask');
     const validityOverflow = resources.createBuffer('validity-overflow', 4);
 
@@ -450,6 +450,31 @@ export async function createPolygonMeasures(
       GPU_SHAPE_DESCRIPTORS_PARAMETER_LENGTH,
       getGPUShapeDescriptorsParameterValues({sliverThreshold: ctx.options.sliverThreshold})
     );
+    const coloringParameters = resources.createParameterBuffer(
+      'coloring-parameters',
+      'uint32',
+      GPU_MAP_COLORING_PARAMETER_LENGTH,
+      getGPUMapColoringParameterValues({seed: ctx.options.colorSeed})
+    );
+
+    // Four-level polygon structure of the layer. Ring roles are positional (the first ring of each
+    // polygon is its shell, later rings are holes), so grouping the rings into polygons decides
+    // which rings are holes: 'parts' keeps the real polygon parts, 'merged' puts every ring of a
+    // feature into one polygon.
+    const importPolygonStructure = (
+      imp: ReturnType<typeof createGraphImporter>,
+      ringGrouping: PolygonMeasuresOptions['ringGrouping']
+    ) => ({
+      featureOffsets:
+        ringGrouping === 'parts'
+          ? imp('feature-offsets', featureOffsetsBuffer, 'uint32', featureCount + 1)
+          : imp('feature-offsets', mergedFeatureOffsetsBuffer, 'uint32', featureCount + 1),
+      polygonOffsets:
+        ringGrouping === 'parts'
+          ? imp('polygon-offsets', polygonOffsetsBuffer, 'uint32', partCount + 1)
+          : imp('polygon-offsets', featureRingsBuffer, 'uint32', featureCount + 1),
+      ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1)
+    });
 
     // Coordinate conversion shared by the drawing kernels.
     const toLngLat = (() => {
@@ -469,30 +494,23 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     })();
 
     // ---- Measures graph: three coordinate systems, groups, derived columns ----
-    const buildMeasures = ({holeRule}: PolygonMeasuresOptions) => {
+    const buildMeasures = async ({ringGrouping}: PolygonMeasuresOptions) => {
       const graph = new GPUCommandGraph<void>(device, {id: `measures-${id}`});
       const imp = createGraphImporter(graph);
       const lngLat = imp('lnglat', lngLatBuffer, 'float32x2', vertexCount);
       const planarView = imp('planar', planarBuffer, 'float32x2', vertexCount);
-      const ringOffsets = imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1);
-      const featureRings = imp('feature-rings', featureRingsBuffer, 'uint32', featureCount + 1);
+      const polygonStructure = importPolygonStructure(imp, ringGrouping);
       const view = (name: string, buffer: Buffer, length = featureCount) =>
         imp(name, buffer, 'float32', length);
       const areaPlanar = view('area-planar', columns.areaPlanar);
       const areaWgs84 = view('area-wgs84', columns.areaWgs84);
-      const common = {
-        geometryType: 'polygons' as const,
-        holeRule,
-        featureRingOffsets: featureRings
-      };
+      const common = {geometryType: 'polygons' as const, ...polygonStructure};
       graph.add(
         new GPUGeometryMeasures({
           spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
           id: 'measures-planar',
           positions: planarView,
-          ringOffsets,
           ...common,
-
           output: {
             areas: areaPlanar,
             lengths: view('length-planar', columns.lengthPlanar),
@@ -509,9 +527,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           },
           id: 'measures-sphere',
           positions: lngLat,
-          ringOffsets,
           ...common,
-
           output: {
             areas: view('area-sphere', columns.areaSphere),
             lengths: view('length-sphere', columns.lengthSphere)
@@ -539,9 +555,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           ellipsoidalEdgeModel: 'coordinate-linear',
           id: 'measures-wgs84',
           positions: lngLat,
-          ringOffsets,
           ...common,
-
           output: {
             areas: areaWgs84,
             lengths: view('length-wgs84', columns.lengthWgs84),
@@ -655,16 +669,17 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     ends[endsOffset + slot + 1u] = c.y;
   }`
       });
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // ---- Shape graph: label points, descriptors, drawing kernels ----
-    const buildShape = (options: PolygonMeasuresOptions) => {
+    const buildShape = async (options: PolygonMeasuresOptions) => {
       const graph = new GPUCommandGraph<void>(device, {id: `shape-${id}`});
       const imp = createGraphImporter(graph);
       const planarView = imp('planar', planarBuffer, 'float32x2', vertexCount);
-      const ringOffsets = imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1);
-      const featureRings = imp('feature-rings', featureRingsBuffer, 'uint32', featureCount + 1);
+      // Label points sit in the real polygon parts whatever the grouping option says.
+      const partStructure = importPolygonStructure(imp, 'parts');
+      const groupedStructure = importPolygonStructure(imp, options.ringGrouping);
       const points = imp('label-points', labelPoints, 'float32x2', featureCount);
       const radii = imp('label-radii', labelRadii, 'float32', featureCount);
       const degenerate = imp('label-degenerate', labelDegenerate, 'uint32', featureCount);
@@ -672,8 +687,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         new GPULabelPoint({
           id: 'label-point',
           positions: planarView,
-          ringOffsets,
-          featureRingOffsets: featureRings,
+          ...partStructure,
           initialGridSize: options.initialGridSize,
           refinementCandidates: options.refinementCandidates,
           output: {points, distances: radii, degenerate}
@@ -686,9 +700,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         new GPUShapeDescriptors({
           id: 'shape-descriptors',
           positions: planarView,
-          ringOffsets,
-          featureRingOffsets: featureRings,
-          holeRule: options.holeRule,
+          ...groupedStructure,
           parameters: shapeParameters.importToGraph(graph),
           output: {
             polsbyPopper: view('polsby-popper', columns.polsbyPopper),
@@ -805,11 +817,11 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   ends[endsOffset + index * 2u] = end.x;
   ends[endsOffset + index * 2u + 1u] = end.y;`
       });
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // ---- Validity graph ----
-    const buildValidity = (options: PolygonMeasuresOptions) => {
+    const buildValidity = async (options: PolygonMeasuresOptions) => {
       const graph = new GPUCommandGraph<void>(device, {id: `validity-${id}`});
       const imp = createGraphImporter(graph);
       const maskView = imp('mask', mask, 'uint32', featureCount);
@@ -819,17 +831,12 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           polygons: {
             kind: 'polygons',
             positions: imp('validity-positions', validityPositions, 'float32x2', vertexCount),
-            featureOffsets: imp(
-              'feature-offsets',
-              featureOffsetsBuffer,
-              'uint32',
-              featureCount + 1
-            ),
-            polygonOffsets: imp('polygon-offsets', polygonOffsetsBuffer, 'uint32', partCount + 1),
-            ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1)
+            ...importPolygonStructure(imp, 'parts')
           },
-          mask: maskView,
-          overflow: imp('validity-overflow', validityOverflow, 'uint32', 1),
+          output: {
+            mask: maskView,
+            status: {overflow: imp('validity-overflow', validityOverflow, 'uint32', 1)}
+          },
           intersectionCapacity: Math.max(4096, featureCount * 4),
           ringClosure: options.ringClosure,
           orientation: options.orientation
@@ -847,9 +854,10 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
             access: 'read_write'
           }
         ],
-        declarations: `const STRUCTURAL: u32 = ${GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK}u;`,
+        declarations: `const STRUCTURAL: u32 = ${GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK}u;\nconst REPEATED: u32 = ${GPU_GEOMETRY_VALIDITY_BIT.repeatedVertex}u;`,
+        // A repeated vertex is valid for GEOS and not structural, so it does not leave 'valid'.
         body: /* wgsl */ `
-  let bits = mask[maskOffset + index];
+  let bits = mask[maskOffset + index] & ~REPEATED;
   var value = ${VALIDITY_PALETTE_INDEXES[0]}.0;
   if ((bits & STRUCTURAL) != 0u) {
     value = ${VALIDITY_PALETTE_INDEXES[2]}.0;
@@ -858,72 +866,79 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   }
   category[categoryOffset + index] = value;`
       });
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // ---- Coloring graph ----
-    const neighborCapacity = Math.max(1024, partCount * 24);
-    const weightOffsets = resources.createBuffer('weight-offsets', (partCount + 1) * 4);
+    // Contiguity rows are features: a multipart feature is one row.
+    const neighborCapacity = Math.max(1024, featureCount * 24);
+    const weightOffsets = resources.createBuffer('weight-offsets', (featureCount + 1) * 4);
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
-    const colors = resources.createBuffer('colors', partCount * 4);
+    const colors = resources.createBuffer('colors', featureCount * 4);
     const colorSummary = resources.createBuffer('color-summary', 4);
     const colorSummaryParts = {
       conflict: resources.createBuffer('conflict-count', 4),
       converged: resources.createBuffer('coloring-converged', 4),
       rounds: resources.createBuffer('coloring-rounds', 4)
     };
-    const buildColoring = (options: PolygonMeasuresOptions) => {
+    const buildColoring = async (options: PolygonMeasuresOptions) => {
       const graph = new GPUCommandGraph<void>(device, {id: `coloring-${id}`});
       const imp = createGraphImporter(graph);
       const weights = {
-        offsets: imp('weight-offsets', weightOffsets, 'uint32', partCount + 1),
+        offsets: imp('weight-offsets', weightOffsets, 'uint32', featureCount + 1),
         neighbors: imp('weight-neighbors', weightNeighbors, 'uint32', neighborCapacity),
-        weights: imp('weight-values', weightValues, 'float32', neighborCapacity)
+        weights: imp('weight-values', weightValues, 'float32', neighborCapacity),
+        status: {overflow: imp('weight-overflow', weightOverflow, 'uint32', 1)}
       };
       graph.add(
         new GPUContiguityWeights({
           id: 'contiguity',
           criterion: options.contiguity,
-          positions: imp('lnglat', lngLatBuffer, 'float32x2', vertexCount),
-          ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
-          polygonOffsets: imp('polygon-offsets', polygonOffsetsBuffer, 'uint32', partCount + 1),
-          weights,
+          polygons: {
+            kind: 'polygons',
+            positions: imp('lnglat', lngLatBuffer, 'float32x2', vertexCount),
+            ...importPolygonStructure(imp, 'parts')
+          },
           // Shared boundaries emit one directed pair per shared vertex or edge before deduplication.
           pairCapacity: Math.max(65536, vertexCount * 16),
-          overflow: imp('weight-overflow', weightOverflow, 'uint32', 1)
+          output: weights
         })
       );
-      const colorsView = imp('colors', colors, 'uint32', partCount);
+      const colorsView = imp('colors', colors, 'uint32', featureCount);
       graph.add(
         new GPUMapColoring({
           id: 'coloring',
           weights,
-          colors: colorsView,
-          colorCount: imp('color-count', colorSummary, 'uint32', 1),
-          seed: options.colorSeed,
-          maximumRounds: options.maxRounds,
-          conflictCount: imp('conflict-count', colorSummaryParts.conflict, 'uint32', 1),
-          converged: imp('coloring-converged', colorSummaryParts.converged, 'uint32', 1),
-          roundCount: imp('coloring-rounds', colorSummaryParts.rounds, 'uint32', 1)
+          parameters: coloringParameters.importToGraph(graph),
+          maximumIterations: options.maxRounds,
+          output: {
+            colors: colorsView,
+            colorCount: imp('color-count', colorSummary, 'uint32', 1),
+            conflictCount: imp('conflict-count', colorSummaryParts.conflict, 'uint32', 1),
+            status: {
+              converged: imp('coloring-converged', colorSummaryParts.converged, 'uint32', 1),
+              iterationCount: imp('coloring-rounds', colorSummaryParts.rounds, 'uint32', 1)
+            }
+          }
         })
       );
       addKernelPass(graph, {
         id: 'colors-to-float',
-        invocationCount: partCount,
+        invocationCount: featureCount,
         bindings: [
           {name: 'colors', view: colorsView, type: 'u32', access: 'read'},
           {
             name: 'values',
-            view: imp('color-f', columns.colorF, 'float32', partCount),
+            view: imp('color-f', columns.colorF, 'float32', featureCount),
             type: 'f32',
             access: 'read_write'
           }
         ],
         body: /* wgsl */ `values[valuesOffset + index] = f32(colors[colorsOffset + index]);`
       });
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
     const next: DatasetState = {
       id,
@@ -959,11 +974,12 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         validity: buildValidity,
         coloring: buildColoring
       },
-      measures: buildMeasures(ctx.options),
-      shape: buildShape(ctx.options),
-      validity: buildValidity(ctx.options),
-      coloring: buildColoring(ctx.options),
+      measures: await buildMeasures(ctx.options),
+      shape: await buildShape(ctx.options),
+      validity: await buildValidity(ctx.options),
+      coloring: await buildColoring(ctx.options),
       shapeParameters,
+      coloringParameters,
       validityPositions,
       tableReader: null,
       coloringReader: null,
@@ -1042,7 +1058,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         {buffer: colorSummaryParts.converged, size: 4},
         {buffer: colorSummaryParts.rounds, size: 4},
         {buffer: weightOverflow, size: 4},
-        {buffer: weightOffsets, size: (partCount + 1) * 4}
+        {buffer: weightOffsets, size: (featureCount + 1) * 4}
       ],
       bytes => {
         if (destroyed || state !== next) return;
@@ -1053,7 +1069,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           converged: words[2],
           roundCount: words[3],
           overflow: words[4],
-          adjacencies: words[5 + partCount]
+          adjacencies: words[5 + featureCount]
         };
         publishColoring(next);
       }
@@ -1314,7 +1330,9 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     );
     let conventionOnly = 0;
     let structural = 0;
-    for (const bits of table.mask) {
+    for (const mask of table.mask) {
+      // Matches the category kernel: a repeated vertex alone leaves the polygon valid.
+      const bits = mask & ~GPU_GEOMETRY_VALIDITY_BIT.repeatedVertex;
       if ((bits & GPU_GEOMETRY_VALIDITY_STRUCTURAL_MASK) !== 0) structural++;
       else if (bits !== 0) conventionOnly++;
     }
@@ -1330,7 +1348,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       values: entries.map(([, count]) => count),
       xLabel: 'Validity bit',
       yLabel: 'Polygons',
-      description: 'Per-bit validity counts from the active GPU mask.'
+      description:
+        'Per-bit validity counts from the active GPU mask. repeatedVertex is informational: GEOS treats it as valid.'
     });
     if (active.selected >= 0) updateSelectedReadout(active);
   }
@@ -1416,7 +1435,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
         const [a] = ringRange(rings(1));
         set(a + 1, Number.NaN, Number.NaN);
       }
-      // 2: repeated vertex.
+      // 2: repeated vertex (own bit; valid for GEOS, so not a structural defect).
       {
         const [a] = ringRange(rings(2));
         const p = get(a + 1);
@@ -1453,18 +1472,85 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   // Instance
   // -------------------------------------------------------------------------------------------
 
-  const activate = (id: PolygonDatasetId) => {
+  /** Makes a freshly built dataset live and retires the one it replaces. */
+  const commitDataset = (next: DatasetState) => {
     if (state) {
       state.tableReader?.stop();
       state.coloringReader?.stop();
       state.resources.destroy();
     }
-    state = buildDataset(id);
-    writeValidityPositions(state, ctx.options.injectDefects);
+    state = next;
+    staleGraphs.clear();
+    writeValidityPositions(next, ctx.options.injectDefects);
     ctx.setStatus('');
   };
 
-  activate(ctx.options.dataset);
+  type GraphName = 'measures' | 'shape' | 'validity' | 'coloring';
+  /** Graphs of the live dataset whose compile-time options changed and still need a rebuild. */
+  const staleGraphs = new Set<GraphName>();
+  type SyncResult =
+    | {kind: 'dataset'; next: DatasetState}
+    | {
+        kind: 'graphs';
+        dataset: DatasetState;
+        graphs: Map<GraphName, CompiledGPUCommandGraph<void>>;
+      };
+  const graphSwap = new GraphSwap();
+
+  /**
+   * Brings the live dataset in line with the options: builds a different dataset, or rebuilds the
+   * stale graphs of the current one. The live dataset keeps encoding until the commit swaps.
+   */
+  const requestSync = () => {
+    void graphSwap.request<SyncResult | null>({
+      build: async () => {
+        const dataset = state;
+        if (ctx.options.dataset !== dataset?.id) {
+          return {kind: 'dataset', next: await buildDataset(ctx.options.dataset)};
+        }
+        const graphs = new Map<GraphName, CompiledGPUCommandGraph<void>>();
+        for (const name of [...staleGraphs]) {
+          graphs.set(name, await dataset.builders[name](ctx.options));
+        }
+        return {kind: 'graphs', dataset, graphs};
+      },
+      commit: result => {
+        if (!result) return;
+        if (result.kind === 'dataset') {
+          commitDataset(result.next);
+        } else {
+          const active = result.dataset;
+          for (const [name, graph] of result.graphs) {
+            const previous = active[name];
+            active[name] = graph;
+            if (previous) active.resources.release(previous);
+            staleGraphs.delete(name);
+            if (name === 'measures') active.dirty.measures = active.dirty.table = true;
+            if (name === 'shape') {
+              active.dirty.shape = active.dirty.table = true;
+              writeLabelSearchGrid(active, ctx.options);
+            }
+            if (name === 'validity') active.dirty.validity = active.dirty.table = true;
+            if (name === 'coloring') active.dirty.coloring = true;
+          }
+          touch();
+        }
+        ctx.requestLayers();
+      },
+      discard: result => {
+        if (!result) return;
+        if (result.kind === 'dataset') {
+          result.next.tableReader?.stop();
+          result.next.coloringReader?.stop();
+          result.next.resources.destroy();
+        } else {
+          for (const graph of result.graphs.values()) result.dataset.resources.release(graph);
+        }
+      }
+    });
+  };
+
+  commitDataset(await buildDataset(ctx.options.dataset));
 
   const settle = {lastChange: performance.now(), pendingTable: true, pendingColoring: true};
   const touch = () => {
@@ -1514,37 +1600,38 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
       const active = state;
       if (!active) return;
       if (id === 'dataset') {
-        activate(options.dataset);
-        ctx.requestLayers();
+        requestSync();
         return;
       }
-      if (id === 'holeRule') {
-        active.resources.release(active.measures);
-        active.measures = active.builders.measures(options);
-        if (active.shape) active.resources.release(active.shape);
-        active.shape = active.builders.shape(options);
-        active.dirty.measures = active.dirty.shape = active.dirty.table = true;
+      if (id === 'ringGrouping') {
+        staleGraphs.add('measures').add('shape');
+        requestSync();
+        return;
       } else if (id === 'sliverThreshold') {
         active.shapeParameters.write(
           getGPUShapeDescriptorsParameterValues({sliverThreshold: options.sliverThreshold})
         );
         active.dirty.shape = active.dirty.table = true;
       } else if (id === 'initialGridSize' || id === 'refinementCandidates') {
-        if (active.shape) active.resources.release(active.shape);
-        active.shape = active.builders.shape(options);
-        active.dirty.shape = active.dirty.table = true;
-        writeLabelSearchGrid(active, options);
+        staleGraphs.add('shape');
+        requestSync();
+        return;
       } else if (id === 'orientation' || id === 'ringClosure') {
-        if (active.validity) active.resources.release(active.validity);
-        active.validity = active.builders.validity(options);
-        active.dirty.validity = active.dirty.table = true;
+        staleGraphs.add('validity');
+        requestSync();
+        return;
       } else if (id === 'injectDefects') {
         writeValidityPositions(active, options.injectDefects);
         active.dirty.validity = active.dirty.table = true;
-      } else if (id === 'contiguity' || id === 'colorSeed' || id === 'maxRounds') {
-        if (active.coloring) active.resources.release(active.coloring);
-        active.coloring = active.builders.coloring(options);
+      } else if (id === 'colorSeed') {
+        active.coloringParameters.write(
+          getGPUMapColoringParameterValues({seed: options.colorSeed})
+        );
         active.dirty.coloring = true;
+      } else if (id === 'contiguity' || id === 'maxRounds') {
+        staleGraphs.add('coloring');
+        requestSync();
+        return;
       } else if (id === 'areaSystem' || id === 'metric' || id === 'areaClassification') {
         active.dirty.table = true;
         ctx.setLegendExtent('value', currentRange);
@@ -1670,7 +1757,6 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
           break;
         case 'mapColor':
           values = options.coloringMethod === 'algorithm' ? columns.colorF : columns.naiveColorF;
-          rows = active.fill.partRows;
           mapping = 'category';
           break;
       }
@@ -1821,6 +1907,7 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
 
     destroy() {
       destroyed = true;
+      graphSwap.destroy();
       if (state) {
         state.tableReader?.stop();
         state.coloringReader?.stop();

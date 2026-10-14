@@ -617,13 +617,13 @@ import {
   GPUTrajectoryPlayhead, GPULineDensity, GPUZoneEvents,
   getGPUTrajectoryPlayheadParameterValues, getGPULineDensityParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // One set of tracks, three coordinate spaces: Web Mercator meters for the playhead (true headings
 // on the map), azimuthal-equidistant meters for the gates (true distances), degrees for the grid.
 const play = new GPUCommandGraph(device, {id: 'playhead'});
 play.add(new GPUTrajectoryPlayhead({positions: mercator, timestamps, trackOffsets, parameters: playheadParameters.importToGraph(play),
-  currentPositions, headings, speeds, status, activeTracks: {ids, count, overflow}, drawInstanceCount}));
+  output: {currentPositions, headings, speeds, trackStatus: status, activeTracks: {ids, status: {count, overflow}}, drawInstanceCount}}));
 
 ${
   state.showDensity
@@ -631,11 +631,11 @@ ${
 // cell (stable) and sum in a fixed order, then divide by the exact spherical cell area.
 const density = new GPUCommandGraph(device, {id: 'density'});
 density.add(new GPULineDensity({
-  positions: lngLat, pathOffsets,                       // float32x2 degrees, one row per fix
+  positions: lngLat, lineOffsets: pathOffsets,                       // float32x2 degrees, one row per fix
   columns: ${state.densityGrid}, rows: ${Number(state.densityGrid) / 2}, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},   // compile-time
-  maximumRecords: 6 * fixCount,
+  recordCapacity: 6 * fixCount,
   parameters: densityParameters.importToGraph(density), // [minX, minY, cellWidth, cellHeight]
-  output: {lengths, densities, overflow, totalRecords}
+  output: {lengths, densities, status: {overflow, requiredCount: totalRecords}}
 }));
 // Classes are made on the CPU from the occupied cells, once per choice (${STRETCH_LABELS[state.stretch]}):
 const breaks = getStretchBreaks(sortedOccupied, '${state.stretch}', 5);
@@ -648,18 +648,19 @@ new SpatialAnalysisRasterLayer({values: ${state.densityValue === 'density' ? 'de
   state.showGates
     ? `const gates = new GPUCommandGraph(device, {id: 'gates'});
 gates.add(new GPUZoneEvents({
-  positions, timestamps, trackOffsets,             // analysis meters, seconds
-  edgeStarts, edgeEnds, edgeZones, zoneCount: ${SHIPPING_GATES.length},
-  candidateCapacity: 1 << 18, maxEventsPerTrack: ${state.eventsPerTrack},
-  events: {output: {ids: eventTracks, count, overflow}, eventZones, eventTypes, eventTimes, eventPositions}
+  tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},   // analysis meters, seconds
+  // ${SHIPPING_GATES.length} gates, one rectangle each: gate g is feature g, its four corners are one ring
+  zones: {kind: 'polygons', positions: gateCorners, featureOffsets, polygonOffsets, ringOffsets},
+  candidateCapacity: 1 << 18, trackEventCapacity: ${state.eventsPerTrack},
+  output: {events: {ids: eventTracks, status: {count, overflow}, eventZones, eventTypes, eventTimes, eventPositions}}
 }));
 // crossing time = trackStart[eventTracks[i]] + eventTimes[i], interpolated along the chord
 
 `
     : ''
 }// every frame: parameters are plain buffer writes
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: ${state.maxGapMinutes * 60}}));
-windowParameters.write(getGPUTimeWindowParameterValues({start: playhead - ${state.trailMinutes * 60}, end: playhead,
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: ${state.maxGapMinutes * 60}}));
+windowParameters.write(getGPUTimeWindowFilterParameterValues({start: playhead - ${state.trailMinutes * 60}, end: playhead,
   startFadeDuration: ${state.trailMinutes * 60}}));`,
 
   about: {

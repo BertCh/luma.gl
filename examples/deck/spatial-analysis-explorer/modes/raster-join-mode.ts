@@ -17,6 +17,7 @@
  * the readouts; it is requested only after the extent changed.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -25,11 +26,12 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
-  getGPUPolygonRasterizationExtentValues,
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
+  getGPUPolygonRasterizationParameterValues,
   GPU_POLYGON_RASTERIZATION_NO_ZONE,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   GPUPolygonRasterization,
-  GPURasterJoin
+  GPURasterJoin,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUPointInPolygonJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
@@ -157,13 +159,15 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     const extentParameter = resources.createParameterBuffer(
       'extent',
       'float32',
-      GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH
+      GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH
     );
     const metricParameter = resources.createParameterBuffer('metric', 'uint32', 1);
 
     // --- Graphs --------------------------------------------------------------------------------
     const rasterGraph = new GPUCommandGraph<void>(device, {id: 'raster-join'});
     const extentView = extentParameter.importToGraph(rasterGraph);
+    // Only the size is compile-time: the origin and cell size are rewritten per frame.
+    const rasterGrid = makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT});
     const zonesView = importGraphBuffer(rasterGraph, 'zones', zones, 'uint32', cellCount);
     const boundaryView = importGraphBuffer(rasterGraph, 'boundary', boundary, 'uint32', cellCount);
     const countsView = importGraphBuffer(rasterGraph, 'counts', counts, 'uint32', zoneCount);
@@ -178,10 +182,9 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     rasterGraph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
-        extent: extentView,
-        polygonPositions: importGraphBuffer(
+        grid: rasterGrid,
+        parameters: extentView,
+        positions: importGraphBuffer(
           rasterGraph,
           'polygon-positions',
           polygonPositions,
@@ -210,18 +213,27 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           zips.ringOffsets.length
         ),
         crossingCapacity: CROSSING_CAPACITY,
-        zones: zonesView,
-        boundary: boundaryView,
-        overflow: importGraphBuffer(rasterGraph, 'overflow', overflow, 'uint32', 1),
-        crossingCount: importGraphBuffer(rasterGraph, 'crossing-count', crossingCount, 'uint32', 1)
+        output: {
+          zones: zonesView,
+          boundary: boundaryView,
+          status: {
+            overflow: importGraphBuffer(rasterGraph, 'overflow', overflow, 'uint32', 1),
+            crossingCount: importGraphBuffer(
+              rasterGraph,
+              'crossing-count',
+              crossingCount,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
     rasterGraph.add(
       new GPURasterJoin({
         id: 'join',
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
-        extent: extentView,
+        grid: rasterGrid,
+        parameters: extentView,
         points: importGraphBuffer(rasterGraph, 'points', positions, 'float32x2', pointCount),
         values: importGraphBuffer(rasterGraph, 'spaces', spaces, 'float32', pointCount),
         zones: zonesView,
@@ -267,7 +279,9 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       metric: metricParameter.importToGraph(rasterGraph),
       display: importGraphBuffer(rasterGraph, 'display', display, 'float32', cellCount)
     });
-    const rasterCompiled: CompiledGPUCommandGraph<void> = resources.track(rasterGraph.compile());
+    const rasterCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await rasterGraph.compileAsync()
+    );
 
     // The existing exact join over the same points and polygons. The points never move, so it is
     // encoded once and serves as the reference for the live error check.
@@ -275,61 +289,73 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     exactGraph.add(
       new GPUPointInPolygonJoin({
         id: 'exact-join',
-        points: importGraphBuffer(exactGraph, 'points', positions, 'float32x2', pointCount),
-        polygonPositions: importGraphBuffer(
-          exactGraph,
-          'polygon-positions',
-          polygonPositions,
-          'float32x2',
-          vertexCount
-        ),
-        featureOffsets: importGraphBuffer(
-          exactGraph,
-          'feature-offsets',
-          featureOffsets,
-          'uint32',
-          zips.featureOffsets.length
-        ),
-        polygonOffsets: importGraphBuffer(
-          exactGraph,
-          'polygon-offsets',
-          polygonOffsets,
-          'uint32',
-          zips.polygonOffsets.length
-        ),
-        ringOffsets: importGraphBuffer(
-          exactGraph,
-          'ring-offsets',
-          ringOffsets,
-          'uint32',
-          zips.ringOffsets.length
-        ),
+        points: {
+          kind: 'points',
+          positions: importGraphBuffer(exactGraph, 'points', positions, 'float32x2', pointCount)
+        },
+        polygons: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
+            exactGraph,
+            'polygon-positions',
+            polygonPositions,
+            'float32x2',
+            vertexCount
+          ),
+          featureOffsets: importGraphBuffer(
+            exactGraph,
+            'feature-offsets',
+            featureOffsets,
+            'uint32',
+            zips.featureOffsets.length
+          ),
+          polygonOffsets: importGraphBuffer(
+            exactGraph,
+            'polygon-offsets',
+            polygonOffsets,
+            'uint32',
+            zips.polygonOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
+            exactGraph,
+            'ring-offsets',
+            ringOffsets,
+            'uint32',
+            zips.ringOffsets.length
+          )
+        },
         candidateCapacity: Math.max(1024, pointCount * 4),
-        pointFeatureIds: importGraphBuffer(
-          exactGraph,
-          'exact-zones',
-          exactZones,
-          'uint32',
-          pointCount
-        ),
-        featureCounts: importGraphBuffer(
-          exactGraph,
-          'exact-counts',
-          exactCounts,
-          'uint32',
-          zoneCount
-        ),
-        overflow: importGraphBuffer(exactGraph, 'exact-overflow', exactOverflow, 'uint32', 1),
-        candidateCount: importGraphBuffer(
-          exactGraph,
-          'exact-candidates',
-          exactCandidates,
-          'uint32',
-          1
-        )
+        output: {
+          pointFeatureIds: importGraphBuffer(
+            exactGraph,
+            'exact-zones',
+            exactZones,
+            'uint32',
+            pointCount
+          ),
+          featureCounts: importGraphBuffer(
+            exactGraph,
+            'exact-counts',
+            exactCounts,
+            'uint32',
+            zoneCount
+          ),
+          status: {
+            overflow: importGraphBuffer(exactGraph, 'exact-overflow', exactOverflow, 'uint32', 1),
+            candidateCount: importGraphBuffer(
+              exactGraph,
+              'exact-candidates',
+              exactCandidates,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
-    const exactCompiled: CompiledGPUCommandGraph<void> = resources.track(exactGraph.compile());
+    const exactCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await exactGraph.compileAsync()
+    );
 
     const summaryWords = zoneCount * 3 + pointCount * 3 + 4;
     const readbackRing = resources.track(
@@ -375,7 +401,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
     let measuring = false;
     let snapshot: JoinSnapshot | null = null;
     let colorMaximum = 1;
-    const extentValues = new Float32Array(GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH);
+    const extentValues = new Float32Array(GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH);
 
     /** Square cells that cover `bounds` (scaled by `cellScale`), centered on it. */
     const writeExtent = (bounds: readonly [number, number, number, number]): boolean => {
@@ -384,7 +410,15 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
           cellScale || 1;
       const originX = (bounds[0] + bounds[2]) / 2 - (RASTER_WIDTH * cellSize) / 2;
       const originY = (bounds[1] + bounds[3]) / 2 - (RASTER_HEIGHT * cellSize) / 2;
-      const next = getGPUPolygonRasterizationExtentValues(originX, originY, cellSize, cellSize);
+      const next = getGPUPolygonRasterizationParameterValues(
+        makeGPURasterMetadata({
+          width: RASTER_WIDTH,
+          height: RASTER_HEIGHT,
+          cellSize,
+          origin: [originX, originY],
+          rowDirection: 'north'
+        })
+      );
       const changed = next.some((value, index) => value !== extentValues[index]);
       if (!changed) return false;
       extentValues.set(next);
@@ -636,7 +670,7 @@ export const rasterJoinMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       void (async () => {
         try {
-          const bytes = await ticket.read();
+          const bytes = await scheduleReadback(() => ticket.read());
           if (destroyed) return;
           const words = new Uint32Array(
             bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + summaryWords * 4)

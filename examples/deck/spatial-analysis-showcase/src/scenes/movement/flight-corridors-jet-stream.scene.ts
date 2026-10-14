@@ -206,10 +206,12 @@ const graph = new GPUCommandGraph(device, {id: 'flight-speed-contrast'});
 graph.add(new GPUTrajectoryMetrics({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets,
-  stepSpeeds,      // per row: speed of the step that ends there, m/s
-  stepHeadings     // per row: initial true bearing of that step, radians counter-clockwise from east
+  output: {
+    stepSpeeds,      // per row: speed of the step that ends there, m/s
+    stepHeadings     // per row: initial true bearing of that step, radians counter-clockwise from east
+  }
 }));
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks never change
 
 // shader-side filter, ${state.show}: cos(heading) ${state.show === 'east' ? '> ' : state.show === 'west' ? '< -' : 'ignored '}cos(${state.coneDegrees} deg), lower end >= ${state.minAltitude} m

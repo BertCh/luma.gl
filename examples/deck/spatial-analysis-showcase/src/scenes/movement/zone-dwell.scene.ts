@@ -446,32 +446,35 @@ export default defineScene<ZoneDwellOptions>({
 
 const stopsGraph = new GPUCommandGraph(device, {id: 'zone-stops'});
 addFleetDwellRecipe(stopsGraph, {
-  positions, timestamps, trackOffsets,
+  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},
   parameters: stopParameters.importToGraph(stopsGraph),     // speed threshold + minimum duration
   stopCapacity: 4096,
-  zones: {polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: ${1 << 18}},
-  stops: {ids, count, overflow, centroids, durations},
-  stopZones,                                                // zone of each stop (0xffffffff outside)
-  table: {counts, sumValues, means, maximums}
+  zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: ${1 << 18}},
+  outputs: {
+    stops: {ids, status: {count, overflow}, centroids, durations},
+    status: {joinOverflow},
+    table: {counts, sumValues, means, maximums}
+  },
+  scratch: {stopZones}                                      // zone of each stop (0xffffffff outside)
 });
-const stopsCompiled = stopsGraph.compile();                 // once
+const stopsCompiled = await stopsGraph.compileAsync();      // once
 stopParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${((state.stopSpeedKnots * 1852) / 3600).toFixed(2)},        // m/s (${state.stopSpeedKnots} kn)
   stopMinimumDuration: ${state.stopMinutes * 60}                     // s
 }));`;
     const events = `import {addFleetDwellZoneEventsRecipe} from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// zones: boundary edges tagged with a zone index (holes and extra parts share it)
+// zones: one polygon feature per zone (holes and extra parts share its index); the edges come from the rings
 const eventsGraph = new GPUCommandGraph(device, {id: 'zone-events'});
 addFleetDwellZoneEventsRecipe(eventsGraph, {
-  positions, timestamps, trackOffsets,                 // planar meters, float32 seconds
-  edgeStarts, edgeEnds, edgeZones, zoneCount,
-  candidateCapacity: ${1 << 20}, maxEventsPerTrack: ${state.eventsPerVessel},
-  events: {output: {ids, count, overflow}, eventZones, eventTypes, eventTimes, eventPositions},
-  visitTable: {output: visitIds, zones: visitZones, dwellTimes},   // one row per (track, zone) visit
-  table: {counts, sumValues, means, maximums}          // dense: row k is zone k
+  trajectories: {kind: 'trajectories', positions, timestamps, trackOffsets},   // planar meters, float32 seconds
+  zones: {kind: 'polygons', positions: zonePositions, featureOffsets, polygonOffsets, ringOffsets},
+  candidateCapacity: ${1 << 20}, trackEventCapacity: ${state.eventsPerVessel},
+  outputs: {events: {ids, status: {count, overflow}, eventZones, eventTypes, eventTimes, eventPositions}},
+  scratch: {visitTable: {ids: visitIds, zones: visitZones, dwellTimes}},   // one row per (track, zone) visit
+  outputs: {table: {counts, sumValues, means, maximums}}          // dense: row k is zone k
 });
-const eventsCompiled = eventsGraph.compile();          // once`;
+const eventsCompiled = await eventsGraph.compileAsync();  // once`;
     const after = `
 // Both graphs encode once per change; the small per-zone tables are read back, the pieces of one
 // anchorage are added up, and the unit is applied on the CPU:

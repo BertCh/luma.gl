@@ -58,7 +58,7 @@ export type FocusRowGatherer = {
  * chart and the tooltips read them back. The row index is a one-word buffer, so moving the focus
  * is a buffer write, never a recompile.
  */
-export function createFocusRowGatherer(props: {
+export async function createFocusRowGatherer(props: {
   device: Device;
   resources: SpatialAnalysisResources;
   id: string;
@@ -67,7 +67,7 @@ export function createFocusRowGatherer(props: {
   csr: WeightsCsrBuffers;
   focusRow: Buffer;
   onRow: (row: FocusRow) => void;
-}): FocusRowGatherer {
+}): Promise<FocusRowGatherer> {
   const {device, resources, id, rows, slots, csr, focusRow} = props;
   const neighborIds = resources.createBuffer(`${id}-ids`, FOCUS_SLOTS * 4);
   const slotWeights = resources.createBuffer(`${id}-weights`, FOCUS_SLOTS * 4);
@@ -116,7 +116,7 @@ export function createFocusRowGatherer(props: {
     declarations: `const ROW_COUNT: u32 = ${rows}u;`,
     body: GATHER_BODY
   });
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
   const reader = new SummaryReader(
     resources,
     `${id}-focus-row`,

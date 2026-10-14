@@ -26,6 +26,7 @@ import {
   SERVICE_BREAKS
 } from './randstad-network-cartography';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {binValues, histogramChart} from '../movement/f-chart-helpers';
@@ -124,7 +125,7 @@ export async function createTransitFrequency(
   // ---- Line density graphs: one per mode filter, compiled on first use --------------------------
   const variants = new Map<string, Variant>();
 
-  function createVariant(filter: string): Variant {
+  async function createVariant(filter: string): Promise<Variant> {
     let positions = positionsBuffer;
     let offsets = offsetsBuffer;
     let rows = vertexCount;
@@ -158,19 +159,21 @@ export async function createTransitFrequency(
       new GPULineDensity({
         id: 'line-density',
         positions: view(positions, 'float32x2', rows),
-        pathOffsets: view(offsets, 'uint32', paths + 1),
+        lineOffsets: view(offsets, 'uint32', paths + 1),
         columns: COLUMNS,
         rows: ROWS,
         spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         parameters: gridParameters.importToGraph(graph),
         output: {
           lengths: view(lengthsBuffer, 'float32', CELL_COUNT),
-          overflow: view(overflowBuffer, 'uint32', 1),
-          totalRecords: view(totalRecordsBuffer, 'uint32', 1)
+          status: {
+            overflow: view(overflowBuffer, 'uint32', 1),
+            requiredCount: view(totalRecordsBuffer, 'uint32', 1)
+          }
         }
       })
     );
-    const variant = {key: filter, compiled: resources.track(graph.compile())};
+    const variant = {key: filter, compiled: resources.track(await graph.compileAsync())};
     variants.set(filter, variant);
     return variant;
   }
@@ -202,9 +205,7 @@ export async function createTransitFrequency(
         positions: view(positionsBuffer, 'float32x2', vertexCount),
         timestamps: view(timestampsBuffer, 'float32', vertexCount),
         trackOffsets: view(offsetsBuffer, 'uint32', trackCount + 1),
-        trackLengths: lengths,
-        trackDurations: durations,
-        averageSpeeds: speeds
+        output: {trackLengths: lengths, trackDurations: durations, averageSpeeds: speeds}
       })
     );
     statisticsGraph.add(
@@ -235,21 +236,23 @@ export async function createTransitFrequency(
         output: {
           keys: view(outputKeys, 'uint32', lineCount),
           counts: view(lineTrips, 'uint32', lineCount),
-          count: view(statCount, 'uint32', 1),
-          overflow: view(statOverflow, 'uint32', 1)
+          status: {
+            count: view(statCount, 'uint32', 1),
+            overflow: view(statOverflow, 'uint32', 1)
+          }
         }
       })
     );
   }
-  const statisticsCompiled = resources.track(statisticsGraph.compile());
+  const statisticsCompiled = resources.track(await statisticsGraph.compileAsync());
 
   // ---- State ------------------------------------------------------------------------------------
   let destroyed = false;
   let densityDirty = true;
   let statisticsPending = true;
   let activeFilter = ctx.options.modeFilter;
-  createVariant('all');
-  if (activeFilter !== 'all') createVariant(activeFilter);
+  await createVariant('all');
+  if (activeFilter !== 'all') await createVariant(activeFilter);
   let cells = new Float32Array(CELL_COUNT);
   let gridMin: [number, number] = [0, 0];
   let hoveredCell = -1;
@@ -569,6 +572,8 @@ export async function createTransitFrequency(
     return row * COLUMNS + column;
   }
 
+  const variantSwap = resources.track(new GraphSwap());
+
   // ---- Instance ---------------------------------------------------------------------------------
   return {
     getCompiledGraphs: () => [
@@ -579,10 +584,23 @@ export async function createTransitFrequency(
     setOption(id, _value, state) {
       switch (id) {
         case 'modeFilter':
-          activeFilter = state.modeFilter;
-          if (!variants.has(activeFilter)) createVariant(activeFilter);
-          densityDirty = true;
-          ctx.requestLayers();
+          if (variants.has(state.modeFilter)) {
+            activeFilter = state.modeFilter;
+            densityDirty = true;
+            ctx.requestLayers();
+          } else {
+            // The variant cache is owned by `resources`, so a superseded build needs no discard.
+            void variantSwap.request({
+              build: () => createVariant(state.modeFilter),
+              commit: variant => {
+                // A cached variant may have been selected meanwhile; do not override it.
+                if (variant.key !== ctx.options.modeFilter) return;
+                activeFilter = variant.key;
+                densityDirty = true;
+                ctx.requestLayers();
+              }
+            });
+          }
           break;
         case 'cellMeters':
           writeGridParameters();

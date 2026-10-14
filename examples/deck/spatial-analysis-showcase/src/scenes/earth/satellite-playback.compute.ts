@@ -68,7 +68,7 @@ export async function createSatellitePlayback(
   let destroyed = false;
   let selectedSatellite = NO_TRACK;
 
-  const core = createSatellitePlaybackCore(resources, tracks, tracks.group, snapshot => {
+  const core = await createSatellitePlaybackCore(resources, tracks, tracks.group, snapshot => {
     if (destroyed) return;
     describeSnapshot(snapshot);
   });

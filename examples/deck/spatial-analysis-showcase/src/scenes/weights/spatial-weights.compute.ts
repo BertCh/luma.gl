@@ -23,6 +23,7 @@ import {getFeatureLabelPoint} from '../../cartography/polygon-mesh';
 import {getLocalProjector, projectRingsToSegments} from '../../cartography/segments';
 import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisPolygonLayer,
@@ -349,8 +350,14 @@ export async function createSpatialWeights(
 ): Promise<SceneInstance<SpatialWeightsOptions>> {
   const {device} = ctx;
   let destroyed = false;
+  /** Serializes the compiles of the variants a `setOption` needs. */
+  const graphSwap = new GraphSwap();
   let world: World | null = null;
   let switchToken = 0;
+  /** A `focus` change waits for the next committed swap. */
+  let focusChanged = false;
+  /** Counts option changes, so a world that finishes loading can catch up with them. */
+  let optionRevision = 0;
   let dirty = true;
   let readbackStale = true;
   let focusStale = true;
@@ -568,7 +575,7 @@ export async function createSpatialWeights(
   // World
   // ---------------------------------------------------------------------------------------
 
-  const buildWorld = (geography: Geography): World => {
+  const buildWorld = async (geography: Geography): Promise<World> => {
     const resources = new SpatialAnalysisResources(device, `weights-${geography.id}`);
     const rowCount = geography.count;
     const create = (name: string, data: number | Float32Array | Uint32Array) =>
@@ -579,7 +586,7 @@ export async function createSpatialWeights(
     const values = create('values', Float32Array.from(initialValues));
     const valueMask = create('value-mask', new Uint32Array(rowCount));
     const displayMask = create('display-mask', new Uint32Array(rowCount).fill(1));
-    const space = createAnalysisSpace({
+    const space = await createAnalysisSpace({
       device,
       resources,
       id: 'polygons',
@@ -592,7 +599,11 @@ export async function createSpatialWeights(
       displayMask,
       categories: geography.groups,
       drawAllLinks: true,
-      producer: {overflow: core.overflow, total: core.total}
+      producer: {
+        overflow: core.overflow,
+        total: core.total,
+        candidateOverflow: core.candidateOverflow
+      }
     });
     const populationSorted = Float32Array.from(geography.population).sort();
     const focusRow = Math.max(0, geography.pick(...FOCUS_POINTS[geography.id][ctx.options.focus]));
@@ -611,7 +622,7 @@ export async function createSpatialWeights(
         )
       : new Float32Array(0);
 
-    const gatherer = createFocusRowGatherer({
+    const gatherer = await createFocusRowGatherer({
       device,
       resources,
       id: 'weights',
@@ -721,7 +732,7 @@ export async function createSpatialWeights(
   };
 
   /** Builds the lattice the first time the lattice source is chosen. */
-  const buildLattice = (target: World): Lattice => {
+  const buildLattice = async (target: World): Promise<Lattice> => {
     const {geography, resources} = target;
     const columns = LATTICE_COLUMNS[geography.id];
     // The lattice is a display raster (cells are counted, never measured), so it lives in the
@@ -757,7 +768,7 @@ export async function createSpatialWeights(
     const structureMask = create('structure-mask', Uint32Array.from(insideMask));
     const overflow = create('overflow', 4);
     const total = create('total', 4);
-    const space = createAnalysisSpace({
+    const space = await createAnalysisSpace({
       device,
       resources,
       id: 'lattice',
@@ -816,7 +827,10 @@ export async function createSpatialWeights(
     );
   };
 
-  const prepareLatticeProducer = (lattice: Lattice): boolean => {
+  const prepareLatticeProducer = async (
+    lattice: Lattice,
+    resources: SpatialAnalysisResources
+  ): Promise<boolean> => {
     const {latticeCriterion: criterion, latticeRadius: radius} = ctx.options;
     const key = `${criterion}-${radius}`;
     if (lattice.producers.has(key)) return false;
@@ -832,7 +846,7 @@ export async function createSpatialWeights(
         radius,
         cellSize: [lattice.cell, lattice.cell],
         mask: importGraphBuffer(graph, 'mask', lattice.structureMask, 'uint32', count),
-        weights: {
+        output: {
           offsets: importGraphBuffer(graph, 'offsets', space.csr.offsets, 'uint32', count + 1),
           neighbors: importGraphBuffer(
             graph,
@@ -841,18 +855,20 @@ export async function createSpatialWeights(
             'uint32',
             space.slots
           ),
-          weights: importGraphBuffer(graph, 'weights', space.csr.weights, 'float32', space.slots)
-        },
-        overflow: importGraphBuffer(graph, 'overflow', lattice.overflow, 'uint32', 1),
-        totalNeighbors: importGraphBuffer(graph, 'total', lattice.total, 'uint32', 1)
+          weights: importGraphBuffer(graph, 'weights', space.csr.weights, 'float32', space.slots),
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', lattice.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total', lattice.total, 'uint32', 1)
+          }
+        }
       })
     );
-    lattice.producers.set(key, world!.resources.track(graph.compile()));
+    lattice.producers.set(key, resources.track(await graph.compileAsync()));
     return true;
   };
 
   /** Compiles the algebra variant of the current options. */
-  const prepareAlgebra = (target: World): boolean => {
+  const prepareAlgebra = async (target: World): Promise<boolean> => {
     const key = getAlgebraKey();
     if (!key || target.algebra.has(key)) return false;
     const o = ctx.options;
@@ -871,9 +887,13 @@ export async function createSpatialWeights(
     const left = importCsr('a', core.csr, core.slots);
     const common = {
       id: 'algebra',
-      output: importCsr('out', space.csr, space.slots),
-      overflow: importGraphBuffer(graph, 'overflow', target.algebraOverflow, 'uint32', 1),
-      totalNeighbors: importGraphBuffer(graph, 'total', target.algebraTotal, 'uint32', 1)
+      output: {
+        ...importCsr('out', space.csr, space.slots),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', target.algebraOverflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total', target.algebraTotal, 'uint32', 1)
+        }
+      }
     };
     switch (o.combine) {
       case 'union':
@@ -940,7 +960,7 @@ export async function createSpatialWeights(
       default:
         return false;
     }
-    target.algebra.set(key, target.resources.track(graph.compile()));
+    target.algebra.set(key, target.resources.track(await graph.compileAsync()));
     return true;
   };
 
@@ -996,32 +1016,41 @@ export async function createSpatialWeights(
   const isPolygonRowStandardized = (target: World) =>
     !getAlgebraKey() && isRowStandardized(getConfig(target.geography));
 
-  /** Compiles every variant the current options need. Called from `create` and `setOption`. */
-  const prepareAll = () => {
-    const target = world;
-    if (!target) return;
+  /** Compiles every variant the current options need. Only fills caches the running frame ignores. */
+  const compileVariants = async (target: World) => {
     const o = ctx.options;
     const focalWeight = Number(o.focalWeight);
     if (o.lattice) {
-      target.lattice ??= buildLattice(target);
-      prepareLatticeProducer(target.lattice);
-      target.lattice.space.prepare(o.includeFocal, focalWeight, false);
+      target.lattice ??= await buildLattice(target);
+      await prepareLatticeProducer(target.lattice, target.resources);
+      await target.lattice.space.prepare(o.includeFocal, focalWeight, false);
     } else {
-      target.core.prepare(getConfig(target.geography));
-      if (isBinaryCombine()) target.partner.prepare(o.partnerK);
-      prepareAlgebra(target);
-      target.space.prepare(o.includeFocal, focalWeight, isPolygonRowStandardized(target));
+      await target.core.prepare(getConfig(target.geography));
+      if (isBinaryCombine()) await target.partner.prepare(o.partnerK);
+      await prepareAlgebra(target);
+      await target.space.prepare(o.includeFocal, focalWeight, isPolygonRowStandardized(target));
       if (o.showQueenOnly) {
         const reference = ensureReference(target);
-        reference.queen.prepare(getReferenceConfig(target, 'queen'));
-        reference.rook.prepare(getReferenceConfig(target, 'rook'));
+        await reference.queen.prepare(getReferenceConfig(target, 'queen'));
+        await reference.rook.prepare(getReferenceConfig(target, 'rook'));
       }
     }
+  };
+
+  /** Points the display kernels of a world at the current display options. */
+  const applyDisplayChoice = (target: World) => {
+    const o = ctx.options;
     const display = getEffectiveDisplay(o);
     const spaceDisplay: SpaceDisplay =
       display === 'weights' ? 'focus' : display === 'difference' ? 'lag' : display;
     target.space.setDisplayChoice(spaceDisplay, o.summary);
     target.lattice?.space.setDisplayChoice(spaceDisplay, o.summary);
+  };
+
+  /** Compiles every variant the current options need and applies the display. Called from `create`. */
+  const prepareAll = async (target: World) => {
+    await compileVariants(target);
+    applyDisplayChoice(target);
   };
 
   const writeParameters = () => {
@@ -1255,7 +1284,11 @@ export async function createSpatialWeights(
       );
       ctx.setReadout(
         'capacity',
-        kit.producerOverflow ? 'producer overflow: some links dropped' : 'ok'
+        kit.producerCandidateOverflow
+          ? 'pair list full: some links dropped, count is a lower bound'
+          : kit.producerOverflow
+            ? 'producer overflow: some links dropped'
+            : 'ok'
       );
       ctx.setReadout('islands', formatCount(kit.isolates));
       const focus = kit.focus[o.matrix];
@@ -1585,11 +1618,21 @@ export async function createSpatialWeights(
       stopWorld(previous);
       setTimeout(() => previous.resources.destroy(), 200);
     }
-    world = buildWorld(geography);
+    // The world becomes live only once its variants exist, because `encode` runs while it compiles.
+    const next = await buildWorld(geography);
+    let revision: number;
+    do {
+      revision = optionRevision;
+      await prepareAll(next);
+    } while (revision !== optionRevision && token === switchToken && !destroyed);
+    if (token !== switchToken || destroyed) {
+      next.resources.destroy();
+      return;
+    }
+    world = next;
     legendHighlight = null;
     counts = {};
     tables = null;
-    prepareAll();
     writeParameters();
     writeSelfWeights(world);
     writeSubgraphMask(world);
@@ -1604,8 +1647,8 @@ export async function createSpatialWeights(
 
   const initial = await getGeography(ctx.options.geography);
   if (ctx.signal.aborted) throw new Error('aborted');
-  world = buildWorld(initial);
-  prepareAll();
+  world = await buildWorld(initial);
+  await prepareAll(world);
   writeParameters();
   writeSelfWeights(world);
   writeSubgraphMask(world);
@@ -2121,6 +2164,7 @@ export async function createSpatialWeights(
     },
 
     setOption(id, value) {
+      optionRevision++;
       const target = world;
       if (id === 'geography') {
         void switchWorld(value as GeographyId);
@@ -2142,20 +2186,29 @@ export async function createSpatialWeights(
       if (id === 'populationPercentile') writeSubgraphMask(target);
       if (id === 'selfWeight') writeSelfWeights(target);
       if (id === 'latticeMask' && target.lattice) writeLatticeStructure(target.lattice);
-      prepareAll();
-      writeParameters();
-      if (id === 'focus') updateCorners(target);
-      dirty = true;
-      readbackStale = true;
-      focusStale = true;
-      publishFurniture();
-      publishAnnotations();
-      ctx.requestLayers();
+      if (id === 'focus') focusChanged = true;
+      // `encode` waits for the swap: the variants the new options need may not exist yet.
+      void graphSwap.request({
+        build: () => compileVariants(target),
+        commit: () => {
+          if (world !== target) return;
+          applyDisplayChoice(target);
+          writeParameters();
+          if (focusChanged) updateCorners(target);
+          focusChanged = false;
+          dirty = true;
+          readbackStale = true;
+          focusStale = true;
+          publishFurniture();
+          publishAnnotations();
+          ctx.requestLayers();
+        }
+      });
     },
 
     encode(commandEncoder, frame) {
       const target = world;
-      if (!target) return;
+      if (!target || graphSwap.pending) return;
       const o = ctx.options;
       if (dirty || frame.frameIndex < 2) {
         const focalWeight = Number(o.focalWeight);
@@ -2284,6 +2337,7 @@ export async function createSpatialWeights(
     destroy() {
       destroyed = true;
       switchToken++;
+      graphSwap.destroy();
       const target = world;
       world = null;
       if (target) {

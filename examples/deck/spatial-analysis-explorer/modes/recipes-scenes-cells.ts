@@ -17,10 +17,10 @@ import {
   addHotSpotAnalysisRecipe,
   addPeriodComparisonRecipe,
   addSpaceTimeHotSpotsRecipe,
-  getGPUEmergingHotSpotParameterValues,
   getGPUNeighborSearchParameterValues,
-  getGPUPermutationParameterValues,
-  getGPUSpatialAutocorrelationParameterValues
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {formatCount} from '../spatial-analysis-resources';
@@ -125,15 +125,15 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       weightKind: 'binary'
     })
   );
-  const autocorrelation = kit.parameter(
+  const autocorrelation = kit.parameterBuffer(
     'autocorrelation-parameters',
     'float32',
-    getGPUSpatialAutocorrelationParameterValues({significanceLevel})
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
   );
-  const permutationParameters = kit.parameter(
+  const permutationParameters = kit.parameterBuffer(
     'permutation-parameters',
     'uint32',
-    getGPUPermutationParameterValues({seed: 7, permutations, significanceLevel})
+    GPU_PERMUTATION_PARAMETER_LENGTH
   );
   const classBreaksParameters = kit.parameter(
     'class-breaks-parameters',
@@ -178,7 +178,8 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
       family: 'quadbin',
       resolution: HOT_SPOT_RESOLUTION,
       studyArea: {
-        polygonPositions: studyPositions.view,
+        kind: 'polygons',
+        positions: studyPositions.view,
         featureOffsets: studyFeatureOffsets.view,
         polygonOffsets: studyPolygonOffsets.view,
         ringOffsets: studyRingOffsets.view,
@@ -192,20 +193,23 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
         neighborCapacity: capacity * HOT_SPOT_NEIGHBORS_PER_ROW
       }
     },
-    parameters: autocorrelation.view,
+    settings: {significanceLevel, seed: 7, permutationCount: permutations},
+    parameters: autocorrelation,
     scratch: {
-      table: {cells: tableCells.view, count: tableCount.view, overflow: tableOverflow.view}
+      table: {
+        cells: tableCells.view,
+        status: {count: tableCount.view, overflow: tableOverflow.view}
+      }
     },
     outputs: {
       bins: bins.view,
       globalStatistics: globalStatistics.view,
-      weightsOverflow: weightsOverflow.view,
-      invalidCount: invalidCount.view,
+      status: {weightsOverflow: weightsOverflow.view, invalidCount: invalidCount.view},
       permutation: {significant: significant.view},
       color: {colors: colors.view}
     },
     permutation: {
-      parameters: permutationParameters.view,
+      parameters: permutationParameters,
       maximumPermutations: HOT_SPOT_MAXIMUM_PERMUTATIONS
     },
     color: {
@@ -231,7 +235,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
   let keep = gate[gateOffset] == 0u || significant[significantOffset + index] != 0u;
   gated[gatedOffset + index] = select((color & 0x00ffffffu) | 0x30000000u, color, keep);`
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
 
   const summarySizes = [4, 4, 4, 20, 4, capacity * 4, capacity * 4];
   const reader = new SummaryReader(
@@ -285,12 +289,7 @@ export const buildHotSpotScene: RecipeSceneBuilder = async host => {
     encoder.markDirty();
   };
   const writeSignificance = () => {
-    autocorrelation.parameters.write(
-      getGPUSpatialAutocorrelationParameterValues({significanceLevel})
-    );
-    permutationParameters.parameters.write(
-      getGPUPermutationParameterValues({seed: 7, permutations, significanceLevel})
-    );
+    recipe.setSettings({significanceLevel, seed: 7, permutationCount: permutations});
     encoder.markDirty();
   };
   const parameters: RecipeParameter[] = [
@@ -462,15 +461,14 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
     },
     after: {positions: positions.view, mask: after.view},
     scratch: {
-      before: {count: beforeTableCount.view},
-      after: {count: afterTableCount.view}
+      before: {status: {count: beforeTableCount.view}},
+      after: {status: {count: afterTableCount.view}}
     },
     outputs: {
       comparison: {
         cells: unionCells.view,
         delta: delta.view,
-        count: unionCount.view,
-        overflow: unionOverflow.view
+        status: {count: unionCount.view, overflow: unionOverflow.view}
       },
       colors: colors.view
     },
@@ -482,7 +480,7 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
     colorScaleParameters: colorScale.view,
     maximumPaletteCount: 5
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
 
   const unionBytes = PERIOD_UNION_CAPACITY * 4;
   const summarySizes = [4, 4, 4, 4, unionBytes];
@@ -701,12 +699,11 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
   let radiusCells = 1.5;
   let temporalWindow = 1;
   let confidenceIndex = 0;
-  const getParameters = () =>
-    getGPUEmergingHotSpotParameterValues({
-      radius: radiusCells,
-      temporalWindow,
-      confidenceLevel: CONFIDENCE_LEVELS[confidenceIndex]
-    });
+  const getSettings = () => ({
+    radius: radiusCells,
+    temporalWindow,
+    confidenceLevel: CONFIDENCE_LEVELS[confidenceIndex]
+  });
 
   const kit = new RecipeKit(context.device, 'recipe-space-time');
   const positions = kit.input('positions', trips.vertexPositions, 'float32x2', pointCount);
@@ -717,7 +714,11 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     'sint32',
     2
   );
-  const emerging = kit.parameter('emerging-parameters', 'float32', getParameters());
+  const emerging = kit.parameterBuffer(
+    'emerging-parameters',
+    'float32',
+    GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
+  );
   const colorScale = kit.parameter(
     'color-scale-parameters',
     'float32',
@@ -748,7 +749,8 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
       height: SPACE_TIME_HEIGHT,
       bounds
     },
-    parameters: emerging.view,
+    settings: getSettings(),
+    parameters: emerging,
     outputs: {
       category: category.view,
       hotSliceCount: hotSlices.view,
@@ -757,7 +759,7 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     },
     color: {palette: palette.view, parameters: colorScale.view}
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
 
   const cellBytes = cellCount * 4;
   const summarySizes = [cellBytes, cellBytes];
@@ -798,7 +800,7 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
   );
   const encoder = new DirtyEncoder(compiled, reader);
   const writeParameters = () => {
-    emerging.parameters.write(getParameters());
+    recipe.setSettings(getSettings());
     encoder.markDirty();
   };
   const parameters: RecipeParameter[] = [

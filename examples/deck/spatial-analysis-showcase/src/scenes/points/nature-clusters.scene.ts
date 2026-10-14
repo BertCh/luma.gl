@@ -614,13 +614,12 @@ export default defineScene<NatureClusterOptions>({
 graph.add(new GPUKMeans({
   positions,                               // float32x2 meters of the chosen group
   k: ${state.k},
-  iterations: ${cap},                       // compile-time cap: each cap is its own graph
-  tolerance: ${state.tolerance},                         // meters a centre may still move
-  initialization: '${state.initialization}',${state.initialization === 'kmeans++' ? `\n  seed: ${state.seed},` : ''}
-  convergence,                             // [iterationsUsed, converged]
-  labels, centers, sizes
+  maximumIterations: ${cap},                // compile-time cap: each cap is its own graph
+  parameters: kmeansParameters,             // getGPUKMeansParameterValues({seed: ${state.seed}, tolerance: ${state.tolerance}}): meters a centre may still move
+  initialization: '${state.initialization}',
+  output: {labels, centers, sizes, status: {iterationCount, converged}}   // iterationCount: iterations that moved centres
 }));
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 compiled.encode(commandEncoder, {parameters: undefined});
 // Colours are nominal: map-colour the centres so neighbours differ.
 const slots = colourPartition(centres, k, previousSlots, 7);`;
@@ -628,7 +627,7 @@ const slots = colourPartition(centres, k, previousSlots, 7);`;
     if (state.pipeline === 'recipe') {
       return `const graph = new GPUCommandGraph(device, {id: 'cluster-outline'});
 addClusterAndOutlineRecipe(graph, {
-  positions,
+  points: {kind: 'points', positions},
   spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
   clusteringParameters: clusteringParameters.importToGraph(graph),  // bounds, epsilon, minimumPoints
   gridSize: [256, 256],
@@ -636,10 +635,10 @@ addClusterAndOutlineRecipe(graph, {
   maximumClusterCount: 2048,
   maximumVerticesPerHull: 256,
   hullCapacity: 1 << 14,
-  outputs: {labels, hullPositions, hullOffsets, hullOverflow, areas, perimeters, centroids},
+  outputs: {labels, hullPositions, hullOffsets, areas, perimeters, centroids, status: {hullOverflow}},
   scratch: {counts, bounds, meanCenters, hullCounts}
 });
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 // each change of epsilon / minimumPoints:
 clusteringParameters.write(getGPUSpatialClusteringParameterValues({bounds, epsilon: ${state.epsilon}, minimumPoints: ${state.minimumPoints}}));
 compiled.encode(commandEncoder, {parameters: undefined});`;
@@ -648,16 +647,16 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
 graph.add(new GPUSpatialClustering({
   positions, parameters: clusteringParameters.importToGraph(graph),
   gridSize: [256, 256],${state.denseBoxShortcut ? '\n  denseBoxShortcut: true,' : ''}${state.sumOrder === 'atomic' ? "\n  sumOrder: 'atomic'," : ''}
-  labels, coreFlags, clusterCount, clusterSizes, clusterCentroids,
-  clusters: {ids, count, overflow}
+  output: {labels, coreFlags, clusterCount, clusterSizes, clusterCentroids,
+    clusters: {ids, status: {count, overflow}}}
 }));
 const shapes = new GPUCommandGraph(device, {id: 'shapes'});
 shapes.add(new GPUGroupGeometry({positions, labels, groupCount: 2048, weights,
   parameters: geometryParameters.importToGraph(shapes),
-  output: {counts, bounds, meanCenters, weightedCenters, medoidIndices, ellipses}}));
+  output: {counts, bounds, meanCenters, weightedCenters, medoidIndices, ellipses, status: {overflow}}}));
 shapes.add(new GPUGroupConvexHull({positions, labels, groupCount: 2048,
-  maximumVerticesPerGroup: 256, totalCapacity: 1 << 14, prefilterLevels: ${state.prefilterLevels},
-  output: {vertexIndices, vertexPositions, offsets, counts, overflow}}));
+  maximumVerticesPerGroup: 256, vertexCapacity: 1 << 14, prefilterLevels: ${state.prefilterLevels},
+  output: {vertexIndices, vertexPositions, offsets, counts, status: {overflow}}}));   // overflow is a bit set
 // Compiled once. Epsilon and minimumPoints are parameter words:
 clusteringParameters.write(getGPUSpatialClusteringParameterValues({bounds, epsilon: ${state.epsilon}, minimumPoints: ${state.minimumPoints}}));
 clustersCompiled.encode(commandEncoder, {parameters: undefined});

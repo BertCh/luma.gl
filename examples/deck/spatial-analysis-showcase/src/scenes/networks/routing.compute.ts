@@ -22,6 +22,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {makeClassTable} from '../../cartography/class-table';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -308,12 +309,13 @@ export async function createRouting(
   const costs = new Float32Array(edgeCount);
   const freeFlowCosts = new Float32Array(edgeCount);
   let destroyed = false;
-  let graphs: {
+  type RoutingGraphs = {
     freeFlow: CompiledGPUCommandGraph<void>;
     tree: TreeGraph;
     hood: CompiledGPUCommandGraph<void>;
     turns: CompiledGPUCommandGraph<void>;
-  } | null = null;
+  };
+  let graphs: RoutingGraphs | null = null;
   let freeFlowDirty = 2;
   let treeDirty = 2;
   let hoodDirty = 2;
@@ -407,14 +409,8 @@ export async function createRouting(
   };
 
   // ---- Graphs ------------------------------------------------------------------------------
-  function buildGraphs(localIterations: number): void {
-    if (graphs) {
-      resources.release(graphs.freeFlow);
-      resources.release(graphs.tree.compiled);
-      resources.release(graphs.hood);
-      resources.release(graphs.turns);
-    }
-
+  /** Builds and compiles the four graphs; the running graphs keep encoding meanwhile. */
+  async function compileGraphs(localIterations: number): Promise<RoutingGraphs> {
     const importer = (graph: GPUCommandGraph<void>) => {
       const cache = new Map<Buffer, GraphDataView>();
       return <Format extends 'uint32' | 'float32' | 'float32x2'>(
@@ -439,17 +435,23 @@ export async function createRouting(
       freeFlowGraph.add(
         new GPUNetworkReachability({
           id: 'free-flow-tree',
-          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-          weights: view(freeFlowWeightsBuffer, 'float32', edgeCount),
-          sources: originParameter.importToGraph(freeFlowGraph),
+          topology: {
+            offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+            neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+            weights: view(freeFlowWeightsBuffer, 'float32', edgeCount)
+          },
+          startNodes: originParameter.importToGraph(freeFlowGraph),
           costLimit: costLimitParameter.importToGraph(freeFlowGraph),
-          maxIterations: MAXIMUM_ROUNDS,
+          maximumIterations: MAXIMUM_ROUNDS,
           localIterations,
-          costs: view(freeFlowTreeCosts, 'float32', nodeCount),
-          predecessors: view(freeFlowPredecessors, 'uint32', nodeCount),
-          converged: view(freeFlowConverged, 'uint32', 1),
-          iterationCount: view(freeFlowIterations, 'uint32', 1)
+          output: {
+            costs: view(freeFlowTreeCosts, 'float32', nodeCount),
+            predecessors: view(freeFlowPredecessors, 'uint32', nodeCount),
+            status: {
+              converged: view(freeFlowConverged, 'uint32', 1),
+              iterationCount: view(freeFlowIterations, 'uint32', 1)
+            }
+          }
         })
       );
     }
@@ -463,21 +465,24 @@ export async function createRouting(
       const weights = view(weightsBuffer, 'float32', edgeCount);
       const costsView = view(treeCosts, 'float32', nodeCount);
       const predecessors = view(treePredecessors, 'uint32', nodeCount);
+      const treeConvergedView = view(treeConverged, 'uint32', 1);
       treeGraph.add(
         new GPUNetworkReachability({
           id: 'tree',
-          offsets,
-          neighbors,
-          weights,
-          sources: originParameter.importToGraph(treeGraph),
+          topology: {offsets, neighbors, weights},
+          startNodes: originParameter.importToGraph(treeGraph),
           costLimit: costLimitParameter.importToGraph(treeGraph),
-          maxIterations: MAXIMUM_ROUNDS,
+          maximumIterations: MAXIMUM_ROUNDS,
           localIterations,
-          costs: costsView,
-          predecessors,
-          converged: view(treeConverged, 'uint32', 1),
-          iterationCount: view(treeIterations, 'uint32', 1),
-          unresolvedCount: view(treeUnresolved, 'uint32', 1)
+          output: {
+            costs: costsView,
+            predecessors,
+            unresolvedCount: view(treeUnresolved, 'uint32', 1),
+            status: {
+              converged: treeConvergedView,
+              iterationCount: view(treeIterations, 'uint32', 1)
+            }
+          }
         })
       );
       const edgeIds = view(pathEdgeIds, 'uint32', pathCapacity);
@@ -489,23 +494,26 @@ export async function createRouting(
           costs: costsView,
           targets: destinationParameter.importToGraph(treeGraph),
           targetCount: destinationCountParameter.importToGraph(treeGraph),
-          maxPathLength: MAXIMUM_PATH_LENGTH,
+          predecessorsComplete: treeConvergedView,
+          maximumPathLength: MAXIMUM_PATH_LENGTH,
           output: {
             ids: view(pathNodeIds, 'uint32', pathCapacity),
-            count: view(pathNodeCount, 'uint32', 1),
-            overflow: view(pathNodeOverflow, 'uint32', 1)
+            status: {
+              count: view(pathNodeCount, 'uint32', 1),
+              overflow: view(pathNodeOverflow, 'uint32', 1)
+            },
+            lineOffsets: view(pathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
+            pathCosts: view(pathCosts, 'float32', MAXIMUM_DESTINATIONS),
+            pathFound: view(pathFound, 'uint32', MAXIMUM_DESTINATIONS)
           },
-          pathOffsets: view(pathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
-          pathCosts: view(pathCosts, 'float32', MAXIMUM_DESTINATIONS),
-          pathFound: view(pathFound, 'uint32', MAXIMUM_DESTINATIONS),
           edges: {
-            offsets,
-            neighbors,
-            weights,
+            topology: {offsets, neighbors, weights},
             output: {
               ids: edgeIds,
-              count: edgeCountView,
-              overflow: view(pathEdgeOverflow, 'uint32', 1)
+              status: {
+                count: edgeCountView,
+                overflow: view(pathEdgeOverflow, 'uint32', 1)
+              }
             }
           }
         })
@@ -600,22 +608,30 @@ export async function createRouting(
       hoodGraph.add(
         new GPUNetworkNeighborhood({
           id: 'hood',
-          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-          seeds: originParameter.importToGraph(hoodGraph),
-          hops: hopsParameter.importToGraph(hoodGraph),
-          maxHops: MAXIMUM_HOPS,
-          hopDistances: view(hopDistances, 'uint32', nodeCount),
-          edgeMask: view(hoodEdgeMask, 'uint32', edgeCount),
-          nodes: {
-            ids: view(hoodNodeIds, 'uint32', HOOD_NODE_CAPACITY),
-            count: view(hoodNodeCount, 'uint32', 1),
-            overflow: view(hoodNodeOverflow, 'uint32', 1)
+          topology: {
+            offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+            neighbors: view(neighborsBuffer, 'uint32', edgeCount)
           },
-          edges: {
-            ids: view(hoodEdgeIds, 'uint32', HOOD_EDGE_CAPACITY),
-            count: view(hoodEdgeCount, 'uint32', 1),
-            overflow: view(hoodEdgeOverflow, 'uint32', 1)
+          startNodes: originParameter.importToGraph(hoodGraph),
+          hops: hopsParameter.importToGraph(hoodGraph),
+          maximumHops: MAXIMUM_HOPS,
+          output: {
+            hopDistances: view(hopDistances, 'uint32', nodeCount),
+            edgeMask: view(hoodEdgeMask, 'uint32', edgeCount),
+            nodes: {
+              ids: view(hoodNodeIds, 'uint32', HOOD_NODE_CAPACITY),
+              status: {
+                count: view(hoodNodeCount, 'uint32', 1),
+                overflow: view(hoodNodeOverflow, 'uint32', 1)
+              }
+            },
+            edges: {
+              ids: view(hoodEdgeIds, 'uint32', HOOD_EDGE_CAPACITY),
+              status: {
+                count: view(hoodEdgeCount, 'uint32', 1),
+                overflow: view(hoodEdgeOverflow, 'uint32', 1)
+              }
+            }
           }
         })
       );
@@ -632,36 +648,41 @@ export async function createRouting(
       turnGraph.add(
         new GPUNetworkLineGraph({
           id: 'turns',
-          offsets,
-          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-          weights: view(weightsBuffer, 'float32', edgeCount),
-          nodePositions: view(nodePositionsBuffer, 'float32x2', nodeCount),
+          topology: {
+            offsets,
+            neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+            weights: view(weightsBuffer, 'float32', edgeCount),
+            nodePositions: view(nodePositionsBuffer, 'float32x2', nodeCount)
+          },
           parameters: turnParameters.importToGraph(turnGraph),
           bannedTurns: view(bannedTurnsBuffer, 'uint32', BAN_CAPACITY * 2),
-          lineOffsets,
-          lineNeighbors,
-          lineWeights,
-          arcCount: view(lineArcCount, 'uint32', 1),
-          overflow: view(lineOverflow, 'uint32', 1)
+          output: {
+            topology: {offsets: lineOffsets, neighbors: lineNeighbors, weights: lineWeights},
+            arcCount: view(lineArcCount, 'uint32', 1),
+            status: {overflow: view(lineOverflow, 'uint32', 1)}
+          }
         })
       );
       const lineCostsView = view(lineCosts, 'float32', edgeCount);
+      const lineConvergedView = view(lineConverged, 'uint32', 1);
       const linePredecessorsView = view(linePredecessors, 'uint32', edgeCount);
       turnGraph.add(
         new GPUNetworkReachability({
           id: 'line-tree',
-          offsets: lineOffsets,
-          neighbors: lineNeighbors,
-          weights: lineWeights,
-          sources: lineSources.importToGraph(turnGraph),
-          sourceCosts: lineSourceCosts.importToGraph(turnGraph),
+          topology: {offsets: lineOffsets, neighbors: lineNeighbors, weights: lineWeights},
+          startNodes: lineSources.importToGraph(turnGraph),
+          startCosts: lineSourceCosts.importToGraph(turnGraph),
           costLimit: costLimitParameter.importToGraph(turnGraph),
-          maxIterations: MAXIMUM_ROUNDS,
+          maximumIterations: MAXIMUM_ROUNDS,
           localIterations,
-          costs: lineCostsView,
-          predecessors: linePredecessorsView,
-          converged: view(lineConverged, 'uint32', 1),
-          iterationCount: view(lineIterations, 'uint32', 1)
+          output: {
+            costs: lineCostsView,
+            predecessors: linePredecessorsView,
+            status: {
+              converged: lineConvergedView,
+              iterationCount: view(lineIterations, 'uint32', 1)
+            }
+          }
         })
       );
       // The arrival edge of each destination: the cheapest edge entering its node.
@@ -712,15 +733,18 @@ export async function createRouting(
           costs: lineCostsView,
           targets: targetsView,
           targetCount: destinationCountParameter.importToGraph(turnGraph),
-          maxPathLength: MAXIMUM_PATH_LENGTH,
+          predecessorsComplete: lineConvergedView,
+          maximumPathLength: MAXIMUM_PATH_LENGTH,
           output: {
             ids: lineIds,
-            count: lineCount,
-            overflow: view(linePathNodeOverflow, 'uint32', 1)
-          },
-          pathOffsets: view(linePathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
-          pathCosts: view(linePathCosts, 'float32', MAXIMUM_DESTINATIONS),
-          pathFound: view(linePathFound, 'uint32', MAXIMUM_DESTINATIONS)
+            status: {
+              count: lineCount,
+              overflow: view(linePathNodeOverflow, 'uint32', 1)
+            },
+            lineOffsets: view(linePathOffsets, 'uint32', MAXIMUM_DESTINATIONS + 1),
+            pathCosts: view(linePathCosts, 'float32', MAXIMUM_DESTINATIONS),
+            pathFound: view(linePathFound, 'uint32', MAXIMUM_DESTINATIONS)
+          }
         })
       );
       // Line nodes are edge rows, so the extracted nodes are the route edges.
@@ -733,18 +757,36 @@ export async function createRouting(
       );
     }
 
-    graphs = {
-      freeFlow: resources.track(freeFlowGraph.compile()),
-      tree: {compiled: resources.track(treeGraph.compile()), localIterations},
-      hood: resources.track(hoodGraph.compile()),
-      turns: resources.track(turnGraph.compile())
-    };
+    // The graphs compile concurrently; each is tracked as soon as it is ready.
+    const [freeFlow, tree, hood, turns] = await Promise.all(
+      [freeFlowGraph, treeGraph, hoodGraph, turnGraph].map(async graph =>
+        resources.track(await graph.compileAsync())
+      )
+    );
+    return {freeFlow, tree: {compiled: tree, localIterations}, hood, turns};
+  }
+
+  /** Swaps compiled graphs in, then releases the graphs they replace. */
+  function commitGraphs(next: RoutingGraphs): void {
+    const previous = graphs;
+    graphs = next;
+    if (previous) releaseGraphs(previous);
+    const {localIterations} = next.tree;
     freeFlowDirty = 2;
     treeDirty = 2;
     hoodDirty = 2;
     turnDirty = 2;
     ctx.setReadout('solver', `${MAXIMUM_ROUNDS} rounds x ${localIterations} hops`);
   }
+
+  function releaseGraphs(target: RoutingGraphs): void {
+    resources.release(target.freeFlow);
+    resources.release(target.tree.compiled);
+    resources.release(target.hood);
+    resources.release(target.turns);
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
 
   /** Clears an edge flag buffer and then sets the flag of every extracted route edge. */
   function addFlagKernels(
@@ -1081,7 +1123,7 @@ export async function createRouting(
     'bans',
     `${formatInteger(bannedTurnTotal)} left turns between primary or secondary roads`
   );
-  buildGraphs(Number(ctx.options.localIterations));
+  commitGraphs(await compileGraphs(Number(ctx.options.localIterations)));
   writeFreeFlowCosts();
   writeCosts();
   writeScalarParameters();
@@ -1141,8 +1183,14 @@ export async function createRouting(
           ctx.requestLayers();
           break;
         case 'localIterations':
-          buildGraphs(Number(state.localIterations));
-          ctx.requestLayers();
+          void graphSwap.request({
+            build: () => compileGraphs(Number(state.localIterations)),
+            commit: next => {
+              commitGraphs(next);
+              ctx.requestLayers();
+            },
+            discard: releaseGraphs
+          });
           break;
         default:
           ctx.requestLayers();

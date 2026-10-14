@@ -39,8 +39,12 @@ export type AccessGraph = {
   edgeStop: Uint32Array;
   /** Mode of each hop edge: 0 bus, 1 rail. */
   edgeMode: Uint8Array;
-  /** Road walking edges as COO for snapping (both directions), planar nodes of the road graph. */
-  roadSources: Uint32Array;
+  /**
+   * Road walking edges as a forward CSR for snapping (both directions), planar nodes of the road
+   * graph: `roadOffsets` has `roadNodeCount + 1` rows and `roadTargets` and `roadMeters` have one
+   * row per slot.
+   */
+  roadOffsets: Uint32Array;
   roadTargets: Uint32Array;
   roadMeters: Float32Array;
   /** Stop positions in meters and per-stop attributes. */
@@ -143,6 +147,19 @@ export function buildAccessGraph(network: RoadNetwork, transit: LoadedDataset): 
     );
   }
 
+  // Counting sort of the road edges by source into the forward CSR that snapping reads.
+  const roadOffsets = new Uint32Array(roadNodeCount + 1);
+  for (const from of roadSources) roadOffsets[from + 1]++;
+  for (let node = 0; node < roadNodeCount; node++) roadOffsets[node + 1] += roadOffsets[node];
+  const roadCursor = roadOffsets.slice(0, roadNodeCount);
+  const sortedRoadTargets = new Uint32Array(roadSources.length);
+  const sortedRoadMeters = new Float32Array(roadSources.length);
+  for (let edge = 0; edge < roadSources.length; edge++) {
+    const slot = roadCursor[roadSources[edge]]++;
+    sortedRoadTargets[slot] = roadTargets[edge];
+    sortedRoadMeters[slot] = roadMeters[edge];
+  }
+
   // Counting sort by (reversed) source into CSR order.
   const edgeCount = sources.length;
   const offsets = new Uint32Array(nodeCount + 1);
@@ -173,9 +190,9 @@ export function buildAccessGraph(network: RoadNetwork, transit: LoadedDataset): 
     base,
     edgeStop,
     edgeMode,
-    roadSources: Uint32Array.from(roadSources),
-    roadTargets: Uint32Array.from(roadTargets),
-    roadMeters: Float32Array.from(roadMeters),
+    roadOffsets,
+    roadTargets: sortedRoadTargets,
+    roadMeters: sortedRoadMeters,
     stopPositions,
     stopMode,
     stopWeekdayTrips,
@@ -211,7 +228,7 @@ export function writeAccessWeights(
   }
 }
 
-/** Walking edge costs in seconds for the snapping edge set (road edges, both directions). */
+/** Walking edge costs in seconds for the snapping road CSR slots (both directions). */
 export function writeRoadWalkCosts(
   graph: AccessGraph,
   walkSpeed: number,

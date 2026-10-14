@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -219,28 +219,38 @@ export async function createNycTaxiTrails(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
-      speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
+        speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail graph: route segments of the last few minutes -----------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -252,7 +262,7 @@ export async function createNycTaxiTrails(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -280,25 +290,6 @@ export async function createNycTaxiTrails(
         segmentCount
       ),
       window: windowParameters.importToGraph(trailGraph),
-      output: {
-        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
       trackIds: importGraphBuffer(
         trailGraph,
         'segment-tracks',
@@ -306,20 +297,41 @@ export async function createNycTaxiTrails(
         'uint32',
         segmentCount
       ),
-      trackVisibleCounts: importGraphBuffer(
-        trailGraph,
-        'track-visible-counts',
-        trackVisibleCounts,
-        'uint32',
-        trackCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+      output: {
+        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        },
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        trackVisibleCounts: importGraphBuffer(
+          trailGraph,
+          'track-visible-counts',
+          trackVisibleCounts,
+          'uint32',
+          trackCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Chords and the inspected cab: small buffers rewritten from the active-id readback ---------
   const chordBuffer = resources.createBuffer('chords', MAXIMUM_CHORDS * 16);
@@ -686,7 +698,7 @@ export async function createNycTaxiTrails(
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
       const trailSeconds = options.trailMinutes * 60;
       windowParameters.write(
-        getGPUTimeWindowParameterValues({
+        getGPUTimeWindowFilterParameterValues({
           start: playhead - trailSeconds,
           end: playhead,
           // Fade across the whole trail: weight 1 at the head, 0 at the tail.

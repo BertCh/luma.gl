@@ -48,6 +48,7 @@ import {
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {sampleRamp, type RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -244,19 +245,16 @@ export async function createCellPyramid(
     const parity = levelIndex & 1;
     const slabRow = (levelIndex >> 1) * capacity;
     return {
-      resolution: getLevelResolution(levelIndex),
-      output: {
-        cells: importSlice(cellsSlabs[parity], 'uint32x2', 8, slabRow, capacity),
-        counts: importSlice(countsSlabs[parity], 'uint32', 4, slabRow, capacity),
+      cells: importSlice(cellsSlabs[parity], 'uint32x2', 8, slabRow, capacity),
+      counts: importSlice(countsSlabs[parity], 'uint32', 4, slabRow, capacity),
+      status: {
         count: importSlice(tableCountBuffers[parity], 'uint32', 4, levelIndex, 1),
         overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
         ...(levelIndex === 0
-          ? {
-              requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
-              sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)
-            }
+          ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
           : {})
-      }
+      },
+      ...(levelIndex === 0 ? {sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)} : {})
     };
   });
   const pyramid = new GPUCellPyramid({
@@ -271,17 +269,22 @@ export async function createCellPyramid(
     ),
     mask: importGraphBuffer(pyramidGraph, 'mask', maskBuffer, 'uint32', pointCount),
     values: importGraphBuffer(pyramidGraph, 'values', researchGradeBuffer, 'float32', pointCount),
-    levels,
-    levelCounts: importGraphBuffer(
-      pyramidGraph,
-      'level-counts',
-      levelCountsBuffer,
-      'uint32',
-      LEVEL_COUNT
-    )
+    resolutions: Array.from({length: LEVEL_COUNT}, (_, levelIndex) =>
+      getLevelResolution(levelIndex)
+    ),
+    output: {
+      levels,
+      levelCounts: importGraphBuffer(
+        pyramidGraph,
+        'level-counts',
+        levelCountsBuffer,
+        'uint32',
+        LEVEL_COUNT
+      )
+    }
   });
   pyramidGraph.add(pyramid);
-  const compiledPyramid = resources.track(pyramidGraph.compile());
+  const compiledPyramid = resources.track(await pyramidGraph.compileAsync());
 
   const selectionGraph = new GPUCommandGraph<void>(device, {id: 'cell-level-selection'});
   const selectionDrawView = drawCommands.importToGraph(selectionGraph);
@@ -300,21 +303,23 @@ export async function createCellPyramid(
       output: {
         // The record's firstInstance stays 0: the shell does not request the
         // indirect-first-instance device feature, so the layer adds the first row itself.
-        count: selectionGraph.createDataView(selectionDrawView.buffer, {
-          format: 'uint32',
-          length: 1,
-          byteOffset: Uint32Array.BYTES_PER_ELEMENT
-        }),
+        status: {
+          count: selectionGraph.createDataView(selectionDrawView.buffer, {
+            format: 'uint32',
+            length: 1,
+            byteOffset: Uint32Array.BYTES_PER_ELEMENT
+          })
+        },
         firstRow: importGraphBuffer(selectionGraph, 'active-first-row', activeFirstRow, 'uint32', 1)
       }
     })
   );
-  const compiledSelection = resources.track(selectionGraph.compile());
+  const compiledSelection = resources.track(await selectionGraph.compileAsync());
 
   // --- Roll-up variants (one per parent resolution, compiled on first use) ------------------------
 
   const rollupVariants = new Map<number, RollupVariant>();
-  const ensureRollup = (parentResolution: number): RollupVariant => {
+  const ensureRollup = async (parentResolution: number): Promise<RollupVariant> => {
     const existing = rollupVariants.get(parentResolution);
     if (existing) return existing;
     const graph = new GPUCommandGraph<void>(device, {id: `cell-rollup-${parentResolution}`});
@@ -347,8 +352,10 @@ export async function createCellPyramid(
           cells: view(cellsSlabs[0], 'uint32x2', 8, capacity),
           counts: view(countsSlabs[0], 'uint32', 4, capacity),
           sums: view(finestSumsBuffer, 'uint32x2', 8, capacity),
-          count: view(tableCountBuffers[0], 'uint32', 4, 1),
-          overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+          status: {
+            count: view(tableCountBuffers[0], 'uint32', 4, 1),
+            overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+          }
         },
         sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
         output: {
@@ -357,16 +364,18 @@ export async function createCellPyramid(
           sums: view(rollupSumsBuffer, 'uint32x2', 8, capacity),
           sumValues: view(rollupSumValuesBuffer, 'float32', 4, capacity),
           // The record's instanceCount is the parent cell count (the clamped output count).
-          count: graph.createDataView(drawView.buffer, {
-            format: 'uint32',
-            length: 1,
-            byteOffset: Uint32Array.BYTES_PER_ELEMENT
-          }),
-          overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+          status: {
+            count: graph.createDataView(drawView.buffer, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: Uint32Array.BYTES_PER_ELEMENT
+            }),
+            overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+          }
         }
       })
     );
-    const variant = {graph: resources.track(graph.compile())};
+    const variant = {graph: resources.track(await graph.compileAsync())};
     rollupVariants.set(parentResolution, variant);
     return variant;
   };
@@ -407,7 +416,7 @@ export async function createCellPyramid(
   const classVariants = new Map<CellPyramidOptions['classValue'], ClassVariant>();
   let classSnapshot: {breaks: Float32Array; classCount: number} | null = null;
 
-  const ensureClasses = (value: CellPyramidOptions['classValue']): ClassVariant => {
+  const ensureClasses = async (value: CellPyramidOptions['classValue']): Promise<ClassVariant> => {
     const existing = classVariants.get(value);
     if (existing) return existing;
     const graph = new GPUCommandGraph<void>(device, {id: `cell-classes-${value}`});
@@ -495,7 +504,7 @@ export async function createCellPyramid(
         ctx.setReadout('classEdges', `${classCountValue} classes: ${edges.join(' | ')}`);
       }
     );
-    const variant = {graph: resources.track(graph.compile()), reader};
+    const variant = {graph: resources.track(await graph.compileAsync()), reader};
     classVariants.set(value, variant);
     return variant;
   };
@@ -558,167 +567,178 @@ export async function createCellPyramid(
     );
   };
 
-  const ensureCompare = (options: Readonly<CellPyramidOptions>): CompareVariant => {
+  const ensureCompare = async (
+    options: Readonly<CellPyramidOptions>
+  ): Promise<CompareVariant | null> => {
     const key = getCompareKey(options);
     const existing = compareVariants.get(key);
     if (existing) return existing;
     const resolution = options.compareResolution;
     const sum = options.compareMeasure === 'sum';
     const owned = new SpatialAnalysisResources(device, `cell-compare-${compareVariants.size}`);
-    const graph = new GPUCommandGraph<void>(device, {id: `cell-compare-${key}`});
-    const output = <Format extends Parameters<typeof importGraphBuffer>[3]>(
-      name: string,
-      rowBytes: number,
-      length: number,
-      format: Format
-    ) => {
-      const buffer = owned.createBuffer(name, Math.max(1, length) * rowBytes);
-      return {buffer, view: importGraphBuffer(graph, name, buffer, format, length)};
-    };
-    const union = COMPARE_UNION_CAPACITY;
-    const cells = output('union-cells', 8, union, 'uint32x2');
-    const delta = output('delta', 4, union, 'float32');
-    const ratio = output('ratio', 4, union, 'float32');
-    const percentChange = output('percent-change', 4, union, 'float32');
-    const zScore = output('z-score', 4, union, 'float32');
-    const beforeValue = output('before-value', 4, union, 'float32');
-    const afterValue = output('after-value', 4, union, 'float32');
-    const count = output('union-count', 4, 1, 'uint32');
-    const overflow = output('union-overflow', 4, 1, 'uint32');
-    const colors = output('colors', 4, union, 'uint32');
-    const beforeCellCount = output('before-table-count', 4, 1, 'uint32');
-    const afterCellCount = output('after-table-count', 4, 1, 'uint32');
-    const classBreaks = owned.createParameterBuffer(
-      'compare-class-breaks',
-      'float32',
-      getGPUClassBreaksParameterLength(5)
-    );
-    const colorScale = owned.createParameterBuffer(
-      'compare-color-scale',
-      'float32',
-      9,
-      getGPUColorScaleParameterValues({
-        scale: 'threshold',
-        domainCount: 6,
-        paletteCount: 5,
-        noDataColor: packGPUColor(0, 0, 0, 0)
-      })
-    );
-    const paletteBuffer = owned.createBuffer(
-      'compare-palette',
-      Uint32Array.from(CHANGE_CLASS_COLORS, ([r, g, b]) => packGPUColor(r, g, b, 235))
-    );
-    const rows = (maskBuffer: Buffer, name: string) =>
-      importGraphBuffer(graph, name, maskBuffer, 'uint32', pointCount);
-    const positions = importGraphBuffer(
-      graph,
-      'positions',
-      positionsBuffer,
-      'float32x2',
-      pointCount
-    );
-    const valueView = sum
-      ? importGraphBuffer(graph, 'values', researchGradeBuffer, 'float32', pointCount)
-      : undefined;
-    addPeriodComparisonRecipe(graph, {
-      id: 'period',
-      family: 'quadbin',
-      resolution,
-      tableCapacity: COMPARE_TABLE_CAPACITY,
-      unionCapacity: union,
-      before: {
-        positions,
-        values: valueView,
-        mask: rows(beforeMaskBuffer, 'before-mask')
-      },
-      after: {
-        positions,
-        values: valueView,
-        mask: rows(afterMaskBuffer, 'after-mask')
-      },
-      scratch: {
-        before: {count: beforeCellCount.view},
-        after: {count: afterCellCount.view}
-      },
-      measure: options.compareMeasure,
-      zScore: options.zScoreKind,
-      outputs: {
-        comparison: {
-          cells: cells.view,
-          before: beforeValue.view,
-          after: afterValue.view,
-          delta: delta.view,
-          ratio: ratio.view,
-          percentChange: percentChange.view,
-          zScore: zScore.view,
-          count: count.view,
-          overflow: overflow.view
+    try {
+      const graph = new GPUCommandGraph<void>(device, {id: `cell-compare-${key}`});
+      const output = <Format extends Parameters<typeof importGraphBuffer>[3]>(
+        name: string,
+        rowBytes: number,
+        length: number,
+        format: Format
+      ) => {
+        const buffer = owned.createBuffer(name, Math.max(1, length) * rowBytes);
+        return {buffer, view: importGraphBuffer(graph, name, buffer, format, length)};
+      };
+      const union = COMPARE_UNION_CAPACITY;
+      const cells = output('union-cells', 8, union, 'uint32x2');
+      const delta = output('delta', 4, union, 'float32');
+      const ratio = output('ratio', 4, union, 'float32');
+      const percentChange = output('percent-change', 4, union, 'float32');
+      const zScore = output('z-score', 4, union, 'float32');
+      const beforeValue = output('before-value', 4, union, 'float32');
+      const afterValue = output('after-value', 4, union, 'float32');
+      const count = output('union-count', 4, 1, 'uint32');
+      const overflow = output('union-overflow', 4, 1, 'uint32');
+      const colors = output('colors', 4, union, 'uint32');
+      const beforeCellCount = output('before-table-count', 4, 1, 'uint32');
+      const afterCellCount = output('after-table-count', 4, 1, 'uint32');
+      const classBreaks = owned.createParameterBuffer(
+        'compare-class-breaks',
+        'float32',
+        getGPUClassBreaksParameterLength(5)
+      );
+      const colorScale = owned.createParameterBuffer(
+        'compare-color-scale',
+        'float32',
+        9,
+        getGPUColorScaleParameterValues({
+          scale: 'threshold',
+          domainCount: 6,
+          paletteCount: 5,
+          noDataColor: packGPUColor(0, 0, 0, 0)
+        })
+      );
+      const paletteBuffer = owned.createBuffer(
+        'compare-palette',
+        Uint32Array.from(CHANGE_CLASS_COLORS, ([r, g, b]) => packGPUColor(r, g, b, 235))
+      );
+      const rows = (maskBuffer: Buffer, name: string) =>
+        importGraphBuffer(graph, name, maskBuffer, 'uint32', pointCount);
+      const positions = importGraphBuffer(
+        graph,
+        'positions',
+        positionsBuffer,
+        'float32x2',
+        pointCount
+      );
+      const valueView = sum
+        ? importGraphBuffer(graph, 'values', researchGradeBuffer, 'float32', pointCount)
+        : undefined;
+      addPeriodComparisonRecipe(graph, {
+        id: 'period',
+        family: 'quadbin',
+        resolution,
+        tableCapacity: COMPARE_TABLE_CAPACITY,
+        unionCapacity: union,
+        before: {
+          positions,
+          values: valueView,
+          mask: rows(beforeMaskBuffer, 'before-mask')
         },
-        colors: colors.view
-      },
-      classify: 'delta',
-      classBreaksParameters: classBreaks.importToGraph(graph),
-      maximumClassCount: 5,
-      methods: ['custom', 'standard-deviation'],
-      palette: importGraphBuffer(graph, 'palette', paletteBuffer, 'uint32', 5),
-      colorScaleParameters: colorScale.importToGraph(graph),
-      maximumPaletteCount: 5
-    });
-    const compiled = owned.track(graph.compile());
-    const reader = new SummaryReader(
-      owned,
-      `cell-compare-${key}`,
-      [
-        {buffer: count.buffer, size: 4},
-        {buffer: overflow.buffer, size: 4},
-        {buffer: beforeCellCount.buffer, size: 4},
-        {buffer: afterCellCount.buffer, size: 4},
-        {buffer: cells.buffer, size: union * 8},
-        {buffer: beforeValue.buffer, size: union * 4},
-        {buffer: afterValue.buffer, size: union * 4},
-        {buffer: delta.buffer, size: union * 4},
-        {buffer: zScore.buffer, size: union * 4}
-      ],
-      bytes => {
-        const words = new Uint32Array(bytes);
-        const unionRows = Math.min(words[0], union);
-        const base = 4;
-        compareSnapshot = {
-          rows: unionRows,
-          cells: words.slice(base, base + unionRows * 2),
-          before: new Float32Array(bytes.slice((base + union * 2) * 4, (base + union * 3) * 4)),
-          after: new Float32Array(bytes.slice((base + union * 3) * 4, (base + union * 4) * 4)),
-          delta: new Float32Array(bytes.slice((base + union * 4) * 4, (base + union * 5) * 4)),
-          zScore: new Float32Array(bytes.slice((base + union * 5) * 4, (base + union * 6) * 4)),
-          beforeCells: words[2],
-          afterCells: words[3],
-          overflow: words[1] !== 0
-        };
-        compareTileLookup = null;
-        updateCompareReadouts();
+        after: {
+          positions,
+          values: valueView,
+          mask: rows(afterMaskBuffer, 'after-mask')
+        },
+        scratch: {
+          before: {status: {count: beforeCellCount.view}},
+          after: {status: {count: afterCellCount.view}}
+        },
+        measure: options.compareMeasure,
+        zScore: options.zScoreKind,
+        outputs: {
+          comparison: {
+            cells: cells.view,
+            before: beforeValue.view,
+            after: afterValue.view,
+            delta: delta.view,
+            ratio: ratio.view,
+            percentChange: percentChange.view,
+            zScore: zScore.view,
+            status: {count: count.view, overflow: overflow.view}
+          },
+          colors: colors.view
+        },
+        classify: 'delta',
+        classBreaksParameters: classBreaks.importToGraph(graph),
+        maximumClassCount: 5,
+        methods: ['custom', 'standard-deviation'],
+        palette: importGraphBuffer(graph, 'palette', paletteBuffer, 'uint32', 5),
+        colorScaleParameters: colorScale.importToGraph(graph),
+        maximumPaletteCount: 5
+      });
+      const compiled = owned.track(await graph.compileAsync());
+      if (destroyed) {
+        // The scene closed while the compile was in flight; nothing will own this variant.
+        owned.destroy();
+        return null;
       }
-    );
-    const variant: CompareVariant = {
-      key,
-      resolution,
-      resources: owned,
-      graph: compiled,
-      classBreaks,
-      colorScale,
-      cells: cells.buffer,
-      count: count.buffer,
-      colors: colors.buffer,
-      columns: {
-        delta: delta.buffer,
-        ratio: ratio.buffer,
-        percentChange: percentChange.buffer,
-        zScore: zScore.buffer
-      },
-      reader
-    };
-    writeCompareParameters(variant);
-    compareVariants.set(key, variant);
-    return variant;
+      const reader = new SummaryReader(
+        owned,
+        `cell-compare-${key}`,
+        [
+          {buffer: count.buffer, size: 4},
+          {buffer: overflow.buffer, size: 4},
+          {buffer: beforeCellCount.buffer, size: 4},
+          {buffer: afterCellCount.buffer, size: 4},
+          {buffer: cells.buffer, size: union * 8},
+          {buffer: beforeValue.buffer, size: union * 4},
+          {buffer: afterValue.buffer, size: union * 4},
+          {buffer: delta.buffer, size: union * 4},
+          {buffer: zScore.buffer, size: union * 4}
+        ],
+        bytes => {
+          const words = new Uint32Array(bytes);
+          const unionRows = Math.min(words[0], union);
+          const base = 4;
+          compareSnapshot = {
+            rows: unionRows,
+            cells: words.slice(base, base + unionRows * 2),
+            before: new Float32Array(bytes.slice((base + union * 2) * 4, (base + union * 3) * 4)),
+            after: new Float32Array(bytes.slice((base + union * 3) * 4, (base + union * 4) * 4)),
+            delta: new Float32Array(bytes.slice((base + union * 4) * 4, (base + union * 5) * 4)),
+            zScore: new Float32Array(bytes.slice((base + union * 5) * 4, (base + union * 6) * 4)),
+            beforeCells: words[2],
+            afterCells: words[3],
+            overflow: words[1] !== 0
+          };
+          compareTileLookup = null;
+          updateCompareReadouts();
+        }
+      );
+      const variant: CompareVariant = {
+        key,
+        resolution,
+        resources: owned,
+        graph: compiled,
+        classBreaks,
+        colorScale,
+        cells: cells.buffer,
+        count: count.buffer,
+        colors: colors.buffer,
+        columns: {
+          delta: delta.buffer,
+          ratio: ratio.buffer,
+          percentChange: percentChange.buffer,
+          zScore: zScore.buffer
+        },
+        reader
+      };
+      writeCompareParameters(variant);
+      compareVariants.set(key, variant);
+      return variant;
+    } catch (error) {
+      owned.destroy();
+      throw error;
+    }
   };
 
   const formatPlace = (low: number, high: number): string => {
@@ -960,29 +980,38 @@ export async function createCellPyramid(
 
   let destroyed = false;
   let ensureTimer: ReturnType<typeof setTimeout> | undefined;
-  const ensureVariants = () => {
+  // Variants stay cached in the maps below (owned by this scene), so a superseded build needs no
+  // discard. Encode skips a view whose variant is not compiled yet.
+  const graphSwap = resources.track(new GraphSwap());
+  const ensureVariants = (): Promise<boolean> => {
     ensureTimer = undefined;
-    if (destroyed) return;
-    const options = ctx.options;
-    if (options.view === 'rollup' || options.view === 'classes') {
-      ensureRollup(options.rollupResolution);
-      totalsResolution = options.rollupResolution;
-      rollupStale = true;
-    }
-    if (options.view === 'classes') {
-      ensureClasses(options.classValue);
-      writeClassParameters();
-      classesStale = true;
-    }
-    if (options.view === 'compare') {
-      ensureCompare(options);
-      compareStale = true;
-    }
-    ctx.requestLayers();
+    if (destroyed) return Promise.resolve(false);
+    return graphSwap.request({
+      build: async () => {
+        const {view, rollupResolution, classValue} = ctx.options;
+        const options = ctx.options;
+        if (view === 'rollup' || view === 'classes') await ensureRollup(rollupResolution);
+        if (view === 'classes') await ensureClasses(classValue);
+        if (view === 'compare') await ensureCompare(options);
+        return {view, rollupResolution};
+      },
+      commit: ({view, rollupResolution}) => {
+        if (view === 'rollup' || view === 'classes') {
+          totalsResolution = rollupResolution;
+          rollupStale = true;
+        }
+        if (view === 'classes') {
+          writeClassParameters();
+          classesStale = true;
+        }
+        if (view === 'compare') compareStale = true;
+        ctx.requestLayers();
+      }
+    });
   };
   const scheduleEnsure = () => {
     clearTimeout(ensureTimer);
-    ensureTimer = setTimeout(ensureVariants, REBUILD_DEBOUNCE_MILLISECONDS);
+    ensureTimer = setTimeout(() => void ensureVariants(), REBUILD_DEBOUNCE_MILLISECONDS);
   };
 
   updateMasks();
@@ -990,7 +1019,7 @@ export async function createCellPyramid(
     'pyramid',
     `${LEVEL_COUNT} levels, res ${FINEST_RESOLUTION} to ${COARSEST_RESOLUTION}, ${formatCount(capacity)} rows each`
   );
-  ensureVariants();
+  await ensureVariants();
 
   const getActiveCompare = (): CompareVariant | null =>
     compareVariants.get(getCompareKey(ctx.options)) ?? null;

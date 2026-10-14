@@ -360,14 +360,14 @@ export type PathOutputBuffers = {
   requiredCount: Buffer;
   pathCount: Buffer;
   measures: Buffer;
-  sourcePaths: Buffer;
+  sourceLineIndices: Buffer;
   vertexCapacity: number;
   pathCapacity: number;
   offsetCount: number;
   drawCommands: DrawCommandBuffer;
 };
 
-/** Allocates the buffers of a `GPULinePathOutput` of the given capacities. */
+/** Allocates the buffers of a `GPULineGeometryOutput` of the given capacities. */
 export function createPathOutputBuffers(
   resources: SpatialAnalysisResources,
   name: string,
@@ -382,7 +382,7 @@ export function createPathOutputBuffers(
     requiredCount: resources.createBuffer(`${name}-total`, 4),
     pathCount: resources.createBuffer(`${name}-path-count`, 4),
     measures: resources.createBuffer(`${name}-measures`, vertexCapacity * 4),
-    sourcePaths: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
+    sourceLineIndices: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
     vertexCapacity,
     pathCapacity,
     offsetCount: pathCapacity + 1,
@@ -415,7 +415,7 @@ export function copyCountToDrawRecord(
 export function importPathOutput(
   graph: GPUCommandGraph<void>,
   output: PathOutputBuffers,
-  options: {measures?: boolean; pathCount?: boolean; sourcePaths?: boolean} = {}
+  options: {measures?: boolean; lineCount?: boolean; sourceLineIndices?: boolean} = {}
 ) {
   const {vertexCapacity, pathCapacity} = output;
   return {
@@ -426,25 +426,27 @@ export function importPathOutput(
       'float32x2',
       vertexCapacity
     ),
-    pathOffsets: importGraphBuffer(
+    lineOffsets: importGraphBuffer(
       graph,
       'out-offsets',
       output.offsets,
       'uint32',
       pathCapacity + 1
     ),
-    count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
-    overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-    requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
-    ...(options.pathCount
-      ? {pathCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
-      : {}),
-    ...(options.sourcePaths
+    status: {
+      count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
+      ...(options.lineCount
+        ? {lineCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
+        : {})
+    },
+    ...(options.sourceLineIndices
       ? {
-          sourcePaths: importGraphBuffer(
+          sourceLineIndices: importGraphBuffer(
             graph,
             'out-source-paths',
-            output.sourcePaths,
+            output.sourceLineIndices,
             'uint32',
             pathCapacity
           )

@@ -4,8 +4,8 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -22,6 +22,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {ChoroplethFillLayer} from '../statistics/b5-choropleth-layer';
@@ -275,7 +276,9 @@ export async function createStormWarningVerification(
     polygonHits: Uint32Array;
   } | null = null;
 
-  function buildVariant(spatialTest: StormWarningVerificationOptions['spatialTest']): JoinVariant {
+  async function buildVariant(
+    spatialTest: StormWarningVerificationOptions['spatialTest']
+  ): Promise<JoinVariant> {
     const existing = variants.get(spatialTest);
     if (existing) return existing;
     const own = new SpatialAnalysisResources(device, `storm-verify-${spatialTest}`);
@@ -329,14 +332,20 @@ export async function createStormWarningVerification(
         ...(spatialTest === 'dwithin' ? {distance: toleranceParameters.importToGraph(graph)} : {}),
         candidateCapacity: CANDIDATE_CAPACITY,
         prepared,
-        pairs: {
-          leftIds: leftView,
-          rightIds: rightView,
-          count: countView,
-          overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
-        },
-        candidateCount: importGraphBuffer(graph, 'candidates', candidateCount, 'uint32', 1)
+        output: {
+          pairs: {
+            leftIds: leftView,
+            rightIds: rightView,
+            status: {
+              count: countView,
+              overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+            }
+          },
+          status: {
+            candidateCount: importGraphBuffer(graph, 'candidates', candidateCount, 'uint32', 1)
+          }
+        }
       })
     );
     const reportInfoView = importGraphBuffer(
@@ -471,8 +480,14 @@ export async function createStormWarningVerification(
       if (destroyed || current !== built) return;
       handleSummary(bytes);
     });
-    built.compiled = own.track(graph.compile());
+    built.compiled = own.track(await graph.compileAsync());
     own.track({destroy: () => prepared.destroy()});
+    if (destroyed) {
+      // The scene closed while the graph compiled; nothing will destroy this variant later.
+      built.reader.stop();
+      own.destroy();
+      return built;
+    }
     variants.set(spatialTest, built);
     return built;
   }
@@ -486,7 +501,7 @@ export async function createStormWarningVerification(
   const warningWindow = resources.createParameterBuffer(
     'warning-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const reportIds = resources.createBuffer('report-ids', reportCount * 4);
   const reportSeen = resources.createBuffer('report-seen', 4);
@@ -494,7 +509,7 @@ export async function createStormWarningVerification(
   const reportWindow = resources.createParameterBuffer(
     'report-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const reportDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -531,10 +546,18 @@ export async function createStormWarningVerification(
       window: warningWindow.importToGraph(displayGraph),
       output: {
         ids: importGraphBuffer(displayGraph, 'warning-ids', warningIds, 'uint32', warningCount),
-        count: importGraphBuffer(displayGraph, 'warning-active', warningActive, 'uint32', 1),
-        overflow: importGraphBuffer(displayGraph, 'warning-overflow', warningOverflow, 'uint32', 1)
-      },
-      outputMask: maskView
+        outputMask: maskView,
+        status: {
+          count: importGraphBuffer(displayGraph, 'warning-active', warningActive, 'uint32', 1),
+          overflow: importGraphBuffer(
+            displayGraph,
+            'warning-overflow',
+            warningOverflow,
+            'uint32',
+            1
+          )
+        }
+      }
     })
   );
   addKernelPass(displayGraph, {
@@ -583,16 +606,18 @@ export async function createStormWarningVerification(
       window: reportWindow.importToGraph(displayGraph),
       output: {
         ids: importGraphBuffer(displayGraph, 'report-ids', reportIds, 'uint32', reportCount),
-        count: importGraphBuffer(displayGraph, 'report-seen', reportSeen, 'uint32', 1),
-        overflow: importGraphBuffer(displayGraph, 'report-overflow', reportOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: displayGraph.importGPUData(
-        'report-draw-count',
-        reportDraw.getInstanceCountData(0)
-      )
+        drawInstanceCount: displayGraph.importGPUData(
+          'report-draw-count',
+          reportDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(displayGraph, 'report-seen', reportSeen, 'uint32', 1),
+          overflow: importGraphBuffer(displayGraph, 'report-overflow', reportOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const displayCompiled = resources.track(displayGraph.compile());
+  const displayCompiled = resources.track(await displayGraph.compileAsync());
 
   // ---- State ------------------------------------------------------------------------------------
   const clock = createPlaybackClock(
@@ -613,11 +638,13 @@ export async function createStormWarningVerification(
     `${formatInteger(reportCount)} reports, ${formatInteger(warningCount)} polygon versions of ${formatInteger(chainCount)} warnings`
   );
 
-  function selectVariant(): void {
-    current = buildVariant(ctx.options.spatialTest);
+  /** Makes a compiled join variant the current one. */
+  function commitVariant(next: JoinVariant): void {
+    current = next;
     verifyDirty = true;
   }
-  selectVariant();
+  const graphSwap = resources.track(new GraphSwap());
+  commitVariant(await buildVariant(ctx.options.spatialTest));
 
   // Reports per half hour and how many were verified, for the timeline chart.
   const timelineBins = Math.ceil(
@@ -901,8 +928,12 @@ export async function createStormWarningVerification(
     setOption(id) {
       switch (id) {
         case 'spatialTest':
-          selectVariant();
           writeVerifyParameters();
+          // The variant cache is destroyed with the resources, so a superseded build is kept.
+          void graphSwap.request({
+            build: () => buildVariant(ctx.options.spatialTest),
+            commit: commitVariant
+          });
           break;
         case 'toleranceKm':
         case 'graceMinutes':
@@ -939,9 +970,9 @@ export async function createStormWarningVerification(
       } else {
         current?.reader.flush(commandEncoder);
       }
-      warningWindow.write(getGPUTimeWindowParameterValues({start: playhead, end: playhead}));
+      warningWindow.write(getGPUTimeWindowFilterParameterValues({start: playhead, end: playhead}));
       reportWindow.write(
-        getGPUTimeWindowParameterValues({
+        getGPUTimeWindowFilterParameterValues({
           start: playhead - options.reportMinutes * 60,
           end: playhead
         })

@@ -23,6 +23,7 @@
  * readback so the clamp slider starts at a useful range.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -51,6 +52,8 @@ import {
   type GPUTerrainRuggednessAlgorithm,
   type GPUTerrainWeissStandardization
 } from '@luma.gl/experimental/gpu-terrain';
+import {GraphSwap} from '../graph-swap';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
@@ -168,6 +171,13 @@ export const geomorphometryMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
     const pixelCount = width * height;
     const projection = new LocalMetricProjection(terrain.origin);
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
@@ -214,6 +224,7 @@ export const geomorphometryMode: SpatialAnalysisModeDefinition = {
     let opacity = 0.85;
     let build: ProductBuild | null = null;
     let generation = 0;
+    const graphSwap = resources.track(new GraphSwap());
     let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
     let destroyed = false;
     let calibrationRequested = false;
@@ -364,7 +375,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
       });
     }
 
-    function buildProduct(): ProductBuild {
+    async function buildProduct(): Promise<ProductBuild> {
       const graph = new GPUCommandGraph<undefined>(device, {id: `landforms-${product}`});
       const elevation = makeElevation(graph);
       const owned: {destroy: () => void}[] = [];
@@ -400,14 +411,14 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         graph.add(
           new GPUTerrainCurvature({
             id: 'curvature',
-            width,
-            height,
+            grid,
             elevation,
-            settings: settingsView,
+            parameters: settingsView,
             method: curvatureMethod,
-            ...(isRing
-              ? {ringCurvature: curvature, ringRadii: [ringRadius, ringRadius * 4]}
-              : {curvatures: {[curvatureChoice as GPUTerrainCurvatureKind]: curvature}}),
+            output: isRing
+              ? {ringCurvature: curvature}
+              : {curvatures: {[curvatureChoice as GPUTerrainCurvatureKind]: curvature}},
+            ...(isRing ? {ringRadii: [ringRadius, ringRadius * 4]} : {}),
             cellSizeMode: 'uniform',
             rowDirection: 'south'
           })
@@ -417,20 +428,19 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
           fetch: 'value = curvature[curvatureOffset + index];'
         });
         writeSettings = () =>
-          settings.write(getGPUTerrainCurvatureParameterValues({cellSize, zFactor: 1}));
+          settings.write(getGPUTerrainCurvatureParameterValues({zFactor: 1}, grid));
       } else if (product === 'geomorphons') {
         const settings = makeSettings(GPU_GEOMORPHONS_PARAMETER_LENGTH);
         const forms = words('forms');
         graph.add(
           new GPUGeomorphons({
             id: 'geomorphons',
-            width,
-            height,
+            grid,
             elevation,
-            settings: settings.importToGraph(graph),
+            parameters: settings.importToGraph(graph),
             searchRadius: geomorphonRadius,
             comparison: geomorphonComparison,
-            forms,
+            output: {forms},
             cellSizeMode: 'uniform',
             rowDirection: 'south'
           })
@@ -441,9 +451,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
           fetch: 'value = f32(forms[formsOffset + index]);'
         });
         writeSettings = () =>
-          settings.write(
-            getGPUGeomorphonsParameterValues({cellSize, flatThresholdDegrees: flatAngle})
-          );
+          settings.write(getGPUGeomorphonsParameterValues({flatThresholdDegrees: flatAngle}, grid));
       } else if (product === 'ruggedness') {
         const tpi = floats('tpi');
         const tri = floats('tri');
@@ -451,12 +459,9 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         graph.add(
           new GPUTerrainRuggedness({
             id: 'ruggedness',
-            width,
-            height,
+            grid,
             elevation,
-            topographicPositionIndex: tpi,
-            terrainRuggednessIndex: tri,
-            roughness,
+            output: {topographicPositionIndex: tpi, terrainRuggednessIndex: tri, roughness},
             terrainRuggednessAlgorithm: ruggednessAlgorithm
           })
         );
@@ -478,12 +483,11 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         graph.add(
           new GPUTerrainVectorRuggedness({
             id: 'vector-ruggedness',
-            width,
-            height,
+            grid,
             elevation,
-            settings: settings.importToGraph(graph),
-            radius: vectorRadius,
-            vectorRuggedness: vrm,
+            parameters: settings.importToGraph(graph),
+            maximumRadius: vectorRadius,
+            output: {vectorRuggedness: vrm},
             cellSizeMode: 'uniform',
             rowDirection: 'south'
           })
@@ -493,7 +497,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
           fetch: 'value = vrm[vrmOffset + index];'
         });
         writeSettings = () =>
-          settings.write(getGPUTerrainVectorRuggednessParameterValues({cellSize}));
+          settings.write(getGPUTerrainVectorRuggednessParameterValues({}, grid));
       } else if (product === 'multiscale') {
         const planes = floats('dev-planes', MULTISCALE_RADII.length * pixelCount);
         const maximumDeviation = floats('devmax');
@@ -501,13 +505,14 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         graph.add(
           new GPUTerrainTopographicPosition({
             id: 'topographic-position',
-            width,
-            height,
+            grid,
             elevation,
             scales: MULTISCALE_RADII.map(radius => ({radius})),
-            deviationFromMean: planes,
-            maximumDeviation,
-            maximumDeviationRadius: maximumRadius
+            output: {
+              deviationFromMean: planes,
+              maximumDeviation,
+              maximumDeviationRadius: maximumRadius
+            }
           })
         );
         addDisplayKernel(graph, {
@@ -538,14 +543,13 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         graph.add(
           new GPUTerrainWeissLandforms({
             id: 'weiss',
-            width,
-            height,
+            grid,
             elevation,
-            settings: settings.importToGraph(graph),
+            parameters: settings.importToGraph(graph),
             smallScale: {radius: smallRadius},
             largeScale: {radius: largeRadius},
             standardization,
-            landforms,
+            output: {landforms},
             cellSizeMode: 'uniform'
           })
         );
@@ -556,15 +560,14 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
         });
         writeSettings = () =>
           settings.write(
-            getGPUTerrainWeissLandformsParameterValues({
-              cellSize,
-              standardThreshold,
-              slopeThresholdDegrees: slopeThreshold
-            })
+            getGPUTerrainWeissLandformsParameterValues(
+              {standardThreshold, slopeThresholdDegrees: slopeThreshold},
+              grid
+            )
           );
       }
 
-      const compiled = resources.track(graph.compile());
+      const compiled = resources.track(await graph.compileAsync());
       writeSettings();
       return {
         compiled,
@@ -589,18 +592,22 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
 
     function rebuildProduct(): void {
       if (destroyed) return;
-      generation++;
-      try {
-        const previous = build;
-        build = buildProduct();
-        previous?.release();
-        hoverResolvedIndex = -1;
-        resetClamp();
-        context.setStatus('');
-        context.updateLayers();
-      } catch (error) {
-        context.setStatus(`Error: ${(error as Error).message}`);
-      }
+      graphSwap
+        .request({
+          build: buildProduct,
+          commit: next => {
+            generation++;
+            const previous = build;
+            build = next;
+            previous?.release();
+            hoverResolvedIndex = -1;
+            resetClamp();
+            context.setStatus('');
+            context.updateLayers();
+          },
+          discard: next => next.release()
+        })
+        .catch(error => context.setStatus(`Error: ${(error as Error).message}`));
     }
 
     function scheduleRebuild(): void {
@@ -633,7 +640,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
       ticket.markEncoded({byteOffset: 0, byteLength: pixelCount * 4});
       calibrationPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed || requestGeneration !== generation) return;
         const values = new Float32Array(
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + pixelCount * 4)
@@ -675,8 +682,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
       });
       ticket.markEncoded({byteOffset: 0, byteLength: 4});
       hoverPending = true;
-      void ticket
-        .read()
+      void scheduleReadback(() => ticket.read())
         .then(bytes => {
           if (destroyed) return;
           hoverValue = new Float32Array(
@@ -1070,7 +1076,7 @@ fn rampColor(diverging: bool, t: f32) -> vec3<f32> {
     controls.addButton({label: 'Measure GPU cost', onClick: () => void measureActive()});
 
     syncDisabled();
-    build = buildProduct();
+    build = await buildProduct();
     resetClamp();
 
     // --- Instance ------------------------------------------------------------------------------

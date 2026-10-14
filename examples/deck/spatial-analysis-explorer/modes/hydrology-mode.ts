@@ -15,6 +15,7 @@
  * (convergence flags and the stream cell count from `GPUHistogram`) through `GPUReadbackRing`.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -23,6 +24,7 @@ import {
   GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
   getGPUTerrainFlowParameterValues,
@@ -80,6 +82,7 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
     const cellCount = width * height;
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'hydrology');
+    const grid = makeGPURasterMetadata({width, height, cellSize});
     const cellAreaSquareMeters = cellSize[0] * cellSize[1];
 
     // Sea (elevation 0) is invalid: it has no elevation, so flow leaves the grid at the coast.
@@ -182,11 +185,12 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation,
-        settings: derivativesSettings.importToGraph(graph),
-        hillshade: importGraphBuffer(graph, 'hillshade', hillshadeBuffer, 'float32', cellCount),
+        parameters: derivativesSettings.importToGraph(graph),
+        output: {
+          hillshade: importGraphBuffer(graph, 'hillshade', hillshadeBuffer, 'float32', cellCount)
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -194,23 +198,26 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUTerrainFlow({
         id: 'flow',
-        width,
-        height,
+        grid,
         elevation,
-        settings: flowSettings.importToGraph(graph),
+        parameters: flowSettings.importToGraph(graph),
         cellSizeMode: 'uniform',
         fillDepressions: true,
-        maxFillIterations: MAXIMUM_FILL_ITERATIONS,
-        maxAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
+        maximumFillIterations: MAXIMUM_FILL_ITERATIONS,
+        maximumAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
         accumulationUnits: 'cells',
-        filledElevation: filled,
-        flowDirections: directions,
-        accumulation,
-        streams,
-        fillConverged,
-        accumulationConverged,
-        fillIterations,
-        accumulationIterations
+        output: {
+          filledElevation: filled,
+          flowDirections: directions,
+          accumulation,
+          streams,
+          status: {
+            fillConverged,
+            accumulationConverged,
+            fillIterationCount: fillIterations,
+            accumulationIterationCount: accumulationIterations
+          }
+        }
       })
     );
     graph.add(
@@ -246,7 +253,7 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       directions,
       output: importGraphBuffer(graph, 'direction-index', directionIndexBuffer, 'uint32', cellCount)
     });
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     // --- State ---------------------------------------------------------------------------------
     let display: Display = 'streams';
@@ -260,20 +267,24 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
     const getThresholdCells = () => Math.round(10 ** thresholdExponent);
     const writeFlowSettings = () => {
       flowSettings.write(
-        getGPUTerrainFlowParameterValues({
-          cellSize,
-          fillEpsilon: FILL_EPSILONS[epsilonIndex],
-          streamThreshold: getThresholdCells()
-        })
+        getGPUTerrainFlowParameterValues(
+          {
+            fillEpsilon: FILL_EPSILONS[epsilonIndex],
+            streamThreshold: getThresholdCells()
+          },
+          grid
+        )
       );
       dirty = true;
     };
     derivativesSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize,
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {
+          azimuthDegrees: SUN_AZIMUTH_DEGREES,
+          altitudeDegrees: SUN_ALTITUDE_DEGREES
+        },
+        grid
+      )
     );
     writeFlowSettings();
 
@@ -389,7 +400,7 @@ export const hydrologyMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: 24});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 6);
         const fillText = `fill ${words[0] ? 'yes' : 'no'} after ${words[4]} of ${MAXIMUM_FILL_ITERATIONS}`;

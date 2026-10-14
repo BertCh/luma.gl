@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -10,9 +11,9 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPUTimeWindowFilter,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -92,7 +93,7 @@ export const timeMode: SpatialAnalysisModeDefinition = {
     const windowBuffer = resources.createParameterBuffer(
       'window',
       'float32',
-      GPU_TIME_WINDOW_PARAMETER_LENGTH
+      GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
     );
     const drawCommands = resources.track(
       new DrawCommandBuffer(device, {
@@ -124,40 +125,42 @@ export const timeMode: SpatialAnalysisModeDefinition = {
           segmentCount
         ),
         window: windowBuffer.importToGraph(graph),
+        trackIds: importGraphBuffer(graph, 'track-ids', trackIdsBuffer, 'uint32', segmentCount),
         output: {
           ids: importGraphBuffer(graph, 'ids', idsBuffer, 'uint32', segmentCount),
-          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
-        },
-        fadeWeights: importGraphBuffer(
-          graph,
-          'fade-weights',
-          weightsBuffer,
-          'float32',
-          segmentCount
-        ),
-        clipFractions: importGraphBuffer(
-          graph,
-          'clip-fractions',
-          clipBuffer,
-          'float32x2',
-          segmentCount
-        ),
-        trackIds: importGraphBuffer(graph, 'track-ids', trackIdsBuffer, 'uint32', segmentCount),
-        trackVisibleCounts: importGraphBuffer(
-          graph,
-          'track-counts',
-          trackCountsBuffer,
-          'uint32',
-          tripCount
-        ),
-        drawInstanceCount: graph.importGPUData(
-          'draw-instance-count',
-          drawCommands.getInstanceCountData(0)
-        )
+          fadeWeights: importGraphBuffer(
+            graph,
+            'fade-weights',
+            weightsBuffer,
+            'float32',
+            segmentCount
+          ),
+          clipFractions: importGraphBuffer(
+            graph,
+            'clip-fractions',
+            clipBuffer,
+            'float32x2',
+            segmentCount
+          ),
+          trackVisibleCounts: importGraphBuffer(
+            graph,
+            'track-counts',
+            trackCountsBuffer,
+            'uint32',
+            tripCount
+          ),
+          drawInstanceCount: graph.importGPUData(
+            'draw-instance-count',
+            drawCommands.getInstanceCountData(0)
+          ),
+          status: {
+            count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     const [timeStart, timeEnd] = trips.timeRange;
     let trailSeconds = 180;
@@ -258,7 +261,7 @@ export const timeMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: 8 + tripCount * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         let activeTrips = 0;
@@ -285,7 +288,7 @@ export const timeMode: SpatialAnalysisModeDefinition = {
           currentTime = loopStart() + ((((currentTime - loopStart()) % span) + span) % span);
         }
         windowBuffer.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: currentTime - trailSeconds,
             end: currentTime,
             startFadeDuration: trailSeconds

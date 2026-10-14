@@ -63,14 +63,14 @@ export function packValueClassTable(
  *
  * @param table A parameter buffer written with {@link packValueClassTable}.
  */
-export function createValueClassPaintGraph(
+export async function createValueClassPaintGraph(
   resources: SpatialAnalysisResources,
   device: Device,
   id: string,
   source: {buffer: Buffer; length: number},
   table: GPUParameterBuffer<'float32'>,
   colors: Buffer
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const graph = new GPUCommandGraph<void>(device, {id: `${id}-class-paint`});
   addKernelPass(graph, {
     id: `${id}-class-colorize`,
@@ -112,5 +112,5 @@ fn isNotFinite(value: f32) -> bool {
   }
   colors[colorsOffset + index] = pack4x8unorm(color);`
   });
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }

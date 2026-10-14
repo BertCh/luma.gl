@@ -221,25 +221,25 @@ function getSnippet(state: SpatialWeightsOptions): string {
   ].filter(Boolean);
   const producer =
     kind === 'queen' || kind === 'rook'
-      ? `// 1. Which polygons touch? One output row per polygon, binary weights.
+      ? `// 1. Which features touch? One output row per feature (a multipart feature is one row), binary weights.
 graph.add(new GPUContiguityWeights({
   criterion: '${kind}',${Number(state.snapTolerance) > 0 ? `\n  snapTolerance: ${state.snapTolerance},          // metres, grid snap` : ''}
-  positions: vertices, ringOffsets, polygonOffsets,
-  weights: {offsets, neighbors, weights}, overflow
+  polygons: {kind: 'polygons', positions: vertices, featureOffsets, polygonOffsets, ringOffsets},
+  output: {offsets, neighbors, weights, status: {overflow, requiredCount, candidateOverflow}}
 }));`
       : kind === 'lattice'
         ? `// 1. Neighbours on a raster grid; a mask removes cells outside the map.
 graph.add(new GPULatticeWeights({
   width, height, criterion: '${state.latticeCriterion}', radius: ${state.latticeRadius},
   mask, cellSize: [cellMetres, cellMetres],
-  weights: {offsets, neighbors, weights}, overflow
+  output: {offsets, neighbors, weights, status: {overflow, requiredCount}}
 }));`
         : `// 1. ${kind === 'knn' ? `The ${state.k} nearest centroids of every place` : 'Every centroid within the distance band'}.
 graph.add(new GPUNeighborSearch({
   mode: '${kind === 'knn' ? 'knn' : 'radius'}',${kind === 'knn' ? `\n  k: ${state.k},` : ''}
   gridSize: [256, 256], positions: centroids,
   parameters,                          // radius, weightKind, kernel, rowStandardize: buffer writes
-  weights: {offsets, neighbors, weights, distances}, overflow
+  output: {offsets, neighbors, weights, distances, status: {overflow, requiredCount}}
 }));
 parameters.write(getGPUNeighborSearchParameterValues({
   bounds, ${kind === 'band' ? `radius: ${state.bandFactor} * medianSpacing, ` : ''}weightKind: '${state.weightKind}'${state.weightKind === 'kernel' ? `, kernel: '${state.kernel}'` : ''}${state.rowStandardize ? ', rowStandardize: true' : ''}
@@ -268,20 +268,20 @@ graph.add(new GPUSpatialWeightsAlgebra({
             ? '\n  weights, mask: populationMask,'
             : `\n  groupIds, groupCount: ${state.geography === 'us-counties' ? 49 : 78},`
   }
-  output: analysisWeights, overflow
+  output: {...analysisWeights, status: {overflow, requiredCount}}
 }));`;
   return `import {${imports.join(', ')}} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 ${producer}${transform}${algebra}
 
 // Diagnostics, lag and neighbourhood statistics read the same CSR.
-graph.add(new GPUSpatialWeightsSummary({weights, statistics, counts, cardinality}));
-graph.add(new GPUSpatialWeightsTranspose({weights, output: transposed, asymmetricSlots}));
+graph.add(new GPUSpatialWeightsSummary({weights, output: {statistics, counts, cardinality}}));
+graph.add(new GPUSpatialWeightsTranspose({weights, output: {...transposed, asymmetricSlots}}));
 graph.add(new GPUSpatialLag({weights, values, normalize: ${state.lagNormalize}, output: lag}));
 graph.add(new GPUNeighborhoodSummary({
   weights, values, categories: stateIds, includeFocal: ${state.includeFocal},${state.includeFocal ? ` focalWeight: ${state.focalWeight},` : ''}
   statistics: ['count', 'weightSum', 'sum', 'mean', 'min', 'max', 'standardDeviation', 'median'],
-  output: table, modes, entropy, maximumNeighbors: 64, overflow
+  maximumNeighbors: 64, output: {table, modes, entropy, status: {overflow}}
 }));`;
 }
 

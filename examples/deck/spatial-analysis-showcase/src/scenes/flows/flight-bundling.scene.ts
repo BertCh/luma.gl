@@ -482,26 +482,26 @@ export default defineScene<FlightBundlingOptions>({
 import {
   GPUEdgeBundling,
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
-  createGPUEdgeBundlingParameterValues
+  getGPUEdgeBundlingParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 const graph = new GPUCommandGraph(device, {id: 'bundling'});
 graph.add(
   new GPUEdgeBundling({
-    positions,                         // float32x2 [lon, lat] per airport (plus antimeridian copies)
-    sourceVertices, targetVertices,    // uint32 airport per edge end
+    nodePositions,                     // float32x2 [lon, lat] per airport (plus antimeridian copies)
+    sourceNodes, targetNodes,          // uint32 airport per edge end
     edgeMask,                          // uint32 per edge: the region and distance filters
     spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},  // degrees: longitude scaled by cos(mid-latitude)
     pointsPerEdge: ${state.pointsPerEdge},
-    iterations: 32,                    // compile-time maximum
+    maximumIterations: 32,             // compile-time maximum
     densityResolution: ${state.densityResolution},
     parameters: parameters.importToGraph(graph),
-    paths                              // float32x2 [edge * pointsPerEdge + point]
+    output: {paths}                    // float32x2 [edge * pointsPerEdge + point]
   })
 );
-const compiled = graph.compile();      // once
+const compiled = await graph.compileAsync();  // once
 // when a slider moves: write the parameter buffer, then encode again
-parameters.write(createGPUEdgeBundlingParameterValues({
+parameters.write(getGPUEdgeBundlingParameterValues({
   activeIterations: ${state.iterations},
   kernelRadius: ${state.kernelRadius},   // fraction of the work box side
   lambda: ${state.decay},

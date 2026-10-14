@@ -72,8 +72,16 @@ export class SpatialAnalysisResources {
     );
   }
 
-  /** Tracks any resource with `destroy()`, such as a compiled graph or `DrawCommandBuffer`. */
+  /**
+   * Tracks any resource with `destroy()`, such as a compiled graph or `DrawCommandBuffer`.
+   * After `destroy()`, a late resource (for example a graph whose `compileAsync()` resolved
+   * after the scene was closed) is destroyed at once instead of leaking.
+   */
   track<T extends Destroyable>(resource: T): T {
+    if (this.destroyed) {
+      resource.destroy();
+      return resource;
+    }
     this.resources.push(resource);
     return resource;
   }

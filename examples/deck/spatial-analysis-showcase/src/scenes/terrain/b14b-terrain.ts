@@ -11,17 +11,19 @@
  * contributor needs about the Mercator geometry:
  *
  * - contributors with a Web Mercator cell model (`GPUTerrainSummits`, `GPUTerrainPeakSnap`,
- *   `GPUTerrainDerivatives`, `GPUTerrainHorizon`) take `cellSize` (equatorial Mercator meters) with
- *   `northEdge` / `southEdge` (normalized Mercator y) and scale each row by the cosine of latitude;
+ *   `GPUTerrainDerivatives`, `GPUTerrainHorizon`) read the equatorial Mercator pixel size from
+ *   the `grid` (EPSG:3857 meters) and scale each row by the cosine of latitude;
  * - contributors with a planar cell model (`GPUTerrainViewshed`, `GPUTerrainLineOfSight`,
  *   `GPUTerrainCumulativeViewshed`) take one uniform ground cell size, here the ground size of the
  *   central row (the cosine of latitude varies by 0.1 percent across this 13.6 km window);
  * - `GPUPointHorizonProfile` and `GPUPointHorizonVisibility` have a true `'web-mercator'`
- *   projection: great-circle rays from `worldPixelSize` and the world pixel row of the window.
+ *   projection: great-circle rays from the grid's Mercator cell size and top-left corner.
  */
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import type {Buffer} from '@luma.gl/core';
+import type {GPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import type {LoadedDataset} from '../../data/catalog';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {LocalMetricProjection} from '../../engine/projection';
@@ -65,20 +67,16 @@ export type AlpsTerrain = {
   layerCellSize: readonly [number, number];
   /** Equatorial Web Mercator meters per analysis pixel. */
   mercatorCellSize: number;
-  /** Normalized Web Mercator y of the top of row 0 and of the bottom of the last row. */
-  northEdge: number;
-  southEdge: number;
+  /** Raster metadata in EPSG:3857 meters: origin `[minX, maxY]`, cell size `mercatorCellSize`. */
+  grid: GPURasterMetadata;
+  /**
+   * The same window as a planar raster: every cell is `groundCellSize` ground meters, origin at the
+   * Mercator top-left corner. For contributors with a uniform cell model and the planar
+   * point-horizon projection.
+   */
+  groundGrid: GPURasterMetadata;
   /** Ground meters per analysis pixel at the central row (uniform cell model). */
   groundCellSize: number;
-  /** World size in analysis pixels (`512 * 2^13 / stride`) and the world row of the top edge. */
-  worldPixelSize: number;
-  originY: number;
-  /** Cell settings every Mercator-aware parameter packer accepts. */
-  mercatorCellSettings: {
-    cellSize: readonly [number, number];
-    northEdge: number;
-    southEdge: number;
-  };
   /** Observers recorded in the dataset manifest. */
   observers: NamedPlace[];
   /** Pixel-center index position `[column, row]` (fractional) of a longitude and latitude. */
@@ -116,7 +114,6 @@ export function prepareAlpsTerrain(dataset: LoadedDataset, stride = 1): AlpsTerr
   const spec = raster.spec as Record<string, unknown>;
   const boundsMercator = spec.boundsMercator as [number, number, number, number];
   const sourceCellSize = spec.cellSizeMercatorM as number;
-  const tile = spec.webMercatorTile as {zoom: number; tileSize: number; originPixel: number[]};
   const sourceWidth = raster.width;
   const sourceHeight = raster.height;
   const width = Math.floor(sourceWidth / stride);
@@ -154,12 +151,20 @@ export function prepareAlpsTerrain(dataset: LoadedDataset, stride = 1): AlpsTerr
   const bounds: [number, number, number, number] = [minX, minY, maxX, maxY];
   const layerCellSize: [number, number] = [(maxX - minX) / width, (maxY - minY) / height];
   const mercatorCellSize = sourceCellSize * stride;
-  const northEdge = 0.5 - boundsMercator[3] / WORLD_METERS;
-  const southEdge = 0.5 - boundsMercator[1] / WORLD_METERS;
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: mercatorCellSize,
+    origin: [boundsMercator[0], boundsMercator[3]]
+  });
   const centerLatitude = getLatitude((boundsMercator[1] + boundsMercator[3]) / 2);
   const groundCellSize = mercatorCellSize * Math.cos((centerLatitude * Math.PI) / 180);
-  const worldPixelSize = (tile.tileSize * 2 ** tile.zoom) / stride;
-  const originY = tile.originPixel[1] / stride;
+  const groundGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: groundCellSize,
+    origin: [boundsMercator[0], boundsMercator[3]]
+  });
 
   const properties = dataset.properties as {
     observers?: Record<string, {lon: number; lat: number; elevationM: number}>;
@@ -221,16 +226,9 @@ export function prepareAlpsTerrain(dataset: LoadedDataset, stride = 1): AlpsTerr
     bounds,
     layerCellSize,
     mercatorCellSize,
-    northEdge,
-    southEdge,
+    grid,
+    groundGrid,
     groundCellSize,
-    worldPixelSize,
-    originY,
-    mercatorCellSettings: {
-      cellSize: [mercatorCellSize, mercatorCellSize],
-      northEdge,
-      southEdge
-    },
     observers,
     getPixel,
     getLongitudeLatitude,

@@ -253,32 +253,41 @@ export default defineScene<RasterJoinOptions>({
   },
 
   snippet: state => `import {
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
   GPUPolygonRasterization,
-  GPURasterJoin
+  GPURasterJoin,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 
 const width = ${64 * 2 ** state.resolutionLevel}, height = ${'/* long side scaled to the city */ '}width;
-extent.write(getGPUPolygonRasterizationExtentValues(originX, originY, cellWidth, cellHeight));
+// Planar metres, rows advance north from the bottom-left corner. The size is compile-time;
+// origin and cell size are per-frame values.
+const grid = makeGPURasterMetadata({
+  width, height, cellSize: [cellWidth, cellHeight], origin: [originX, originY], rowDirection: 'north'
+});
+extent.write(getGPUPolygonRasterizationParameterValues(grid));
 
 graph.add(
   new GPUPolygonRasterization({
-    width, height, extent: extent.importToGraph(graph),   // per frame: ${state.extent === 'viewport' ? 'follows the camera' : 'fixed to the city'}
-    polygonPositions, featureOffsets, polygonOffsets, ringOffsets,
+    grid, parameters: extent.importToGraph(graph),   // per frame: ${state.extent === 'viewport' ? 'follows the camera' : 'fixed to the city'}
+    positions, featureOffsets, polygonOffsets, ringOffsets,
     crossingCapacity,                                    // sized from the crossing count
-    zones, boundary, overflow, crossingCount
+    output: {zones, boundary, status: {overflow, crossingCount}}
   })
 );
 graph.add(
   new GPURasterJoin({
-    width, height, extent: extent.importToGraph(graph),
+    grid, parameters: extent.importToGraph(graph),
     points, values: researchGrade, zones, boundary, zoneCount: 77,
     output: {counts, sums, boundaryCounts, unassignedBoundaryCount, outsideCount,
              pointZones, pointBoundaryMask}              // error accounting
   })
 );
-// exact reference: GPUPointInPolygonJoin({points, polygons..., pointFeatureIds, featureCounts, overflow})
-const compiled = graph.compile();                        // once per resolution
+// exact reference: GPUPointInPolygonJoin({
+//   points: {kind: 'points', positions}, polygons: {kind: 'polygons', positions, featureOffsets, ...},
+//   output: {pointFeatureIds, featureCounts, status: {overflow}}
+// })
+const compiled = await graph.compileAsync();             // once per resolution
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {

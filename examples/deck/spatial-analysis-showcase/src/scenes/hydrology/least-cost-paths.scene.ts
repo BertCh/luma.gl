@@ -120,7 +120,7 @@ export default defineScene<LeastCostOptions>({
       step: 15,
       default: 60,
       format: formatMinutes,
-      help: 'Width of each of the eight isochrone bands, written to the bandThresholds buffer.'
+      help: 'Width of each of the eight isochrone bands, written to the costBreaks buffer.'
     },
     {
       kind: 'slider',
@@ -219,7 +219,7 @@ export default defineScene<LeastCostOptions>({
       step: 1,
       default: NO_DISTANCE_CAP_KILOMETERS,
       format: value => (value >= NO_DISTANCE_CAP_KILOMETERS ? 'no cap' : `${value} km`),
-      help: 'Cells farther than this from every seed get infinite distance and no allocation (the maxDistance setting).'
+      help: 'Cells farther than this from every seed get infinite distance and no allocation (the maximumDistance setting).'
     },
     {
       kind: 'select',
@@ -393,7 +393,7 @@ export default defineScene<LeastCostOptions>({
       headline: 'Travel-time bands expand unevenly across terrain',
       textAlternative:
         'Isochrone bands extend from the start across accessible terrain and stop at cliffs or the selected time budget.',
-      body: '`GPUCostDistance` computes the **least accumulated cost to every cell** from the start. Moves are 8-connected; the cost of a move is its ground length times the mean friction of the two cells. It is a tiled min-relaxation, so a front advances 16 cells per iteration and switches to directional sweeps for long corridors. The *Converged* readout reports iterations used out of the compile-time limit; nothing is read back to decide when to stop.\n\n**Time budget** below (a parameter, no recompile) cuts the spread off: drag it to 4 hours and the unreached canyon floor disappears. **Walking pace on flat ground** re-prices the map through `frictionParameters`. Bands are cost thresholds in a buffer (`bandThresholds`), so **Band width** is also a write.',
+      body: '`GPUCostDistance` computes the **least accumulated cost to every cell** from the start. Moves are 8-connected; the cost of a move is its ground length times the mean friction of the two cells. It is a tiled min-relaxation, so a front advances 16 cells per iteration and switches to directional sweeps for long corridors. The *Converged* readout reports iterations used out of the compile-time limit; nothing is read back to decide when to stop.\n\n**Time budget** below (a parameter, no recompile) cuts the spread off: drag it to 4 hours and the unreached canyon floor disappears. **Walking pace on flat ground** re-prices the map through `frictionParameters`. Bands are cost thresholds in a buffer (`costBreaks`), so **Band width** is also a write.',
       options: {display: 'bands', costLimit: 480},
       camera: {...CANYON_VIEW, transitionMs: 1400},
       controls: ['costLimit', 'speed', 'bandMinutes'],
@@ -419,7 +419,7 @@ export default defineScene<LeastCostOptions>({
       headline: 'Euclidean proximity differs from terrain travel time',
       textAlternative:
         'Distance bands from South and North Rim starts cross the canyon directly, contrasting with travel-time bands constrained by steep terrain.',
-      body: '`GPUDistanceField` is the cost-free counterpart: the **exact Euclidean distance** from every cell to the nearest seed, plus which seed it is (allocation, Voronoi zones). The map now shows the straight-line distance in kilometres from the South Rim *and* the North Rim (Bright Angel Point), the two starts. Compare it with the travel-time bands: the Colorado gorge, two kilometres across but a day to cross, is where the two pictures disagree most.\n\nThe exact mode is the separable Felzenszwalb-Huttenlocher transform. **Distance algorithm** below switches to the jump-flood preview (compiled on first use); press the "Time exact vs jump-flood on the canyon grid" button for GPU timings. **Distance cap** sets `maxDistance`. Pick *Nearest start by straight line* in **Map shows** for the allocation.',
+      body: '`GPUDistanceField` is the cost-free counterpart: the **exact Euclidean distance** from every cell to the nearest seed, plus which seed it is (allocation, Voronoi zones). The map now shows the straight-line distance in kilometres from the South Rim *and* the North Rim (Bright Angel Point), the two starts. Compare it with the travel-time bands: the Colorado gorge, two kilometres across but a day to cross, is where the two pictures disagree most.\n\nThe exact mode is the separable Felzenszwalb-Huttenlocher transform. **Distance algorithm** below switches to the jump-flood preview (compiled on first use); press the "Time exact vs jump-flood on the canyon grid" button for GPU timings. **Distance cap** sets `maximumDistance`. Pick *Nearest start by straight line* in **Map shows** for the allocation.',
       options: {display: 'distance', secondStart: true, placement: 'add-start'},
       camera: {...CANYON_VIEW, transitionMs: 1400},
       controls: ['display', 'distanceAlgorithm', 'distanceCap', 'timeDistance'],
@@ -615,30 +615,31 @@ import {
 // Friction kernel: minutes per metre, NaN for barriers (cliffs, water).
 //   friction = 0.01 * exp(3.5 * ${state.slopePenalty} * tan(slope)) * landCoverFactor[class]
 costGraph.add(new GPUCostDistance({
-  width, height, cellSizeMode: 'web-mercator',
+  grid, cellSizeMode: 'web-mercator',      // grid: EPSG:3857 meters, origin [minX, maxY]
   friction: {id: 'friction', format: 'float32', storage: {kind: 'buffer', values: friction}},
   frictionParameters,                      // [scale, offset]: scale = 6 / ${state.speed} km/h
-  settings: costSettings.importToGraph(costGraph),
+  parameters: costSettings.importToGraph(costGraph),
   sources, sourceCosts, sourceCount,       // up to 8 starts, per-start head start
-  maxIterations: 384,
-  costs, backLinks, bandThresholds, bands, bandCounts, converged, iterationCount
+  maximumIterations: 384,
+  costBreaks,                              // travel-time band edges, ascending
+  output: {costs, backLinks, bands, bandCounts, status: {converged, iterationCount}}
 }));
 pathGraph.add(new GPUCostDistancePath({
-  width, height, backLinks, target,        // target cell: a parameter write while you drag
-  output: {ids, count, overflow, requiredCount}
+  grid, backLinks, target,                 // target cell: a parameter write while you drag
+  output: {path: {ids, status: {count, overflow, requiredCount}}, status: {iterationLimitReached}}
 }));
 distanceGraph.add(new GPUDistanceField({
-  width, height, mode: '${state.distanceAlgorithm.startsWith('jump') ? 'jump-flood' : 'exact'}',${state.distanceAlgorithm.startsWith('jump') ? `\n  jumpFloodRefinementPasses: ${state.distanceAlgorithm.slice(-1)},` : ''}
-  settings: distanceSettings.importToGraph(distanceGraph),
+  grid: distanceGrid, mode: '${state.distanceAlgorithm.startsWith('jump') ? 'jump-flood' : 'exact'}',${state.distanceAlgorithm.startsWith('jump') ? `\n  jumpFloodRefinementIterationCount: ${state.distanceAlgorithm.slice(-1)},` : ''}
+  parameters: distanceSettings.importToGraph(distanceGraph),
   seedPositions, seedCount, seedMask,      // points and/or a raster of seeds
   output: {distances, allocation}
 }));
 
 // Per change (parameter writes, no recompile):
 costSettings.write(getGPUCostDistanceParameterValues({
-  cellSize, northEdge, southEdge, costLimit: ${state.costLimit >= NO_COST_LIMIT_MINUTES ? 'Infinity' : state.costLimit}
-}));
-bandThresholds.write(Float32Array.from({length: 8}, (_, i) => (i + 1) * ${state.bandMinutes}));
+  costLimit: ${state.costLimit >= NO_COST_LIMIT_MINUTES ? 'Infinity' : state.costLimit}
+}, grid));                                 // cell size and latitude band come from the grid
+costBreaks.write(Float32Array.from({length: 8}, (_, i) => (i + 1) * ${state.bandMinutes}));
 target.write(Uint32Array.of(destinationCell));
 costGraph.compiled.encode(commandEncoder, {parameters: undefined});   // when sources or costs changed
 pathGraph.compiled.encode(commandEncoder, {parameters: undefined});   // also when only the target moved`,

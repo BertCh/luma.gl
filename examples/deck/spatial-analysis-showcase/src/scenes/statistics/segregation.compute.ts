@@ -28,6 +28,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {ChartColor, ChartData, LineChartData} from '../chart-types';
@@ -383,12 +384,22 @@ export async function createSegregation(
         gridSize: [32, 32],
         positions: positionsView,
         parameters: buffers.searchParameter.importToGraph(searchGraph),
-        weights: importWeights(searchGraph, scale),
-        overflow: importGraphBuffer(searchGraph, `overflow-${scale}`, buffers.overflow, 'uint32', 1)
+        output: {
+          ...importWeights(searchGraph, scale),
+          status: {
+            overflow: importGraphBuffer(
+              searchGraph,
+              `overflow-${scale}`,
+              buffers.overflow,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
   });
-  const searchCompiled = resources.track(searchGraph.compile());
+  const searchCompiled = resources.track(await searchGraph.compileAsync());
 
   const getKey = (options: SegregationOptions) =>
     [
@@ -400,7 +411,7 @@ export async function createSegregation(
     ].join('|');
 
   // Variant graph: the weights transforms, then two GPUSegregation nodes over the same weights.
-  const compileVariant = (options: SegregationOptions): Variant => {
+  const compileVariant = async (options: SegregationOptions): Promise<Variant> => {
     const key = getKey(options);
     const graph = new GPUCommandGraph<void>(device, {id: `segregation-${key}`});
     const scaleWeights: (GPUSpatialWeights | null)[] = [null];
@@ -428,28 +439,31 @@ export async function createSegregation(
       length: number
     ): GraphDataView<'float32'> => importGraphBuffer(graph, name, buffer, 'float32', length);
     const common = {
-      unitCount: n,
       groupCount: GROUP_COUNT,
       scales: scaleWeights,
       selfWeight: Number(options.selfWeight),
       spatialForm: options.spatialForm,
-      atkinsonB: Number(options.atkinsonB)
+      atkinsonInequalityAversion: Number(options.atkinsonB)
     } as const;
     graph.add(
       new GPUSegregation({
         id: 'segregation',
         ...common,
         groupCounts: view('group-counts', groupCounts, n * GROUP_COUNT),
-        indices: view('indices', indices, SCALE_COUNT * layoutIndices.stride),
-        local: {
-          environment: view('local-environment', localEnvironment, SCALE_COUNT * n * GROUP_COUNT),
-          entropy: view('local-entropy', localEntropy, SCALE_COUNT * n),
-          dissimilarity: view(
+        output: {
+          indices: view('indices', indices, SCALE_COUNT * layoutIndices.stride),
+          localEnvironment: view(
+            'local-environment',
+            localEnvironment,
+            SCALE_COUNT * n * GROUP_COUNT
+          ),
+          localEntropy: view('local-entropy', localEntropy, SCALE_COUNT * n),
+          localDissimilarity: view(
             'local-dissimilarity',
             localDissimilarity,
             SCALE_COUNT * n * GROUP_COUNT
           ),
-          theil: view('local-theil', localTheil, SCALE_COUNT * n)
+          localTheil: view('local-theil', localTheil, SCALE_COUNT * n)
         }
       })
     );
@@ -459,18 +473,20 @@ export async function createSegregation(
         id: 'segregation-shuffled',
         ...common,
         groupCounts: view('group-counts-shuffled', shuffledCounts, n * GROUP_COUNT),
-        indices: view('indices-shuffled', shuffledIndices, SCALE_COUNT * layoutIndices.stride)
+        output: {
+          indices: view('indices-shuffled', shuffledIndices, SCALE_COUNT * layoutIndices.stride)
+        }
       })
     );
-    return {key, compiled: resources.track(graph.compile())};
+    return {key, compiled: resources.track(await graph.compileAsync())};
   };
 
   const variants = new Map<string, Variant>();
-  const getVariant = (options: SegregationOptions): Variant => {
+  const getVariant = async (options: SegregationOptions): Promise<Variant> => {
     const key = getKey(options);
     let variant = variants.get(key);
     if (!variant) {
-      variant = compileVariant(options);
+      variant = await compileVariant(options);
       variants.set(key, variant);
     }
     return variant;
@@ -545,13 +561,15 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
   }
   display[displayOffset + index] = value;`
   });
-  const displayCompiled = resources.track(displayGraph.compile());
+  const displayCompiled = resources.track(await displayGraph.compileAsync());
 
   // -------------------------------------------------------------------------------------------
   // State
   // -------------------------------------------------------------------------------------------
 
-  let active = getVariant(ctx.options);
+  let active = await getVariant(ctx.options);
+  // Variants stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
   let analysisDirty = true;
   let displayDirty = true;
   let latest: Latest | null = null;
@@ -1328,9 +1346,16 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
 
     setOption(id) {
       if (['weights', 'rowStandardize', 'spatialForm', 'selfWeight', 'atkinsonB'].includes(id)) {
-        active = getVariant(ctx.options);
-        analysisDirty = true;
-        reader.markStale();
+        // The previous variant keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => getVariant(ctx.options),
+          commit: variant => {
+            active = variant;
+            analysisDirty = true;
+            reader.markStale();
+            ctx.requestLayers();
+          }
+        });
       } else if (id === 'bandwidth') {
         writeSearchParameters();
         updateFurniture();

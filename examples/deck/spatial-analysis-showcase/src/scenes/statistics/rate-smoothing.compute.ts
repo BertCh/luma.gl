@@ -5,8 +5,6 @@
 import type {Layer} from '@deck.gl/core';
 import {
   addRateClusterMapRecipe,
-  getGPUPermutationParameterValues,
-  getGPUSpatialAutocorrelationParameterValues,
   GPU_EMPIRICAL_BAYES_SUMMARY,
   GPU_GLOBAL_SPATIAL_STATISTIC_FIELD,
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
@@ -17,7 +15,8 @@ import {
   GPUSpatialEmpiricalBayesRates,
   type GPUContiguityCriterion,
   type GPUInferenceAlternative,
-  type GPUInferenceMetadata
+  type GPUInferenceMetadata,
+  type GPURateClusterMapRecipeResult
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {getClassTableLayerProps} from '../../cartography/class-table';
@@ -40,6 +39,7 @@ import {
   type SpatialAnalysisStyleProps
 } from '../../engine/layers';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -96,7 +96,7 @@ export type RateSmoothingOptions = {
   analyze: 'standardized' | 'smoothed';
   criterion: GPUContiguityCriterion;
   gating: 'permutation' | 'analytic';
-  alternative: Exclude<GPUInferenceAlternative, 'less'>;
+  alternative: GPUInferenceAlternative;
   /** Benjamini-Hochberg FDR across the county tests (the recipe's `multipleTesting`); off is `'none'`. */
   falseDiscoveryRate: boolean;
   permutations: number;
@@ -132,7 +132,8 @@ const QUADRANT_NAMES = [
 type Variant = {
   compiled: CompiledGPUCommandGraph<void>;
   key: string;
-  inference: GPUInferenceMetadata;
+  /** Owns `inference`, which `setSettings` keeps in step with the shared parameter buffers. */
+  recipe: GPURateClusterMapRecipeResult;
 };
 
 /** Everything read back from the GPU after the graph ran. */
@@ -277,9 +278,13 @@ export async function createRateSmoothing(
   // GPU inputs and outputs.
   const verticesBuffer = resources.createBuffer('vertices', layout.vertices);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', layout.ringOffsets);
-  const featureRingOffsetsBuffer = resources.createBuffer(
-    'feature-ring-offsets',
-    layout.featureRingOffsets
+  const featureOffsetsBuffer = resources.createBuffer(
+    'feature-polygon-offsets',
+    layout.featurePolygonOffsets
+  );
+  const polygonOffsetsBuffer = resources.createBuffer(
+    'polygon-ring-offsets',
+    layout.polygonRingOffsets
   );
   const eventsBuffer = resources.createBuffer('events', events);
   const populationsBuffer = resources.createBuffer('woman-years', womenYears);
@@ -357,7 +362,7 @@ export async function createRateSmoothing(
       options.falseDiscoveryRate ? 'fdr' : '-'
     ].join('|');
 
-  const compileVariant = (options: RateSmoothingOptions): Variant => {
+  const compileVariant = async (options: RateSmoothingOptions): Promise<Variant> => {
     const key = compileKey(options);
     const graph = new GPUCommandGraph<void>(device, {id: `rate-smoothing-${key}`});
     const float = (id: string, buffer: typeof rawBuffer, length = n) =>
@@ -373,42 +378,53 @@ export async function createRateSmoothing(
       id: 'rates',
       events: eventsView,
       populations,
-      positions: importGraphBuffer(
-        graph,
-        'vertices',
-        verticesBuffer,
-        'float32x2',
-        layout.vertices.length / 2
-      ),
-      ringOffsets: word('ring-offsets', ringOffsetsBuffer, layout.ringOffsets.length),
-      polygonOffsets: word(
-        'feature-ring-offsets',
-        featureRingOffsetsBuffer,
-        layout.featureRingOffsets.length
-      ),
+      polygons: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          graph,
+          'vertices',
+          verticesBuffer,
+          'float32x2',
+          layout.vertices.length / 2
+        ),
+        featureOffsets: word(
+          'feature-polygon-offsets',
+          featureOffsetsBuffer,
+          layout.featurePolygonOffsets.length
+        ),
+        polygonOffsets: word(
+          'polygon-ring-offsets',
+          polygonOffsetsBuffer,
+          layout.polygonRingOffsets.length
+        ),
+        ringOffsets: word('ring-offsets', ringOffsetsBuffer, layout.ringOffsets.length)
+      },
       criterion: options.criterion,
       neighborCapacity,
       pairCapacity: n * 96,
       analyze: options.analyze,
       // The recipe default is Benjamini-Hochberg, so the uncorrected map must ask for 'none'.
       multipleTesting: options.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
-      parameters: autocorrelationParameters.importToGraph(graph),
+      parameters: autocorrelationParameters,
+      settings: {
+        significanceLevel: options.significance,
+        seed: options.seed,
+        permutationCount: options.permutations
+      },
       permutation:
         options.gating === 'permutation'
           ? {
-              parameters: permutationParameters.importToGraph(graph),
+              parameters: permutationParameters,
               maximumPermutations: MAXIMUM_PERMUTATIONS,
               alternative: options.alternative,
-              maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS,
-              permutations: options.permutations,
-              seed: options.seed
+              maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS
             }
           : undefined,
       palette: word('palette', paletteBuffer, GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH),
       outputs: {
         standardizedRates: standardized,
         smoothedRates: smoothed,
-        weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1),
+        status: {weightsOverflow: word('weights-overflow', weightsOverflowBuffer, 1)},
         zScores: float('z-scores', zScoresBuffer),
         quadrants: word('quadrants', quadrantsBuffer),
         colors: word('cluster-colors', colorsBuffer),
@@ -437,7 +453,7 @@ export async function createRateSmoothing(
         events: eventsView,
         populations,
         weights: recipe.weights,
-        smoothedRates: spatial
+        output: {smoothedRates: spatial}
       })
     );
     for (const [name, values] of [
@@ -452,29 +468,37 @@ export async function createRateSmoothing(
           weights: recipe.weights,
           values,
           statistics: ['moran'],
-          results: float(
-            `moran-${name}`,
-            globalBuffers[name],
-            GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
-          )
+          output: {
+            summary: float(
+              `moran-${name}`,
+              globalBuffers[name],
+              GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length
+            )
+          }
         })
       );
     }
-    return {key, compiled: resources.track(graph.compile()), inference: recipe.inference};
+    return {
+      key,
+      compiled: resources.track(await graph.compileAsync()),
+      recipe
+    };
   };
 
   const variants = new Map<string, Variant>();
-  const getVariant = (options: RateSmoothingOptions): Variant => {
+  const getVariant = async (options: RateSmoothingOptions): Promise<Variant> => {
     const key = compileKey(options);
     let variant = variants.get(key);
     if (!variant) {
-      variant = compileVariant(options);
+      variant = await compileVariant(options);
       variants.set(key, variant);
     }
     return variant;
   };
 
-  let active = getVariant(ctx.options);
+  let active = await getVariant(ctx.options);
+  // Variants stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
   let dirty = true;
   let latest: Latest | null = null;
   let legendHighlight: number[] | null = null;
@@ -516,7 +540,7 @@ export async function createRateSmoothing(
       clusterCounts: countQuadrants(latest.quadrants),
       groundIsDark: ctx.ground() === 'dark',
       pooledPerThousand: latest.pooledRate * RATE_SCALE,
-      inference: active.inference
+      inference: active.recipe.inference
     };
     ctx.setLegendData('rateSmoothing', legendData);
   };
@@ -875,12 +899,12 @@ export async function createRateSmoothing(
   const writeParameters = () => {
     const {significance, seed, permutations} = ctx.options;
     publishTest();
-    autocorrelationParameters.write(
-      getGPUSpatialAutocorrelationParameterValues({significanceLevel: significance})
-    );
-    permutationParameters.write(
-      getGPUPermutationParameterValues({seed, permutations, significanceLevel: significance})
-    );
+    // The recipe packs the shared parameter buffers and refreshes its `inference`; no rebuild.
+    active.recipe.setSettings({
+      significanceLevel: significance,
+      seed,
+      permutationCount: permutations
+    });
     dirty = true;
     reader.markStale();
   };
@@ -1284,10 +1308,18 @@ export async function createRateSmoothing(
 
     setOption(id) {
       if (['criterion', 'analyze', 'gating', 'alternative', 'falseDiscoveryRate'].includes(id)) {
-        active = getVariant(ctx.options);
-        publishTest();
-        dirty = true;
-        reader.markStale();
+        // The previous variant keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => getVariant(ctx.options),
+          commit: variant => {
+            active = variant;
+            // A cached variant's inference predates later settings changes.
+            writeParameters();
+            dirty = true;
+            reader.markStale();
+            ctx.requestLayers();
+          }
+        });
       } else if (['permutations', 'seed', 'significance'].includes(id)) {
         writeParameters();
       } else if (id === 'map' || id === 'swipe') {

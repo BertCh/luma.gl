@@ -24,6 +24,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -129,6 +130,7 @@ export async function createQuakeAftershocks(
   const {device} = ctx;
   const catalog = ctx.datasets.get('poopdeck-earthquakes');
   const resources = new SpatialAnalysisResources(device, 'quake-aftershocks');
+  const graphSwap = resources.track(new GraphSwap());
 
   const searchParameters = resources.createParameterBuffer(
     'search-parameters',
@@ -168,7 +170,7 @@ export async function createQuakeAftershocks(
   let lastChartMonth = -1;
   const variants = new Map<string, Variant>();
 
-  function buildVariant(key: string, events: QuakeEvents): Variant {
+  async function buildVariant(key: string, events: QuakeEvents): Promise<Variant> {
     const count = events.count;
     const buffer = (name: string, data: Float32Array | Uint32Array | number) =>
       resources.createBuffer(`${key}-${name}`, data);
@@ -198,7 +200,8 @@ export async function createQuakeAftershocks(
       offsets: v('offsets', offsets, 'uint32', count + 1),
       neighbors: v('neighbors', neighbors, 'uint32', slotCapacity),
       weights: v('weights', weights, 'float32', slotCapacity),
-      distances: v('distances', distances, 'float32', slotCapacity)
+      distances: v('distances', distances, 'float32', slotCapacity),
+      status: {overflow: v('overflow', overflow, 'uint32', 1)}
     };
     knoxGraph.add(
       new GPUNeighborSearch({
@@ -207,8 +210,7 @@ export async function createQuakeAftershocks(
         positions: positionsView,
         parameters: searchParameters.importToGraph(knoxGraph),
         gridSize: [64, 64],
-        weights: pairs,
-        overflow: v('overflow', overflow, 'uint32', 1)
+        output: pairs
       })
     );
     knoxGraph.add(
@@ -218,8 +220,10 @@ export async function createQuakeAftershocks(
         times: timesView,
         parameters: testParameters.importToGraph(knoxGraph),
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        statistics: v('knox-statistics', knoxStatistics, 'uint32', MAXIMUM_PERMUTATIONS + 1),
-        summary: v('knox-summary', knoxSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        output: {
+          statistics: v('knox-statistics', knoxStatistics, 'uint32', MAXIMUM_PERMUTATIONS + 1),
+          summary: v('knox-summary', knoxSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        }
       })
     );
     // One thread per pair slot finds its row by binary search and writes the segment of each
@@ -286,7 +290,7 @@ export async function createQuakeAftershocks(
   segments[segmentsOffset + index * 4u + 3u] = positions[positionsOffset + neighbor * 2u + 1u];
   fade[fadeOffset + index] = drawParameters[drawParametersOffset + 1u];`
     });
-    const knoxCompiled = resources.track(knoxGraph.compile());
+    const knoxCompiled = resources.track(await knoxGraph.compileAsync());
     const knoxReader = new SummaryReader(
       resources,
       `${key}-knox`,
@@ -355,14 +359,16 @@ export async function createQuakeAftershocks(
         bucketCount: MONTH_COUNT,
         output: {
           counts: countsView,
-          min: m('month-min', monthMin, 'float32', slotCount),
-          max: m('month-max', monthMax, 'float32', slotCount),
+          minimums: m('month-min', monthMin, 'float32', slotCount),
+          maximums: m('month-max', monthMax, 'float32', slotCount),
           first: m('month-first', monthFirst, 'float32', slotCount),
           last: m('month-last', monthLast, 'float32', slotCount),
           occupiedSlots: {
             ids: m('occupied-ids', buffer('occupied-ids', slotCount * 4), 'uint32', slotCount),
-            count: m('occupied-count', buffer('occupied-count', 4), 'uint32', 1),
-            overflow: m('occupied-overflow', buffer('occupied-overflow', 4), 'uint32', 1)
+            status: {
+              count: m('occupied-count', buffer('occupied-count', 4), 'uint32', 1),
+              overflow: m('occupied-overflow', buffer('occupied-overflow', 4), 'uint32', 1)
+            }
           }
         }
       })
@@ -399,7 +405,7 @@ export async function createQuakeAftershocks(
   }
   burst[burstOffset + index] = value;`
     });
-    const monthlyCompiled = resources.track(monthlyGraph.compile());
+    const monthlyCompiled = resources.track(await monthlyGraph.compileAsync());
     const monthlyReader = new SummaryReader(
       resources,
       `${key}-monthly`,
@@ -423,13 +429,13 @@ export async function createQuakeAftershocks(
     };
   }
 
-  function getVariant(): Variant {
+  async function getVariant(): Promise<Variant> {
     const options = ctx.options;
     const key = `${options.region}|${options.minimumMagnitude}`;
     let variant = variants.get(key);
     if (!variant) {
       const events = readQuakeEvents(catalog, options.region, Number(options.minimumMagnitude));
-      variant = buildVariant(key, events);
+      variant = await buildVariant(key, events);
       variants.set(key, variant);
     }
     return variant;
@@ -531,7 +537,7 @@ export async function createQuakeAftershocks(
     testParameters.write(
       getGPUSpaceTimeParameterValues({
         seed,
-        permutations: options.permutations,
+        permutationCount: options.permutations,
         timeThreshold: options.timeThreshold
       })
     );
@@ -589,8 +595,8 @@ export async function createQuakeAftershocks(
     if (month !== lastChartMonth && cpuCounts) showMonthly();
   }
 
-  function adoptVariant(): void {
-    current = getVariant();
+  function adoptVariant(variant: Variant): void {
+    current = variant;
     cpuCounts = null;
     lastChartMonth = -1;
     ctx.setReadout(
@@ -603,7 +609,7 @@ export async function createQuakeAftershocks(
     ctx.requestLayers();
   }
 
-  adoptVariant();
+  adoptVariant(await getVariant());
 
   return {
     getCompiledGraphs: () =>
@@ -613,7 +619,7 @@ export async function createQuakeAftershocks(
 
     setOption(id) {
       if (id === 'region' || id === 'minimumMagnitude') {
-        adoptVariant();
+        void graphSwap.request({build: getVariant, commit: adoptVariant});
         if (id === 'region') {
           // Follow the region unless the camera is already looking at it (a story step sets both).
           const [west, south, east, north] = QUAKE_REGIONS[ctx.options.region].bbox;

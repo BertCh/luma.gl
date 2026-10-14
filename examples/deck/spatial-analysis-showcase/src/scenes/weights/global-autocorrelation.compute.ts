@@ -16,7 +16,7 @@ import {
 import {
   getGPUPermutationParameterValues,
   GPU_GLOBAL_JOIN_COUNT_FIELD,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_GLOBAL_SPATIAL_STATISTIC_FIELD,
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
   GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY,
@@ -44,6 +44,7 @@ import {mercatorCaveat} from '../../cartography/projection-notes';
 import {getLocalProjector, projectRingsToSegments} from '../../cartography/segments';
 import type {ClassTable, LngLat, MapAnnotation, MapHighlight} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPolygonLayer,
   SpatialAnalysisSegmentLayer,
@@ -139,7 +140,7 @@ const HISTOGRAM_BINS = 24;
 const MAXIMUM_BANDS = 32;
 const MAXIMUM_SEED = 50;
 const STATISTICS_LENGTH = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length;
-const PERMUTATION_RESULT_LENGTH = GPU_GLOBAL_PERMUTATION_RESULT.length;
+const PERMUTATION_RESULT_LENGTH = GPU_GLOBAL_PERMUTATION_SUMMARY.length;
 /** Polygons drawn by a chart brush: more would be an unreadable tangle of outlines. */
 const MAXIMUM_BRUSHED_OUTLINES = 300;
 const FOCUS_POINTS: Record<GeographyId, [number, number]> = {
@@ -240,8 +241,10 @@ type World = {
   bivariateClasses: Uint32Array;
   focusRow: number;
   statsCompiled: CompiledGPUCommandGraph<void>;
-  /** The statistics graph for a row-standardized state of the weights (compiled on first use). */
-  getStats: (rowStandardized: boolean) => CompiledGPUCommandGraph<void>;
+  /** The statistics graph for a row-standardized state of the weights, once `prepareStats` compiled it. */
+  getStats: (rowStandardized: boolean) => CompiledGPUCommandGraph<void> | undefined;
+  /** Compiles the statistics graph for a row-standardized state of the weights (no-op when cached). */
+  prepareStats: (rowStandardized: boolean) => Promise<CompiledGPUCommandGraph<void>>;
   /** Every statistics graph compiled so far. */
   statsGraphs: () => CompiledGPUCommandGraph<void>[];
   permutation: Map<string, CompiledGPUCommandGraph<void>>;
@@ -297,6 +300,10 @@ export async function createGlobalAutocorrelation(
   let destroyed = false;
   let world: World | null = null;
   let switchToken = 0;
+  /** Serializes the compiles of the variants a `setOption` needs. */
+  const graphSwap = new GraphSwap();
+  /** Counts option changes, so a world that finishes loading can catch up with them. */
+  let optionRevision = 0;
   let dirty = true;
   let weightsDirty = true;
   let stale = true;
@@ -348,7 +355,7 @@ export async function createGlobalAutocorrelation(
   // ---------------------------------------------------------------------------------------
   // The world: buffers and graphs of one geography
   // ---------------------------------------------------------------------------------------
-  const buildWorld = (geography: Geography): World => {
+  const buildWorld = async (geography: Geography): Promise<World> => {
     const resources = new SpatialAnalysisResources(device, `global-${geography.id}`);
     const rowCount = geography.count;
     const create = (name: string, data: number | Float32Array | Uint32Array) =>
@@ -414,7 +421,9 @@ export async function createGlobalAutocorrelation(
     // weights' row-standardized state is compile-time (it makes the statistics re-standardize rows
     // over masked neighbours), so each state gets its own graph, built on first use.
     const statsGraphs = new Map<boolean, CompiledGPUCommandGraph<void>>();
-    const compileStats = (rowStandardized: boolean): CompiledGPUCommandGraph<void> => {
+    const compileStats = async (
+      rowStandardized: boolean
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `global-statistics-${geography.id}-${rowStandardized ? 'row' : 'raw'}`
       });
@@ -422,7 +431,7 @@ export async function createGlobalAutocorrelation(
         offsets: importGraphBuffer(graph, 'offsets', core.csr.offsets, 'uint32', rowCount + 1),
         neighbors: importGraphBuffer(graph, 'neighbors', core.csr.neighbors, 'uint32', core.slots),
         weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
-        info: getWeightsInfo(rowCount, rowStandardized)
+        information: getWeightsInfo(rowCount, rowStandardized)
       };
       const xView = importGraphBuffer(graph, 'x', x, 'float32', rowCount);
       const yView = importGraphBuffer(graph, 'y', y, 'float32', rowCount);
@@ -442,7 +451,7 @@ export async function createGlobalAutocorrelation(
           values: xView,
           mask: maskXView,
           statistics: ['moran', 'geary', 'getisOrdG'],
-          results: globalResults
+          output: {summary: globalResults}
         })
       );
       graph.add(
@@ -453,13 +462,15 @@ export async function createGlobalAutocorrelation(
           secondValues: yView,
           mask: maskXYView,
           statistics: ['bivariateMoran'],
-          results: importGraphBuffer(
-            graph,
-            'bivariate-results',
-            buffersByName.bivariateResults,
-            'float32',
-            STATISTICS_LENGTH
-          )
+          output: {
+            summary: importGraphBuffer(
+              graph,
+              'bivariate-results',
+              buffersByName.bivariateResults,
+              'float32',
+              STATISTICS_LENGTH
+            )
+          }
         })
       );
       graph.add(
@@ -469,13 +480,15 @@ export async function createGlobalAutocorrelation(
           values: importGraphBuffer(graph, 'shuffled-x', shuffled, 'float32', rowCount),
           mask: maskXView,
           statistics: ['moran'],
-          results: importGraphBuffer(
-            graph,
-            'shuffled-results',
-            buffersByName.shuffledResults,
-            'float32',
-            STATISTICS_LENGTH
-          )
+          output: {
+            summary: importGraphBuffer(
+              graph,
+              'shuffled-results',
+              buffersByName.shuffledResults,
+              'float32',
+              STATISTICS_LENGTH
+            )
+          }
         })
       );
       const lagView = importGraphBuffer(graph, 'lag', lag, 'float32', rowCount);
@@ -544,28 +557,37 @@ export async function createGlobalAutocorrelation(
           values: binaryView,
           mask: maskXView,
           statistics: ['joinCount'],
-          results: importGraphBuffer(
-            graph,
-            'join-results',
-            buffersByName.joinResults,
-            'float32',
-            STATISTICS_LENGTH
-          ),
-          joinCounts: importGraphBuffer(graph, 'join-counts', buffersByName.joinCounts, 'uint32', 3)
+          output: {
+            summary: importGraphBuffer(
+              graph,
+              'join-results',
+              buffersByName.joinResults,
+              'float32',
+              STATISTICS_LENGTH
+            ),
+            joinCounts: importGraphBuffer(
+              graph,
+              'join-counts',
+              buffersByName.joinCounts,
+              'uint32',
+              3
+            )
+          }
         })
       );
 
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
-    const getStats = (rowStandardized: boolean) => {
+    const getStats = (rowStandardized: boolean) => statsGraphs.get(rowStandardized);
+    const prepareStats = async (rowStandardized: boolean) => {
       let compiled = statsGraphs.get(rowStandardized);
       if (!compiled) {
-        compiled = compileStats(rowStandardized);
+        compiled = await compileStats(rowStandardized);
         statsGraphs.set(rowStandardized, compiled);
       }
       return compiled;
     };
-    const statsCompiled = getStats(isRowStandardized(getConfig()));
+    const statsCompiled = await prepareStats(isRowStandardized(getConfig()));
 
     const reader = new SummaryReader(
       resources,
@@ -617,6 +639,7 @@ export async function createGlobalAutocorrelation(
       focusRow,
       statsCompiled,
       getStats,
+      prepareStats,
       statsGraphs: () => [...statsGraphs.values()],
       permutation: new Map(),
       correlogram: new Map(),
@@ -723,7 +746,7 @@ export async function createGlobalAutocorrelation(
     const o = ctx.options;
     target.core.writeParameters(getConfig());
     target.permutationParameters.write(
-      getGPUPermutationParameterValues({seed: o.seed, permutations: o.permutations})
+      getGPUPermutationParameterValues({seed: o.seed, permutationCount: o.permutations})
     );
     const bounds = target.geography.bounds;
     target.correlogramParameters.write(
@@ -742,7 +765,7 @@ export async function createGlobalAutocorrelation(
       : `${o.statistic}-${o.alternative}-${isRowStandardized(getConfig()) ? 'row' : 'raw'}`;
   };
 
-  const preparePermutation = (target: World): boolean => {
+  const preparePermutation = async (target: World): Promise<boolean> => {
     const key = getPermutationKey();
     if (!key || target.permutation.has(key)) return false;
     const o = ctx.options;
@@ -775,7 +798,7 @@ export async function createGlobalAutocorrelation(
             'float32',
             target.core.slots
           ),
-          info: getWeightsInfo(rowCount, isRowStandardized(getConfig()))
+          information: getWeightsInfo(rowCount, isRowStandardized(getConfig()))
         },
         values: importGraphBuffer(graph, 'x', target.x, 'float32', rowCount),
         secondValues: bivariate
@@ -792,29 +815,31 @@ export async function createGlobalAutocorrelation(
         alternative: o.alternative,
         parameters: target.permutationParameters.importToGraph(graph),
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        results: importGraphBuffer(
-          graph,
-          'results',
-          target.buffersByName.permutationResults,
-          'float32',
-          PERMUTATION_RESULT_LENGTH
-        ),
-        histogram: importGraphBuffer(
-          graph,
-          'histogram',
-          target.buffersByName.histogram,
-          'uint32',
-          HISTOGRAM_BINS
-        )
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'results',
+            target.buffersByName.permutationResults,
+            'float32',
+            PERMUTATION_RESULT_LENGTH
+          ),
+          histogram: importGraphBuffer(
+            graph,
+            'histogram',
+            target.buffersByName.histogram,
+            'uint32',
+            HISTOGRAM_BINS
+          )
+        }
       })
     );
-    target.permutation.set(key, target.resources.track(graph.compile()));
+    target.permutation.set(key, target.resources.track(await graph.compileAsync()));
     return true;
   };
 
   const getCorrelogramKey = () => `${ctx.options.bandCount}-${ctx.options.bandMode}`;
 
-  const prepareCorrelogram = (target: World): boolean => {
+  const prepareCorrelogram = async (target: World): Promise<boolean> => {
     const key = getCorrelogramKey();
     if (target.correlogram.has(key)) return false;
     const o = ctx.options;
@@ -842,22 +867,26 @@ export async function createGlobalAutocorrelation(
         gridSize: [128, 128],
         bandCount: o.bandCount,
         bandMode: o.bandMode,
-        moransI: view('moransI', target.buffersByName.moransI, 'float32', o.bandCount),
-        zScores: view('zScores', target.buffersByName.zScores, 'float32', o.bandCount),
-        pValues: view('pValues', target.buffersByName.pValues, 'float32', o.bandCount),
-        expectedI: view('expectedI', target.buffersByName.expectedI, 'float32', o.bandCount),
-        pairCounts: view('pairCounts', target.buffersByName.pairCounts, 'uint32', o.bandCount),
-        overflow: view('overflow', target.buffersByName.correlogramOverflow, 'uint32', 1),
-        peakBands: view('peaks', target.buffersByName.peaks, 'uint32', 2),
-        statistics: view(
-          'statistics',
-          target.buffersByName.correlogramStatistics,
-          'float32',
-          GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
-        )
+        output: {
+          moransI: view('moransI', target.buffersByName.moransI, 'float32', o.bandCount),
+          zScores: view('zScores', target.buffersByName.zScores, 'float32', o.bandCount),
+          pValues: view('pValues', target.buffersByName.pValues, 'float32', o.bandCount),
+          expectedI: view('expectedI', target.buffersByName.expectedI, 'float32', o.bandCount),
+          pairCounts: view('pairCounts', target.buffersByName.pairCounts, 'uint32', o.bandCount),
+          status: {
+            overflow: view('overflow', target.buffersByName.correlogramOverflow, 'uint32', 1)
+          },
+          peakBands: view('peaks', target.buffersByName.peaks, 'uint32', 2),
+          statistics: view(
+            'statistics',
+            target.buffersByName.correlogramStatistics,
+            'float32',
+            GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
+          )
+        }
       })
     );
-    target.correlogram.set(key, target.resources.track(graph.compile()));
+    target.correlogram.set(key, target.resources.track(await graph.compileAsync()));
     return true;
   };
 
@@ -866,7 +895,7 @@ export async function createGlobalAutocorrelation(
   // ---------------------------------------------------------------------------------------
 
   /** Creates the second weights set and the one-pass Moran graph the comparison runs on. */
-  const ensureSweep = (target: World): Sweep => {
+  const ensureSweep = async (target: World): Promise<Sweep> => {
     if (target.sweep) return target.sweep;
     const {resources, geography} = target;
     const rowCount = geography.count;
@@ -887,17 +916,19 @@ export async function createGlobalAutocorrelation(
           ),
           weights: importGraphBuffer(graph, 'weights', core.csr.weights, 'float32', core.slots),
           // The comparison always row-standardizes (see getRuleConfig).
-          info: getWeightsInfo(rowCount, true)
+          information: getWeightsInfo(rowCount, true)
         },
         values: importGraphBuffer(graph, 'x', target.x, 'float32', rowCount),
         mask: importGraphBuffer(graph, 'mask', target.maskX, 'uint32', rowCount),
         statistics: ['moran'],
-        results: importGraphBuffer(graph, 'results', results, 'float32', STATISTICS_LENGTH)
+        output: {
+          summary: importGraphBuffer(graph, 'results', results, 'float32', STATISTICS_LENGTH)
+        }
       })
     );
     const sweep: Sweep = {
       core,
-      graph: resources.track(graph.compile()),
+      graph: resources.track(await graph.compileAsync()),
       reader: new SummaryReader(
         resources,
         `sweep-${geography.id}`,
@@ -914,15 +945,18 @@ export async function createGlobalAutocorrelation(
   };
 
   /** Compiles every rule's weights graph (a compile-time step, never inside `encode`). */
-  const prepareSweep = (target: World) => {
-    const sweep = ensureSweep(target);
-    for (const rule of RULES) sweep.core.prepare(getRuleConfig(rule));
+  const prepareSweep = async (target: World) => {
+    const sweep = await ensureSweep(target);
+    for (const rule of RULES) await sweep.core.prepare(getRuleConfig(rule));
   };
 
-  /** Starts the comparison again from the first rule (the variable or a rule parameter changed). */
+  /**
+   * Starts the comparison again from the first rule (the variable or a rule parameter changed).
+   * `prepareSweep` created the sweep before this runs.
+   */
   const restartSweep = (target: World) => {
-    if (!ctx.options.showRuleSweep) return;
-    const sweep = ensureSweep(target);
+    const sweep = target.sweep;
+    if (!ctx.options.showRuleSweep || !sweep) return;
     sweep.values = RULES.map(() => Number.NaN);
     sweep.index = 0;
     sweep.state = 'running';
@@ -1097,7 +1131,7 @@ export async function createGlobalAutocorrelation(
       ctx.setChart('nullDistribution', null);
       return;
     }
-    const R = GPU_GLOBAL_PERMUTATION_RESULT;
+    const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
     const permutation = snapshot.permutation;
     const observed = permutation[R.observed];
     const {values, domain} = rebinHistogram(
@@ -1289,7 +1323,7 @@ export async function createGlobalAutocorrelation(
     const sweep = target.sweep;
     ctx.setCost({
       records: included ?? target.geography.count,
-      passes: getStatsGraph(target).stats.nodeOrder.length,
+      passes: (getStatsGraph(target) ?? target.statsCompiled).stats.nodeOrder.length,
       note:
         sweep && sweep.state === 'done'
           ? `${sweep.core.getGraphs().length} weights graphs compiled once, reused for 4 rules`
@@ -1306,7 +1340,7 @@ export async function createGlobalAutocorrelation(
     const F = GPU_GLOBAL_SPATIAL_STATISTIC_FIELD;
     const S = GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY;
     const J = GPU_GLOBAL_JOIN_COUNT_FIELD;
-    const R = GPU_GLOBAL_PERMUTATION_RESULT;
+    const R = GPU_GLOBAL_PERMUTATION_SUMMARY;
     const global = snapshot.global;
     const describe = (block: number, values: Float32Array) => ({
       statistic: values[block + F.statistic],
@@ -1350,7 +1384,7 @@ export async function createGlobalAutocorrelation(
         ctx.setReadout(id, 'no permutation test for join counts');
       }
     } else {
-      const shuffles = permutation[R.permutations];
+      const shuffles = permutation[R.permutationCount];
       ctx.setReadout('pSim', formatPseudoPValue(permutation[R.pseudoPValue]));
       ctx.setReadout('pFloor', formatPseudoPValue(getMinimumPseudoP(o.alternative, shuffles)));
       ctx.setReadout('permutations', formatCount(shuffles));
@@ -1471,13 +1505,22 @@ export async function createGlobalAutocorrelation(
       previous.sweep?.reader.stop();
       setTimeout(() => previous.resources.destroy(), 200);
     }
-    const next = buildWorld(geography);
+    // The world becomes live only once its variants exist, because `encode` runs while it compiles.
+    const next = await buildWorld(geography);
+    let revision: number;
+    do {
+      revision = optionRevision;
+      await prepareAll(next);
+    } while (revision !== optionRevision && token === switchToken && !destroyed);
+    if (token !== switchToken || destroyed) {
+      next.resources.destroy();
+      return;
+    }
     world = next;
     legendHighlight = null;
     writeVariables(next);
-    prepareAll();
     writeParameters();
-    if (ctx.options.showRuleSweep) restartSweep(next);
+    restartSweep(next);
     dirty = true;
     weightsDirty = true;
     stale = true;
@@ -1488,22 +1531,22 @@ export async function createGlobalAutocorrelation(
     ctx.requestLayers();
   };
 
-  const prepareAll = () => {
-    const target = world;
-    if (!target) return;
-    target.core.prepare(getConfig());
-    preparePermutation(target);
-    prepareCorrelogram(target);
-    if (ctx.options.showRuleSweep) prepareSweep(target);
+  /** Compiles every variant the current options need. Only fills caches the running frame ignores. */
+  const prepareAll = async (target: World) => {
+    await target.prepareStats(isRowStandardized(getConfig()));
+    await target.core.prepare(getConfig());
+    await preparePermutation(target);
+    await prepareCorrelogram(target);
+    if (ctx.options.showRuleSweep) await prepareSweep(target);
   };
 
   const initial = await getGeography(ctx.options.geography);
   if (ctx.signal.aborted) throw new Error('aborted');
-  world = buildWorld(initial);
+  world = await buildWorld(initial);
   writeVariables(world);
-  prepareAll();
+  await prepareAll(world);
   writeParameters();
-  if (ctx.options.showRuleSweep) restartSweep(world);
+  restartSweep(world);
   publishFurniture();
   updateAnnotations();
   ctx.setStatus('');
@@ -1653,6 +1696,37 @@ export async function createGlobalAutocorrelation(
     return [{...xRow, emphasis: true}, rank, ...(lagRow ? [lagRow] : []), quadrantRow];
   };
 
+  /** Option ids whose compiles are in flight; the committed swap applies all of them. */
+  const pendingOptionIds: string[] = [];
+
+  /**
+   * Publishes what an option changed once the variants it needs exist.
+   *
+   * @returns true when the GPU graphs must run again.
+   */
+  const applyOption = (target: World, id: string): boolean => {
+    if (id === 'variable') restartSweep(target);
+    if (id === 'showRuleSweep' || id === 'k' || id === 'bandFactor') restartSweep(target);
+    if (['display', 'showBands', 'showShuffled', 'showOutlines', 'variable'].includes(id)) {
+      publishFurniture();
+      updateAnnotations();
+    }
+    // Pure display options never touch the GPU graphs.
+    if (['display', 'showBands', 'showShuffled', 'showOutlines', 'showRuleSweep'].includes(id)) {
+      if (id === 'showRuleSweep' || id === 'showBands') publishFurniture();
+      if (target.snapshot) publishScatter();
+      if (id === 'showRuleSweep') {
+        const sweep = target.sweep;
+        if (sweep?.state === 'done') publishSweepChart(sweep);
+        publishCost();
+      }
+      ctx.requestLayers();
+      return false;
+    }
+    if (id === 'source' && target.sweep?.state === 'done') publishSweepChart(target.sweep);
+    return true;
+  };
+
   // ---------------------------------------------------------------------------------------
   // The instance
   // ---------------------------------------------------------------------------------------
@@ -1670,6 +1744,7 @@ export async function createGlobalAutocorrelation(
     },
 
     setOption(id, value) {
+      optionRevision++;
       if (id === 'geography') {
         void switchWorld(value as GeographyId);
         return;
@@ -1682,40 +1757,34 @@ export async function createGlobalAutocorrelation(
       }
       if (id === 'variable' || id === 'secondVariable' || id === 'joinPercentile') {
         writeVariables(target);
-        if (id !== 'secondVariable' && id !== 'joinPercentile') restartSweep(target);
       }
       if (id === 'seed') writeShuffled(target);
       if (['source', 'k', 'bandFactor', 'transform'].includes(id)) {
         weightsDirty = true;
       }
-      if (id === 'showRuleSweep' || id === 'k' || id === 'bandFactor') {
-        if (ctx.options.showRuleSweep) {
-          prepareSweep(target);
-          restartSweep(target);
-        }
-      }
-      if (['display', 'showBands', 'showShuffled', 'showOutlines', 'variable'].includes(id)) {
-        publishFurniture();
-        updateAnnotations();
-      }
-      // Pure display options never touch the GPU graphs.
-      if (['display', 'showBands', 'showShuffled', 'showOutlines', 'showRuleSweep'].includes(id)) {
-        if (id === 'showRuleSweep' || id === 'showBands') publishFurniture();
-        if (target.snapshot) publishScatter();
-        if (id === 'showRuleSweep') {
-          const sweep = target.sweep;
-          if (sweep?.state === 'done') publishSweepChart(sweep);
-          publishCost();
-        }
-        ctx.requestLayers();
+      // Only these options never need a graph, so they apply at once.
+      if (['display', 'showBands', 'showShuffled', 'showOutlines'].includes(id)) {
+        applyOption(target, id);
         return;
       }
-      if (id === 'source' && target.sweep?.state === 'done') publishSweepChart(target.sweep);
-      prepareAll();
-      writeParameters();
-      dirty = true;
-      stale = true;
-      ctx.requestLayers();
+      // The rest may need variants that are not compiled yet: `encode` waits for the swap.
+      pendingOptionIds.push(id);
+      void graphSwap.request({
+        build: () => prepareAll(target),
+        commit: () => {
+          if (world !== target) return;
+          const ids = pendingOptionIds.splice(0);
+          let touchedGraphs = false;
+          for (const optionId of ids)
+            touchedGraphs = applyOption(target, optionId) || touchedGraphs;
+          if (touchedGraphs) {
+            writeParameters();
+            dirty = true;
+            stale = true;
+            ctx.requestLayers();
+          }
+        }
+      });
     },
 
     onAction(id) {
@@ -1742,13 +1811,14 @@ export async function createGlobalAutocorrelation(
 
     encode(commandEncoder: CommandEncoder, frame) {
       const target = world;
-      if (!target) return;
+      // While a swap compiles, the options name variants that may not exist yet.
+      if (!target || graphSwap.pending) return;
       if (dirty || frame.frameIndex < 2) {
         if (weightsDirty || frame.frameIndex < 2) {
           target.core.encode(commandEncoder, getConfig());
           weightsDirty = false;
         }
-        getStatsGraph(target).encode(commandEncoder, {parameters: undefined});
+        getStatsGraph(target)?.encode(commandEncoder, {parameters: undefined});
         const permutationKey = getPermutationKey();
         if (permutationKey) {
           target.permutation.get(permutationKey)?.encode(commandEncoder, {parameters: undefined});
@@ -1904,6 +1974,7 @@ export async function createGlobalAutocorrelation(
     destroy() {
       destroyed = true;
       switchToken++;
+      graphSwap.destroy();
       const target = world;
       world = null;
       if (target) {

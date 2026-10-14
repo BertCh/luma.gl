@@ -11,6 +11,7 @@
  * row is a variant pick or a buffer write, never a recompile.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Buffer, CommandEncoder, Device} from '@luma.gl/core';
 import {
   GPUCommandGraph,
@@ -198,7 +199,7 @@ const FOCUS_BODY = /* wgsl */ `
   neighborIds[neighborIdsOffset + index] = other;`;
 
 /** Builds the transform, transpose, union, summary, lag and focus graphs of one weights source. */
-export function createWeightsKit(props: WeightsKitProps): WeightsKit {
+export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsKit> {
   const {device, resources, id, rowCount, slots, unionSlots, positions, values, csr} = props;
   const create = (name: string, data: number | Uint32Array) =>
     resources.createBuffer(`${id}-${name}`, data);
@@ -277,7 +278,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
             : undefined
       })
     );
-    transforms.set(operation, resources.track(graph.compile()));
+    transforms.set(operation, resources.track(await graph.compileAsync()));
   }
 
   // Summary of the weights (own graph unless another graph already fills the buffers).
@@ -288,18 +289,32 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       new GPUSpatialWeightsSummary({
         id: 'weights-summary',
         weights: importCsr(graph, 'a', csr, slots),
-        statistics: importGraphBuffer(
-          graph,
-          'statistics',
-          summaryStatistics,
-          'float32',
-          SUMMARY_STATISTICS_LENGTH
-        ),
-        counts: importGraphBuffer(graph, 'counts', summaryCounts, 'uint32', SUMMARY_COUNTS_LENGTH),
-        cardinality: importGraphBuffer(graph, 'cardinality', cardinalityBuffer!, 'uint32', rowCount)
+        output: {
+          statistics: importGraphBuffer(
+            graph,
+            'statistics',
+            summaryStatistics,
+            'float32',
+            SUMMARY_STATISTICS_LENGTH
+          ),
+          counts: importGraphBuffer(
+            graph,
+            'counts',
+            summaryCounts,
+            'uint32',
+            SUMMARY_COUNTS_LENGTH
+          ),
+          cardinality: importGraphBuffer(
+            graph,
+            'cardinality',
+            cardinalityBuffer!,
+            'uint32',
+            rowCount
+          )
+        }
       })
     );
-    summaryCompiled = resources.track(graph.compile());
+    summaryCompiled = resources.track(await graph.compileAsync());
   }
 
   // W transpose and the symmetrised union W OR W'.
@@ -311,14 +326,16 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       new GPUSpatialWeightsTranspose({
         id: 'transpose',
         weights: source,
-        output: transposeView,
-        asymmetricSlots: importGraphBuffer(
-          transposeGraph,
-          'asymmetric',
-          asymmetricBuffer,
-          'uint32',
-          1
-        )
+        output: {
+          ...transposeView,
+          asymmetricSlots: importGraphBuffer(
+            transposeGraph,
+            'asymmetric',
+            asymmetricBuffer,
+            'uint32',
+            1
+          )
+        }
       })
     );
     transposeGraph.add(
@@ -327,25 +344,29 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         operation: 'union',
         left: source,
         right: transposeView,
-        output: importCsr(transposeGraph, 's', union, unionSlots),
-        overflow: importGraphBuffer(
-          transposeGraph,
-          'union-overflow',
-          unionOverflowBuffer,
-          'uint32',
-          1
-        ),
-        totalNeighbors: importGraphBuffer(
-          transposeGraph,
-          'union-total',
-          unionTotalBuffer,
-          'uint32',
-          1
-        )
+        output: {
+          ...importCsr(transposeGraph, 's', union, unionSlots),
+          status: {
+            overflow: importGraphBuffer(
+              transposeGraph,
+              'union-overflow',
+              unionOverflowBuffer,
+              'uint32',
+              1
+            ),
+            requiredCount: importGraphBuffer(
+              transposeGraph,
+              'union-total',
+              unionTotalBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
   }
-  const transposeCompiled = resources.track(transposeGraph.compile());
+  const transposeCompiled = resources.track(await transposeGraph.compileAsync());
 
   // Spatial lag of the value column, plain or normalized, and its extent for the color range.
   const lagVariants = new Map<boolean, CompiledGPUCommandGraph<void>>();
@@ -369,7 +390,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         operation: 'extent'
       })
     );
-    lagVariants.set(normalize, resources.track(graph.compile()));
+    lagVariants.set(normalize, resources.track(await graph.compileAsync()));
   }
 
   // Neighbor links of the focus row, one graph per matrix (all rows share the focus buffer).
@@ -419,7 +440,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       declarations: `const ROW_COUNT: u32 = ${rowCount}u;`,
       body: FOCUS_BODY
     });
-    focusGraphs[name] = resources.track(graph.compile());
+    focusGraphs[name] = resources.track(await graph.compileAsync());
   }
 
   // Optional full-matrix segments of the transpose and the union.
@@ -456,7 +477,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         declarations: `const ROW_COUNT: u32 = ${rowCount}u;`,
         body: SEGMENT_BODY
       });
-      const compiled = resources.track(graph.compile());
+      const compiled = resources.track(await graph.compileAsync());
       allGraphs.push(compiled);
       allGraphByMatrix[name] = compiled;
       allSegments[name] = {segments, fade, slots: count};
@@ -537,7 +558,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       copy(infoBuffers.transpose, 2);
       copy(infoBuffers.union, 2);
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
-      const bytes = await ticket.read();
+      const bytes = await scheduleReadback(() => ticket.read());
       const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
       const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
       const layout = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT;
@@ -635,6 +656,8 @@ export type BlockGeometry = {
   ringOffsets: Uint32Array;
   /** `polygonCount + 1`, one ring per polygon. */
   polygonOffsets: Uint32Array;
+  /** `polygonCount + 1`, one polygon per feature, so contiguity rows equal blocks. */
+  featureOffsets: Uint32Array;
   /** Mean of the four vertices, `x, y` per polygon. */
   centroids: Float32Array;
   /** Ring edges `x0, y0, x1, y1`, four per polygon. */
@@ -707,15 +730,18 @@ export function buildBlockGeometry(
   });
   const ringOffsets = new Uint32Array(polygonCount + 1);
   const polygonOffsets = new Uint32Array(polygonCount + 1);
+  const featureOffsets = new Uint32Array(polygonCount + 1);
   for (let index = 0; index <= polygonCount; index++) {
     ringOffsets[index] = index * 4;
     polygonOffsets[index] = index;
+    featureOffsets[index] = index;
   }
   return {
     polygonCount,
     positions,
     ringOffsets,
     polygonOffsets,
+    featureOffsets,
     centroids,
     outline,
     gridCells,

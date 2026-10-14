@@ -361,25 +361,26 @@ routes.add(new GPUTrajectoryResample({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets,
   sampleCount: ${state.routeSamples}, spacing: '${state.routeSpacing}',      // compile-time
-  samples                                  // storms x ${state.routeSamples} float32x2 rows (degrees)
+  output: {samples}                        // storms x ${state.routeSamples} float32x2 rows (degrees)
 }));
 
 const similarity = new GPUCommandGraph(device, {id: 'similarity'});
 similarity.add(new GPUTrackSimilarity({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positionsA: samples, offsetsA: sampleOffsets,
+  linesA: {kind: 'lines', positions: samples, lineOffsets: sampleOffsets},
   pairA, pairB,                            // every unordered pair of storms
-  frechet, hausdorff, status,              // one float32 per pair
-  maxFrechetVertices: ${state.routeSamples}
+  maximumFrechetVertexCount: ${state.routeSamples},
+  output: {frechet, hausdorff, pairStatus: status}   // one float32 per pair
 }));
 
 // distances -> two-dimensional embedding on the CPU (classical scaling), then:
 const families = new GPUCommandGraph(device, {id: 'families'});
 families.add(new GPUKMeans({
   positions: embedding,                    // float32x2 per storm
-  k: ${state.familyCount}, iterations: ${state.iterations},
-  initialization: '${state.initialization}'${state.initialization === 'kmeans++' ? `, seed: ${state.seed}` : ''},
-  labels, centers, sizes, convergence, squaredDistances
+  k: ${state.familyCount}, maximumIterations: ${state.iterations},
+  initialization: '${state.initialization}',
+  parameters: kmeansParameters.importToGraph(families),   // getGPUKMeansParameterValues({seed: ${state.seed}})
+  output: {labels, centers, sizes, squaredDistances, status: {iterationCount, converged}}
 }));`,
 
   about: {

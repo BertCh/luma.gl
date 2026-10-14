@@ -6,28 +6,30 @@ import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
   GPUCommandGraph,
-  GPUReadbackRing,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPULineIntegralConvolutionParameterValues,
-  getGPULineIntegralConvolutionWordParameterValues,
+  getGPULineIntegralConvolutionUint32ParameterValues,
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   getGPUStreamlinesParameterValues,
-  getGPUStreamlinesWordParameterValues,
+  getGPUStreamlinesUint32ParameterValues,
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
-  GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH,
+  GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
   GPU_STREAMLINES_PARAMETER_LENGTH,
-  GPU_STREAMLINES_WORD_PARAMETER_LENGTH,
+  GPU_STREAMLINES_UINT32_PARAMETER_LENGTH,
   GPULineIntegralConvolution,
   GPUParticleAdvection,
-  GPUStreamlines
+  GPUStreamlines,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {fetchBytes, getDataFileUrl} from '../../data/loaders';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
+import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createGraphViewer, formatFixed} from './b16-common';
@@ -241,7 +243,7 @@ export async function createWindFlow(
   const particleWords = resources.createParameterBuffer(
     'particle-words',
     'uint32',
-    GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+    GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
   );
   const licParameters = resources.createParameterBuffer(
     'lic-parameters',
@@ -251,7 +253,7 @@ export async function createWindFlow(
   const licWords = resources.createParameterBuffer(
     'lic-words',
     'uint32',
-    GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
+    GPU_LINE_INTEGRAL_CONVOLUTION_UINT32_PARAMETER_LENGTH
   );
   const streamParameters = resources.createParameterBuffer(
     'stream-parameters',
@@ -261,7 +263,7 @@ export async function createWindFlow(
   const streamWords = resources.createParameterBuffer(
     'stream-words',
     'uint32',
-    GPU_STREAMLINES_WORD_PARAMETER_LENGTH
+    GPU_STREAMLINES_UINT32_PARAMETER_LENGTH
   );
 
   // --- Streamlines (compile-time grid and seed lattice) -------------------------------------------
@@ -279,9 +281,6 @@ export async function createWindFlow(
       commands: [{vertexCount: 6, instanceCount: 0}]
     })
   );
-  const summaryRing = resources.track(
-    new GPUReadbackRing(device, {id: 'wind-stream-summary', byteLength: 16})
-  );
   const streamGraph = new GPUCommandGraph<void>(device, {id: 'wind-streamlines'});
   {
     const view = createGraphViewer(streamGraph);
@@ -296,28 +295,32 @@ export async function createWindFlow(
         seedColumns: STREAM_SEED_COLUMNS,
         seedRows: STREAM_SEED_ROWS,
         stepsPerDirection: STREAM_STEPS,
-        roundCount: STREAM_ROUNDS,
+        maximumIterations: STREAM_ROUNDS,
         parameters: streamParameters.importToGraph(streamGraph),
-        wordParameters: streamWords.importToGraph(streamGraph),
+        uint32Parameters: streamWords.importToGraph(streamGraph),
         output: {
           lines: {
             ids: view('ids', streamIds, 'uint32', STREAM_LINE_CAPACITY),
-            count: view('count', streamCount, 'uint32', 1),
-            overflow: view('overflow', streamOverflow, 'uint32', 1)
+            status: {
+              count: view('count', streamCount, 'uint32', 1),
+              overflow: view('overflow', streamOverflow, 'uint32', 1)
+            }
           },
-          pathOffsets: view('offsets', streamOffsets, 'uint32', STREAM_LINE_CAPACITY + 1),
-          points: view('points', streamPoints, 'float32x2', STREAM_POINT_CAPACITY),
-          pointCount: view('point-count', streamPointCount, 'uint32', 1),
-          unconverged: view('unconverged', streamUnconverged, 'uint32', 1)
+          lineOffsets: view('offsets', streamOffsets, 'uint32', STREAM_LINE_CAPACITY + 1),
+          positions: view('points', streamPoints, 'float32x2', STREAM_POINT_CAPACITY),
+          positionCount: view('point-count', streamPointCount, 'uint32', 1),
+          status: {
+            iterationLimitReached: view('unconverged', streamUnconverged, 'uint32', 1)
+          }
         }
       })
     );
   }
-  const compiledStreamlines = resources.track(streamGraph.compile());
+  const compiledStreamlines = resources.track(await streamGraph.compileAsync());
 
   // --- Rebuildable graphs ------------------------------------------------------------------------
   let setCounter = 0;
-  const buildParticles = (count: number, trailLength: number): ParticleSet => {
+  const buildParticles = async (count: number, trailLength: number): Promise<ParticleSet> => {
     const scope = new SpatialAnalysisResources(device, `wind-particles-${setCounter++}`);
     const positions = scope.createBuffer('positions', count * 8);
     const ages = scope.createBuffer('ages', count * 4);
@@ -333,29 +336,31 @@ export async function createWindFlow(
         fieldWidth: FIELD_WIDTH,
         fieldHeight: FIELD_HEIGHT,
         parameters: particleParameters.importToGraph(graph),
-        wordParameters: particleWords.importToGraph(graph),
+        uint32Parameters: particleWords.importToGraph(graph),
         state: {
           positions: view('positions', positions, 'float32x2', count),
           ages: view('ages', ages, 'uint32', count),
           generations: view('generations', generations, 'uint32', count)
         },
-        speeds: view('speeds', speedsOut, 'float32', count),
-        trails: {
-          positions: view('trails', trails, 'float32x2', count * trailLength),
-          length: trailLength
+        output: {
+          speeds: view('speeds', speedsOut, 'float32', count),
+          trails: {
+            positions: view('trails', trails, 'float32x2', count * trailLength),
+            length: trailLength
+          }
         }
       })
     );
     return {
       resources: scope,
-      compiled: scope.track(graph.compile()),
+      compiled: scope.track(await graph.compileAsync()),
       positions,
       trails,
       count,
       trailLength
     };
   };
-  const buildLic = (stepCount: number): LicSet => {
+  const buildLic = async (stepCount: number): Promise<LicSet> => {
     const scope = new SpatialAnalysisResources(device, `wind-lic-${setCounter++}`);
     const values = scope.createBuffer('values', LIC_WIDTH * LIC_HEIGHT * 4);
     const graph = new GPUCommandGraph<void>(device, {id: `wind-lic-${stepCount}`});
@@ -366,22 +371,25 @@ export async function createWindFlow(
         velocities: view('velocity', velocityBuffer, 'float32x2', FIELD_CELLS),
         fieldWidth: FIELD_WIDTH,
         fieldHeight: FIELD_HEIGHT,
-        width: LIC_WIDTH,
-        height: LIC_HEIGHT,
+        // Output raster size only: its extent in degrees is a per-frame `outputExtent` parameter.
+        grid: makeGPURasterMetadata({width: LIC_WIDTH, height: LIC_HEIGHT}),
         stepCount,
         parameters: licParameters.importToGraph(graph),
-        wordParameters: licWords.importToGraph(graph),
+        uint32Parameters: licWords.importToGraph(graph),
         output: {values: view('values', values, 'float32', LIC_WIDTH * LIC_HEIGHT)}
       })
     );
-    return {resources: scope, compiled: scope.track(graph.compile()), values, stepCount};
+    return {resources: scope, compiled: scope.track(await graph.compileAsync()), values, stepCount};
   };
 
-  let particles = buildParticles(
+  let particles = await buildParticles(
     Number(ctx.options.particleCount),
     Number(ctx.options.trailLength)
   );
-  let lic = buildLic(Number(ctx.options.licSteps));
+  let lic = await buildLic(Number(ctx.options.licSteps));
+  // One swap per set: a particle rebuild never supersedes a LIC rebuild.
+  const particleSwap = resources.track(new GraphSwap());
+  const licSwap = resources.track(new GraphSwap());
 
   // --- State -----------------------------------------------------------------------------------
   let destroyed = false;
@@ -395,7 +403,6 @@ export async function createWindFlow(
   let streamDirty = true;
   let lastStreamTime = -Infinity;
   let lastCameraKey = '';
-  let summaryPending = false;
   let measuring = false;
   let appliedSeed = ctx.options.seed;
   let appliedHourOption = ctx.options.hour;
@@ -494,7 +501,7 @@ export async function createWindFlow(
         period: state.licPeriod
       })
     );
-    licWords.write(getGPULineIntegralConvolutionWordParameterValues({seed: state.licSeed}));
+    licWords.write(getGPULineIntegralConvolutionUint32ParameterValues({seed: state.licSeed}));
     licBounds[0] = bounds.west;
     licBounds[1] = bounds.south;
     licBounds[2] = bounds.east;
@@ -522,45 +529,30 @@ export async function createWindFlow(
       })
     );
     streamWords.write(
-      getGPUStreamlinesWordParameterValues({
+      getGPUStreamlinesUint32ParameterValues({
         seed: state.streamSeed,
         minimumPoints: state.streamMinimumPoints
       })
     );
   };
 
-  const readStreamSummary = async (
-    commandEncoder: Parameters<SceneInstance<WindFlowOptions>['encode']>[0]
-  ) => {
-    const ticket = summaryRing.tryAcquire();
-    if (!ticket) return;
-    [streamCount, streamPointCount, streamOverflow, streamUnconverged].forEach((buffer, index) => {
-      commandEncoder.copyBufferToBuffer({
-        sourceBuffer: buffer,
-        sourceOffset: 0,
-        destinationBuffer: ticket.buffer,
-        destinationOffset: index * 4,
-        size: 4
-      });
-    });
-    ticket.markEncoded({byteOffset: 0, byteLength: 16});
-    summaryPending = true;
-    try {
-      const bytes = await ticket.read();
-      if (destroyed) return;
-      const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 4);
+  const streamSummaryReader = new SummaryReader(
+    resources,
+    'wind-stream-summary',
+    [streamCount, streamPointCount, streamOverflow, streamUnconverged].map(buffer => ({
+      buffer,
+      size: 4
+    })),
+    bytes => {
+      const words = new Uint32Array(bytes);
       ctx.setReadout(
         'streamlines',
         `${formatCount(words[0])} lines · ${formatCount(words[1])} points · ${
           words[2] ? 'capacity overflow' : 'no overflow'
         } · ${words[3] ? 'unconverged (undecided lines dropped)' : 'converged'}`
       );
-    } catch {
-      // The ring or device was destroyed while the read was in flight.
-    } finally {
-      summaryPending = false;
     }
-  };
+  );
 
   const describeParticles = () => {
     ctx.setReadout(
@@ -661,20 +653,37 @@ export async function createWindFlow(
         updateField(state);
         resetParticles = id === 'level' ? true : resetParticles;
       } else if (id === 'particleCount' || id === 'trailLength') {
-        const next = buildParticles(Number(state.particleCount), Number(state.trailLength));
-        particles.resources.destroy();
-        particles = next;
-        resetParticles = true;
-        describeParticles();
+        const count = Number(state.particleCount);
+        const trailLength = Number(state.trailLength);
+        void particleSwap.request({
+          build: () => buildParticles(count, trailLength),
+          commit: next => {
+            const previous = particles;
+            particles = next;
+            previous.resources.destroy();
+            resetParticles = true;
+            describeParticles();
+            ctx.requestLayers();
+          },
+          discard: next => next.resources.destroy()
+        });
       } else if (id === 'licSteps') {
-        const next = buildLic(Number(state.licSteps));
-        lic.resources.destroy();
-        lic = next;
-        licDirty = true;
-        ctx.setReadout(
-          'licRaster',
-          `${LIC_WIDTH} × ${LIC_HEIGHT} px follows the camera, ${lic.stepCount * 2} taps`
-        );
+        const stepCount = Number(state.licSteps);
+        void licSwap.request({
+          build: () => buildLic(stepCount),
+          commit: next => {
+            const previous = lic;
+            lic = next;
+            previous.resources.destroy();
+            licDirty = true;
+            ctx.setReadout(
+              'licRaster',
+              `${LIC_WIDTH} × ${LIC_HEIGHT} px follows the camera, ${lic.stepCount * 2} taps`
+            );
+            ctx.requestLayers();
+          },
+          discard: next => next.resources.destroy()
+        });
       } else if (id === 'seed') {
         resetParticles = true;
       }
@@ -739,7 +748,7 @@ export async function createWindFlow(
           )
         );
         particleWords.write(
-          getGPUParticleAdvectionWordParameterValues({
+          getGPUParticleAdvectionUint32ParameterValues({
             seed: state.seed,
             frame: particleFrame,
             maximumAge: state.maximumAge,
@@ -799,9 +808,10 @@ export async function createWindFlow(
             size: 4
           });
           streamDirty = false;
-          if (!summaryPending) void readStreamSummary(commandEncoder);
+          streamSummaryReader.markStale();
         }
       }
+      streamSummaryReader.flush(commandEncoder);
     },
 
     getLayers() {
@@ -877,6 +887,7 @@ export async function createWindFlow(
 
     destroy() {
       destroyed = true;
+      streamSummaryReader.stop();
       particles.resources.destroy();
       lic.resources.destroy();
       resources.destroy();

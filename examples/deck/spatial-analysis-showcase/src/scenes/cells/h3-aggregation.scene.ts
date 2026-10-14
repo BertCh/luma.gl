@@ -489,7 +489,7 @@ export default defineScene<H3AggregationOptions>({
         ``,
         `// 2. Sort + count into a table of (cell, count), keys ascending, capacity-bounded.`,
         `graph.add(new GPUCellAggregation({family: ${family}, resolution, cells: keys,`,
-        `  output: {cells: tableCells, counts, count, overflow}}));`
+        `  output: {cells: tableCells, counts, status: {count, overflow}}}));`
       );
     }
     lines.push(
@@ -504,7 +504,7 @@ export default defineScene<H3AggregationOptions>({
           ``,
           `// Boundary of the occupied set${state.outline === 'groups' ? ' (an edge is kept when the neighbour has another group label)' : ''}.`,
           `graph.add(new GPUCellSetOutline({family: ${family}, cells: tableCells, count${state.outline === 'groups' ? ', groups: tiers' : ''},`,
-          `${state.outline === 'rings' ? '  rings: {normalizeWinding: true, output: ringOutput},\n' : ''}  output: {rows, cells, edgeIndices, endpoints${state.outline === 'groups' ? ', groups' : ''}, count, overflow}}));`
+          `${state.outline === 'rings' ? '  rings: {normalizeWinding: true, output: ringOutput},\n' : ''}  output: {rows, cells, edgeIndices, endpoints${state.outline === 'groups' ? ', groups' : ''}, status: {count, overflow}}}));`
         );
       }
       if (state.showSelection) {
@@ -526,14 +526,14 @@ export default defineScene<H3AggregationOptions>({
           ``,
           `// Polyfill the community areas.`,
           `graph.add(new GPUCellCover({family: ${family}, resolution, containment: '${state.family === 'h3' ? 'center' : state.containment}',`,
-          `  polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: 1 << 20,`,
-          `  output: {featureIds, cells: coverCells, core, count, overflow}}));`
+          `  positions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity: 1 << 20,`,
+          `  output: {featureIds, cells: coverCells, core, status: {count, overflow, candidateOverflow}}}));`
         );
         if (state.showCompacted) {
           lines.push(
             `graph.add(new GPUCellCompaction({family: ${family},`,
             `  operation: {type: 'compact', resolution, minimumResolution: resolution - ${state.compactDepth}},`,
-            `  cells: coverCells, count: coverCount, output: {cells: compacted, count, overflow}}));`
+            `  cells: coverCells, count: coverCount, output: {cells: compacted, status: {count, overflow}}}));`
           );
         }
       }

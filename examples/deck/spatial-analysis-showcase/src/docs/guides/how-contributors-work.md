@@ -27,7 +27,7 @@ Every analysis on this site follows the same three-beat pattern. Learn it once a
     <path d="M590 58H618" marker-end="url(#arrow)"/>
   </g>
   <g fill="currentColor" font-size="12">
-    <text x="10" y="195">1. Compile once: graph.compile()</text>
+    <text x="10" y="195">1. Compile once: await graph.compileAsync()</text>
     <text x="10" y="215">2. Each frame: parameters.write(...) then compiled.encode(commandEncoder)</text>
     <text x="10" y="235">3. Layers read the output buffers on the GPU. No readback in the frame loop.</text>
   </g>
@@ -36,7 +36,7 @@ Every analysis on this site follows the same three-beat pattern. Learn it once a
 
 ## 1. Compile once
 
-A contributor such as `GPUPointDensity` is not a function you call. It declares *resources* and *compute nodes* into a `GPUCommandGraph`. You add it with `graph.add(...)` and call `graph.compile()` once. Compiling decides the topology: array lengths, grid sizes, which optional outputs exist, and compile-time options such as grid or hexagon binning, or false-discovery-rate correction.
+A contributor such as `GPUPointDensity` is not a function you call. It declares *resources* and *compute nodes* into a `GPUCommandGraph`. You add it with `graph.add(...)` and call `await graph.compileAsync()` once; the asynchronous compile creates the GPU pipelines without blocking the page. Compiling decides the topology: array lengths, grid sizes, which optional outputs exist, and compile-time options such as grid or hexagon binning, or false-discovery-rate correction.
 
 ## 2. Rewrite parameter buffers every frame
 

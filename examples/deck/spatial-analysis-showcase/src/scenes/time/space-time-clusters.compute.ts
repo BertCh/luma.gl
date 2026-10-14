@@ -12,11 +12,11 @@ import {
 import {
   getGPUNeighborSearchParameterValues,
   getGPUSpaceTimeParameterValues,
-  getGPUSpatialScanParameterValues,
+  getGPUSpatialScanStatisticParameterValues,
   getKnoxPoissonPValue,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
-  GPU_SCAN_STATISTIC_PARAMETER_LENGTH,
-  GPU_SCAN_STATISTIC_SUMMARY_LENGTH,
+  GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH,
+  GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH,
   GPU_SPACE_TIME_PARAMETER_LENGTH,
   GPU_SPACE_TIME_SUMMARY,
   GPU_SPACE_TIME_SUMMARY_LENGTH,
@@ -33,6 +33,7 @@ import {
   SpatialAnalysisSegmentLayer,
   type SpatialAnalysisColor
 } from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -184,7 +185,14 @@ type ScanPart = {
   reader: SummaryReader;
 };
 
-type Variant = {key: ClusterSource; knox: KnoxPart; scan: ScanPart; knoxEvents: number};
+type Variant = {
+  key: ClusterSource;
+  knox: KnoxPart;
+  scan: ScanPart;
+  knoxEvents: number;
+  /** Neighbour-search bounds of the Knox events, a parameter write at adoption. */
+  searchBounds: [number, number, number, number];
+};
 
 /**
  * Space-time clusters of Chicago nature observations and rodent complaints. Two compiled graphs per event
@@ -211,6 +219,7 @@ export async function createSpaceTimeClusters(
   const zoneCount = tracts.count;
 
   const resources = new SpatialAnalysisResources(device, 'clusters');
+  const graphSwap = resources.track(new GraphSwap());
   const cellFeatureBuffer = resources.createBuffer('cell-feature', raster.cellFeature);
   const outlineSegments = getOutlineSegments(tracts.source, tractsDataset.getProjection(origin));
   const outlineBuffer = resources.createBuffer('outlines', outlineSegments);
@@ -235,7 +244,7 @@ export async function createSpaceTimeClusters(
   const scanParameters = resources.createParameterBuffer(
     'scan-parameters',
     'uint32',
-    GPU_SCAN_STATISTIC_PARAMETER_LENGTH
+    GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH
   );
   const significanceParameter = resources.createParameterBuffer('significance', 'float32', 1);
 
@@ -281,7 +290,14 @@ export async function createSpaceTimeClusters(
     return table;
   }
 
-  function buildKnox(key: ClusterSource, table: SourceTable): {part: KnoxPart; events: number} {
+  async function buildKnox(
+    key: ClusterSource,
+    table: SourceTable
+  ): Promise<{
+    part: KnoxPart;
+    events: number;
+    searchBounds: [number, number, number, number];
+  }> {
     const total = table.seconds.length;
     const step = Math.max(1, Math.ceil(total / MAXIMUM_KNOX_EVENTS));
     const eventCount = Math.ceil(total / step);
@@ -301,7 +317,12 @@ export async function createSpaceTimeClusters(
       minimumY = Math.min(minimumY, positions[index * 2 + 1]);
       maximumY = Math.max(maximumY, positions[index * 2 + 1]);
     }
-    searchBounds = [minimumX - 100, minimumY - 100, maximumX + 100, maximumY + 100];
+    const eventBounds: [number, number, number, number] = [
+      minimumX - 100,
+      minimumY - 100,
+      maximumX + 100,
+      maximumY + 100
+    ];
     const slotCapacity = eventCount * SLOTS_PER_EVENT;
     const buffer = (name: string, data: Float32Array | number) =>
       resources.createBuffer(`${key}-knox-${name}`, data);
@@ -326,7 +347,8 @@ export async function createSpaceTimeClusters(
       offsets: v('offsets', offsets, 'uint32', eventCount + 1),
       neighbors: v('neighbors', neighbors, 'uint32', slotCapacity),
       weights: v('weights', weights, 'float32', slotCapacity),
-      distances: v('distances', distances, 'float32', slotCapacity)
+      distances: v('distances', distances, 'float32', slotCapacity),
+      status: {overflow: v('overflow', overflow, 'uint32', 1)}
     };
     const testParametersView = testParameters.importToGraph(graph);
     graph.add(
@@ -336,8 +358,7 @@ export async function createSpaceTimeClusters(
         positions: positionsView,
         parameters: searchParameters.importToGraph(graph),
         gridSize: [64, 64],
-        weights: pairs,
-        overflow: v('overflow', overflow, 'uint32', 1)
+        output: pairs
       })
     );
     graph.add(
@@ -347,8 +368,10 @@ export async function createSpaceTimeClusters(
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        statistics: v('knox-statistics', knoxStatistics, 'uint32', MAXIMUM_PERMUTATIONS + 1),
-        summary: v('knox-summary', knoxSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        output: {
+          statistics: v('knox-statistics', knoxStatistics, 'uint32', MAXIMUM_PERMUTATIONS + 1),
+          summary: v('knox-summary', knoxSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        }
       })
     );
     graph.add(
@@ -358,8 +381,10 @@ export async function createSpaceTimeClusters(
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        statistics: v('mantel-statistics', mantelStatistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
-        summary: v('mantel-summary', mantelSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        output: {
+          statistics: v('mantel-statistics', mantelStatistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
+          summary: v('mantel-summary', mantelSummary, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        }
       })
     );
     // One thread per pair slot finds its row by binary search and writes the drawable segment of
@@ -422,7 +447,7 @@ export async function createSpaceTimeClusters(
   let timeGap = abs(times[timesOffset + low] - times[timesOffset + neighbor]);
   fade[fadeOffset + index] = select(drawParameters[drawParametersOffset + 1u], 1.0, timeGap <= drawParameters[drawParametersOffset]);`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `${key}-knox`,
@@ -491,11 +516,12 @@ export async function createSpaceTimeClusters(
         slotCapacity,
         reader
       },
-      events: eventCount
+      events: eventCount,
+      searchBounds: eventBounds
     };
   }
 
-  function buildScan(key: ClusterSource, table: SourceTable): ScanPart {
+  async function buildScan(key: ClusterSource, table: SourceTable): Promise<ScanPart> {
     const caseCount = table.seconds.length;
     // CPU copy of the same counts GPUTemporalReduction produces, for the baseline model only.
     const totals = new Uint32Array(zoneCount * BUCKET_COUNT);
@@ -516,7 +542,7 @@ export async function createSpaceTimeClusters(
     const clusterIndices = buffer('cluster-indices', MAXIMUM_CLUSTERS * 4 * 4);
     const clusterStatistics = buffer('cluster-statistics', MAXIMUM_CLUSTERS * 8 * 4);
     const statistics = buffer('statistics', (MAXIMUM_PERMUTATIONS + 1) * 4);
-    const summary = buffer('summary', GPU_SCAN_STATISTIC_SUMMARY_LENGTH * 4);
+    const summary = buffer('summary', GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4);
     const zoneStatistics = buffer('zone-statistics', (zoneCount + 1) * 4);
     const membership = buffer('membership', (zoneCount + 1) * 4);
     const perCapita = new Float32Array(zoneCount + 1).fill(NaN);
@@ -548,8 +574,8 @@ export async function createSpaceTimeClusters(
         bucketCount: BUCKET_COUNT,
         output: {
           counts: v('cases', casesBuffer, 'uint32', cellCountBins),
-          min: v('min', reductionOutputs('min'), 'float32', cellCountBins),
-          max: v('max', reductionOutputs('max'), 'float32', cellCountBins),
+          minimums: v('min', reductionOutputs('min'), 'float32', cellCountBins),
+          maximums: v('max', reductionOutputs('max'), 'float32', cellCountBins),
           first: v('first', reductionOutputs('first'), 'float32', cellCountBins),
           last: v('last', reductionOutputs('last'), 'float32', cellCountBins),
           occupiedSlots: {
@@ -559,8 +585,10 @@ export async function createSpaceTimeClusters(
               'uint32',
               cellCountBins
             ),
-            count: v('occupied-count', buffer('occupied-count', 4), 'uint32', 1),
-            overflow: v('occupied-overflow', buffer('occupied-overflow', 4), 'uint32', 1)
+            status: {
+              count: v('occupied-count', buffer('occupied-count', 4), 'uint32', 1),
+              overflow: v('occupied-overflow', buffer('occupied-overflow', 4), 'uint32', 1)
+            }
           }
         }
       })
@@ -585,11 +613,13 @@ export async function createSpaceTimeClusters(
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         maximumClusters: MAXIMUM_CLUSTERS,
         parameters: scanParameters.importToGraph(graph),
-        clusterIndices: clusterIndicesView,
-        clusterStatistics: clusterStatisticsView,
-        statistics: v('statistics', statistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
-        summary: v('summary', summary, 'uint32', GPU_SCAN_STATISTIC_SUMMARY_LENGTH),
-        zoneStatistics: v('zone-statistics', zoneStatistics, 'float32', zoneCount)
+        output: {
+          clusterIndices: clusterIndicesView,
+          clusterStatistics: clusterStatisticsView,
+          statistics: v('statistics', statistics, 'float32', MAXIMUM_PERMUTATIONS + 1),
+          summary: v('summary', summary, 'uint32', GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH),
+          zoneStatistics: v('zone-statistics', zoneStatistics, 'float32', zoneCount)
+        }
       })
     );
     // Zones inside a significant cluster window get the cluster rank (1 is the most likely).
@@ -640,12 +670,12 @@ export async function createSpaceTimeClusters(
   }
   membership[membershipOffset + index] = member;`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `${key}-scan`,
       [
-        {buffer: summary, size: GPU_SCAN_STATISTIC_SUMMARY_LENGTH * 4},
+        {buffer: summary, size: GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4},
         {buffer: clusterIndices, size: MAXIMUM_CLUSTERS * 16},
         {buffer: clusterStatistics, size: MAXIMUM_CLUSTERS * 32},
         {buffer: membership, size: (zoneCount + 1) * 4}
@@ -670,14 +700,14 @@ export async function createSpaceTimeClusters(
 
   let searchBounds: [number, number, number, number] = [0, 0, 1, 1];
 
-  function getVariant(): Variant {
+  async function getVariant(): Promise<Variant> {
     const key = ctx.options.source;
     let variant = variants.get(key);
     if (!variant) {
       const table = getTable(key);
-      const {part: knox, events} = buildKnox(key, table);
-      const scan = buildScan(key, table);
-      variant = {key, knox, scan, knoxEvents: events};
+      const {part: knox, events, searchBounds: bounds} = await buildKnox(key, table);
+      const scan = await buildScan(key, table);
+      variant = {key, knox, scan, knoxEvents: events, searchBounds: bounds};
       variants.set(key, variant);
     }
     return variant;
@@ -729,7 +759,7 @@ export async function createSpaceTimeClusters(
     testParameters.write(
       getGPUSpaceTimeParameterValues({
         seed,
-        permutations: options.permutations,
+        permutationCount: options.permutations,
         timeThreshold: options.timeThreshold
       })
     );
@@ -742,9 +772,9 @@ export async function createSpaceTimeClusters(
   function writeScanParameters(): void {
     const options = ctx.options;
     scanParameters.write(
-      getGPUSpatialScanParameterValues({
+      getGPUSpatialScanStatisticParameterValues({
         seed,
-        permutations: options.scanPermutations,
+        permutationCount: options.scanPermutations,
         maximumPopulationFraction: options.maximumPopulationFraction,
         maximumWindowZones: options.maximumWindowZones,
         maximumTimeBuckets: options.maximumTimeBuckets,
@@ -757,7 +787,7 @@ export async function createSpaceTimeClusters(
   }
 
   function showScan(bytes: ArrayBuffer): void {
-    const summary = new Uint32Array(bytes, 0, GPU_SCAN_STATISTIC_SUMMARY_LENGTH);
+    const summary = new Uint32Array(bytes, 0, GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH);
     const indices = new Uint32Array(bytes, 16, MAXIMUM_CLUSTERS * 4);
     const stats = new Float32Array(bytes, 16 + MAXIMUM_CLUSTERS * 16, MAXIMUM_CLUSTERS * 8);
     cpuMembership = new Uint32Array(bytes, 16 + MAXIMUM_CLUSTERS * 48, zoneCount + 1);
@@ -797,8 +827,9 @@ export async function createSpaceTimeClusters(
     return count;
   }
 
-  function adoptVariant(): void {
-    current = getVariant();
+  function adoptVariant(variant: Variant): void {
+    current = variant;
+    searchBounds = variant.searchBounds;
     cpuMembership = null;
     _cpuStatistics = null;
     ctx.setReadout(
@@ -811,7 +842,7 @@ export async function createSpaceTimeClusters(
     ctx.requestLayers();
   }
 
-  adoptVariant();
+  adoptVariant(await getVariant());
 
   return {
     getCompiledGraphs: () =>
@@ -821,7 +852,7 @@ export async function createSpaceTimeClusters(
 
     setOption(id) {
       if (id === 'source') {
-        adoptVariant();
+        void graphSwap.request({build: getVariant, commit: adoptVariant});
       } else if (
         id === 'spatialRadius' ||
         id === 'timeThreshold' ||

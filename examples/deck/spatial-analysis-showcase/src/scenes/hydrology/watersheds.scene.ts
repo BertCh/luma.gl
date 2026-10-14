@@ -541,30 +541,29 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'watersheds'});
 graph.add(new GPUTerrainFlow({
-  width, height, elevation, settings: flowSettings.importToGraph(graph),
-  cellSizeMode: 'web-mercator',             // cellSize = 19.1 m Mercator pixels, edges from the tile bounds
+  grid, elevation, parameters: flowSettings.importToGraph(graph),
+  cellSizeMode: 'web-mercator',             // grid: 19.1 m EPSG:3857 pixels, origin [minX, maxY] in meters
   fillDepressions: true, resolveFlats: ${state.resolveFlats},
   flowRouting: '${state.routing}',          // compile-time
   accumulationUnits: 'area',                // m², so the stream threshold is a drainage area
-  filledElevation, flowDirections, accumulation, streams
+  output: {filledElevation, flowDirections, accumulation, streams}
 }));
-graph.add(new GPUTerrainStreamOrder({width, height, flowDirections, streams, streamOrder}));
-graph.add(new GPUTerrainWatersheds({width, height, flowDirections, pourPoints, labels}));
+graph.add(new GPUTerrainStreamOrder({grid, flowDirections, streams, output: {streamOrder}}));
+graph.add(new GPUTerrainWatersheds({grid, flowDirections, pourPoints, output: {labels}}));
 graph.add(new GPUTerrainHeightAboveDrainage({
-  width, height, elevation: filledBand, flowDirections, streams, heightAboveDrainage
+  grid, elevation: filledBand, flowDirections, streams, output: {heightAboveDrainage}
 }));
 graph.add(new GPUTerrainHydrologicIndices({
-  width, height, elevation: filledBand, accumulation, settings: indicesSettings.importToGraph(graph),
-  cellSizeMode: 'web-mercator', wetnessIndex, streamPowerIndex, specificCatchmentArea
+  grid, elevation: filledBand, accumulation, parameters: indicesSettings.importToGraph(graph),
+  cellSizeMode: 'web-mercator', output: {wetnessIndex, streamPowerIndex, specificCatchmentArea}
 }));
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 
 // Per change (no recompile): thresholds are parameter-buffer writes.
 flowSettings.write(getGPUTerrainFlowParameterValues({
-  cellSize: [19.109, 19.109], northEdge, southEdge,
   streamThreshold: ${(10 ** state.streamArea * 1e6).toFixed(0)}, // m², ${(10 ** state.streamArea).toFixed(3)} km²
   fillEpsilon: 0, flowExponent: ${state.flowExponent}
-}));
+}, grid));                                  // cell size and latitude band come from the grid
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   create: async ctx => (await import('./watersheds.compute')).createWatersheds(ctx)

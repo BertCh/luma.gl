@@ -235,75 +235,77 @@ export async function createGullMigration(
         trackCount + 1
       ),
       parameters: stopParameters.importToGraph(metricsGraph),
-      trackLengths: importGraphBuffer(
-        metricsGraph,
-        'track-lengths',
-        trackLengths,
-        'float32',
-        trackCount
-      ),
-      trackDurations: importGraphBuffer(
-        metricsGraph,
-        'track-durations',
-        trackDurations,
-        'float32',
-        trackCount
-      ),
-      averageSpeeds: importGraphBuffer(
-        metricsGraph,
-        'average-speeds',
-        averageSpeeds,
-        'float32',
-        trackCount
-      ),
-      maximumSpeeds: importGraphBuffer(
-        metricsGraph,
-        'maximum-speeds',
-        maximumSpeeds,
-        'float32',
-        trackCount
-      ),
-      stepSpeeds: importGraphBuffer(
-        metricsGraph,
-        'step-speeds',
-        stepSpeeds,
-        'float32',
-        vertexCount
-      ),
-      trackStopCounts: importGraphBuffer(
-        metricsGraph,
-        'track-stop-counts',
-        trackStopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
-          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: stopCountView,
-          overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
-        },
-        drawInstanceCount: metricsGraph.importGPUData(
-          'stop-draw-count',
-          stopDraw.getInstanceCountData(0)
-        ),
-        startRows: startRowsView,
-        endRows: endRowsView,
-        centroids: importGraphBuffer(
+      output: {
+        trackLengths: importGraphBuffer(
           metricsGraph,
-          'stop-centroids',
-          stopCentroids,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        durations: importGraphBuffer(
-          metricsGraph,
-          'stop-durations',
-          stopDurations,
+          'track-lengths',
+          trackLengths,
           'float32',
-          STOP_CAPACITY
-        )
+          trackCount
+        ),
+        trackDurations: importGraphBuffer(
+          metricsGraph,
+          'track-durations',
+          trackDurations,
+          'float32',
+          trackCount
+        ),
+        averageSpeeds: importGraphBuffer(
+          metricsGraph,
+          'average-speeds',
+          averageSpeeds,
+          'float32',
+          trackCount
+        ),
+        maximumSpeeds: importGraphBuffer(
+          metricsGraph,
+          'maximum-speeds',
+          maximumSpeeds,
+          'float32',
+          trackCount
+        ),
+        stepSpeeds: importGraphBuffer(
+          metricsGraph,
+          'step-speeds',
+          stepSpeeds,
+          'float32',
+          vertexCount
+        ),
+        trackStopCounts: importGraphBuffer(
+          metricsGraph,
+          'track-stop-counts',
+          trackStopCounts,
+          'uint32',
+          trackCount
+        ),
+        stops: {
+          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
+          drawInstanceCount: metricsGraph.importGPUData(
+            'stop-draw-count',
+            stopDraw.getInstanceCountData(0)
+          ),
+          startRows: startRowsView,
+          endRows: endRowsView,
+          centroids: importGraphBuffer(
+            metricsGraph,
+            'stop-centroids',
+            stopCentroids,
+            'float32x2',
+            STOP_CAPACITY
+          ),
+          durations: importGraphBuffer(
+            metricsGraph,
+            'stop-durations',
+            stopDurations,
+            'float32',
+            STOP_CAPACITY
+          ),
+          status: {
+            count: stopCountView,
+            overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          }
+        }
       }
     })
   );
@@ -354,7 +356,7 @@ export async function createGullMigration(
   output[outputOffset + index * 2u] = lng;
   output[outputOffset + index * 2u + 1u] = lat;`
   });
-  const metricsCompiled = resources.track(metricsGraph.compile());
+  const metricsCompiled = resources.track(await metricsGraph.compileAsync());
 
   // ---- Simplification graphs (both metrics compiled up front) ----------------------------------
   const toleranceParameters = resources.createParameterBuffer(
@@ -363,7 +365,7 @@ export async function createGullMigration(
     GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH
   );
 
-  function buildSimplify(metric: 'segment' | 'time-ratio'): SimplifyVariant {
+  async function buildSimplify(metric: 'segment' | 'time-ratio'): Promise<SimplifyVariant> {
     const importance = resources.createBuffer(`${metric}-importance`, vertexCount * 4);
     const converged = resources.createBuffer(`${metric}-converged`, 4);
     const roundCount = resources.createBuffer(`${metric}-rounds`, 4);
@@ -380,7 +382,7 @@ export async function createGullMigration(
     );
     const inputs = (graph: GPUCommandGraph<void>) => ({
       positions: importGraphBuffer(graph, 'lng-lat', lngLatBuffer, 'float32x2', vertexCount),
-      trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
+      lineOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       importance: importGraphBuffer(graph, 'importance', importance, 'float32', vertexCount)
     });
     const importanceGraph = new GPUCommandGraph<void>(device, {id: `gull-importance-${metric}`});
@@ -397,10 +399,12 @@ export async function createGullMigration(
           'float32',
           vertexCount
         ),
-        maximumRounds: SIMULATION_ROUNDS,
-        status: {
-          converged: importGraphBuffer(importanceGraph, 'converged', converged, 'uint32', 1),
-          roundCount: importGraphBuffer(importanceGraph, 'rounds', roundCount, 'uint32', 1)
+        maximumIterations: SIMULATION_ROUNDS,
+        output: {
+          status: {
+            converged: importGraphBuffer(importanceGraph, 'converged', converged, 'uint32', 1),
+            iterationCount: importGraphBuffer(importanceGraph, 'rounds', roundCount, 'uint32', 1)
+          }
         }
       })
     );
@@ -413,9 +417,9 @@ export async function createGullMigration(
         metric,
         computeImportance: false,
         parameters: toleranceParameters.importToGraph(selectionGraph),
-        selection: {
-          output: {
-            ids: importGraphBuffer(selectionGraph, 'kept-ids', keptIds, 'uint32', vertexCount),
+        output: {
+          ids: importGraphBuffer(selectionGraph, 'kept-ids', keptIds, 'uint32', vertexCount),
+          status: {
             count: importGraphBuffer(selectionGraph, 'kept-count', keptCount, 'uint32', 1),
             overflow: importGraphBuffer(selectionGraph, 'kept-overflow', keptOverflow, 'uint32', 1),
             requiredCount: importGraphBuffer(selectionGraph, 'kept-total', keptTotal, 'uint32', 1)
@@ -432,8 +436,8 @@ export async function createGullMigration(
       keptOverflow,
       keptTotal,
       draw,
-      importanceCompiled: resources.track(importanceGraph.compile()),
-      selectionCompiled: resources.track(selectionGraph.compile()),
+      importanceCompiled: resources.track(await importanceGraph.compileAsync()),
+      selectionCompiled: resources.track(await selectionGraph.compileAsync()),
       importanceEncoded: false,
       snapshot: null,
       reader: new SummaryReader(
@@ -485,7 +489,9 @@ export async function createGullMigration(
   const pairFrechet = resources.createBuffer('pair-frechet', pairCount * 4);
   const pairStatus = resources.createBuffer('pair-status', pairCount * 4);
 
-  function buildResample(spacing: 'arc-length' | 'time'): CompiledGPUCommandGraph<void> {
+  async function buildResample(
+    spacing: 'arc-length' | 'time'
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const graph = new GPUCommandGraph<void>(device, {id: `gull-routes-${spacing}`});
     const routesView = importGraphBuffer(
       graph,
@@ -509,55 +515,66 @@ export async function createGullMigration(
         trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         sampleCount: SIMILARITY_SAMPLES,
         spacing,
-        samples: routesView
+        output: {samples: routesView}
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   }
   const resampleGraphs = {
-    'arc-length': buildResample('arc-length'),
-    time: buildResample('time')
+    'arc-length': await buildResample('arc-length'),
+    time: await buildResample('time')
   };
   const similarityGraph = new GPUCommandGraph<void>(device, {id: 'gull-similarity'});
   similarityGraph.add(
     new GPUTrackSimilarity({
       id: 'route-similarity',
       spatialContext: GREAT_CIRCLE_METERS,
-      positionsA: importGraphBuffer(
-        similarityGraph,
-        'routes',
-        routesBuffer,
-        'float32x2',
-        trackCount * SIMILARITY_SAMPLES
-      ),
-      offsetsA: importGraphBuffer(
-        similarityGraph,
-        'route-offsets',
-        routeOffsetsBuffer,
-        'uint32',
-        trackCount + 1
-      ),
       pairA: importGraphBuffer(similarityGraph, 'pair-a', pairABuffer, 'uint32', pairCount),
       pairB: importGraphBuffer(similarityGraph, 'pair-b', pairBBuffer, 'uint32', pairCount),
-      hausdorff: importGraphBuffer(
-        similarityGraph,
-        'pair-hausdorff',
-        pairHausdorff,
-        'float32',
-        pairCount
-      ),
-      frechet: importGraphBuffer(
-        similarityGraph,
-        'pair-frechet',
-        pairFrechet,
-        'float32',
-        pairCount
-      ),
-      status: importGraphBuffer(similarityGraph, 'pair-status', pairStatus, 'uint32', pairCount),
-      maxFrechetVertices: SIMILARITY_SAMPLES
+      maximumFrechetVertexCount: SIMILARITY_SAMPLES,
+      output: {
+        hausdorff: importGraphBuffer(
+          similarityGraph,
+          'pair-hausdorff',
+          pairHausdorff,
+          'float32',
+          pairCount
+        ),
+        frechet: importGraphBuffer(
+          similarityGraph,
+          'pair-frechet',
+          pairFrechet,
+          'float32',
+          pairCount
+        ),
+        pairStatus: importGraphBuffer(
+          similarityGraph,
+          'pair-status',
+          pairStatus,
+          'uint32',
+          pairCount
+        )
+      },
+      linesA: {
+        kind: 'lines',
+        positions: importGraphBuffer(
+          similarityGraph,
+          'routes',
+          routesBuffer,
+          'float32x2',
+          trackCount * SIMILARITY_SAMPLES
+        ),
+        lineOffsets: importGraphBuffer(
+          similarityGraph,
+          'route-offsets',
+          routeOffsetsBuffer,
+          'uint32',
+          trackCount + 1
+        )
+      }
     })
   );
-  const similarityCompiled = resources.track(similarityGraph.compile());
+  const similarityCompiled = resources.track(await similarityGraph.compileAsync());
 
   // ---- Temporal reduction graph ----------------------------------------------------------------
   const bucketParameters = resources.createParameterBuffer(
@@ -622,19 +639,21 @@ export async function createGullMigration(
         bucketCount: BUCKET_COUNT,
         output: {
           counts,
-          min: temporalView(`${name}-min`, columns.min, 'float32', slotCount),
-          max: temporalView(`${name}-max`, columns.max, 'float32', slotCount),
+          minimums: temporalView(`${name}-min`, columns.min, 'float32', slotCount),
+          maximums: temporalView(`${name}-max`, columns.max, 'float32', slotCount),
           first: temporalView(`${name}-first`, columns.first, 'float32', slotCount),
           last: temporalView(`${name}-last`, columns.last, 'float32', slotCount),
           occupiedSlots: {
             ids: temporalView(`${name}-occupied`, columns.occupiedIds, 'uint32', slotCount),
-            count: temporalView(`${name}-occupied-count`, columns.occupiedCount, 'uint32', 1),
-            overflow: temporalView(
-              `${name}-occupied-overflow`,
-              columns.occupiedOverflow,
-              'uint32',
-              1
-            )
+            status: {
+              count: temporalView(`${name}-occupied-count`, columns.occupiedCount, 'uint32', 1),
+              overflow: temporalView(
+                `${name}-occupied-overflow`,
+                columns.occupiedOverflow,
+                'uint32',
+                1
+              )
+            }
           }
         }
       })
@@ -644,7 +663,7 @@ export async function createGullMigration(
   addReduction('latitude', latitudeBuffer, latitudeColumns);
   addReduction('longitude', longitudeBuffer, longitudeColumns);
   addReduction('speed', speedBuffer, speedColumns);
-  const compiledTemporal = resources.track(temporalGraph.compile());
+  const compiledTemporal = resources.track(await temporalGraph.compileAsync());
 
   // Display graph: weekly positions, the focus bucket and the weekly connecting segments.
   const weeklyGraph = new GPUCommandGraph<void>(device, {id: 'gull-weekly'});
@@ -736,7 +755,7 @@ export async function createGullMigration(
   segments[segmentsOffset + index * 4u + 2u] = select(nan, b.x, valid);
   segments[segmentsOffset + index * 4u + 3u] = select(nan, b.y, valid);`
   });
-  const weeklyCompiled = resources.track(weeklyGraph.compile());
+  const weeklyCompiled = resources.track(await weeklyGraph.compileAsync());
 
   // ---- State -----------------------------------------------------------------------------------
   let destroyed = false;
@@ -750,8 +769,8 @@ export async function createGullMigration(
   let selectedBird = NO_BIRD;
   let currentSpacing: 'arc-length' | 'time' = ctx.options.routeSpacing;
   const simplify = {
-    segment: buildSimplify('segment'),
-    'time-ratio': buildSimplify('time-ratio')
+    segment: await buildSimplify('segment'),
+    'time-ratio': await buildSimplify('time-ratio')
   };
   let metricsSnapshot: {
     lengths: Float32Array;

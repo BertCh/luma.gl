@@ -4,7 +4,7 @@ The gallery takes the six lowest and six highest live Polsby-Popper rows from th
 
 ## One fire may contain many polygons {#multipart}
 
-`GPUGeometryMeasures` follows each feature's rings and parts. The selected multipart row is resolved from the loaded sample; its area, ring count and alternate hole-rule error are live readouts. Winding adds exterior rings and subtracts holes, while treating every later ring as a hole is a deliberately unsafe comparison for multipart geometry.
+`GPUGeometryMeasures` follows each feature's rings and parts. The selected multipart row is resolved from the loaded sample; its area and ring count are live readouts. Ring roles are positional: the first ring of each polygon is its shell and later rings are holes, whatever their winding. With the real polygon parts every part adds area, while grouping all rings of a fire into one polygon turns the extra parts into holes, a deliberately unsafe comparison for multipart geometry.
 
 ## Compactness compares area with perimeter {#compactness}
 

@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {HURRICANE_CLASS} from '../../cartography/hue-registry';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -166,19 +166,29 @@ export async function createHurricaneSeason(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: currentView,
-      segmentRows: rowsView,
-      segmentFractions: fractionsView,
-      status: statusView,
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'head-draw-count',
-        headDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: currentView,
+        segmentRows: rowsView,
+        segmentFractions: fractionsView,
+        trackStatus: statusView,
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'head-draw-count',
+          headDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
   // Heads: hide storms outside the chosen seasons and read the wind at the head from the
@@ -257,7 +267,7 @@ export async function createHurricaneSeason(
   headWind[headWindOffset + index] = blended;
   headCategory[headCategoryOffset + index] = kind;`
   });
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ------------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -268,7 +278,7 @@ export async function createHurricaneSeason(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -310,30 +320,32 @@ export async function createHurricaneSeason(
       ],
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- State -----------------------------------------------------------------------------------
   const clock = createPlaybackClock(
@@ -558,14 +570,14 @@ export async function createHurricaneSeason(
       playheadParameters.write(
         getGPUTrajectoryPlayheadParameterValues({
           playhead,
-          maxGap: options.maxGapHours / HOURS_PER_DAY
+          maximumGap: options.maxGapHours / HOURS_PER_DAY
         })
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
 
       if (options.showTrails) {
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - options.trailDays,
             end: playhead,
             startFadeDuration: options.trailDays * options.tailFade

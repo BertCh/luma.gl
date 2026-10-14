@@ -855,7 +855,7 @@ new GPUGraphLabelPropagation({
   topology, output: communities, iterations: ${state.propagationRounds}
 }).addToGraph(analysis);
 new GPUGraphModularity({graph, communities, output: modularity}).addToGraph(analysis);
-analysis.compile().encode(commandEncoder, {parameters: undefined});
+(await analysis.compileAsync()).encode(commandEncoder, {parameters: undefined});
 
 // Improve the propagation result; resolution and rounds are shader constants.
 new GPUGraphModularityOptimization({

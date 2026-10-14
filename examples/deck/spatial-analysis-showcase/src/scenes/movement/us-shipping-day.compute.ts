@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer, type Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -35,6 +35,7 @@ import {formatCount, formatPercent, liveText} from '../../cartography/live-text'
 import {evaluateZoomStops} from '../../cartography/zoom';
 import type {ClassTable, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
@@ -302,19 +303,29 @@ export async function createUsShippingDay(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: currentPositionsView,
-      headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
-      speeds: rawSpeedsView,
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: currentPositionsView,
+        headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
+        speeds: rawSpeedsView,
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
   // Mercator meters (relative to the projection origin) to longitude and latitude, and the
@@ -361,7 +372,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   lngLat[lngLatOffset + index * 2u + 1u] = latitudeRadians * RADIANS_TO_DEGREES;
   trueSpeeds[trueSpeedsOffset + index] = rawSpeeds[rawSpeedsOffset + index] * cos(latitudeRadians);`
   });
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   ctx.setStatus('Compiling the playback graphs');
@@ -374,7 +385,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -416,53 +427,66 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       ],
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        trackVisibleCounts: importGraphBuffer(
+          trailGraph,
+          'track-visible-counts',
+          trackVisibleCounts,
+          'uint32',
+          trackCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
       },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
       trackIds: importGraphBuffer(
         trailGraph,
         'segment-tracks',
         segmentTracksBuffer,
         'uint32',
         segmentCount
-      ),
-      trackVisibleCounts: importGraphBuffer(
-        trailGraph,
-        'track-visible-counts',
-        trackVisibleCounts,
-        'uint32',
-        trackCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
       )
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Zone-event graph: gate crossings ---------------------------------------------------------
   ctx.setStatus('Compiling the gate-crossing graph');
   const projection = {project: tracks.project, unproject: tracks.unproject};
   let gateEdges: GateEdges = buildGateEdges(projection.project, ctx.options.gateHalfWidth);
   const edgeCount = gateEdges.zones.length;
-  const edgeStartsBuffer = resources.createBuffer('edge-starts', gateEdges.starts);
-  const edgeEndsBuffer = resources.createBuffer('edge-ends', gateEdges.ends);
-  const edgeZonesBuffer = resources.createBuffer('edge-zones', gateEdges.zones);
+  // Each gate is one four-corner polygon (its `starts` rows are the corners); the zone edges
+  // follow from the rings.
+  const gateCornerBuffer = resources.createBuffer('gate-corners', gateEdges.starts);
+  const gateFeatureOffsets = Uint32Array.from({length: gateCount + 1}, (_, gate) => gate);
+  const gateRingOffsets = Uint32Array.from({length: gateCount + 1}, (_, gate) => gate * 4);
+  const gateFeatureOffsetBuffer = resources.createBuffer(
+    'gate-feature-offsets',
+    gateFeatureOffsets
+  );
+  const gatePolygonOffsetBuffer = resources.createBuffer(
+    'gate-polygon-offsets',
+    gateFeatureOffsets
+  );
+  const gateRingOffsetBuffer = resources.createBuffer('gate-ring-offsets', gateRingOffsets);
   const gateLinesBuffer = resources.createBuffer('gate-lines', gateEdges.lines);
   const selectedGateBuffer = resources.createBuffer('selected-gate', 16);
   const eventTracks = resources.createBuffer('event-tracks', EVENT_CAPACITY * 4);
@@ -494,7 +518,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     })
   );
 
-  function buildZoneGraph(eventsPerTrack: number): ZoneGraph {
+  async function buildZoneGraph(eventsPerTrack: number): Promise<ZoneGraph> {
     const graph = new GPUCommandGraph<void>(device, {id: `us-zone-events-${eventsPerTrack}`});
     const eventPositionsView = importGraphBuffer(
       graph,
@@ -506,61 +530,111 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     graph.add(
       new GPUZoneEvents({
         id: 'gates',
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-        timestamps: importGraphBuffer(
-          graph,
-          'timestamps',
-          timestampsBuffer,
-          'float32',
-          vertexCount
-        ),
-        trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
-        edgeStarts: importGraphBuffer(
-          graph,
-          'edge-starts',
-          edgeStartsBuffer,
-          'float32x2',
-          edgeCount
-        ),
-        edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
-        edgeZones: importGraphBuffer(graph, 'edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
-        zoneCount: gateCount,
         candidateCapacity: CANDIDATE_CAPACITY,
-        maxEventsPerTrack: eventsPerTrack,
-        events: {
-          output: {
-            ids: importGraphBuffer(graph, 'event-tracks', eventTracks, 'uint32', EVENT_CAPACITY),
-            count: importGraphBuffer(graph, 'event-count', eventCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'event-overflow', eventOverflow, 'uint32', 1)
-          },
-          eventZones: importGraphBuffer(graph, 'event-zones', eventZones, 'uint32', EVENT_CAPACITY),
-          eventTypes: importGraphBuffer(graph, 'event-types', eventTypes, 'uint32', EVENT_CAPACITY),
-          eventTimes: importGraphBuffer(
+        zones: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
             graph,
-            'event-times',
-            eventTimes,
-            'float32',
-            EVENT_CAPACITY
+            'gate-corners',
+            gateCornerBuffer,
+            'float32x2',
+            edgeCount
           ),
-          eventPositions: eventPositionsView
-        },
-        diagnostics: {
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1),
-          candidateOverflow: importGraphBuffer(
+          featureOffsets: importGraphBuffer(
             graph,
-            'candidate-overflow',
-            candidateOverflow,
+            'gate-feature-offsets',
+            gateFeatureOffsetBuffer,
             'uint32',
-            1
+            gateCount + 1
           ),
-          trackOverflow: importGraphBuffer(graph, 'track-overflow', trackOverflow, 'uint32', 1),
-          eventOverflow: importGraphBuffer(
+          polygonOffsets: importGraphBuffer(
             graph,
-            'event-list-overflow',
-            eventListOverflow,
+            'gate-polygon-offsets',
+            gatePolygonOffsetBuffer,
             'uint32',
-            1
+            gateCount + 1
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'gate-ring-offsets',
+            gateRingOffsetBuffer,
+            'uint32',
+            gateCount + 1
           )
+        },
+        output: {
+          events: {
+            ids: importGraphBuffer(graph, 'event-tracks', eventTracks, 'uint32', EVENT_CAPACITY),
+            eventZones: importGraphBuffer(
+              graph,
+              'event-zones',
+              eventZones,
+              'uint32',
+              EVENT_CAPACITY
+            ),
+            eventTypes: importGraphBuffer(
+              graph,
+              'event-types',
+              eventTypes,
+              'uint32',
+              EVENT_CAPACITY
+            ),
+            eventTimes: importGraphBuffer(
+              graph,
+              'event-times',
+              eventTimes,
+              'float32',
+              EVENT_CAPACITY
+            ),
+            eventPositions: eventPositionsView,
+            status: {
+              count: importGraphBuffer(graph, 'event-count', eventCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'event-overflow', eventOverflow, 'uint32', 1)
+            }
+          },
+          status: {
+            candidateCount: importGraphBuffer(
+              graph,
+              'candidate-count',
+              candidateCount,
+              'uint32',
+              1
+            ),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              candidateOverflow,
+              'uint32',
+              1
+            ),
+            trackOverflow: importGraphBuffer(graph, 'track-overflow', trackOverflow, 'uint32', 1),
+            eventOverflow: importGraphBuffer(
+              graph,
+              'event-list-overflow',
+              eventListOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        trackEventCapacity: eventsPerTrack,
+        tracks: {
+          kind: 'trajectories',
+          positions: importGraphBuffer(
+            graph,
+            'positions',
+            positionsBuffer,
+            'float32x2',
+            vertexCount
+          ),
+          timestamps: importGraphBuffer(
+            graph,
+            'timestamps',
+            timestampsBuffer,
+            'float32',
+            vertexCount
+          ),
+          trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1)
         }
       })
     );
@@ -601,9 +675,11 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
   lngLat[lngLatOffset + index * 2u] = longitude * RADIANS_TO_DEGREES;
   lngLat[lngLatOffset + index * 2u + 1u] = latitude * RADIANS_TO_DEGREES;`
     });
-    return {eventsPerTrack, compiled: resources.track(graph.compile())};
+    return {eventsPerTrack, compiled: resources.track(await graph.compileAsync())};
   }
-  let zoneGraph = buildZoneGraph(Number(ctx.options.eventsPerTrack));
+  let zoneGraph = await buildZoneGraph(Number(ctx.options.eventsPerTrack));
+  const zoneSwap = resources.track(new GraphSwap());
+  const densitySwap = resources.track(new GraphSwap());
 
   // ---- Line-density graph (one grid at a time; buffers kept per grid) ----------------------------
   const densityParameters = resources.createParameterBuffer(
@@ -657,7 +733,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     return buffers;
   }
 
-  function buildDensityGraph(grid: UsShippingOptions['densityGrid']): DensityGraph {
+  async function buildDensityGraph(grid: UsShippingOptions['densityGrid']): Promise<DensityGraph> {
     const [columns, rows] = GRID_SIZES[grid];
     const buffers = getDensityBuffers(grid);
     const graph = new GPUCommandGraph<void>(device, {id: `us-density-${grid}`});
@@ -665,7 +741,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       new GPULineDensity({
         id: 'corridors',
         positions: importGraphBuffer(graph, 'positions', lngLatBuffer, 'float32x2', vertexCount),
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           graph,
           'path-offsets',
           offsetsBuffer,
@@ -679,7 +755,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           metric: 'great-circle',
           units: 'meters'
         },
-        maximumRecords: Math.max(1024, 6 * vertexCount),
+        recordCapacity: Math.max(1024, 6 * vertexCount),
         parameters: densityParameters.importToGraph(graph),
         output: {
           lengths: importGraphBuffer(graph, 'lengths', buffers.lengths, 'float32', buffers.cells),
@@ -690,18 +766,22 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
             'float32',
             buffers.cells
           ),
-          overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
-          totalRecords: importGraphBuffer(graph, 'records', buffers.totalRecords, 'uint32', 1)
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', buffers.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'records', buffers.totalRecords, 'uint32', 1)
+          }
         }
       })
     );
-    return {grid, compiled: resources.track(graph.compile()), buffers, columns, rows};
+    return {grid, compiled: resources.track(await graph.compileAsync()), buffers, columns, rows};
   }
 
-  function rebuildDensity(): void {
-    if (density) resources.release(density.compiled);
+  /** Swaps in a compiled density graph, then releases the one it replaces. */
+  function commitDensityGraph(next: DensityGraph): void {
+    const previous = density;
     densityField = null;
-    density = buildDensityGraph(ctx.options.densityGrid);
+    density = next;
+    if (previous) resources.release(previous.compiled);
     densityDirty = true;
     densityTable = null;
     ctx.setLegendData('densityTable', null);
@@ -773,8 +853,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
 
   function writeGateEdges(): void {
     gateEdges = buildGateEdges(projection.project, ctx.options.gateHalfWidth);
-    edgeStartsBuffer.write(gateEdges.starts);
-    edgeEndsBuffer.write(gateEdges.ends);
+    gateCornerBuffer.write(gateEdges.starts);
     zonesDirty = true;
   }
 
@@ -1262,7 +1341,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
     ctx.setCost({records: vertexCount, passes});
   }
 
-  rebuildDensity();
+  commitDensityGraph(await buildDensityGraph(ctx.options.densityGrid));
   writeSegmentMask();
   writeSelectedGate();
   updateGapReadouts();
@@ -1379,11 +1458,18 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           writeGateEdges();
           break;
         case 'eventsPerTrack':
-          resources.release(zoneGraph.compiled);
-          zoneGraph = buildZoneGraph(Number(state.eventsPerTrack));
-          zonesDirty = true;
-          updateCost();
-          ctx.requestLayers();
+          void zoneSwap.request({
+            build: () => buildZoneGraph(Number(state.eventsPerTrack)),
+            commit: next => {
+              const previous = zoneGraph;
+              zoneGraph = next;
+              resources.release(previous.compiled);
+              zonesDirty = true;
+              updateCost();
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next.compiled)
+          });
           break;
         case 'gateFocus':
           writeSelectedGate();
@@ -1392,9 +1478,15 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
           ctx.requestLayers();
           break;
         case 'densityGrid':
-          rebuildDensity();
-          updateCost();
-          ctx.requestLayers();
+          void densitySwap.request({
+            build: () => buildDensityGraph(state.densityGrid),
+            commit: next => {
+              commitDensityGraph(next);
+              updateCost();
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next.compiled)
+          });
           break;
         case 'densityValue':
         case 'stretch':
@@ -1500,7 +1592,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       playheadParameters.write(
         getGPUTrajectoryPlayheadParameterValues({
           playhead,
-          maxGap: options.maxGapMinutes * 60
+          maximumGap: options.maxGapMinutes * 60
         })
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
@@ -1508,7 +1600,7 @@ const RADIANS_TO_DEGREES: f32 = 57.29577951308232;`,
       if (options.showTrails) {
         const trailSeconds = options.trailMinutes * 60;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds

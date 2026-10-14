@@ -14,6 +14,7 @@ import {
   type VariogramModelType,
   type VariogramModelWeighting
 } from '@luma.gl/experimental/gpu-dataframe';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {
   getGPUFocalStatisticsParameterValues,
   getGPUInverseDistanceWeightingParameterValues,
@@ -82,6 +83,21 @@ export type RainfallOptions = {
 const RASTER_WIDTH = 384;
 const RASTER_HEIGHT = 240;
 const CELL_COUNT = RASTER_WIDTH * RASTER_HEIGHT;
+
+/**
+ * The raster grid of the viewport bounds: rows advance north from the bounds' minimum corner, so
+ * row 0 is the southernmost row, as the map layers read it.
+ */
+function getViewGrid(bounds: readonly [number, number, number, number]) {
+  const [minX, minY, maxX, maxY] = bounds;
+  return makeGPURasterMetadata({
+    width: RASTER_WIDTH,
+    height: RASTER_HEIGHT,
+    cellSize: [(maxX - minX) / RASTER_WIDTH, (maxY - minY) / RASTER_HEIGHT],
+    origin: [minX, minY],
+    rowDirection: 'north'
+  });
+}
 /** Compile-time capacities of the per-frame neighbor limits. */
 const MAXIMUM_IDW_NEIGHBORS = 32;
 const MAXIMUM_KRIGING_NEIGHBORS = 16;
@@ -237,8 +253,7 @@ export async function createRainfallInterpolation(
       values: valuesView,
       mask: maskView,
       parameters: idwParameters.importToGraph(graph),
-      width: RASTER_WIDTH,
-      height: RASTER_HEIGHT,
+      grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
       indexGridSize: INDEX_GRID_SIZE,
       indexBounds,
       maximumNeighborCount: MAXIMUM_IDW_NEIGHBORS,
@@ -252,8 +267,7 @@ export async function createRainfallInterpolation(
       values: valuesView,
       mask: maskView,
       parameters: krigingParameters.importToGraph(graph),
-      width: RASTER_WIDTH,
-      height: RASTER_HEIGHT,
+      grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
       indexGridSize: INDEX_GRID_SIZE,
       indexBounds,
       maximumNeighborCount: MAXIMUM_KRIGING_NEIGHBORS,
@@ -309,8 +323,7 @@ export async function createRainfallInterpolation(
     new GPUFocalStatistics({
       id: 'focal',
       values: selectedView,
-      width: RASTER_WIDTH,
-      height: RASTER_HEIGHT,
+      grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
       maximumRadius: MAXIMUM_FOCAL_RADIUS,
       parameters: focalParameters.importToGraph(graph),
       output: {
@@ -334,7 +347,7 @@ export async function createRainfallInterpolation(
       }
     })
   );
-  const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+  const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
   // --- Variogram graph ------------------------------------------------------------------------
   const variogramOverflowBuffer = resources.createBuffer('variogram-overflow', 4);
@@ -355,47 +368,51 @@ export async function createRainfallInterpolation(
       gridSize: VARIOGRAM_GRID_SIZE,
       lagCount: LAG_COUNT,
       directionCount: SECTOR_COUNT,
-      semivariances: importGraphBuffer(
-        variogramGraph,
-        'semivariances',
-        semivarianceBuffer,
-        'float32',
-        BIN_COUNT
-      ),
-      robustSemivariances: importGraphBuffer(
-        variogramGraph,
-        'robust',
-        robustBuffer,
-        'float32',
-        BIN_COUNT
-      ),
-      pairCounts: importGraphBuffer(
-        variogramGraph,
-        'pair-counts',
-        pairCountBuffer,
-        'uint32',
-        BIN_COUNT
-      ),
-      meanDistances: importGraphBuffer(
-        variogramGraph,
-        'mean-distances',
-        distanceBuffer,
-        'float32',
-        BIN_COUNT
-      ),
-      statistics: importGraphBuffer(variogramGraph, 'statistics', statisticsBuffer, 'float32', 5),
-      // 1 when a bin's pair count saturated; the fit would be distorted, so it is skipped.
-      overflow: importGraphBuffer(
-        variogramGraph,
-        'variogram-overflow',
-        variogramOverflowBuffer,
-        'uint32',
-        1
-      )
+      output: {
+        semivariances: importGraphBuffer(
+          variogramGraph,
+          'semivariances',
+          semivarianceBuffer,
+          'float32',
+          BIN_COUNT
+        ),
+        robustSemivariances: importGraphBuffer(
+          variogramGraph,
+          'robust',
+          robustBuffer,
+          'float32',
+          BIN_COUNT
+        ),
+        pairCounts: importGraphBuffer(
+          variogramGraph,
+          'pair-counts',
+          pairCountBuffer,
+          'uint32',
+          BIN_COUNT
+        ),
+        meanDistances: importGraphBuffer(
+          variogramGraph,
+          'mean-distances',
+          distanceBuffer,
+          'float32',
+          BIN_COUNT
+        ),
+        statistics: importGraphBuffer(variogramGraph, 'statistics', statisticsBuffer, 'float32', 5),
+        // 1 when a bin's pair count saturated; the fit would be distorted, so it is skipped.
+        status: {
+          overflow: importGraphBuffer(
+            variogramGraph,
+            'variogram-overflow',
+            variogramOverflowBuffer,
+            'uint32',
+            1
+          )
+        }
+      }
     })
   );
   const variogramCompiled: CompiledGPUCommandGraph<void> = resources.track(
-    variogramGraph.compile()
+    await variogramGraph.compileAsync()
   );
 
   // --- State ----------------------------------------------------------------------------------
@@ -468,13 +485,15 @@ export async function createRainfallInterpolation(
     const o = ctx.options;
     const radius = o.searchRadiusKm * 1000;
     idwParameters.write(
-      getGPUInverseDistanceWeightingParameterValues({
-        extent: viewBounds,
-        searchRadius: radius,
-        power: o.power,
-        neighborCount: o.neighborCount,
-        minimumNeighborCount: o.minimumStations
-      })
+      getGPUInverseDistanceWeightingParameterValues(
+        {
+          searchRadius: radius,
+          power: o.power,
+          neighborCount: o.neighborCount,
+          minimumNeighborCount: o.minimumStations
+        },
+        getViewGrid(viewBounds)
+      )
     );
     const total = getSampleVariance();
     const model = fit ?? {
@@ -484,18 +503,20 @@ export async function createRainfallInterpolation(
       range: 150_000
     };
     krigingParameters.write(
-      getGPUKrigingParameterValues({
-        extent: viewBounds,
-        searchRadius: radius,
-        neighborCount: o.krigingNeighborCount,
-        minimumNeighborCount: Math.max(o.minimumStations, 3),
-        variogram: {
-          model: model.model,
-          nugget: Math.max(model.nugget, 1e-4 * total),
-          sill: Math.max(model.sill, 1e-4 * total),
-          range: Math.max(model.range, 1000)
-        }
-      })
+      getGPUKrigingParameterValues(
+        {
+          searchRadius: radius,
+          neighborCount: o.krigingNeighborCount,
+          minimumNeighborCount: Math.max(o.minimumStations, 3),
+          variogram: {
+            model: model.model,
+            nugget: Math.max(model.nugget, 1e-4 * total),
+            sill: Math.max(model.sill, 1e-4 * total),
+            range: Math.max(model.range, 1000)
+          }
+        },
+        getViewGrid(viewBounds)
+      )
     );
     focalParameters.write(
       getGPUFocalStatisticsParameterValues({

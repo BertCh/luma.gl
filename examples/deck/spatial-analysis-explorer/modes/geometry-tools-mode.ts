@@ -139,12 +139,13 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
     let radii: Float32Array | null = null;
     let descriptorColumns: Record<(typeof DESCRIPTOR_NAMES)[number], Float32Array> | null = null;
 
-    const overlay = createShapeOverlay(context, resources, parking);
+    const overlay = await createShapeOverlay(context, resources, parking);
 
     // Inputs.
     const positionsBuffer = resources.createBuffer('positions', zones.polygonPositions);
     const ringOffsetsBuffer = resources.createBuffer('ring-offsets', zones.ringOffsets);
-    const featureRingsBuffer = resources.createBuffer('feature-rings', featureRingOffsets);
+    const featureOffsetsBuffer = resources.createBuffer('feature-offsets', zones.featureOffsets);
+    const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', zones.polygonOffsets);
     const edgeSegments = resources.createBuffer('edge-segments', zones.outlineSegments);
     const edgeFeatureRows = resources.createBuffer('edge-feature-rows', zones.outlineFeatureRows);
     const outlineParameters = resources.createParameterBuffer(
@@ -213,12 +214,19 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
         'uint32',
         ringCount + 1
       );
-      const featureRings = importGraphBuffer(
+      const featureOffsets = importGraphBuffer(
         shapeGraph,
-        'feature-rings',
-        featureRingsBuffer,
+        'feature-offsets',
+        featureOffsetsBuffer,
         'uint32',
         featureCount + 1
+      );
+      const polygonOffsets = importGraphBuffer(
+        shapeGraph,
+        'polygon-offsets',
+        polygonOffsetsBuffer,
+        'uint32',
+        zones.polygonOffsets.length
       );
       const points = importGraphBuffer(
         shapeGraph,
@@ -245,8 +253,9 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
         new GPULabelPoint({
           id: 'label-point',
           positions,
+          featureOffsets,
+          polygonOffsets,
           ringOffsets,
-          featureRingOffsets: featureRings,
           output: {points, distances: radiiView, degenerate: degenerateView}
         })
       );
@@ -260,9 +269,9 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
         new GPUShapeDescriptors({
           id: 'shape-descriptors',
           positions,
+          featureOffsets,
+          polygonOffsets,
           ringOffsets,
-          featureRingOffsets: featureRings,
-          holeRule: 'first-ring-exterior',
           parameters: shapeParameters.importToGraph(shapeGraph),
           output: {
             polsbyPopper: columnViews.polsbyPopper,
@@ -370,7 +379,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
   ends[endsOffset + index * 2u + 1u] = end.y;`
       });
     }
-    const compiledShape = resources.track(shapeGraph.compile());
+    const compiledShape = resources.track(await shapeGraph.compileAsync());
 
     // Outline graph: re-encoded when the distance slider moves.
     const outlineGraph = new GPUCommandGraph<void>(device, {id: 'geometry-tools-outline'});
@@ -384,8 +393,22 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
           'float32x2',
           vertexCount
         ),
-        geometryType: 'rings',
-        pathOffsets: importGraphBuffer(
+        geometryType: 'polygons',
+        featureOffsets: importGraphBuffer(
+          outlineGraph,
+          'feature-offsets',
+          featureOffsetsBuffer,
+          'uint32',
+          featureCount + 1
+        ),
+        polygonOffsets: importGraphBuffer(
+          outlineGraph,
+          'polygon-offsets',
+          polygonOffsetsBuffer,
+          'uint32',
+          zones.polygonOffsets.length
+        ),
+        ringOffsets: importGraphBuffer(
           outlineGraph,
           'ring-offsets',
           ringOffsetsBuffer,
@@ -405,7 +428,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const compiledOutline = resources.track(outlineGraph.compile());
+    const compiledOutline = resources.track(await outlineGraph.compileAsync());
 
     // Clip graph: re-encoded when the rectangle moves.
     const clipGraph = new GPUCommandGraph<void>(device, {id: 'geometry-tools-clip'});
@@ -436,7 +459,21 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
             vertexCount
           ),
           geometryType: 'polygons',
-          pathOffsets: importGraphBuffer(
+          featureOffsets: importGraphBuffer(
+            clipGraph,
+            'feature-offsets',
+            featureOffsetsBuffer,
+            'uint32',
+            featureCount + 1
+          ),
+          polygonOffsets: importGraphBuffer(
+            clipGraph,
+            'polygon-offsets',
+            polygonOffsetsBuffer,
+            'uint32',
+            zones.polygonOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
             clipGraph,
             'ring-offsets',
             ringOffsetsBuffer,
@@ -446,9 +483,11 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
           parameters: clipParameters.importToGraph(clipGraph),
           output: {
             positions: clippedPositions,
-            pathOffsets: clippedOffsets,
-            count: countView,
-            overflow: importGraphBuffer(clipGraph, 'clip-overflow', clipOverflow, 'uint32', 1)
+            lineOffsets: clippedOffsets,
+            status: {
+              count: countView,
+              overflow: importGraphBuffer(clipGraph, 'clip-overflow', clipOverflow, 'uint32', 1)
+            }
           }
         })
       );
@@ -517,7 +556,7 @@ export const geometryToolsMode: SpatialAnalysisModeDefinition = {
   ends[endsOffset + index * 2u + 1u] = end.y;`
       });
     }
-    const compiledClip = resources.track(clipGraph.compile());
+    const compiledClip = resources.track(await clipGraph.compileAsync());
 
     // Parameter writes.
     const writeOutline = () => {

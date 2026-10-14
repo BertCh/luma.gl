@@ -216,15 +216,15 @@ export default defineScene<WildfireShapesOptions>({
     },
     {
       kind: 'select',
-      id: 'holeRule',
-      label: 'Hole rule',
+      id: 'ringGrouping',
+      label: 'Ring grouping',
       group: 'GPUGeometryMeasures',
       apply: 'compile',
-      default: 'winding',
-      help: 'How the rings of one fire combine. winding sums signed areas (shells counter-clockwise add, holes clockwise subtract). first-ring-exterior takes the first ring as the shell and every other ring as a hole, which is wrong for multi-polygon fires. Rebuilds both graphs.',
+      default: 'parts',
+      help: 'Ring roles are positional: the first ring of each polygon is its shell and every later ring is a hole, whatever its winding. Polygon parts keeps the real parts of each fire, so extra islands add area. One polygon per fire puts every ring in one polygon, so each later ring is subtracted as a hole, which is wrong for multi-polygon fires. Rebuilds both graphs.',
       options: [
-        {value: 'winding', label: 'Winding (GeoJSON)'},
-        {value: 'first-ring-exterior', label: 'First ring is the exterior'}
+        {value: 'parts', label: 'Polygon parts'},
+        {value: 'merged', label: 'One polygon per fire'}
       ]
     },
     {
@@ -283,7 +283,7 @@ export default defineScene<WildfireShapesOptions>({
     multipart: {
       headline: 'One fire may contain many polygons',
       textAlternative:
-        'A selected multipart wildfire perimeter shows its rings and WGS84 area alongside agency acres, with fill colour encoding area; treating every later ring as a hole is invalid when separate exterior polygon parts are present.',
+        'A selected multipart wildfire perimeter shows its rings and WGS84 area alongside agency acres, with fill colour encoding area; grouping every ring of a fire into one polygon turns separate exterior parts into holes, which is invalid.',
       camera: {longitude: -121.6, latitude: 38.6, zoom: 6.6, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'area', areaSystem: 'wgs84', shapeView: 'map'},
@@ -291,13 +291,13 @@ export default defineScene<WildfireShapesOptions>({
       readouts: ['medianRatio', 'gpuAcres', 'nifcAcres']
     },
     compactness: {
-      headline: 'Rings need an explicit hole rule',
+      headline: 'Ring grouping decides what is a hole',
       textAlternative:
-        'Wildfire polygons are coloured by fixed Polsby-Popper compactness classes and a selected outline reports the largest area discrepancy; compactness depends on the chosen ring hole rule and mapped perimeter detail.',
+        'Wildfire polygons are coloured by fixed Polsby-Popper compactness classes and a selected outline reports the largest area discrepancy; compactness depends on how rings are grouped into polygons and on mapped perimeter detail.',
       camera: {longitude: -121.7, latitude: 38.4, zoom: 7.2, transitionMs: 1800},
       optionsMode: 'fresh',
       options: {metric: 'polsbyPopper', areaSystem: 'wgs84', shapeView: 'map'},
-      controls: ['holeRule'],
+      controls: ['ringGrouping'],
       readouts: ['worstError', 'medianRatio', 'selected']
     },
     trend: {
@@ -417,7 +417,7 @@ export default defineScene<WildfireShapesOptions>({
     {
       id: 'worstError',
       label: 'Largest area error',
-      help: 'The shown fire whose GPU WGS84 area differs most from the NIFC acres under the current hole rule.'
+      help: 'The shown fire whose GPU WGS84 area differs most from the NIFC acres under the current ring grouping.'
     },
     {
       id: 'medianCompactness',
@@ -459,31 +459,29 @@ import {
   GPUShapeDescriptors
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// One feature per fire: featureRingOffsets maps fires to rings, ringOffsets to vertices.
+// One feature per fire: featureOffsets maps fires to polygon parts, polygonOffsets maps parts to rings,
+// ringOffsets maps rings to vertices. The first ring of each part is its shell, later rings are holes.
+// Ring grouping here: ${state.ringGrouping === 'parts' ? 'real polygon parts' : 'one polygon per fire (polygonOffsets = fire ring offsets)'}.
 const graph = new GPUCommandGraph(device, {id: 'wildfires'});
 graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
   positions: lngLat,                    // float32x2 lon/lat (planar: Web Mercator meters)
-  ringOffsets, featureRingOffsets,
-  geometryType: 'polygons',
-
-  holeRule: '${state.holeRule}',${state.largeRings === 'serial' ? '\n  cooperativeRingRows: 0,' : ''}
+  geometryType: 'polygons', featureOffsets, polygonOffsets, ringOffsets,${state.largeRings === 'serial' ? '\n  cooperativeRingRows: 0,' : ''}
   output: {areas, lengths, centroids, vertexCounts}
 }));
 graph.add(new GPUShapeDescriptors({
   positions: webMercatorMeters,         // planar coordinates
-  ringOffsets, featureRingOffsets,
-  holeRule: '${state.holeRule}',
+  featureOffsets, polygonOffsets, ringOffsets,
   convexityMethod: '${state.convexityMethod}',
   parameters,                           // [sliverThreshold, 0, 0, 0], a per-frame write
   output: {polsbyPopper, elongation, orientation, convexity, sliver}
 }));
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 shapeParameters.write(getGPUShapeDescriptorsParameterValues({sliverThreshold: ${state.sliverThreshold}}));
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {
     what: '`GPUGeometryMeasures` returns area, perimeter, centroid, bounds and vertex count of every polygon feature in one pass, in planar, spherical, WGS84 or geodesic coordinates. `GPUShapeDescriptors` builds on it: Polsby-Popper and Schwartzberg compactness, convexity, elongation, orientation and a sliver flag.',
-    why: 'Shape statistics are how you ask whether a district gerrymanders, a parcel is a sliver or a burn scar is stringy. Doing it on the GPU means the numbers follow a filter or a different hole rule immediately, for every feature at once.',
+    why: 'Shape statistics are how you ask whether a district gerrymanders, a parcel is a sliver or a burn scar is stringy. Doing it on the GPU means the numbers follow a filter or a different ring grouping immediately, for every feature at once.',
     howToRead:
       'The fixed compactness classes put the strongest colour on the lowest Polsby-Popper values. Dots mark each fire so small ones stay visible when zoomed out. Perimeter dates are record dates, not ignition. Compactness depends on mapped boundary detail, so its relation to acreage is descriptive rather than causal.'
   },

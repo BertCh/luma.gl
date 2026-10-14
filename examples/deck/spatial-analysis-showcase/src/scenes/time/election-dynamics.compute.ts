@@ -30,6 +30,7 @@ import {
   SpatialAnalysisSegmentLayer,
   type SpatialAnalysisColor
 } from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatPValue} from '../weights/b4-format';
@@ -232,6 +233,7 @@ export async function createElectionDynamics(
     elections.column<Float32Array>(`${variable === 'turnout' ? 'turnoutProxy' : variable}${year}`);
 
   const resources = new SpatialAnalysisResources(device, 'elections');
+  const graphSwap = resources.track(new GraphSwap());
   const cellFeatureBuffer = resources.createBuffer('cell-feature', raster.cellFeature);
   const stateBuffer = resources.createBuffer('states', stateSegments);
   const lisaParameters = resources.createParameterBuffer(
@@ -264,7 +266,7 @@ export async function createElectionDynamics(
     return valid;
   };
 
-  function buildVariant(through: '2020' | '2024', lag: number): Variant {
+  async function buildVariant(through: '2020' | '2024', lag: number): Promise<Variant> {
     const periods = through === '2020' ? 6 : 7;
     const key = `${through}-${lag}`;
     const valid = validityOf(periods);
@@ -330,7 +332,7 @@ export async function createElectionDynamics(
       neighbors: v('neighbors', neighbors, 'uint32', queen.neighbors.length),
       weights: v('weights', weightsBuffer, 'float32', queen.weights.length),
       // Queen weights are row-standardized (1 / degree), so masked neighbours are re-standardized out.
-      info: getWeightsInfo(rows, true)
+      information: getWeightsInfo(rows, true)
     };
     const breaksView = v('breaks', breaks, 'float32', MAXIMUM_CLASS_COUNT + 1);
     const classCountView = v('class-count', classCount, 'uint32', 1);
@@ -361,8 +363,7 @@ export async function createElectionDynamics(
       new GPUTransitionMatrix({
         id: `${key}-matrix`,
         classes: classesView,
-        rows,
-        periods,
+        periodCount: periods,
         periodLag: lag,
         classCount: MAXIMUM_CLASS_COUNT,
         mask: rowMaskView,
@@ -381,9 +382,9 @@ export async function createElectionDynamics(
         classes: classesView,
         classCount: MAXIMUM_CLASS_COUNT,
         weights,
-        periods,
+        periodCount: periods,
         periodLag: lag,
-        lagMaximumClassCount: LAG_CLASS_COUNT,
+        maximumLagClassCount: LAG_CLASS_COUNT,
         lagParameters: lagParameters.importToGraph(analysisGraph),
         lagMethods: LAG_METHODS,
         mask: rowMaskView,
@@ -419,7 +420,7 @@ export async function createElectionDynamics(
         // ('none', giddy parity) would have four quadrant states. Island and masked rows are
         // 0xffffffff and skipped either way.
         gating: 'significance',
-        periods,
+        periodCount: periods,
         periodLag: lag,
         parameters: lisaParameters.importToGraph(analysisGraph),
         mask: rowMaskView,
@@ -431,7 +432,7 @@ export async function createElectionDynamics(
         }
       })
     );
-    const analysis = resources.track(analysisGraph.compile());
+    const analysis = resources.track(await analysisGraph.compileAsync());
 
     // Display kernel: one county's class, lag class, LISA state or class move for one period.
     const displayGraph = new GPUCommandGraph<void>(device, {id: `elections-display-${key}`});
@@ -507,7 +508,7 @@ export async function createElectionDynamics(
   }
   shown[shownOffset + index] = value;`
     });
-    const display = resources.track(displayGraph.compile());
+    const display = resources.track(await displayGraph.compileAsync());
 
     const reader = new SummaryReader(
       resources,
@@ -584,12 +585,12 @@ export async function createElectionDynamics(
     };
   }
 
-  function getVariant(): Variant {
+  async function getVariant(): Promise<Variant> {
     const {through, periodLag} = ctx.options;
     const key = `${through}-${periodLag}`;
     let variant = variants.get(key);
     if (!variant) {
-      variant = buildVariant(through, Number(periodLag));
+      variant = await buildVariant(through, Number(periodLag));
       variants.set(key, variant);
     }
     return variant;
@@ -786,8 +787,8 @@ export async function createElectionDynamics(
 
   let displayDirty = true;
 
-  function adopt(): void {
-    current = getVariant();
+  function adopt(variant: Variant): void {
+    current = variant;
     summary = null;
     cpuDisplay = null;
     ctx.setReadout('counties', `${formatCount(current.validCount)} of ${formatCount(rows)}`);
@@ -815,7 +816,7 @@ export async function createElectionDynamics(
     return data;
   }
 
-  adopt();
+  adopt(await getVariant());
 
   return {
     getCompiledGraphs: () =>
@@ -823,7 +824,7 @@ export async function createElectionDynamics(
 
     setOption(id, _value, state) {
       if (id === 'through' || id === 'periodLag') {
-        adopt();
+        void graphSwap.request({build: getVariant, commit: adopt});
       } else if (id === 'variable') {
         writeValues();
         ctx.requestLayers();

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -149,47 +150,63 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
         timestamps: timestampsView,
         trackOffsets: offsetsView,
         parameters: parameterBuffer.importToGraph(playheadGraph),
-        currentPositions: importGraphBuffer(
-          playheadGraph,
-          'current-positions',
-          currentPositionsBuffer,
-          'float32x2',
-          trackCount
-        ),
-        headings: importGraphBuffer(
-          playheadGraph,
-          'headings',
-          headingsBuffer,
-          'float32',
-          trackCount
-        ),
-        speeds: importGraphBuffer(playheadGraph, 'speeds', speedsBuffer, 'float32', trackCount),
-        status: importGraphBuffer(playheadGraph, 'status', statusBuffer, 'uint32', trackCount),
-        activeTracks: {
-          ids: importGraphBuffer(
+        output: {
+          currentPositions: importGraphBuffer(
             playheadGraph,
-            'active-ids',
-            activeIdsBuffer,
+            'current-positions',
+            currentPositionsBuffer,
+            'float32x2',
+            trackCount
+          ),
+          headings: importGraphBuffer(
+            playheadGraph,
+            'headings',
+            headingsBuffer,
+            'float32',
+            trackCount
+          ),
+          speeds: importGraphBuffer(playheadGraph, 'speeds', speedsBuffer, 'float32', trackCount),
+          trackStatus: importGraphBuffer(
+            playheadGraph,
+            'status',
+            statusBuffer,
             'uint32',
             trackCount
           ),
-          count: importGraphBuffer(playheadGraph, 'active-count', activeCountBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(
-            playheadGraph,
-            'active-overflow',
-            activeOverflowBuffer,
-            'uint32',
-            1
+          activeTracks: {
+            ids: importGraphBuffer(
+              playheadGraph,
+              'active-ids',
+              activeIdsBuffer,
+              'uint32',
+              trackCount
+            ),
+            status: {
+              count: importGraphBuffer(
+                playheadGraph,
+                'active-count',
+                activeCountBuffer,
+                'uint32',
+                1
+              ),
+              overflow: importGraphBuffer(
+                playheadGraph,
+                'active-overflow',
+                activeOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
+          },
+          drawInstanceCount: playheadGraph.importGPUData(
+            'vehicle-draw-count',
+            drawCommands.getInstanceCountData(0)
           )
-        },
-        drawInstanceCount: playheadGraph.importGPUData(
-          'vehicle-draw-count',
-          drawCommands.getInstanceCountData(0)
-        )
+        }
       })
     );
     const compiledPlayhead: CompiledGPUCommandGraph<void> = resources.track(
-      playheadGraph.compile()
+      await playheadGraph.compileAsync()
     );
 
     // Static inputs: resample once on the first frame, not every frame.
@@ -220,17 +237,19 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
         ),
         sampleCount: RESAMPLE_SAMPLE_COUNT,
         spacing: 'arc-length',
-        samples: importGraphBuffer(
-          resampleGraph,
-          'resampled-samples',
-          samplesBuffer,
-          'float32x2',
-          trackCount * RESAMPLE_SAMPLE_COUNT
-        )
+        output: {
+          samples: importGraphBuffer(
+            resampleGraph,
+            'resampled-samples',
+            samplesBuffer,
+            'float32x2',
+            trackCount * RESAMPLE_SAMPLE_COUNT
+          )
+        }
       })
     );
     const compiledResample: CompiledGPUCommandGraph<void> = resources.track(
-      resampleGraph.compile()
+      await resampleGraph.compileAsync()
     );
 
     let playhead = 0;
@@ -343,7 +362,7 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: summaryByteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         let before = 0;
@@ -381,7 +400,7 @@ export const playheadMode: SpatialAnalysisModeDefinition = {
         }
         clockReadout.setValue(`${formatClock(playhead)} of ${formatClock(duration)}`);
         parameterBuffer.write(
-          getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: maximumGap}, parameterValues)
+          getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap}, parameterValues)
         );
         if (!resampled) {
           compiledResample.encode(commandEncoder, {parameters: undefined});

@@ -274,18 +274,19 @@ export default defineScene<SatelliteGroundTracksOptions>({
 
 // positions: float32x2 [longitude, latitude] degrees; tracks are cut at the antimeridian
 graph.add(new GPULineDensity({
-  positions, pathOffsets: trackOffsets,
+  positions, lineOffsets: trackOffsets,
   columns: 180, rows: 85, spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},   // 2 degree cells, exact spherical areas
   parameters: gridParameters.importToGraph(graph),
-  output: {lengths, densities, overflow}
+  output: {lengths, densities, status: {overflow}}
 }));
 gridParameters.write(getGPULineDensityParameterValues({minX: -180, minY: -85, cellWidth: 2, cellHeight: 2}));
 
 // 34 latitude bands as rectangles wider than the world: only the horizontal edges are ever crossed
 graph.add(new GPUZoneEvents({
-  positions, timestamps, trackOffsets, edgeStarts, edgeEnds, edgeZones,
-  zoneCount: 34, candidateCapacity: 1 << 19, maxEventsPerTrack: 128,
-  events: {output: {ids, count, overflow}, eventZones, eventTypes}
+  tracks: {kind: 'trajectories', positions, timestamps, trackOffsets},
+  zones: {kind: 'polygons', positions: bandCorners, featureOffsets, polygonOffsets, ringOffsets},   // 34 bands, one ring each
+  candidateCapacity: 1 << 19, trackEventCapacity: 128,
+  output: {events: {ids, status: {count, overflow}, eventZones, eventTypes}}
 }));
 // passes per band = events of type GPU_ZONE_EVENT_TYPE.enter, per band, divided by ${'3'} hours
 // family: ${state.group === 'all' ? 'all tracks' : SATELLITE_GROUPS[Number(state.group)]}`,

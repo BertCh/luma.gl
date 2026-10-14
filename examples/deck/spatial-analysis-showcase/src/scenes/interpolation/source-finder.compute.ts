@@ -203,7 +203,7 @@ export async function createSourceFinder(
       bestPosition: importGraphBuffer(graph, 'best-position', bestPositionBuffer, 'float32x2', 1)
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
   const writeParameters = () => {
     const options = ctx.options;
     parameters.write(

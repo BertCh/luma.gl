@@ -240,19 +240,19 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'dot-density'});
 graph.add(new GPUDotDensity({
-  ...tractPolygons,                     // polygonPositions, featureOffsets, polygonOffsets, ringOffsets
+  ...tractPolygons,                     // positions, featureOffsets, polygonOffsets, ringOffsets
   values,                               // 791 tracts × 5 categories, feature-major
   categoryCount: 5,
   parameters: parameters.importToGraph(graph),
   mask: {weights: maskWeights, width: 480, height: 576},   // dasymetric raster, row 0 = south
   output: {
     positions, categories, slotCounts, slotOffsets,
-    dots: {ids, count: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
-           overflow, requiredCount},
-    failedCount
+    dots: {ids, status: {count: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
+                         overflow, requiredCount}},
+    status: {failedCount}
   }
 }));
-const compiled = graph.compile();       // once
+const compiled = await graph.compileAsync();  // once
 
 // Every frame: dots per unit follows the zoom; the dots already drawn never move
 const dotsPerUnit = 2 ** (${state.zoomCoupling} * (zoom - 10)) / ${formatPeople(state.logUnitsPerDot)};

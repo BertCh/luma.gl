@@ -15,14 +15,14 @@ import {
   GPUTerrainCumulativeViewshed,
   GPUTerrainLineOfSight,
   GPUTerrainViewshed,
-  GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH,
+  GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH,
   GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH,
   GPU_TERRAIN_VISIBILITY,
-  GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH,
+  GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH,
   getGPUTerrainCurvatureCoefficient,
-  getGPUTerrainSightLineParameterValues,
+  getGPUTerrainLineOfSightParameterValues,
   getGPUTerrainViewshedParameterValues,
-  getGPUTerrainVisibilityToleranceParameterValues,
+  getGPUTerrainViewshedToleranceParameterValues,
   type GPUTerrainViewshedProps
 } from '@luma.gl/experimental/gpu-terrain';
 import {
@@ -35,6 +35,7 @@ import {
 import type {ClassTable, MapAnnotation} from '../../cartography/types';
 import {getClassTableLayerProps, hexToRgba} from '../../cartography/class-table';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -327,12 +328,12 @@ export async function createViewshed(
       toleranceSettings: resources.createParameterBuffer(
         'tolerance-settings',
         'float32',
-        GPU_TERRAIN_VISIBILITY_TOLERANCE_PARAMETER_LENGTH
+        GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH
       ),
       sightSettings: resources.createParameterBuffer(
         'sight-settings',
         'float32',
-        GPU_TERRAIN_SIGHT_LINE_PARAMETER_LENGTH
+        GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH
       ),
       reachSettings: resources.createParameterBuffer('reach-settings', 'float32', 4),
       sightPair: resources.createBuffer('sight-pair', new Float32Array(4)),
@@ -364,10 +365,10 @@ export async function createViewshed(
   let analysis: Analysis = buildAnalysis(Number(ctx.options.cellSize));
 
   // --- Per-traversal outputs ---------------------------------------------------------------
-  function getOutputs(traversal: Traversal): TraversalOutputs {
-    const existing = analysis.outputs[traversal];
+  function getOutputs(traversal: Traversal, owner: Analysis = analysis): TraversalOutputs {
+    const existing = owner.outputs[traversal];
     if (existing) return existing;
-    const {resources, terrain, summits} = analysis;
+    const {resources, terrain, summits} = owner;
     const created: TraversalOutputs = {
       visibility: resources.createBuffer(`${traversal}-visibility`, terrain.pixelCount * 4),
       classes: resources.createBuffer(`${traversal}-classes`, terrain.pixelCount * 4),
@@ -376,14 +377,17 @@ export async function createViewshed(
       losClearance: resources.createBuffer(`${traversal}-los-clearance`, 4),
       peakCodes: resources.createBuffer(`${traversal}-peak-codes`, Math.max(1, summits.length) * 4)
     };
-    analysis.outputs[traversal] = created;
+    owner.outputs[traversal] = created;
     return created;
   }
 
-  function getCumulativeOutputs(traversal: Traversal): CumulativeOutputs {
-    const existing = analysis.cumulative[traversal];
+  function getCumulativeOutputs(
+    traversal: Traversal,
+    owner: Analysis = analysis
+  ): CumulativeOutputs {
+    const existing = owner.cumulative[traversal];
     if (existing) return existing;
-    const {resources, terrain} = analysis;
+    const {resources, terrain} = owner;
     const coarse = getCoarseSize(terrain.width, terrain.height);
     const created: CumulativeOutputs = {
       counts: resources.createBuffer(`${traversal}-cumulative-counts`, terrain.pixelCount * 4),
@@ -394,29 +398,20 @@ export async function createViewshed(
         coarse.width * coarse.height * 4
       )
     };
-    analysis.cumulative[traversal] = created;
+    owner.cumulative[traversal] = created;
     return created;
   }
 
-  // --- Extrema pyramid (built on first use, rebuilt when its block size changes) -----------
-  function getPyramid(): PyramidState {
-    const blockSize = Number(ctx.options.pyramidBlockSize);
-    const current = analysis.pyramid;
-    if (current && current.blockSize === blockSize) return current;
-    const {resources, terrain, elevationBuffer, validityBuffer} = analysis;
-    const {width, height, pixelCount} = terrain;
-    if (current) {
-      for (const key of [...analysis.graphs.keys()]) {
-        if (key.endsWith('-pyramid') && !key.startsWith('compare')) {
-          const compiled = analysis.graphs.get(key);
-          if (compiled) resources.release(compiled);
-          analysis.graphs.delete(key);
-        }
-      }
-      if (analysis.pyramidCompiled) resources.release(analysis.pyramidCompiled);
-      for (const buffer of [current.combined, ...current.levelBuffers]) resources.release(buffer);
-    }
-    const layout = getGPURasterExtremaPyramidLayout(width, height, {
+  type BuiltPyramid = {state: PyramidState; compiled: CompiledGPUCommandGraph<void>};
+
+  /**
+   * Builds the extrema pyramid of an analysis for a block size, runs it once and copies each
+   * maximum level out for display. Nothing is installed: see `installPyramid`.
+   */
+  async function buildPyramid(owner: Analysis, blockSize: number): Promise<BuiltPyramid> {
+    const {resources, terrain, elevationBuffer, validityBuffer} = owner;
+    const {pixelCount} = terrain;
+    const layout = getGPURasterExtremaPyramidLayout(terrain.grid, {
       firstBlockSize: blockSize,
       footprint: 'bilinear'
     });
@@ -431,18 +426,17 @@ export async function createViewshed(
     graph.add(
       new GPURasterExtremaPyramid({
         id: 'extrema-pyramid',
-        width,
-        height,
+        grid: terrain.grid,
         input: createElevationBand(graph, 'pyramid', elevationBuffer, validityBuffer, pixelCount),
         firstBlockSize: blockSize,
         footprint: 'bilinear',
-        combined: importGraphBuffer(graph, 'combined', combined, 'float32', 2 * layout.length)
+        output: {
+          combined: importGraphBuffer(graph, 'combined', combined, 'float32', 2 * layout.length)
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
-    analysis.pyramidCompiled = compiled;
+    const compiled = resources.track(await graph.compileAsync());
     const state: PyramidState = {blockSize, layout, combined, levelBuffers};
-    analysis.pyramid = state;
     // Build the pyramid once and copy each maximum level out for display.
     const encoder = device.createCommandEncoder({id: 'viewshed-pyramid-encoder'});
     compiled.encode(encoder, {parameters: undefined});
@@ -455,9 +449,35 @@ export async function createViewshed(
       });
     });
     device.submit(encoder.finish());
-    void readPyramidRoot(analysis, state);
-    return state;
+    return {state, compiled};
   }
+
+  /** Installs a built pyramid, then releases the pyramid it replaces. */
+  function installPyramid(owner: Analysis, built: BuiltPyramid): void {
+    const previous = owner.pyramid;
+    const previousCompiled = owner.pyramidCompiled;
+    owner.pyramid = built.state;
+    owner.pyramidCompiled = built.compiled;
+    if (previousCompiled) owner.resources.release(previousCompiled);
+    if (previous) {
+      for (const buffer of [previous.combined, ...previous.levelBuffers]) {
+        owner.resources.release(buffer);
+      }
+    }
+    void readPyramidRoot(owner, built.state);
+  }
+
+  /** Releases a pyramid that was built but never installed. */
+  function discardPyramid(owner: Analysis, built: BuiltPyramid): void {
+    owner.resources.release(built.compiled);
+    for (const buffer of [built.state.combined, ...built.state.levelBuffers]) {
+      owner.resources.release(buffer);
+    }
+  }
+
+  /** True for the graphs that import the pyramid (the comparison graph never does). */
+  const dependsOnPyramid = (key: string): boolean =>
+    key.endsWith('-pyramid') && !key.startsWith('compare');
 
   async function readPyramidRoot(owner: Analysis, state: PyramidState): Promise<void> {
     try {
@@ -478,15 +498,18 @@ export async function createViewshed(
     }
   }
 
+  /** One import per graph: every consumer of the graph reads the same pyramid view. */
   const sharedPyramidViews = new WeakMap<
     GPUCommandGraph<void>,
     GPUTerrainViewshedProps['pyramid']
   >();
-  function getSharedPyramid(graph: GPUCommandGraph<void>): GPUTerrainViewshedProps['pyramid'] {
-    // One import per graph: every consumer of the graph reads the same pyramid view.
+  function getSharedPyramid(
+    graph: GPUCommandGraph<void>,
+    state: PyramidState | null
+  ): GPUTerrainViewshedProps['pyramid'] {
     const known = sharedPyramidViews.get(graph);
     if (known) return known;
-    const state = getPyramid();
+    if (!state) throw new Error('The extrema pyramid is not built');
     const view = {
       layout: state.layout,
       combined: importGraphBuffer(
@@ -502,22 +525,23 @@ export async function createViewshed(
   }
 
   // --- Lazily compiled graphs --------------------------------------------------------------
-  function getMainGraph(traversal: Traversal): CompiledGPUCommandGraph<void> {
-    const key = `main-${traversal}`;
-    const cached = analysis.graphs.get(key);
-    if (cached) return cached;
-    const {resources, terrain, summits} = analysis;
-    const {width, height, pixelCount} = terrain;
-    const output = getOutputs(traversal);
+  async function buildMainGraph(
+    owner: Analysis,
+    traversal: Traversal,
+    pyramid: PyramidState | null
+  ): Promise<CompiledGPUCommandGraph<void>> {
+    const {resources, terrain, summits} = owner;
+    const {pixelCount} = terrain;
+    const output = getOutputs(traversal, owner);
     const graph = new GPUCommandGraph<void>(device, {id: `viewshed-${traversal}`});
     const elevation = createElevationBand(
       graph,
       'main',
-      analysis.elevationBuffer,
-      analysis.validityBuffer,
+      owner.elevationBuffer,
+      owner.validityBuffer,
       pixelCount
     );
-    const shared = traversal === 'pyramid' ? getSharedPyramid(graph) : undefined;
+    const shared = traversal === 'pyramid' ? getSharedPyramid(graph, pyramid) : undefined;
     const visibility = importGraphBuffer(
       graph,
       'visibility',
@@ -528,28 +552,28 @@ export async function createViewshed(
     graph.add(
       new GPUTerrainViewshed({
         id: 'viewshed',
-        width,
-        height,
+        grid: terrain.groundGrid,
         elevation,
         traversal,
         pyramid: shared,
-        settings: analysis.viewshedSettings.importToGraph(graph),
-        tolerance: analysis.toleranceSettings.importToGraph(graph),
-        visibility
+        parameters: owner.viewshedSettings.importToGraph(graph),
+        toleranceParameters: owner.toleranceSettings.importToGraph(graph),
+        output: {visibility}
       })
     );
     graph.add(
       new GPUTerrainLineOfSight({
         id: 'line-of-sight',
-        width,
-        height,
+        grid: terrain.groundGrid,
         elevation,
         traversal,
-        pyramid: traversal === 'pyramid' ? getSharedPyramid(graph) : undefined,
-        pairs: importGraphBuffer(graph, 'sight-pair', analysis.sightPair, 'float32x4', 1),
-        settings: analysis.sightSettings.importToGraph(graph),
-        visibility: importGraphBuffer(graph, 'los-code', output.losCode, 'uint32', 1),
-        clearance: importGraphBuffer(graph, 'los-clearance', output.losClearance, 'float32', 1)
+        pyramid: traversal === 'pyramid' ? getSharedPyramid(graph, pyramid) : undefined,
+        pairs: importGraphBuffer(graph, 'sight-pair', owner.sightPair, 'float32x4', 1),
+        parameters: owner.sightSettings.importToGraph(graph),
+        output: {
+          visibility: importGraphBuffer(graph, 'los-code', output.losCode, 'uint32', 1),
+          clearance: importGraphBuffer(graph, 'los-clearance', output.losClearance, 'float32', 1)
+        }
       })
     );
     graph.add(
@@ -572,7 +596,7 @@ export async function createViewshed(
       cells: importGraphBuffer(
         graph,
         'summit-cells',
-        analysis.summitCellsBuffer,
+        owner.summitCellsBuffer,
         'uint32',
         Math.max(1, summits.length)
       ),
@@ -585,43 +609,43 @@ export async function createViewshed(
       ),
       count: Math.max(1, summits.length)
     });
-    const compiled = resources.track(graph.compile());
-    analysis.graphs.set(key, compiled);
+    const compiled = resources.track(await graph.compileAsync());
     return compiled;
   }
 
-  function getCumulativeGraph(traversal: Traversal): CompiledGPUCommandGraph<void> {
+  async function buildCumulativeGraph(
+    owner: Analysis,
+    traversal: Traversal,
+    pyramid: PyramidState | null
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const key = `cumulative-${traversal}`;
-    const cached = analysis.graphs.get(key);
-    if (cached) return cached;
-    const {resources, terrain} = analysis;
+    const {resources, terrain} = owner;
     const {width, height, pixelCount} = terrain;
-    const output = getCumulativeOutputs(traversal);
+    const output = getCumulativeOutputs(traversal, owner);
     const graph = new GPUCommandGraph<void>(device, {id: `viewshed-${key}`});
     const counts = importGraphBuffer(graph, 'visible-count', output.counts, 'uint32', pixelCount);
     graph.add(
       new GPUTerrainCumulativeViewshed({
         id: 'cumulative',
-        width,
-        height,
+        grid: terrain.groundGrid,
         elevation: createElevationBand(
           graph,
           'cumulative',
-          analysis.elevationBuffer,
-          analysis.validityBuffer,
+          owner.elevationBuffer,
+          owner.validityBuffer,
           pixelCount
         ),
         traversal,
-        pyramid: traversal === 'pyramid' ? getSharedPyramid(graph) : undefined,
+        pyramid: traversal === 'pyramid' ? getSharedPyramid(graph, pyramid) : undefined,
         observers: importGraphBuffer(
           graph,
           'observers',
-          analysis.lookoutBuffer,
+          owner.lookoutBuffer,
           'float32x2',
           LOOKOUT_SLOTS
         ),
-        settings: analysis.sightSettings.importToGraph(graph),
-        visibleCount: counts
+        parameters: owner.sightSettings.importToGraph(graph),
+        output: {visibleCount: counts}
       })
     );
     const classes = importGraphBuffer(graph, 'classes', output.classes, 'uint32', pixelCount);
@@ -631,11 +655,11 @@ export async function createViewshed(
       lookouts: importGraphBuffer(
         graph,
         'lookouts',
-        analysis.lookoutBuffer,
+        owner.lookoutBuffer,
         'float32',
         LOOKOUT_SLOTS * 2
       ),
-      reach: analysis.reachSettings.importToGraph(graph),
+      reach: owner.reachSettings.importToGraph(graph),
       classes,
       width,
       height
@@ -662,26 +686,26 @@ export async function createViewshed(
       width,
       height
     });
-    const compiled = resources.track(graph.compile());
-    analysis.graphs.set(key, compiled);
+    const compiled = resources.track(await graph.compileAsync());
     return compiled;
   }
 
-  function getCompareGraph(traversal: Traversal): CompiledGPUCommandGraph<void> {
+  async function buildCompareGraph(
+    owner: Analysis,
+    traversal: Traversal
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const key = `compare-${traversal}`;
-    const cached = analysis.graphs.get(key);
-    if (cached) return cached;
-    const {resources, terrain} = analysis;
+    const {resources, terrain} = owner;
     const {width, height, pixelCount} = terrain;
-    if (!analysis.compare) {
-      analysis.compare = {
+    if (!owner.compare) {
+      owner.compare = {
         altVisibility: resources.createBuffer('alt-visibility', pixelCount * 4),
         flips: resources.createBuffer('flips', pixelCount * 4),
         flipsDrawn: resources.createBuffer('flips-drawn', pixelCount * 4),
         flipCounts: resources.createBuffer('flip-counts', 2 * 4)
       };
     }
-    const compare = analysis.compare;
+    const compare = owner.compare;
     const graph = new GPUCommandGraph<void>(device, {id: `viewshed-${key}`});
     const alt = importGraphBuffer(
       graph,
@@ -693,19 +717,18 @@ export async function createViewshed(
     graph.add(
       new GPUTerrainViewshed({
         id: 'viewshed-opposite',
-        width,
-        height,
+        grid: terrain.groundGrid,
         elevation: createElevationBand(
           graph,
           'compare',
-          analysis.elevationBuffer,
-          analysis.validityBuffer,
+          owner.elevationBuffer,
+          owner.validityBuffer,
           pixelCount
         ),
         traversal: 'march',
-        settings: analysis.oppositeSettings.importToGraph(graph),
-        tolerance: analysis.toleranceSettings.importToGraph(graph),
-        visibility: alt
+        parameters: owner.oppositeSettings.importToGraph(graph),
+        toleranceParameters: owner.toleranceSettings.importToGraph(graph),
+        output: {visibility: alt}
       })
     );
     const flips = importGraphBuffer(graph, 'flips', compare.flips, 'uint32', pixelCount);
@@ -714,7 +737,7 @@ export async function createViewshed(
       first: importGraphBuffer(
         graph,
         'main-visibility',
-        getOutputs(traversal).visibility,
+        getOutputs(traversal, owner).visibility,
         'uint32',
         pixelCount
       ),
@@ -737,9 +760,177 @@ export async function createViewshed(
         edges: [0, 1, 2]
       })
     );
-    const compiled = resources.track(graph.compile());
-    analysis.graphs.set(key, compiled);
+    const compiled = resources.track(await graph.compileAsync());
     return compiled;
+  }
+
+  // --- Compiling graphs without blocking the frame ------------------------------------------
+  /** Builds the graph of a cache key: `main-`, `cumulative-` or `compare-` plus the traversal. */
+  function buildGraphByKey(
+    owner: Analysis,
+    key: string,
+    pyramid: PyramidState | null
+  ): Promise<CompiledGPUCommandGraph<void>> {
+    const traversal = key.slice(key.indexOf('-') + 1) as Traversal;
+    if (key.startsWith('main-')) return buildMainGraph(owner, traversal, pyramid);
+    if (key.startsWith('cumulative-')) return buildCumulativeGraph(owner, traversal, pyramid);
+    return buildCompareGraph(owner, traversal);
+  }
+
+  /** The graph cache keys that the options encode. */
+  function getWantedKeys(options: ViewshedOptions): string[] {
+    const keys = [`main-${options.traversal}`];
+    if (options.display === 'cumulative') keys.push(`cumulative-${options.traversal}`);
+    if (options.earthModel !== 'curved') keys.push(`compare-${options.traversal}`);
+    return keys;
+  }
+
+  /** The extrema pyramid of an analysis, built the first time it is needed. */
+  async function ensurePyramid(owner: Analysis): Promise<PyramidState> {
+    if (owner.pyramid) return owner.pyramid;
+    const built = await buildPyramid(owner, Number(ctx.options.pyramidBlockSize));
+    if (owner.pyramid) {
+      discardPyramid(owner, built);
+      return owner.pyramid;
+    }
+    installPyramid(owner, built);
+    return built.state;
+  }
+
+  /**
+   * A cached graph, compiled the first time. For the verify and measure actions only: the frame
+   * and the option handlers go through `requestRebuild`.
+   */
+  async function ensureGraph(owner: Analysis, key: string): Promise<CompiledGPUCommandGraph<void>> {
+    for (;;) {
+      const cached = owner.graphs.get(key);
+      if (cached) return cached;
+      const pyramid = dependsOnPyramid(key) ? await ensurePyramid(owner) : null;
+      const compiled = await buildGraphByKey(owner, key, pyramid);
+      // Another compile of the same graph, or a new pyramid, won the race: try again.
+      if (owner.graphs.has(key) || owner.pyramid !== pyramid) {
+        owner.resources.release(compiled);
+        continue;
+      }
+      owner.graphs.set(key, compiled);
+      return compiled;
+    }
+  }
+
+  /** What one rebuild created. Nothing is installed until `commitRebuild`. */
+  type GraphRebuild = {
+    owner: Analysis;
+    /** True when `owner` is a new analysis grid that replaces the live one. */
+    created: boolean;
+    pyramid: BuiltPyramid | null;
+    graphs: Map<string, CompiledGPUCommandGraph<void>>;
+  };
+  const graphSwap = new GraphSwap();
+  let rebuildFailed = false;
+  // The cell size of the latest request; the build creates the analysis grid when it differs.
+  let requestedStride = Number(ctx.options.cellSize);
+
+  function discardRebuild(rebuild: GraphRebuild): void {
+    if (rebuild.created) {
+      rebuild.owner.destroy();
+      return;
+    }
+    for (const compiled of rebuild.graphs.values()) rebuild.owner.resources.release(compiled);
+    if (rebuild.pyramid) discardPyramid(rebuild.owner, rebuild.pyramid);
+  }
+
+  /**
+   * Builds what the current options encode (a new analysis grid, the pyramid and its dependent
+   * graphs, missing graphs) while the live graphs keep encoding.
+   */
+  async function buildRebuild(): Promise<GraphRebuild> {
+    const options = ctx.options;
+    const created = requestedStride !== analysis.stride;
+    const owner = created ? buildAnalysis(requestedStride) : analysis;
+    const rebuild: GraphRebuild = {owner, created, pyramid: null, graphs: new Map()};
+    try {
+      const blockSize = Number(options.pyramidBlockSize);
+      const needsPyramid = options.traversal === 'pyramid' || options.display === 'pyramid';
+      let pyramid = owner.pyramid;
+      if (pyramid ? pyramid.blockSize !== blockSize : needsPyramid) {
+        rebuild.pyramid = await buildPyramid(owner, blockSize);
+        pyramid = rebuild.pyramid.state;
+      }
+      // Graphs that import a replaced pyramid are compiled again against the new one.
+      const replacing = Boolean(rebuild.pyramid && owner.pyramid);
+      const keys = new Set(getWantedKeys(options));
+      if (replacing) {
+        for (const key of owner.graphs.keys()) if (dependsOnPyramid(key)) keys.add(key);
+      }
+      for (const key of keys) {
+        if (owner.graphs.has(key) && !(replacing && dependsOnPyramid(key))) continue;
+        rebuild.graphs.set(key, await buildGraphByKey(owner, key, pyramid));
+      }
+    } catch (error) {
+      discardRebuild(rebuild);
+      throw error;
+    }
+    return rebuild;
+  }
+
+  /** Swaps the rebuilt analysis, pyramid and graphs in, then releases what they replace. */
+  function commitRebuild(rebuild: GraphRebuild): void {
+    const {owner} = rebuild;
+    const previous = analysis;
+    if (rebuild.created) {
+      for (const reader of previous.readers.values()) reader.stop();
+      analysis = owner;
+      retired.push(previous);
+      latestPeakCodes = null;
+      unseenGap = null;
+      resolveTarget();
+      describeGrid();
+    }
+    if (rebuild.pyramid) installPyramid(owner, rebuild.pyramid);
+    for (const [key, compiled] of rebuild.graphs) {
+      const old = owner.graphs.get(key);
+      if (old) owner.resources.release(old);
+      owner.graphs.set(key, compiled);
+    }
+    mainDirty = true;
+    cumulativeDirty = true;
+    compareDirty = true;
+    if (rebuild.created) {
+      lastFurnitureKey = '';
+      writeParameters();
+      updateFurniture();
+      refreshAnnotations();
+      // The previous grid's buffers may still be bound by the layers of the frame being drawn.
+      setTimeout(() => {
+        const index = retired.indexOf(previous);
+        if (index >= 0) {
+          retired.splice(index, 1);
+          previous.destroy();
+        }
+      }, 800);
+    }
+    ctx.requestLayers();
+  }
+
+  /** Requests the analysis, pyramid and graphs the current options need. */
+  function requestRebuild(): Promise<unknown> {
+    rebuildFailed = false;
+    return graphSwap
+      .request({build: buildRebuild, commit: commitRebuild, discard: discardRebuild})
+      .catch((error: Error) => {
+        // Stops the frame from requesting the same failing compile again and again.
+        rebuildFailed = true;
+        if (!destroyed) ctx.setStatus(`Cannot build the viewshed: ${error.message}`);
+      });
+  }
+
+  /** True when a graph that the options encode is not compiled yet. */
+  function isMissingGraphs(): boolean {
+    const options = ctx.options;
+    return (
+      getWantedKeys(options).some(key => !analysis.graphs.has(key)) ||
+      (options.display === 'pyramid' && !analysis.pyramid)
+    );
   }
 
   // --- Parameters and the observer state ---------------------------------------------------
@@ -755,10 +946,6 @@ export async function createViewshed(
     const [column, row] = terrain.getPixel(lngLat[0], lngLat[1]);
     return [clamp(column, 0, terrain.width - 1), clamp(row, 0, terrain.height - 1)];
   };
-  const getCellSize = (): [number, number] => [
-    analysis.terrain.groundCellSize,
-    analysis.terrain.groundCellSize
-  ];
   const getTolerance = (): RayTolerance => ({
     toleranceMeters: ctx.options.toleranceMeters,
     tolerancePerKilometer: ctx.options.tolerancePerKilometer,
@@ -849,23 +1036,22 @@ export async function createViewshed(
       observer,
       observerHeight: options.observerHeight,
       targetHeight: options.targetHeight,
-      maxDistance,
-      cellSize: getCellSize()
+      maximumDistance: maxDistance
     };
     analysis.viewshedSettings.write(
-      getGPUTerrainViewshedParameterValues({
-        ...common,
-        curvatureCoefficient: getCurvature(shownRefraction)
-      })
+      getGPUTerrainViewshedParameterValues(
+        {...common, curvatureCoefficient: getCurvature(shownRefraction)},
+        terrain.groundGrid
+      )
     );
     analysis.oppositeSettings.write(
-      getGPUTerrainViewshedParameterValues({
-        ...common,
-        curvatureCoefficient: getCurvature(oppositeRefraction)
-      })
+      getGPUTerrainViewshedParameterValues(
+        {...common, curvatureCoefficient: getCurvature(oppositeRefraction)},
+        terrain.groundGrid
+      )
     );
     analysis.toleranceSettings.write(
-      getGPUTerrainVisibilityToleranceParameterValues({
+      getGPUTerrainViewshedToleranceParameterValues({
         toleranceMeters: options.toleranceMeters,
         tolerancePerKilometer: options.tolerancePerKilometer,
         targetIgnoreDistance: options.targetIgnoreDistance,
@@ -873,17 +1059,19 @@ export async function createViewshed(
       })
     );
     analysis.sightSettings.write(
-      getGPUTerrainSightLineParameterValues({
-        observerHeight: options.observerHeight,
-        targetHeight: options.targetHeight,
-        maxDistance,
-        cellSize: getCellSize(),
-        curvatureCoefficient: getCurvature(shownRefraction),
-        toleranceMeters: options.toleranceMeters,
-        tolerancePerKilometer: options.tolerancePerKilometer,
-        targetIgnoreDistance: options.targetIgnoreDistance,
-        targetIgnoreFraction: options.targetIgnoreFraction
-      })
+      getGPUTerrainLineOfSightParameterValues(
+        {
+          observerHeight: options.observerHeight,
+          targetHeight: options.targetHeight,
+          maximumDistance: maxDistance,
+          curvatureCoefficient: getCurvature(shownRefraction),
+          toleranceMeters: options.toleranceMeters,
+          tolerancePerKilometer: options.tolerancePerKilometer,
+          targetIgnoreDistance: options.targetIgnoreDistance,
+          targetIgnoreFraction: options.targetIgnoreFraction
+        },
+        terrain.groundGrid
+      )
     );
     analysis.reachSettings.write(Float32Array.of(maxDistance, terrain.groundCellSize, 0, 0));
     analysis.sightPair.write(Float32Array.of(observer[0], observer[1], target[0], target[1]));
@@ -1278,7 +1466,6 @@ export async function createViewshed(
   const getCompareReader = (): SummaryReader =>
     getReader('compare', () => {
       const owner = analysis;
-      getCompareGraph(ctx.options.traversal);
       return new SummaryReader(
         owner.resources,
         'earth-compare',
@@ -1294,8 +1481,8 @@ export async function createViewshed(
     const owner = analysis;
     try {
       ctx.setReadout('identical', 'running both traversals...');
-      const march = getMainGraph('march');
-      const pyramidMain = getMainGraph('pyramid');
+      const march = await ensureGraph(owner, 'main-march');
+      const pyramidMain = await ensureGraph(owner, 'main-pyramid');
       const encoder = device.createCommandEncoder({id: 'viewshed-verify'});
       march.encode(encoder, {parameters: undefined});
       pyramidMain.encode(encoder, {parameters: undefined});
@@ -1345,10 +1532,16 @@ export async function createViewshed(
           warmUpRuns: 1,
           repetitions: 2
         });
-      const marchTiming = await run(getMainGraph('march'), getOutputs('march').counts);
+      const marchTiming = await run(
+        await ensureGraph(owner, 'main-march'),
+        getOutputs('march', owner).counts
+      );
       if (owner !== analysis) return;
       ctx.setReadout('marchTime', formatCompiledGraphTiming(marchTiming));
-      const pyramidTiming = await run(getMainGraph('pyramid'), getOutputs('pyramid').counts);
+      const pyramidTiming = await run(
+        await ensureGraph(owner, 'main-pyramid'),
+        getOutputs('pyramid', owner).counts
+      );
       if (owner !== analysis) return;
       ctx.setReadout(
         'pyramidTime',
@@ -1747,46 +1940,11 @@ export async function createViewshed(
     );
   }
   describeGrid();
-  ensureGraphs();
+  await requestRebuild();
   writeParameters();
   updateFurniture();
   refreshAnnotations();
   ctx.setStatus('');
-
-  /** Compiles the graphs the current options encode, so no frame compiles anything. */
-  function ensureGraphs(): void {
-    const options = ctx.options;
-    getMainGraph(options.traversal);
-    if (options.display === 'cumulative') getCumulativeGraph(options.traversal);
-    if (options.display === 'pyramid') getPyramid();
-    if (options.earthModel !== 'curved') getCompareGraph(options.traversal);
-  }
-
-  function rebuildAnalysis(stride: number): void {
-    if (stride === analysis.stride) return;
-    const previous = analysis;
-    for (const reader of previous.readers.values()) reader.stop();
-    analysis = buildAnalysis(stride);
-    retired.push(previous);
-    latestPeakCodes = null;
-    unseenGap = null;
-    resolveTarget();
-    describeGrid();
-    ensureGraphs();
-    lastFurnitureKey = '';
-    writeParameters();
-    updateFurniture();
-    refreshAnnotations();
-    ctx.requestLayers();
-    // The previous grid's buffers may still be bound by the layers of the frame being drawn.
-    setTimeout(() => {
-      const index = retired.indexOf(previous);
-      if (index >= 0) {
-        retired.splice(index, 1);
-        previous.destroy();
-      }
-    }, 800);
-  }
 
   const getActiveGraphs = (): CompiledGPUCommandGraph<void>[] => [...analysis.graphs.values()];
 
@@ -1798,34 +1956,23 @@ export async function createViewshed(
     },
 
     setOption(id, value) {
-      const options = ctx.options;
       if (id === 'cellSize') {
-        rebuildAnalysis(Number(value));
+        requestedStride = Number(value);
+        void requestRebuild();
         return;
       }
       if (id === 'traversal') {
         // Compile (or reuse) the chosen traversal's graphs and rerun them.
-        getMainGraph(options.traversal);
-        if (options.display === 'cumulative') getCumulativeGraph(options.traversal);
-        if (options.earthModel !== 'curved') getCompareGraph(options.traversal);
-        mainDirty = true;
-        cumulativeDirty = true;
-        compareDirty = true;
-        ctx.requestLayers();
+        void requestRebuild();
         return;
       }
       if (id === 'pyramidBlockSize') {
-        if (analysis.pyramid) {
-          getPyramid();
-          mainDirty = true;
-          cumulativeDirty = true;
-        }
+        if (analysis.pyramid) void requestRebuild();
         ctx.requestLayers();
         return;
       }
       if (id === 'display') {
-        if (value === 'pyramid') getPyramid();
-        if (value === 'cumulative') getCumulativeGraph(options.traversal);
+        if (value === 'pyramid' || value === 'cumulative') void requestRebuild();
         cumulativeDirty = true;
         lastFurnitureKey = '';
         updateFurniture();
@@ -1834,7 +1981,7 @@ export async function createViewshed(
         return;
       }
       if (id === 'earthModel') {
-        if (value !== 'curved') getCompareGraph(options.traversal);
+        if (value !== 'curved') void requestRebuild();
         if (value === 'curved') {
           ctx.setReadout('flippedCells', null);
         }
@@ -1898,23 +2045,30 @@ export async function createViewshed(
     encode(commandEncoder) {
       const options = ctx.options;
       const traversal = options.traversal;
-      if (mainDirty) {
-        getMainGraph(traversal).encode(commandEncoder, {parameters: undefined});
+      // A graph that is not compiled yet is skipped (its dirty flag stays set) until the swap.
+      if (!graphSwap.pending && !rebuildFailed && isMissingGraphs()) void requestRebuild();
+      const mainGraph = analysis.graphs.get(`main-${traversal}`);
+      if (mainDirty && mainGraph) {
+        mainGraph.encode(commandEncoder, {parameters: undefined});
         getMainReader(traversal).request(commandEncoder);
         mainDirty = false;
       }
-      if (options.display === 'cumulative' && cumulativeDirty) {
-        getCumulativeGraph(traversal).encode(commandEncoder, {parameters: undefined});
+      const cumulativeGraph = analysis.graphs.get(`cumulative-${traversal}`);
+      if (options.display === 'cumulative' && cumulativeDirty && cumulativeGraph) {
+        cumulativeGraph.encode(commandEncoder, {parameters: undefined});
         getCumulativeReader(traversal).request(commandEncoder);
         cumulativeDirty = false;
       }
-      if (options.earthModel !== 'curved' && compareDirty && analysis.compare) {
-        getCompareGraph(traversal).encode(commandEncoder, {parameters: undefined});
+      const compareGraph = analysis.graphs.get(`compare-${traversal}`);
+      if (options.earthModel !== 'curved' && compareDirty && analysis.compare && compareGraph) {
+        compareGraph.encode(commandEncoder, {parameters: undefined});
         getCompareReader().request(commandEncoder);
         compareDirty = false;
       }
-      getMainReader(traversal).flush(commandEncoder);
-      if (options.display === 'cumulative') getCumulativeReader(traversal).flush(commandEncoder);
+      if (analysis.outputs[traversal]) getMainReader(traversal).flush(commandEncoder);
+      if (options.display === 'cumulative' && analysis.cumulative[traversal]) {
+        getCumulativeReader(traversal).flush(commandEncoder);
+      }
       if (options.earthModel !== 'curved' && analysis.compare) {
         getCompareReader().flush(commandEncoder);
       }
@@ -1963,6 +2117,7 @@ export async function createViewshed(
       ctx.setAnnotations('frame', null);
       ctx.setAnnotations('markers', null);
       ctx.setAnnotations('notes', null);
+      graphSwap.destroy();
       analysis.destroy();
       for (const previous of retired) previous.destroy();
       retired.length = 0;

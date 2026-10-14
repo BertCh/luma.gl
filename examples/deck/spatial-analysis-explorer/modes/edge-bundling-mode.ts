@@ -19,9 +19,9 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   GPUEdgeBundling,
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   GPU_EDGE_BUNDLING_DEFAULTS,
-  type GPUEdgeBundlingParameterValues
+  type GPUEdgeBundlingSettings
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
@@ -133,7 +133,7 @@ export const edgeBundlingMode: SpatialAnalysisModeDefinition = {
       })
     );
 
-    let parameterValues: GPUEdgeBundlingParameterValues = {
+    let parameterValues: GPUEdgeBundlingSettings = {
       activeIterations: 15,
       kernelRadius: GPU_EDGE_BUNDLING_DEFAULTS.kernelRadius,
       lambda: GPU_EDGE_BUNDLING_DEFAULTS.lambda,
@@ -144,31 +144,33 @@ export const edgeBundlingMode: SpatialAnalysisModeDefinition = {
       'parameters',
       'uint32',
       5,
-      createGPUEdgeBundlingParameterValues(parameterValues, 'uint32')
+      getGPUEdgeBundlingParameterValues(parameterValues, 'uint32')
     );
 
     const graph = new GPUCommandGraph<void>(device, {id: 'edge-bundling'});
     graph.add(
       new GPUEdgeBundling({
         id: 'edge-bundling',
-        positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', vertexCount),
-        sourceVertices: importGraphBuffer(graph, 'sources', sourceBuffer, 'uint32', edgeCount),
-        targetVertices: importGraphBuffer(graph, 'targets', targetBuffer, 'uint32', edgeCount),
+        nodePositions: importGraphBuffer(graph, 'positions', positions, 'float32x2', vertexCount),
+        sourceNodes: importGraphBuffer(graph, 'sources', sourceBuffer, 'uint32', edgeCount),
+        targetNodes: importGraphBuffer(graph, 'targets', targetBuffer, 'uint32', edgeCount),
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge: POINTS_PER_EDGE,
-        iterations: MAXIMUM_ITERATIONS,
+        maximumIterations: MAXIMUM_ITERATIONS,
         densityResolution: DENSITY_RESOLUTION,
         parameters: parameters.importToGraph(graph),
-        paths: importGraphBuffer(graph, 'paths', paths, 'float32x2', edgeCount * POINTS_PER_EDGE),
-        drawRecord: drawCommands.importToGraph(graph).words
+        output: {
+          paths: importGraphBuffer(graph, 'paths', paths, 'float32x2', edgeCount * POINTS_PER_EDGE),
+          drawRecord: drawCommands.importToGraph(graph).words
+        }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     let dirty = true;
-    const writeParameters = (changes: GPUEdgeBundlingParameterValues) => {
+    const writeParameters = (changes: GPUEdgeBundlingSettings) => {
       parameterValues = {...parameterValues, ...changes};
-      parameters.write(createGPUEdgeBundlingParameterValues(parameterValues, 'uint32'));
+      parameters.write(getGPUEdgeBundlingParameterValues(parameterValues, 'uint32'));
       dirty = true;
     };
 

@@ -7,7 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {
   computeAdjacencyMatrixOrder,
   decodeGPUNetworkCoarseningSummary,
-  encodeGPUAdjacencyMatrixWindow,
+  getGPUAdjacencyMatrixParameterValues,
   GPU_NETWORK_COARSENING_SUMMARY_LENGTH,
   GPUAdjacencyMatrix,
   GPUAdjacencyMatrixOrder,
@@ -29,6 +29,7 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {LocalMetricProjection} from '../../engine/projection';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {MapAnnotation, SceneContext, SceneInstance, TooltipContent} from '../scene';
@@ -504,15 +505,13 @@ export async function createFlightMatrix(
     matrixWindow = getMatrixWindow(rows, columns, resolution);
     if (activeGraph) {
       activeGraph.windowBuffer.write(
-        encodeGPUAdjacencyMatrixWindow(
-          {
-            rowStart: matrixWindow.rowStart,
-            rowEnd: matrixWindow.rowEnd,
-            colStart: matrixWindow.colStart,
-            colEnd: matrixWindow.colEnd
-          },
+        getGPUAdjacencyMatrixParameterValues({
+          rowStart: matrixWindow.rowStart,
+          rowEnd: matrixWindow.rowEnd,
+          colStart: matrixWindow.colStart,
+          colEnd: matrixWindow.colEnd,
           resolution
-        )
+        })
       );
     }
     const {positionsPerCell, cells, extent} = matrixWindow;
@@ -648,7 +647,7 @@ export async function createFlightMatrix(
   // Graphs
   // ---------------------------------------------------------------------------------------------
 
-  function buildOrderGraph() {
+  async function buildOrderGraph() {
     const graphResources = new SpatialAnalysisResources(device, 'flight-matrix-order');
     const commandGraph = new GPUCommandGraph<void>(device, {id: 'flight-matrix-order'});
     commandGraph.add(
@@ -656,13 +655,16 @@ export async function createFlightMatrix(
         id: 'order',
         groups: importGraphBuffer(commandGraph, 'groups', groupsBuffer, 'uint32', nodeCount),
         tieKeys: importGraphBuffer(commandGraph, 'ties', tieBuffer, 'uint32', nodeCount),
-        order: importGraphBuffer(commandGraph, 'order', orderBuffer, 'uint32', nodeCount)
+        output: {order: importGraphBuffer(commandGraph, 'order', orderBuffer, 'uint32', nodeCount)}
       })
     );
-    return {resources: graphResources, compiled: graphResources.track(commandGraph.compile())};
+    return {
+      resources: graphResources,
+      compiled: graphResources.track(await commandGraph.compileAsync())
+    };
   }
 
-  function buildMatrixGraph(resolution: number): MatrixGraph {
+  async function buildMatrixGraph(resolution: number): Promise<MatrixGraph> {
     const graphResources = new SpatialAnalysisResources(device, `flight-matrix-${resolution}`);
     const cellCount = resolution * resolution;
     const counts = graphResources.createBuffer('counts', cellCount * 4);
@@ -672,24 +674,32 @@ export async function createFlightMatrix(
     commandGraph.add(
       new GPUAdjacencyMatrix({
         id: 'matrix',
-        offsets: importGraphBuffer(commandGraph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
-        neighbors: importGraphBuffer(
-          commandGraph,
-          'neighbors',
-          neighborsBuffer,
-          'uint32',
-          slotCount
-        ),
+        topology: {
+          offsets: importGraphBuffer(
+            commandGraph,
+            'offsets',
+            offsetsBuffer,
+            'uint32',
+            nodeCount + 1
+          ),
+          neighbors: importGraphBuffer(
+            commandGraph,
+            'neighbors',
+            neighborsBuffer,
+            'uint32',
+            slotCount
+          )
+        },
         order: importGraphBuffer(commandGraph, 'order', displayOrderBuffer, 'uint32', nodeCount),
-        window: windowBuffer.importToGraph(commandGraph),
+        parameters: windowBuffer.importToGraph(commandGraph),
         resolution,
         output: {
           counts: importGraphBuffer(commandGraph, 'counts', counts, 'uint32', cellCount),
-          maxCount: importGraphBuffer(commandGraph, 'max-count', maxCount, 'uint32', 1)
+          maximumCount: importGraphBuffer(commandGraph, 'max-count', maxCount, 'uint32', 1)
         }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const readsCounts = resolution <= MAXIMUM_COUNT_READBACK_RESOLUTION;
     const sources = [{buffer: maxCount, size: 4}];
     if (readsCounts) sources.push({buffer: counts, size: cellCount * 4});
@@ -724,13 +734,21 @@ export async function createFlightMatrix(
     });
   }
 
-  function activateResolution(): void {
+  /** Returns the matrix graph of the current resolution, compiling it on first use. */
+  async function fetchMatrixGraph(): Promise<MatrixGraph> {
     const resolution = 2 ** ctx.options.resolutionPower;
     let next = matrixGraphs.get(resolution);
     if (!next) {
-      next = buildMatrixGraph(resolution);
-      matrixGraphs.set(resolution, next);
+      next = await buildMatrixGraph(resolution);
+      if (destroyed) next.resources.destroy();
+      else matrixGraphs.set(resolution, next);
     }
+    return next;
+  }
+
+  /** Makes a matrix graph the live one and rewrites the window it reads. */
+  function commitResolution(next: MatrixGraph): void {
+    const {resolution} = next;
     activeGraph = next;
     lastCounts = null;
     ctx.setReadout('resolution', `${resolution} × ${resolution} bins`);
@@ -738,7 +756,19 @@ export async function createFlightMatrix(
     if (orderGraphHandle && coarsenGraphHandle) publishCost();
   }
 
-  function buildCoarsenGraph() {
+  const resolutionSwap = resources.track(new GraphSwap());
+  /** Activates the graph of the current resolution; the latest request wins. The cache owns it. */
+  function requestResolution(): Promise<boolean> {
+    return resolutionSwap.request({
+      build: fetchMatrixGraph,
+      commit: next => {
+        commitResolution(next);
+        ctx.requestLayers();
+      }
+    });
+  }
+
+  async function buildCoarsenGraph() {
     const graphResources = new SpatialAnalysisResources(device, 'flight-matrix-coarsen');
     const groupVertexCount = graphResources.createBuffer('group-vertex-count', GROUP_CAPACITY * 4);
     const groupIntra = graphResources.createBuffer('group-intra', GROUP_CAPACITY * 4);
@@ -757,23 +787,29 @@ export async function createFlightMatrix(
     commandGraph.add(
       new GPUNetworkCoarsening({
         id: 'coarsen',
-        offsets: u32('offsets', offsetsBuffer, nodeCount + 1),
-        neighbors: u32('neighbors', neighborsBuffer, slotCount),
+        topology: {
+          offsets: u32('offsets', offsetsBuffer, nodeCount + 1),
+          neighbors: u32('neighbors', neighborsBuffer, slotCount)
+        },
         labels: u32('labels', labelsBuffer, nodeCount),
         groupCapacity: GROUP_CAPACITY,
-        groupVertexCount: u32('group-vertex-count', groupVertexCount, GROUP_CAPACITY),
-        groupIntraEdgeCount: u32('group-intra', groupIntra, GROUP_CAPACITY),
-        edges: {
-          ids: u32('super-ids', edgeIds, SUPEREDGE_CAPACITY),
-          count: u32('super-count', edgeCount, 1),
-          overflow: u32('super-overflow', edgeOverflow, 1)
-        },
-        edgeTargets: u32('super-targets', edgeTargets, SUPEREDGE_CAPACITY),
-        edgeCounts: u32('super-counts', edgeCounts, SUPEREDGE_CAPACITY),
-        summary: u32('summary', summary, GPU_NETWORK_COARSENING_SUMMARY_LENGTH)
+        output: {
+          groupNodeCount: u32('group-vertex-count', groupVertexCount, GROUP_CAPACITY),
+          groupIntraEdgeCount: u32('group-intra', groupIntra, GROUP_CAPACITY),
+          edges: {
+            ids: u32('super-ids', edgeIds, SUPEREDGE_CAPACITY),
+            status: {
+              count: u32('super-count', edgeCount, 1),
+              overflow: u32('super-overflow', edgeOverflow, 1)
+            }
+          },
+          edgeTargetGroups: u32('super-targets', edgeTargets, SUPEREDGE_CAPACITY),
+          edgeCounts: u32('super-counts', edgeCounts, SUPEREDGE_CAPACITY),
+          summary: u32('summary', summary, GPU_NETWORK_COARSENING_SUMMARY_LENGTH)
+        }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     // One readback of everything small: the order (to check it), the summary and the group tables.
     const sourceList = [
       {name: 'order', buffer: orderBuffer, size: nodeCount * 4},
@@ -894,7 +930,7 @@ export async function createFlightMatrix(
       'intraShare',
       summary.countedEdgeCount > 0 ? summary.intraEdgeCount / summary.countedEdgeCount : null
     );
-    ctx.setReadout('dropped', summary.droppedEdgeCount + summary.overflowedVertexCount);
+    ctx.setReadout('dropped', summary.droppedEdgeCount + summary.overflowedNodeCount);
     let largest = -1;
     for (let edge = 0; edge < lastSuperCounts.length; edge++) {
       if (largest < 0 || lastSuperCounts[edge] > lastSuperCounts[largest]) largest = edge;
@@ -1340,11 +1376,11 @@ export async function createFlightMatrix(
     ctx.setReadout('shareCountry', countryIntraShare);
     ctx.setStatus('Compiling the order, matrix and coarsening graphs');
   }
-  orderGraphHandle = buildOrderGraph();
-  coarsenGraphHandle = buildCoarsenGraph();
+  orderGraphHandle = await buildOrderGraph();
+  coarsenGraphHandle = await buildCoarsenGraph();
   writeLabels();
   writeOrderInputs(false);
-  activateResolution();
+  commitResolution(await fetchMatrixGraph());
   publishLegendData();
   publishFurniture();
   updateAnnotations();
@@ -1365,8 +1401,7 @@ export async function createFlightMatrix(
     setOption(id) {
       switch (id) {
         case 'resolutionPower':
-          activateResolution();
-          ctx.requestLayers();
+          void requestResolution();
           break;
         case 'order':
           writeOrderInputs(true);

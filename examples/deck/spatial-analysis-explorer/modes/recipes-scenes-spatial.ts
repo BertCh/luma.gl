@@ -9,21 +9,24 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
-  getGPUNetworkIsochroneParameterValues,
+  addDriveTimeCatchmentRecipe,
+  getGPUNetworkIsochronesParameterValues,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
-import {getGPUDistanceFieldParameterValues} from '@luma.gl/experimental/gpu-raster';
+import {
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import {
   addClusterAndOutlineRecipe,
-  addDriveTimeCatchmentRecipe,
   addSpatialRegressionRecipe,
   addStraightLineCatchmentsRecipe,
   getGPUGeographicallyWeightedRegressionParameterValues,
   getGPUGeographicDistributionParameterValues,
   getGPUOrdinaryLeastSquaresParameterValues,
-  getGPUSpatialAutocorrelationParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH,
   GPU_ORDINARY_LEAST_SQUARES_SUMMARY_R_SQUARED,
@@ -110,7 +113,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
   const areas = kit.output('areas', 'float32', CLUSTER_MAXIMUM_COUNT);
   const perimeters = kit.output('perimeters', 'float32', CLUSTER_MAXIMUM_COUNT);
   const recipe = addClusterAndOutlineRecipe(kit.graph, {
-    positions: pointsInput.view,
+    points: {kind: 'points', positions: pointsInput.view},
     spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
     clusteringParameters: clustering.view,
     gridSize: [256, 256],
@@ -123,7 +126,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
       clusterCount: clusterCount.view,
       hullOffsets: hullOffsets.view,
       hullPositions: hullPositions.view,
-      hullOverflow: hullOverflow.view,
+      status: {hullOverflow: hullOverflow.view},
       areas: areas.view,
       perimeters: perimeters.view
     },
@@ -160,7 +163,7 @@ export const buildClusterAndOutlineScene: RecipeSceneBuilder = async host => {
   edges[edgesOffset + index] = edge;
   edgeClusters[edgeClustersOffset + index] = owner;`
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
 
   const clusterBytes = CLUSTER_MAXIMUM_COUNT * 4;
   const summarySizes = [4, clusterBytes, clusterBytes, clusterBytes, 4];
@@ -433,15 +436,15 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
     weightList.length
   );
   const centersInput = kit.input('centers', centers, 'float32x2', rowCount);
-  const autocorrelation = kit.parameter(
+  const autocorrelation = kit.parameterBuffer(
     'autocorrelation-parameters',
     'float32',
-    getGPUSpatialAutocorrelationParameterValues({significanceLevel})
+    GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
   );
   const olsParameters = kit.parameter(
     'ols-parameters',
     'float32',
-    getGPUOrdinaryLeastSquaresParameterValues(ridge)
+    getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: ridge})
   );
   const gwrParameters = kit.parameter('gwr-parameters', 'float32', getGwrParameters());
   const olsCoefficients = kit.output('ols-coefficients', 'float32', predictorCount + 1);
@@ -481,19 +484,20 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
       neighbors: weightNeighbors.view,
       weights: weightValues.view
     },
-    parameters: autocorrelation.view,
+    settings: {significanceLevel},
+    parameters: autocorrelation,
     olsParameters: olsParameters.view,
     outputs: {
       ols: {
         coefficients: olsCoefficients.view,
         summary: olsSummary.view,
-        status: olsStatus.view,
+        status: {code: olsStatus.view},
         residuals: residuals.view
       },
       diagnostics: {
         tests: tests.view,
         summary: diagnosticsSummary.view,
-        status: diagnosticsStatus.view
+        status: {code: diagnosticsStatus.view}
       },
       residualMoran: {zScores: moranZ.view},
       localFits: {
@@ -509,7 +513,7 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
       maximumBandwidthCount: REGRESSION_LADDER_CAPACITY
     }
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
   const rowOfCellBuffer = kit.resources.createBuffer('row-of-cell', rowOfCell);
 
   const sizes = [
@@ -614,7 +618,9 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
       format: value => (value === 0 ? 'none' : `lambda ${value}`),
       onChange: value => {
         ridge = value;
-        olsParameters.parameters.write(getGPUOrdinaryLeastSquaresParameterValues(ridge));
+        olsParameters.parameters.write(
+          getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: ridge})
+        );
         encoder.markDirty();
       }
     },
@@ -628,9 +634,7 @@ export const buildSpatialRegressionScene: RecipeSceneBuilder = async host => {
       format: value => `p <= ${value.toFixed(2)}`,
       onChange: value => {
         significanceLevel = value;
-        autocorrelation.parameters.write(
-          getGPUSpatialAutocorrelationParameterValues({significanceLevel})
-        );
+        recipe.setSettings({significanceLevel});
         encoder.markDirty();
       }
     },
@@ -877,7 +881,7 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
     // Longitude/latitude: the isochrone cell outline needs it, and the recipe snaps great-circle
     // on longitude/latitude (meters).
     spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
-    network: {
+    topology: {
       offsets: csrOffsets.view,
       neighbors: csrNeighbors.view,
       weights: csrWeights.view,
@@ -887,8 +891,8 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
     demand: demand.view,
     demandValues: demandValueInput.view,
     costLimit: costLimit.view,
-    maxIterations: 64,
-    bandBreaks: bandBreaks.view,
+    maximumIterations: 64,
+    costBreaks: bandBreaks.view,
     bandCapacity: 8,
     outputs: {
       nodeCosts: nodeCosts.view,
@@ -897,13 +901,12 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
       bands: {
         keys: bandKeys.view,
         counts: bandCounts.view,
-        count: bandCount.view,
-        overflow: bandOverflow.view,
+        status: {count: bandCount.view, overflow: bandOverflow.view},
         sumValues: bandSums.view
       }
     },
     isochrones: {
-      breaks: isochroneBreaks.view,
+      costBreaks: isochroneBreaks.view,
       parameters: isochroneParameters.view,
       cellOutline: {
         family: 'quadbin',
@@ -911,16 +914,14 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
         table: {
           cells: tableCells.view,
           counts: tableCounts.view,
-          count: tableCount.view,
-          overflow: tableOverflow.view
+          status: {count: tableCount.view, overflow: tableOverflow.view}
         },
         output: {
           rows: outlineRows.view,
           cells: outlineCells.view,
           edgeIndices: outlineEdges.view,
           endpoints: outlineEndpoints.view,
-          count: outlineCount.view,
-          overflow: outlineOverflow.view
+          status: {count: outlineCount.view, overflow: outlineOverflow.view}
         },
         rings: {
           normalizeWinding: true,
@@ -928,15 +929,17 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
             ringOffsets: ringOffsets.view,
             positions: ringPositions.view,
             ringIsHole: ringIsHole.view,
-            count: ringCount.view,
-            overflow: ringOverflow.view,
-            openSegmentCount: ringOpen.view
+            status: {
+              count: ringCount.view,
+              overflow: ringOverflow.view,
+              openSegmentCount: ringOpen.view
+            }
           }
         }
       }
     }
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
   const segments = kit.resources.createBuffer('segments', roads.segments);
   const segmentNodes = kit.resources.createBuffer('segment-nodes', roads.segmentNodes);
 
@@ -956,7 +959,7 @@ export const buildDriveTimeScene: RecipeSceneBuilder = async host => {
       )
     );
     isochroneParameters.parameters.write(
-      getGPUNetworkIsochroneParameterValues({
+      getGPUNetworkIsochronesParameterValues({
         breakCount: DRIVE_BAND_COUNT,
         extent: [-180, -90, 180, 90],
         cellCostLimit: limit
@@ -1182,15 +1185,22 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
   }
 
   let maximumDistance = 6000;
-  const getSettings = () =>
-    getGPUDistanceFieldParameterValues({
-      origin: [bounds[0], bounds[1]],
-      cellSize: [cellWidth, cellHeight],
-      maxDistance: maximumDistance
-    });
+  // Row 0 is the southern row and rows advance north, as the density raster below is filled.
+  const grid = makeGPURasterMetadata({
+    width: CATCHMENT_WIDTH,
+    height: CATCHMENT_HEIGHT,
+    cellSize: [cellWidth, cellHeight],
+    origin: [bounds[0], bounds[1]],
+    rowDirection: 'north'
+  });
+  const getDistanceParameters = () => getGPUDistanceFieldParameterValues({maximumDistance}, grid);
 
   const kit = new RecipeKit(context.device, 'recipe-straight-line');
-  const settings = kit.parameter('distance-settings', 'float32', getSettings());
+  const distanceParameters = kit.parameter(
+    'distance-parameters',
+    'float32',
+    getDistanceParameters()
+  );
   const seeds = kit.input('seeds', seedPositions, 'float32x2', CATCHMENT_CAPACITY);
   const seedCount = kit.parameter('seed-count', 'uint32', Uint32Array.of(activeSeeds));
   const values = kit.input('values', density, 'float32', density.length);
@@ -1203,11 +1213,10 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
   const minimums = kit.output('minimums', 'float32', CATCHMENT_CAPACITY);
   const maximums = kit.output('maximums', 'float32', CATCHMENT_CAPACITY);
   const recipe = addStraightLineCatchmentsRecipe(kit.graph, {
-    width: CATCHMENT_WIDTH,
-    height: CATCHMENT_HEIGHT,
-    settings: settings.view,
-    seedPositions: seeds.view,
-    seedCount: seedCount.view,
+    grid,
+    parameters: distanceParameters.view,
+    facilities: {kind: 'points', positions: seeds.view},
+    facilityCount: seedCount.view,
     values: values.view,
     outputs: {
       allocation: allocation.view,
@@ -1222,7 +1231,7 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
       }
     }
   });
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
 
   const rowBytes = CATCHMENT_CAPACITY * 4;
   const summarySizes = [rowBytes, rowBytes];
@@ -1290,7 +1299,7 @@ export const buildStraightLineScene: RecipeSceneBuilder = async host => {
       format: value => `${(value / 1000).toFixed(2)} km`,
       onChange: value => {
         maximumDistance = value;
-        settings.parameters.write(getSettings());
+        distanceParameters.parameters.write(getDistanceParameters());
         encoder.markDirty();
       }
     }

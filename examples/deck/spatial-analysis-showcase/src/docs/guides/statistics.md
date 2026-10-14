@@ -21,7 +21,7 @@ Most maps of statistics fail in the same few ways: a rate computed from three pe
 | --- | --- | --- |
 | A rate per place that is stable for small populations | `GPUEmpiricalBayesRates` | Events and population at risk; a mask |
 | The same, borrowing from neighbours | `GPUSpatialEmpiricalBayesRates` | A weights CSR (queen, rook, kNN) |
-| Whether a rate map has real clusters | `addRateClusterMapRecipe` | Permutations, tail (two-sided by default), multiple-testing correction, queen or rook |
+| Whether a rate map has real clusters | `addRateClusterMapRecipe` | Permutation count and seed (`settings`, repacked by `result.setSettings`), tail (two-sided by default), multiple-testing correction, queen or rook; one row per county feature |
 | Class edges that suit the distribution | `GPUClassBreaks` | Method (eight), class count, histogram bins for Jenks |
 | Colors from classes or a continuous scale | `GPUColorScale` | Scale type, palette, blending, clamp, log floor |
 | Which classing fits best | `GPUClassificationFit` | GADF, GVF, ADCM, ADAM |

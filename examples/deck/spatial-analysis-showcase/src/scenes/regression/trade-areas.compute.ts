@@ -6,11 +6,13 @@ import type {Layer} from '@deck.gl/core';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
+  getGPUHuffTradeAreasParameterValues,
   getGPUNeighborSearchParameterValues,
   GPUCatchmentAccessibility,
   GPUHuffTradeAreas,
   GPUNeighborSearch,
   GPU_HUFF_NO_TRADE_AREA,
+  GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   type GPUNeighborSearchKernel,
   type GPUNeighborSearchWeightKind
@@ -265,7 +267,11 @@ export async function createTradeAreas(
     'float32',
     GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH
   );
-  const huffExponent = resources.createParameterBuffer('huff-exponent', 'float32', 1);
+  const huffExponent = resources.createParameterBuffer(
+    'huff-exponent',
+    'float32',
+    GPU_HUFF_TRADE_AREAS_PARAMETER_LENGTH
+  );
   const spokeParameters = resources.createParameterBuffer('spoke-parameters', 'float32', 1);
 
   let selectedSupplyTotal = 0;
@@ -297,7 +303,7 @@ export async function createTradeAreas(
         distanceFloor: 100
       })
     );
-    huffExponent.write(Float32Array.of(alpha));
+    huffExponent.write(getGPUHuffTradeAreasParameterValues({exponent: alpha}));
     spokeParameters.write(Float32Array.of(showSpokes ? 1 : 0));
   };
   writeFacilityMask();
@@ -344,8 +350,10 @@ export async function createTradeAreas(
       mask: facilityMaskView,
       parameters: searchParametersView,
       gridSize: [64, 64],
-      weights: demandWeights,
-      overflow: view('demand-overflow', demandRows.overflow, 'uint32', 1)
+      output: {
+        ...demandWeights,
+        status: {overflow: view('demand-overflow', demandRows.overflow, 'uint32', 1)}
+      }
     })
   );
   graph.add(
@@ -357,8 +365,10 @@ export async function createTradeAreas(
       queryMask: facilityMaskView,
       parameters: searchParametersView,
       gridSize: [64, 64],
-      weights: facilityWeights,
-      overflow: view('facility-overflow', facilityRows.overflow, 'uint32', 1)
+      output: {
+        ...facilityWeights,
+        status: {overflow: view('facility-overflow', facilityRows.overflow, 'uint32', 1)}
+      }
     })
   );
   const reachableView = view('reachable', reachable, 'uint32', demandCount);
@@ -374,9 +384,11 @@ export async function createTradeAreas(
         demand: demandView,
         facilityWeights,
         demandWeights,
-        accessibility: view(`access-${method}`, accessBuffer, 'float32', demandCount),
-        ratios: view(`ratios-${method}`, ratiosBuffer, 'float32', facilityCount),
-        reachableFacilities: method === '2sfca' ? reachableView : undefined
+        output: {
+          accessibility: view(`access-${method}`, accessBuffer, 'float32', demandCount),
+          ratios: view(`ratios-${method}`, ratiosBuffer, 'float32', facilityCount),
+          reachableFacilities: method === '2sfca' ? reachableView : undefined
+        }
       })
     );
   }
@@ -395,9 +407,11 @@ export async function createTradeAreas(
       facilityWeights,
       demand: demandView,
       parameters: huffExponent.importToGraph(graph),
-      tradeArea: tradeAreaView,
-      tradeAreaProbability: probabilityView,
-      expectedDemand: view('expected-demand', expectedDemand, 'float32', facilityCount)
+      output: {
+        tradeArea: tradeAreaView,
+        tradeAreaProbability: probabilityView,
+        expectedDemand: view('expected-demand', expectedDemand, 'float32', facilityCount)
+      }
     })
   );
   // Spokes from each tract to its modal facility, faded by the Huff probability.
@@ -439,7 +453,7 @@ export async function createTradeAreas(
   segments[segmentsOffset + index * 4u + 3u] = facilityPositions[facilityPositionsOffset + facility * 2u + 1u];
   fade[fadeOffset + index] = probability[probabilityOffset + index] * parameters[parametersOffset];`
   });
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   // Spokes and facilities are drawn in meters around the local origin; fill and outline use degrees.
   // ---- State and readback. ----

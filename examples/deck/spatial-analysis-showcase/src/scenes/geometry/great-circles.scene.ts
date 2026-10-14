@@ -340,9 +340,9 @@ Slide **Range ring distance** below: the ring grows with no recompile, because t
 
 // One great-circle polyline per route pair (lng/lat float32x2 columns)
 graph.add(new GPUGreatCircleArcs({
-  sources, targets, maximumSegments: 64,
+  sources, targets, maximumSegmentCount: 64,
   parameters: arcParameters.importToGraph(graph),
-  output: {positions, pathOffsets, count, overflow}
+  output: {positions, lineOffsets, status: {count, overflow}}
 }));
 arcParameters.write(getGPUGreatCircleArcsParameterValues({
   minimumSegments: ${state.arcMinimumSegments}, maximumSegmentLength: ${state.arcMaximumLength * 1000}
@@ -351,7 +351,7 @@ arcParameters.write(getGPUGreatCircleArcsParameterValues({
 // Distance and bearing from the hub to every airport
 graph.add(new GPUGeodesicPairs({spatialContext: {coordinateSpace: 'longitude-latitude', metric: '${state.geodesicModel}' === 'wgs84' ? 'ellipsoidal' : '${state.geodesicModel}' === 'rhumb' ? 'rhumb' : 'great-circle', units: 'meters'},
   origins: hubColumn, targets: airports,
-  output: {distances, initialBearings${state.geodesicModel === 'wgs84' ? ', converged' : ''}}
+  output: {distances, initialBearings${state.geodesicModel === 'wgs84' ? ', status: {converged}' : ''}}
 }));
 
 // The range ring: 361 bearings at one distance

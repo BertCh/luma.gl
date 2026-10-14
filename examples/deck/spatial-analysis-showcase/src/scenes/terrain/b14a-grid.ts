@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import type {LoadedDataset} from '../../data/catalog';
 import {fetchBytes, getDataFileUrl} from '../../data/loaders';
 import {LocalMetricProjection} from '../../engine/projection';
@@ -21,9 +23,9 @@ export type AlpsObserver = {
  * The alps-dem raster prepared for the terrain contributors.
  *
  * The PNG is Terrarium in Web Mercator, so every contributor runs with
- * `cellSizeMode: 'web-mercator'`: `cellSize` is the equatorial Mercator pixel size (about 9.55 m)
- * and `northEdge` / `southEdge` are the normalized Web Mercator y of the raster edges, from which
- * the contributor derives the true ground size of each row (about 6.6 m at 46 degrees north).
+ * `cellSizeMode: 'web-mercator'`: `grid` carries the equatorial Mercator pixel size (about 9.55 m)
+ * and the top-left corner in EPSG:3857 meters, from which the contributor derives the true ground
+ * size of each row (about 6.6 m at 46 degrees north).
  */
 export type AlpsGrid = {
   width: number;
@@ -42,17 +44,13 @@ export type AlpsGrid = {
   projection: LocalMetricProjection;
   /** Web Mercator pixel size, equatorial meters. */
   mercatorCellSize: number;
-  /** Normalized Web Mercator y of the top of row 0. */
-  northEdge: number;
-  /** Normalized Web Mercator y of the bottom of the last row. */
-  southEdge: number;
+  /** Raster metadata in EPSG:3857 meters: origin `[minX, maxY]`, cell size `mercatorCellSize`. */
+  grid: GPURasterMetadata;
   /** Ground meters per pixel at the raster's central row. */
   groundCellSize: number;
   /** `[minX, minY, maxX, maxY]` Web Mercator meters of the raster, from the manifest. */
   boundsMercator: readonly [number, number, number, number];
   observers: AlpsObserver[];
-  /** Cell settings object every contributor's parameter packer accepts. */
-  cellSettings: {cellSize: readonly [number, number]; northEdge: number; southEdge: number};
   /** Returns the `[column, row]` pixel containing a longitude/latitude, or `null` outside. */
   getPixel: (longitude: number, latitude: number) => [number, number] | null;
   /**
@@ -107,8 +105,12 @@ export async function loadAlpsGrid(
   const projection = new LocalMetricProjection(origin);
   const [minX, minY] = projection.project(west, south);
   const [maxX, maxY] = projection.project(east, north);
-  const northEdge = 0.5 - boundsMercator[3] / WORLD_METERS;
-  const southEdge = 0.5 - boundsMercator[1] / WORLD_METERS;
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: mercatorCellSize,
+    origin: [boundsMercator[0], boundsMercator[3]]
+  });
   const centerLatitude = latitudeFromMercatorY((boundsMercator[1] + boundsMercator[3]) / 2);
   const properties = dataset.properties as {
     observers?: Record<string, {lon: number; lat: number; elevationM: number}>;
@@ -134,12 +136,10 @@ export async function loadAlpsGrid(
     projection,
     lngLatBounds: [west, south, east, north],
     mercatorCellSize,
-    northEdge,
-    southEdge,
+    grid,
     groundCellSize: mercatorCellSize * Math.cos((centerLatitude * Math.PI) / 180),
     boundsMercator,
     observers,
-    cellSettings: {cellSize: [mercatorCellSize, mercatorCellSize], northEdge, southEdge},
     getPixelCoordinates(longitude, latitude) {
       const x = ((longitude + 180) / 360) * WORLD_METERS - WORLD_METERS / 2;
       const y = mercatorYFromLatitude(latitude);

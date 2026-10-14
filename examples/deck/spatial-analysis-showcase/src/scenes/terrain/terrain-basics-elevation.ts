@@ -14,6 +14,7 @@
 import {GPUTerrainRGBDecode, GPUTerrainSpikeRepair} from '@luma.gl/experimental/gpu-terrain';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createSeededRandom} from '../../engine/projection';
 import {formatCount, type SpatialAnalysisResources} from '../../engine/resources';
@@ -89,14 +90,14 @@ export type ElevationPipeline = {
 };
 
 /** Creates the pipeline on the session's elevation and validity buffers. */
-export function createElevationPipeline(
+export async function createElevationPipeline(
   ctx: SceneContext<BasicsOptions>,
   resources: SpatialAnalysisResources,
   session: TerrainSession,
   grid: AlpsGrid
-): ElevationPipeline {
+): Promise<ElevationPipeline> {
   const {device} = ctx;
-  const {width, height, pixelCount} = grid;
+  const {pixelCount} = grid;
   const encodedBuffer = resources.createBuffer(
     'encoded',
     buildInput(grid, ctx.options.spikeDensity, ctx.options.missingTile)
@@ -109,43 +110,50 @@ export function createElevationPipeline(
   const selectFlag = resources.createParameterBuffer('select-flag', 'float32', 4);
 
   let decodeGraph: CompiledGPUCommandGraph<void> | null = null;
+  // The key of the decode graph that is built or requested last.
   let decodeKey = '';
-  const buildDecode = (state: BasicsOptions): void => {
-    const key = `${state.encoding}|${state.validRange}|${state.alphaNoData}|${state.clampBathymetry}`;
-    if (key === decodeKey && decodeGraph) return;
+  const decodeSwap = resources.track(new GraphSwap());
+  const getDecodeKey = (state: BasicsOptions): string =>
+    `${state.encoding}|${state.validRange}|${state.alphaNoData}|${state.clampBathymetry}`;
+  /** Builds and compiles the decode graph; the running graph keeps encoding meanwhile. */
+  const compileDecode = async (state: BasicsOptions) => {
     const graph = new GPUCommandGraph<void>(device, {id: 'terrain-basics-decode'});
     graph.add(
       new GPUTerrainRGBDecode({
         id: 'decode',
-        width,
-        height,
+        grid: grid.grid,
         encoding: state.encoding,
         input: {buffer: importGraphBuffer(graph, 'encoded', encodedBuffer, 'uint32', pixelCount)},
         alphaNoData: state.alphaNoData,
         validRange: VALID_RANGES[state.validRange],
         clampBathymetry: state.clampBathymetry,
-        values: importGraphBuffer(graph, 'decoded', decodedBuffer, 'float32', pixelCount),
-        validity: importGraphBuffer(
-          graph,
-          'decoded-validity',
-          decodedValidity,
-          'uint32',
-          pixelCount
-        )
+        output: {
+          values: importGraphBuffer(graph, 'decoded', decodedBuffer, 'float32', pixelCount),
+          outputValidity: importGraphBuffer(
+            graph,
+            'decoded-validity',
+            decodedValidity,
+            'uint32',
+            pixelCount
+          )
+        }
       })
     );
-    const next = resources.track(graph.compile());
-    if (decodeGraph) resources.release(decodeGraph);
+    return resources.track(await graph.compileAsync());
+  };
+  /** Swaps a decode graph in, then releases the one it replaces. */
+  const commitDecode = (next: CompiledGPUCommandGraph<void>) => {
+    const previous = decodeGraph;
     decodeGraph = next;
-    decodeKey = key;
+    if (previous) resources.release(previous);
+    decodeDirty = true;
   };
 
   const repairSource = new GPUCommandGraph<void>(device, {id: 'terrain-basics-repair'});
   repairSource.add(
     new GPUTerrainSpikeRepair({
       id: 'repair',
-      width,
-      height,
+      grid: grid.grid,
       elevation: {
         id: 'decoded',
         format: 'float32',
@@ -161,18 +169,20 @@ export function createElevationPipeline(
           pixelCount
         )
       },
-      values: importGraphBuffer(repairSource, 'repaired', repairedBuffer, 'float32', pixelCount),
-      validity: importGraphBuffer(
-        repairSource,
-        'repaired-validity',
-        repairedValidity,
-        'uint32',
-        pixelCount
-      ),
-      statistics: importGraphBuffer(repairSource, 'statistics', repairStatistics, 'uint32', 5)
+      output: {
+        values: importGraphBuffer(repairSource, 'repaired', repairedBuffer, 'float32', pixelCount),
+        outputValidity: importGraphBuffer(
+          repairSource,
+          'repaired-validity',
+          repairedValidity,
+          'uint32',
+          pixelCount
+        ),
+        statistics: importGraphBuffer(repairSource, 'statistics', repairStatistics, 'uint32', 5)
+      }
     })
   );
-  const repairGraph = resources.track(repairSource.compile());
+  const repairGraph = resources.track(await repairSource.compileAsync());
 
   const selectSource = new GPUCommandGraph<void>(device, {id: 'terrain-basics-select'});
   addKernelPass(selectSource, {
@@ -250,8 +260,7 @@ export function createElevationPipeline(
     outValid[outValidOffset + index] = rawValid[rawValidOffset + index];
   }`
   });
-  const selectGraph = resources.track(selectSource.compile());
-  buildDecode(ctx.options);
+  const selectGraph = resources.track(await selectSource.compileAsync());
 
   const repairReader = new SummaryReader(
     resources,
@@ -273,6 +282,8 @@ export function createElevationPipeline(
   let inputDirty = false;
   let decodeDirty = true;
   let selectDirty = true;
+  decodeKey = getDecodeKey(ctx.options);
+  commitDecode(await compileDecode(ctx.options));
 
   return {
     getCompiledGraphs: () =>
@@ -283,8 +294,14 @@ export function createElevationPipeline(
       ] as unknown as CompiledGPUCommandGraph<never>[],
 
     decodeOptionChanged() {
-      buildDecode(ctx.options);
-      decodeDirty = true;
+      const key = getDecodeKey(ctx.options);
+      if (key === decodeKey) return;
+      decodeKey = key;
+      void decodeSwap.request({
+        build: () => compileDecode(ctx.options),
+        commit: commitDecode,
+        discard: graph => resources.release(graph)
+      });
     },
 
     inputChanged() {

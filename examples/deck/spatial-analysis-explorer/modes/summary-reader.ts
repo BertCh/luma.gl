@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {GPUReadbackRing} from '@luma.gl/gpgpu/gpu-core';
 import type {SpatialAnalysisResources} from '../spatial-analysis-resources';
@@ -71,8 +72,7 @@ export class SummaryReader {
     ticket.markEncoded({byteOffset: 0, byteLength: this.byteLength});
     this.stale = false;
     this.pending = true;
-    void ticket
-      .read()
+    void scheduleReadback(() => ticket.read())
       .then(bytes => {
         if (!this.destroyed) this.onResult(bytes.slice().buffer);
       })

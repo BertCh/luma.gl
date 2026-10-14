@@ -22,15 +22,15 @@ import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {
-  getGPUSpatialScanParameterValues,
+  getGPUSpatialScanStatisticParameterValues,
   GPUSpatialScanStatistic,
-  GPU_SCAN_STATISTIC_CLUSTER,
-  GPU_SCAN_STATISTIC_CLUSTER_INDEX,
-  GPU_SCAN_STATISTIC_INDEX_WORDS,
-  GPU_SCAN_STATISTIC_PARAMETER_LENGTH,
-  GPU_SCAN_STATISTIC_STATISTIC_WORDS,
-  GPU_SCAN_STATISTIC_SUMMARY,
-  GPU_SCAN_STATISTIC_SUMMARY_LENGTH,
+  GPU_SPATIAL_SCAN_STATISTIC_CLUSTER,
+  GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX,
+  GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS,
+  GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH,
+  GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS,
+  GPU_SPATIAL_SCAN_STATISTIC_SUMMARY,
+  GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH,
   type GPUSpatialScanWindowShape
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
@@ -155,17 +155,20 @@ export const scanStatisticMode: SpatialAnalysisModeDefinition = {
     const pickupBuffer = resources.createBuffer('pickups', pickupPositions);
     const clusterIndicesBuffer = resources.createBuffer(
       'cluster-indices',
-      MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_INDEX_WORDS * 4
+      MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS * 4
     );
     const clusterStatisticsBuffer = resources.createBuffer(
       'cluster-statistics',
-      MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_STATISTIC_WORDS * 4
+      MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS * 4
     );
     const replicateBuffer = resources.createBuffer(
       'replicate-maxima',
       (MAXIMUM_PERMUTATIONS + 1) * 4
     );
-    const summaryBuffer = resources.createBuffer('summary', GPU_SCAN_STATISTIC_SUMMARY_LENGTH * 4);
+    const summaryBuffer = resources.createBuffer(
+      'summary',
+      GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4
+    );
     const zoneStatisticsBuffer = resources.createBuffer('zone-statistics', zoneCount * 4);
     const primarySegmentsBuffer = resources.createBuffer('primary-segments', RING_SEGMENTS * 16);
     const primaryFadeBuffer = resources.createBuffer('primary-fade', RING_SEGMENTS * 4);
@@ -180,14 +183,14 @@ export const scanStatisticMode: SpatialAnalysisModeDefinition = {
     const parameters = resources.createParameterBuffer(
       'parameters',
       'uint32',
-      GPU_SCAN_STATISTIC_PARAMETER_LENGTH
+      GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH
     );
 
     function writeParameters(): void {
       parameters.write(
-        getGPUSpatialScanParameterValues({
+        getGPUSpatialScanStatisticParameterValues({
           seed,
-          permutations,
+          permutationCount: permutations,
           maximumPopulationFraction: populationPercent / 100,
           maximumWindowZones,
           maximumTimeBuckets: maximumBuckets,
@@ -209,13 +212,13 @@ export const scanStatisticMode: SpatialAnalysisModeDefinition = {
       'cluster-indices',
       clusterIndicesBuffer,
       'uint32',
-      MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_INDEX_WORDS
+      MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS
     );
     const clusterStatisticsView = view(
       'cluster-statistics',
       clusterStatisticsBuffer,
       'float32',
-      MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_STATISTIC_WORDS
+      MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS
     );
     graph.add(
       new GPUSpatialScanStatistic({
@@ -227,16 +230,28 @@ export const scanStatisticMode: SpatialAnalysisModeDefinition = {
         maximumPermutations: MAXIMUM_PERMUTATIONS,
         maximumClusters: MAXIMUM_CLUSTERS,
         parameters: parameters.importToGraph(graph),
-        clusterIndices: clusterIndicesView,
-        clusterStatistics: clusterStatisticsView,
-        statistics: view('replicate-maxima', replicateBuffer, 'float32', MAXIMUM_PERMUTATIONS + 1),
-        summary: view('summary', summaryBuffer, 'uint32', GPU_SCAN_STATISTIC_SUMMARY_LENGTH),
-        zoneStatistics: view('zone-statistics', zoneStatisticsBuffer, 'float32', zoneCount)
+        output: {
+          clusterIndices: clusterIndicesView,
+          clusterStatistics: clusterStatisticsView,
+          statistics: view(
+            'replicate-maxima',
+            replicateBuffer,
+            'float32',
+            MAXIMUM_PERMUTATIONS + 1
+          ),
+          summary: view(
+            'summary',
+            summaryBuffer,
+            'uint32',
+            GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH
+          ),
+          zoneStatistics: view('zone-statistics', zoneStatisticsBuffer, 'float32', zoneCount)
+        }
       })
     );
     // One thread per ring segment: cluster 0 writes the primary ring, the others the secondary
     // buffer; unused cluster slots (no expected cases) get fade 0.
-    const {center} = GPU_SCAN_STATISTIC_CLUSTER_INDEX;
+    const {center} = GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX;
     addKernelPass(graph, {
       id: 'scan-rings',
       invocationCount: MAXIMUM_CLUSTERS * RING_SEGMENTS,
@@ -285,10 +300,10 @@ const TAU: f32 = 6.2831853;`,
       body: /* wgsl */ `
   let cluster = index / RING;
   let step = index - cluster * RING;
-  let statsBase = cluster * ${GPU_SCAN_STATISTIC_STATISTIC_WORDS}u;
-  let occupied = clusterStats[clusterStatsOffset + statsBase + ${GPU_SCAN_STATISTIC_CLUSTER.expectedCases}u] > 0.0;
-  let zone = clusterIndices[clusterIndicesOffset + cluster * ${GPU_SCAN_STATISTIC_INDEX_WORDS}u + ${center}u];
-  let radius = clusterStats[clusterStatsOffset + statsBase + ${GPU_SCAN_STATISTIC_CLUSTER.radius}u] + MARGIN;
+  let statsBase = cluster * ${GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS}u;
+  let occupied = clusterStats[clusterStatsOffset + statsBase + ${GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.expectedCases}u] > 0.0;
+  let zone = clusterIndices[clusterIndicesOffset + cluster * ${GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS}u + ${center}u];
+  let radius = clusterStats[clusterStatsOffset + statsBase + ${GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.radius}u] + MARGIN;
   let centerX = positions[positionsOffset + zone * 2u];
   let centerY = positions[positionsOffset + zone * 2u + 1u];
   let angle0 = TAU * f32(step) / f32(RING);
@@ -311,20 +326,20 @@ const TAU: f32 = 6.2831853;`,
     secondaryFade[secondaryFadeOffset + slot] = fade;
   }`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
-    const indexWords = MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_INDEX_WORDS;
-    const statisticWords = MAXIMUM_CLUSTERS * GPU_SCAN_STATISTIC_STATISTIC_WORDS;
+    const indexWords = MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS;
+    const statisticWords = MAXIMUM_CLUSTERS * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS;
     const reader = new SummaryReader(
       resources,
       'scan-statistic',
       [
-        {buffer: summaryBuffer, size: GPU_SCAN_STATISTIC_SUMMARY_LENGTH * 4},
+        {buffer: summaryBuffer, size: GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4},
         {buffer: clusterIndicesBuffer, size: indexWords * 4},
         {buffer: clusterStatisticsBuffer, size: statisticWords * 4}
       ],
       bytes => {
-        const summaryBytes = GPU_SCAN_STATISTIC_SUMMARY_LENGTH * 4;
+        const summaryBytes = GPU_SPATIAL_SCAN_STATISTIC_SUMMARY_LENGTH * 4;
         const summary = new Uint32Array(bytes.slice(0, summaryBytes));
         const indices = new Uint32Array(bytes.slice(summaryBytes, summaryBytes + indexWords * 4));
         const statistics = new Float32Array(bytes.slice(summaryBytes + indexWords * 4));
@@ -443,9 +458,9 @@ const TAU: f32 = 6.2831853;`,
       indices: Uint32Array,
       statistics: Float32Array
     ): void {
-      const count = summary[GPU_SCAN_STATISTIC_SUMMARY.clusterCount];
+      const count = summary[GPU_SPATIAL_SCAN_STATISTIC_SUMMARY.clusterCount];
       clusterCountReadout.setValue(
-        `${count} (${summary[GPU_SCAN_STATISTIC_SUMMARY.permutations]} replicates)`
+        `${count} (${summary[GPU_SPATIAL_SCAN_STATISTIC_SUMMARY.permutationCount]} replicates)`
       );
       let signature = '';
       for (let rank = 0; rank < MAXIMUM_CLUSTERS; rank++) {
@@ -454,23 +469,24 @@ const TAU: f32 = 6.2831853;`,
           detailReadouts[rank].setValue('');
           continue;
         }
-        const record = rank * GPU_SCAN_STATISTIC_INDEX_WORDS;
-        const statistic = rank * GPU_SCAN_STATISTIC_STATISTIC_WORDS;
-        const likelihood = statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.logLikelihoodRatio];
-        const pValue = statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.pValue];
-        const observed = statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.observedCases];
-        const expected = statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.expectedCases];
+        const record = rank * GPU_SPATIAL_SCAN_STATISTIC_INDEX_WORDS;
+        const statistic = rank * GPU_SPATIAL_SCAN_STATISTIC_STATISTIC_WORDS;
+        const likelihood =
+          statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.logLikelihoodRatio];
+        const pValue = statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.pValue];
+        const observed = statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.observedCases];
+        const expected = statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.expectedCases];
         clusterReadouts[rank].setValue(
           `LLR ${likelihood.toFixed(1)}, p ${formatProbability(pValue)}`
         );
         detailReadouts[rank].setValue(
           `${formatCount(observed)} observed vs ${expected.toFixed(1)} expected ` +
-            `(${statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.observedOverExpected].toFixed(2)}x), ` +
-            `${indices[record + GPU_SCAN_STATISTIC_CLUSTER_INDEX.zoneCount]} zones, ` +
-            `r ${Math.round(statistics[statistic + GPU_SCAN_STATISTIC_CLUSTER.radius])} m, ` +
+            `(${statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.observedOverExpected].toFixed(2)}x), ` +
+            `${indices[record + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX.zoneCount]} zones, ` +
+            `r ${Math.round(statistics[statistic + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER.radius])} m, ` +
             describeBuckets(
-              indices[record + GPU_SCAN_STATISTIC_CLUSTER_INDEX.firstBucket],
-              indices[record + GPU_SCAN_STATISTIC_CLUSTER_INDEX.lastBucket]
+              indices[record + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX.firstBucket],
+              indices[record + GPU_SPATIAL_SCAN_STATISTIC_CLUSTER_INDEX.lastBucket]
             )
         );
         if (rank === 0) {

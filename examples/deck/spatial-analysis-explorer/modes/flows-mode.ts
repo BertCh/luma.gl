@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -11,11 +12,12 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -153,12 +155,15 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
     const windowBuffer = resources.createParameterBuffer(
       'window',
       'float32',
-      GPU_TIME_WINDOW_PARAMETER_LENGTH
+      GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
     );
 
     let zoneKind: ZoneKind = 'hexagon';
     let zoneSize = 700;
     let excludeSelfFlows = true;
+    let requestedKind: ZoneKind = zoneKind;
+    let requestedExcludeSelfFlows = excludeSelfFlows;
+    const graphSwap = resources.track(new GraphSwap());
     let weightKind: WeightKind = 'trips';
     let zoneTotals: ZoneTotals = 'departures';
     let showEndpoints = false;
@@ -203,14 +208,12 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       return capacity[0] * capacity[1];
     }
 
-    function buildGraph(): void {
+    /** Compiles a graph for one zone kind and self-flow choice without touching the live graph. */
+    async function buildGraph(zoneKind: ZoneKind, excludeSelfFlows: boolean): Promise<FlowGraph> {
       const gridSize = getGridSize(zoneKind, MINIMUM_ZONE_SIZE);
       const zoneCount = gridSize[0] * gridSize[1];
       if (zoneCount > MAXIMUM_ZONE_COUNT) {
         throw new Error(`Zone count ${zoneCount} exceeds ${MAXIMUM_ZONE_COUNT}`);
-      }
-      if (graph) {
-        retired.push({resources: graph.resources, frames: 0});
       }
       const graphResources = new SpatialAnalysisResources(device, `flows-${++serial}`);
       const idsBuffer = graphResources.createBuffer('ids', TOP_FLOW_COUNT * 4);
@@ -291,81 +294,89 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
           pairCapacity: PAIR_CAPACITY,
           output: {
             ids: importGraphBuffer(commandGraph, 'ids', idsBuffer, 'uint32', TOP_FLOW_COUNT),
-            count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
-            overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(
+            flowOriginZoneIds: importGraphBuffer(
               commandGraph,
-              'total-count',
-              requiredCount,
+              'flow-origins',
+              flowOriginZoneIds,
               'uint32',
-              1
-            )
-          },
-          flowOriginZoneIds: importGraphBuffer(
-            commandGraph,
-            'flow-origins',
-            flowOriginZoneIds,
-            'uint32',
-            TOP_FLOW_COUNT
-          ),
-          flowDestinationZoneIds: importGraphBuffer(
-            commandGraph,
-            'flow-destinations',
-            flowDestinationZoneIds,
-            'uint32',
-            TOP_FLOW_COUNT
-          ),
-          flowCounts: importGraphBuffer(
-            commandGraph,
-            'flow-counts',
-            flowCounts,
-            'uint32',
-            TOP_FLOW_COUNT
-          ),
-          flowWeights: importGraphBuffer(
-            commandGraph,
-            'flow-weights',
-            flowWeights,
-            'float32',
-            TOP_FLOW_COUNT
-          ),
-          pairOverflow: importGraphBuffer(commandGraph, 'pair-overflow', pairOverflow, 'uint32', 1),
-          zoneOutCounts: importGraphBuffer(
-            commandGraph,
-            'zone-out',
-            zoneOutCounts,
-            'uint32',
-            zoneCount
-          ),
-          zoneInCounts: importGraphBuffer(
-            commandGraph,
-            'zone-in',
-            zoneInCounts,
-            'uint32',
-            zoneCount
-          ),
-          zoneOutCountExtent: importGraphBuffer(
-            commandGraph,
-            'zone-out-extent',
-            zoneOutExtent,
-            'float32',
-            2
-          ),
-          zoneInCountExtent: importGraphBuffer(
-            commandGraph,
-            'zone-in-extent',
-            zoneInExtent,
-            'float32',
-            2
-          ),
-          drawInstanceCount: commandGraph.importGPUData(
-            'arcs',
-            drawCommands.getInstanceCountData(0)
-          )
+              TOP_FLOW_COUNT
+            ),
+            flowDestinationZoneIds: importGraphBuffer(
+              commandGraph,
+              'flow-destinations',
+              flowDestinationZoneIds,
+              'uint32',
+              TOP_FLOW_COUNT
+            ),
+            flowCounts: importGraphBuffer(
+              commandGraph,
+              'flow-counts',
+              flowCounts,
+              'uint32',
+              TOP_FLOW_COUNT
+            ),
+            flowWeights: importGraphBuffer(
+              commandGraph,
+              'flow-weights',
+              flowWeights,
+              'float32',
+              TOP_FLOW_COUNT
+            ),
+            zoneOutCounts: importGraphBuffer(
+              commandGraph,
+              'zone-out',
+              zoneOutCounts,
+              'uint32',
+              zoneCount
+            ),
+            zoneInCounts: importGraphBuffer(
+              commandGraph,
+              'zone-in',
+              zoneInCounts,
+              'uint32',
+              zoneCount
+            ),
+            zoneOutCountExtent: importGraphBuffer(
+              commandGraph,
+              'zone-out-extent',
+              zoneOutExtent,
+              'float32',
+              2
+            ),
+            zoneInCountExtent: importGraphBuffer(
+              commandGraph,
+              'zone-in-extent',
+              zoneInExtent,
+              'float32',
+              2
+            ),
+            drawInstanceCount: commandGraph.importGPUData(
+              'arcs',
+              drawCommands.getInstanceCountData(0)
+            ),
+            status: {
+              count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
+              overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(
+                commandGraph,
+                'total-count',
+                requiredCount,
+                'uint32',
+                1
+              ),
+              pairOverflow: importGraphBuffer(
+                commandGraph,
+                'pair-overflow',
+                pairOverflow,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
-      const compiled = graphResources.track(commandGraph.compile());
-      graph = {
+      const compiled = graphResources.track(await commandGraph.compileAsync());
+      return {
         resources: graphResources,
         compiled,
         zoneKind,
@@ -386,7 +397,31 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
         readbackRing,
         serial
       };
+    }
+
+    /** Swaps a compiled graph in, retires the one it replaces and applies the zone size. */
+    function commitGraph(next: FlowGraph, selectedExcludeSelfFlows: boolean): void {
+      if (graph) {
+        retired.push({resources: graph.resources, frames: 0});
+      }
+      graph = next;
+      zoneKind = next.zoneKind;
+      excludeSelfFlows = selectedExcludeSelfFlows;
       applyZoneSize();
+    }
+
+    /** Rebuilds for the requested choices; the current graph keeps running until it is ready. */
+    function requestGraph(): void {
+      const requestedZoneKind = requestedKind;
+      const requestedExclusion = requestedExcludeSelfFlows;
+      void graphSwap.request({
+        build: () => buildGraph(requestedZoneKind, requestedExclusion),
+        commit: next => {
+          commitGraph(next, requestedExclusion);
+          context.updateLayers();
+        },
+        discard: next => next.resources.destroy()
+      });
     }
 
     context.controls.addSelect<ZoneKind>({
@@ -397,10 +432,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       ],
       value: zoneKind,
       onChange: value => {
-        zoneKind = value;
-        activeGridSize = getGridSize(zoneKind, zoneSize);
-        buildGraph();
-        context.updateLayers();
+        requestedKind = value;
+        requestGraph();
       }
     });
     context.controls.addSlider({
@@ -420,9 +453,8 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       label: 'Exclude same-zone trips (compile-time)',
       value: excludeSelfFlows,
       onChange: value => {
-        excludeSelfFlows = value;
-        buildGraph();
-        context.updateLayers();
+        requestedExcludeSelfFlows = value;
+        requestGraph();
       }
     });
     context.controls.addSelect<WeightKind>({
@@ -534,7 +566,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
     }
 
-    buildGraph();
+    commitGraph(await buildGraph(zoneKind, excludeSelfFlows), excludeSelfFlows);
 
     const readSummary = async (current: FlowGraph, commandEncoder: CommandEncoder) => {
       const ticket = current.readbackRing.tryAcquire();
@@ -559,7 +591,7 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed || graph !== current) return;
         const words = new Uint32Array(
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + byteLength)
@@ -608,7 +640,10 @@ export const flowsMode: SpatialAnalysisModeDefinition = {
           if (windowStart > span) windowStart -= span;
         }
         windowBuffer.write(
-          getGPUTimeWindowParameterValues({start: windowStart, end: windowStart + windowLength})
+          getGPUTimeWindowFilterParameterValues({
+            start: windowStart,
+            end: windowStart + windowLength
+          })
         );
         graph.compiled.encode(commandEncoder, {parameters: undefined});
         if (frame.frameIndex % 10 === 0) {

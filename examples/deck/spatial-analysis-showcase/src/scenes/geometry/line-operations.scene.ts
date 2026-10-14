@@ -421,7 +421,7 @@ The colour is the measure output, from 0 at the start to the length of the longe
         'Chicago L routes are divided into one-kilometre pieces with cyclic categorical colours and a reported piece count; adjacent pieces share a boundary point, and repeated colours do not identify unique pieces.',
       body: `Now split each route into **one-kilometre chunks** with \`GPULineChunk\` in \`chunk\` mode (turf \`lineChunk\`). The colours cycle through the output pieces, so you can count kilometres along each line; consecutive chunks share their boundary point.
 
-The number of pieces depends on the data, so the contributor reports it through the \`pathCount\` output (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
+The number of pieces depends on the data, so the contributor reports it through the \`lineCount\` output (see the readout) and the offsets past it equal the vertex count. Slide **Chunk length** below from 100 m to 10 km. Set **Line tool** to *Substring* to extract the stretch between a start and an end measure instead, as ST_LineSubstring does: a quick way to reveal a route a bit at a time.`,
       options: {lineTool: 'chunk', chunkLength: 3},
       highlight: {readout: 'reshapePieces'},
       controls: ['chunkLength', 'lineTool'],
@@ -589,7 +589,7 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
     {
       id: 'reshapePieces',
       label: 'Pieces / events',
-      help: 'Chunks and substrings from the pathCount output; for Locate the status counts.'
+      help: 'Chunks and substrings from the lineCount output; for Locate the status counts.'
     },
     {id: 'reshapeOverflow', label: 'Overflow'},
     {id: 'snapInputs', label: 'Eligible places and streets'},
@@ -620,10 +620,10 @@ Orange is the simplified track over the faint original. Slide **Tolerance** belo
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineSegmentize({
-  positions, pathOffsets,
+  positions, lineOffsets,
   ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: segmentize.importToGraph(graph),
-  output: {positions: out, pathOffsets: outOffsets, count, overflow, measures}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow}, measures}
 }));
 
 segmentize.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: ${Math.round(10 ** state.densifyLength)}}));`;
@@ -633,11 +633,11 @@ segmentize.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: ${Ma
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineChunk({
-  positions, pathOffsets,
+  positions, lineOffsets,
   mode: '${state.lineTool}',
   ${state.lineSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   parameters: chunk.importToGraph(graph),
-  output: {positions: out, pathOffsets: outOffsets, count, overflow, pathCount${state.lineTool === 'chunk' ? ', sourcePaths' : ''}}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow, lineCount}${state.lineTool === 'chunk' ? ', sourceLineIndices' : ''}}
 }));
 
 chunk.write(getGPULineChunkParameterValues(${state.lineTool === 'chunk' ? `{chunkLength: ${Math.round(10 ** state.chunkLength)}}` : `{startMeasure: ${state.substringStart * 1000}, endMeasure: ${state.substringEnd * 1000}}`}));`;
@@ -646,8 +646,8 @@ chunk.write(getGPULineChunkParameterValues(${state.lineTool === 'chunk' ? `{chun
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineLocate({
-  positions, pathOffsets,
-  eventPaths, eventMeasures, eventOffsets,
+  positions, lineOffsets,
+  eventLineIndices, eventMeasures, eventOffsets,
   measureMode: '${state.locateMode}',
   parameters: locate.importToGraph(graph),
   output: {positions: eventPositions, tangents, statuses}
@@ -660,12 +660,14 @@ locate.write(getGPULineLocateParameterValues({measureScale: ${state.locateSpacin
       return `import {GPULinearReferencing} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULinearReferencing({
-  points, positions, pathOffsets,      // planar metres
+  queryPositions: points, positions, lineOffsets,  // planar metres
   radius: radius.importToGraph(graph), // ${state.snapRadius} m, one float32 row
   candidateCapacity: 1 << 22,
   spatialSort: true,
-  output: {footPoints, distances, measures, signedOffsets, pathIndices},
-  overflow, candidateCount
+  output: {
+    footPoints, distances, measures, signedOffsets, lineIndices,
+    status: {overflow, candidateCount}
+  }
 }));`;
     }
     if (state.trackTool === 'smooth') {
@@ -673,11 +675,11 @@ graph.add(new GPULinearReferencing({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPULineSmooth({
-  positions, pathOffsets,
-  iterations: ${state.smoothIterations},        // compile-time: output holds n * 2^iterations vertices
+  positions, lineOffsets,
+  iterationCount: ${state.smoothIterations},    // compile-time: output holds n * 2^iterations vertices
   closed: false,
   parameters: smooth.importToGraph(graph),
-  output: {positions: out, pathOffsets: outOffsets, count, overflow}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow}}
 }));
 
 smooth.write(getGPULineSmoothParameterValues({ratio: ${state.smoothRatio}}));`;
@@ -687,17 +689,17 @@ smooth.write(getGPULineSmoothParameterValues({ratio: ${state.smoothRatio}}));`;
 
 // Graph 1, encoded once: per-vertex importance
 importanceGraph.add(new GPULineSimplification({
-  positions, trackOffsets, importance,
+  positions, lineOffsets: trackOffsets, importance,
   timestamps,                            // needed for 'time-ratio'
-  metric: '${state.simplifyMetric}', maximumRounds: ${state.simplifyRounds},
-  status: {converged, roundCount}
+  metric: '${state.simplifyMetric}', maximumIterations: ${state.simplifyRounds},
+  output: {status: {converged, iterationCount}}
 }));
 
 // Graph 2, every frame the tolerance changes
 selectionGraph.add(new GPULineSimplification({
-  positions, trackOffsets, importance, computeImportance: false,
+  positions, lineOffsets: trackOffsets, importance, computeImportance: false,
   parameters: tolerance.importToGraph(selectionGraph),
-  selection: {output: {ids, count, overflow, requiredCount}}
+  output: {ids, status: {count, overflow, requiredCount}}
 }));
 tolerance.write(getGPULineSimplificationParameterValues({tolerance: 30}));`;
   },

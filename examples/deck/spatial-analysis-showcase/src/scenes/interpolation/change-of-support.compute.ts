@@ -5,9 +5,10 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUPolygonRasterizationExtentValues,
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-  GPUPolygonRasterization
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
   addChangeOfSupportRecipe,
@@ -28,6 +29,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {
@@ -182,6 +184,14 @@ export async function createChangeOfSupport(
     grid.originX + RASTER_WIDTH * grid.cellSize,
     grid.originY + RASTER_HEIGHT * grid.cellSize
   ];
+  // Planar local meters. Row 0 is the southern row (`y = originY`), so rows advance north.
+  const rasterGrid = makeGPURasterMetadata({
+    width: RASTER_WIDTH,
+    height: RASTER_HEIGHT,
+    cellSize: grid.cellSize,
+    origin: [grid.originX, grid.originY],
+    rowDirection: 'north'
+  });
   const cellAreaKm2 = (grid.cellSize / 1000) ** 2;
   const centerX = (bounds[0] + bounds[2]) / 2;
   const centerY = (bounds[1] + bounds[3]) / 2;
@@ -397,11 +407,11 @@ export async function createChangeOfSupport(
   const surfaceScalar = resources.createBuffer('surface-scalar', CELL_COUNT * 4);
   const displayValue = resources.createBuffer('display-value', CELL_COUNT * 4);
   const displayCategory = resources.createBuffer('display-category', CELL_COUNT * 4);
-  const extentParameter = resources.createParameterBuffer(
-    'extent',
+  const rasterParameters = resources.createParameterBuffer(
+    'raster-parameters',
     'float32',
-    GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-    getGPUPolygonRasterizationExtentValues(grid.originX, grid.originY, grid.cellSize, grid.cellSize)
+    GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+    getGPUPolygonRasterizationParameterValues(rasterGrid)
   );
   const gridParameter = resources.createParameterBuffer(
     'grid',
@@ -415,10 +425,9 @@ export async function createChangeOfSupport(
   sourceGraph.add(
     new GPUPolygonRasterization({
       id: 'source-raster',
-      width: RASTER_WIDTH,
-      height: RASTER_HEIGHT,
-      extent: extentParameter.importToGraph(sourceGraph),
-      polygonPositions: importGraphBuffer(
+      grid: rasterGrid,
+      parameters: rasterParameters.importToGraph(sourceGraph),
+      positions: importGraphBuffer(
         sourceGraph,
         'tract-positions',
         tractPositions,
@@ -447,12 +456,16 @@ export async function createChangeOfSupport(
         sources.ringOffsets.length
       ),
       crossingCapacity: CROSSING_CAPACITY,
-      zones: importGraphBuffer(sourceGraph, 'zones', sourceZones, 'uint32', CELL_COUNT),
-      overflow: importGraphBuffer(sourceGraph, 'overflow', sourceRasterOverflow, 'uint32', 1),
-      crossingCount: importGraphBuffer(sourceGraph, 'crossings', sourceCrossings, 'uint32', 1)
+      output: {
+        zones: importGraphBuffer(sourceGraph, 'zones', sourceZones, 'uint32', CELL_COUNT),
+        status: {
+          overflow: importGraphBuffer(sourceGraph, 'overflow', sourceRasterOverflow, 'uint32', 1),
+          crossingCount: importGraphBuffer(sourceGraph, 'crossings', sourceCrossings, 'uint32', 1)
+        }
+      }
     })
   );
-  const sourceCompiled = resources.track(sourceGraph.compile());
+  const sourceCompiled = resources.track(await sourceGraph.compileAsync());
 
   // --- Grid geometry per type (lazily) -------------------------------------------------------
   type GridGeometry = {
@@ -491,7 +504,7 @@ export async function createChangeOfSupport(
 
   // --- Target variants: one compiled recipe graph per (target, denominator) -------------------
   const variants = new Map<string, Variant>();
-  function getVariant(target: CosTarget, denominator: 'overlap' | 'zone'): Variant {
+  async function getVariant(target: CosTarget, denominator: 'overlap' | 'zone'): Promise<Variant> {
     const key = `${target}:${denominator}`;
     let variant = variants.get(key);
     if (variant) return variant;
@@ -527,7 +540,8 @@ export async function createChangeOfSupport(
         grids.targetCount + 1
       );
       targetSystem = {
-        polygonPositions: vertices,
+        kind: 'polygons' as const,
+        positions: vertices,
         featureOffsets: identity,
         polygonOffsets: identity,
         ringOffsets: importGraphBuffer(
@@ -541,7 +555,8 @@ export async function createChangeOfSupport(
       };
     } else {
       targetSystem = {
-        polygonPositions: importGraphBuffer(
+        kind: 'polygons' as const,
+        positions: importGraphBuffer(
           graph,
           'community-positions',
           communityPositions,
@@ -581,11 +596,11 @@ export async function createChangeOfSupport(
     );
     const recipe = addChangeOfSupportRecipe(graph, {
       id: 'cos',
-      width: RASTER_WIDTH,
-      height: RASTER_HEIGHT,
-      extent: extentParameter.importToGraph(graph),
+      grid: rasterGrid,
+      parameters: rasterParameters.importToGraph(graph),
       source: {
-        polygonPositions: importGraphBuffer(
+        kind: 'polygons',
+        positions: importGraphBuffer(
           graph,
           'tract-positions',
           tractPositions,
@@ -641,10 +656,16 @@ export async function createChangeOfSupport(
           'uint32',
           sourceCount
         ),
-        categoryCount: CATEGORY_COUNT,
-        output: importGraphBuffer(graph, 'shares', shares, 'float32', targetCount * CATEGORY_COUNT)
+        categoryCount: CATEGORY_COUNT
       },
       outputs: {
+        categoryShares: importGraphBuffer(
+          graph,
+          'shares',
+          shares,
+          'float32',
+          targetCount * CATEGORY_COUNT
+        ),
         extensiveValues: importGraphBuffer(
           graph,
           'extensive',
@@ -684,8 +705,10 @@ export async function createChangeOfSupport(
           PAIR_CAPACITY
         ),
         areas: importGraphBuffer(graph, 'pair-areas', pairAreas, 'float32', PAIR_CAPACITY),
-        overflow: importGraphBuffer(graph, 'overflow', overflowFlag, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'total-pairs', totalPairs, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflowFlag, 'uint32', 1),
+          requiredCount: importGraphBuffer(graph, 'total-pairs', totalPairs, 'uint32', 1)
+        }
       }
     });
     let outline: Variant['outline'] = null;
@@ -728,7 +751,7 @@ export async function createChangeOfSupport(
     }
     variant = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       targetCount,
       contributors: summarizeContributors(recipe.contributors),
       outline
@@ -739,7 +762,7 @@ export async function createChangeOfSupport(
 
   // --- Pycnophylactic ladder (lazily) --------------------------------------------------------
   const pycnoGraphs = new Map<string, Pycno>();
-  function getPycno(rung: number, kernel: 'rook' | 'box'): Pycno {
+  async function getPycno(rung: number, kernel: 'rook' | 'box'): Promise<Pycno> {
     const key = `${rung}:${kernel}`;
     let pycno = pycnoGraphs.get(key);
     if (pycno) return pycno;
@@ -752,18 +775,17 @@ export async function createChangeOfSupport(
       graph.add(
         new GPUPycnophylactic({
           id: `pycno-${name}`,
-          width: RASTER_WIDTH,
-          height: RASTER_HEIGHT,
+          grid: rasterGrid,
           zones,
           zoneCount: sourceCount,
           totals: importGraphBuffer(graph, `${name}-totals`, totals, 'float32', sourceCount),
-          iterations: COS_ITERATION_LADDER[rung],
+          maximumIterations: COS_ITERATION_LADDER[rung],
           kernel,
-          output: importGraphBuffer(graph, `${name}-surface`, output, 'float32', CELL_COUNT)
+          output: {mass: importGraphBuffer(graph, `${name}-surface`, output, 'float32', CELL_COUNT)}
         })
       );
     }
-    pycno = {key, compiled: resources.track(graph.compile())};
+    pycno = {key, compiled: resources.track(await graph.compileAsync())};
     pycnoGraphs.set(key, pycno);
     return pycno;
   }
@@ -926,7 +948,7 @@ export async function createChangeOfSupport(
   displayValue[displayValueOffset + index] = value;
   displayCategory[displayCategoryOffset + index] = select(255u, u32(max(value, 0.0)), value >= 0.0 && kind == 2u);`
   });
-  const displayCompiled = resources.track(displayGraph.compile());
+  const displayCompiled = resources.track(await displayGraph.compileAsync());
 
   // --- State ----------------------------------------------------------------------------------
   let destroyed = false;
@@ -939,8 +961,14 @@ export async function createChangeOfSupport(
   let lastChangeTime = performance.now();
   let valueRange: [number, number] = [0, 1];
   let lastLegendKey = '';
-  let activeVariant = getVariant(ctx.options.target, ctx.options.denominator);
-  let activePycno: Pycno | null = null;
+  let activeVariant = await getVariant(ctx.options.target, ctx.options.denominator);
+  let activePycno: Pycno | null =
+    ctx.options.view === 'surface'
+      ? await getPycno(ctx.options.iterations, ctx.options.kernel)
+      : null;
+  // Variants and rungs stay cached (and owned by `resources`), so superseded builds need no discard.
+  const variantSwap = resources.track(new GraphSwap());
+  const pycnoSwap = resources.track(new GraphSwap());
   let read: ReadResult | null = null;
   let pycnoCheckStale = true;
   const gridValues = new Float32Array(GPU_GRID_GENERATOR_PARAMETER_LENGTH);
@@ -1266,50 +1294,62 @@ export async function createChangeOfSupport(
   const scratchExtensive = resources.createBuffer('timing-extensive', PAIR_CAPACITY * 4);
   const scratchIntensive = resources.createBuffer('timing-intensive', PAIR_CAPACITY * 4);
   const scratchOverflow = resources.createBuffer('timing-overflow', 4);
-  function buildTimingGraph(unweightedFastPath: boolean, targetCount: number) {
+  async function buildTimingGraph(unweightedFastPath: boolean, targetCount: number) {
     const graph = new GPUCommandGraph<void>(device, {
       id: `cos-timing-${unweightedFastPath ? 'fast' : 'generic'}`
     });
     graph.add(
       new GPUArealInterpolation({
         id: 'areal-timing',
+        grid: rasterGrid,
         sourceZones: importGraphBuffer(graph, 'source-zones', sourceZones, 'uint32', CELL_COUNT),
         targetZones: importGraphBuffer(graph, 'target-zones', targetZones, 'uint32', CELL_COUNT),
-        sourceCount,
-        targetCount,
+        sourceZoneCount: sourceCount,
+        targetZoneCount: targetCount,
         denominator: 'overlap',
         unweightedFastPath,
-        weights: {
-          offsets: importGraphBuffer(graph, 'offsets', scratchOffsets, 'uint32', targetCount + 1),
-          neighbors: importGraphBuffer(
+        output: {
+          weights: {
+            offsets: importGraphBuffer(graph, 'offsets', scratchOffsets, 'uint32', targetCount + 1),
+            neighbors: importGraphBuffer(
+              graph,
+              'neighbors',
+              scratchNeighbors,
+              'uint32',
+              PAIR_CAPACITY
+            ),
+            weights: importGraphBuffer(
+              graph,
+              'extensive',
+              scratchExtensive,
+              'float32',
+              PAIR_CAPACITY
+            )
+          },
+          alternateWeights: importGraphBuffer(
             graph,
-            'neighbors',
-            scratchNeighbors,
-            'uint32',
+            'intensive',
+            scratchIntensive,
+            'float32',
             PAIR_CAPACITY
           ),
-          weights: importGraphBuffer(graph, 'extensive', scratchExtensive, 'float32', PAIR_CAPACITY)
-        },
-        alternateWeights: importGraphBuffer(
-          graph,
-          'intensive',
-          scratchIntensive,
-          'float32',
-          PAIR_CAPACITY
-        ),
-        overflow: importGraphBuffer(graph, 'overflow', scratchOverflow, 'uint32', 1)
+          status: {overflow: importGraphBuffer(graph, 'overflow', scratchOverflow, 'uint32', 1)}
+        }
       })
     );
-    return graph.compile();
+    return await graph.compileAsync();
   }
   async function measureFastPath(): Promise<void> {
     if (measuring || destroyed) return;
     measuring = true;
     ctx.setReadout('fastPath', 'measuring...');
     const targetCount = activeVariant.targetCount;
-    const fast = buildTimingGraph(true, targetCount);
-    const generic = buildTimingGraph(false, targetCount);
+    let fast: CompiledGPUCommandGraph<void> | null = null;
+    let generic: CompiledGPUCommandGraph<void> | null = null;
     try {
+      fast = await buildTimingGraph(true, targetCount);
+      generic = await buildTimingGraph(false, targetCount);
+      if (destroyed) return;
       const options = {parameters: undefined, completionBuffer: scratchOverflow};
       const fastTiming = await measureCompiledGraph(device, fast, options);
       const genericTiming = await measureCompiledGraph(device, generic, options);
@@ -1321,8 +1361,8 @@ export async function createChangeOfSupport(
     } catch {
       if (!destroyed) ctx.setReadout('fastPath', 'interrupted');
     } finally {
-      fast.destroy();
-      generic.destroy();
+      fast?.destroy();
+      generic?.destroy();
       measuring = false;
     }
   }
@@ -1392,6 +1432,21 @@ export async function createChangeOfSupport(
   ctx.setReadout('fastPath', 'press the button to time it');
   updateGeometryReadouts();
 
+  /** Selects the pycnophylactic rung; the previous one keeps encoding until it has compiled. */
+  function requestPycno(iterations: number, kernel: 'rook' | 'box'): void {
+    void pycnoSwap.request({
+      build: () => getPycno(iterations, kernel),
+      commit: pycno => {
+        activePycno = pycno;
+        pycnoDirty = true;
+        displayDirty = true;
+        pycnoCheckStale = true;
+        markChanged();
+        ctx.requestLayers();
+      }
+    });
+  }
+
   function updateGeometryReadouts(): void {
     const o = ctx.options;
     if (o.target === 'community') {
@@ -1430,13 +1485,21 @@ export async function createChangeOfSupport(
           break;
         case 'target':
         case 'denominator': {
-          activeVariant = getVariant(state.target, state.denominator);
-          ctx.setReadout('contributors', activeVariant.contributors);
-          writeGridParameters();
-          writeDisplayParameters();
-          updateGeometryReadouts();
-          targetDirty = true;
-          displayDirty = true;
+          // The previous variant keeps encoding until the new one has compiled.
+          void variantSwap.request({
+            build: () => getVariant(state.target, state.denominator),
+            commit: variant => {
+              activeVariant = variant;
+              ctx.setReadout('contributors', activeVariant.contributors);
+              writeGridParameters();
+              writeDisplayParameters();
+              updateGeometryReadouts();
+              targetDirty = true;
+              displayDirty = true;
+              markChanged();
+              ctx.requestLayers();
+            }
+          });
           break;
         }
         case 'cellWidth':
@@ -1450,15 +1513,12 @@ export async function createChangeOfSupport(
         case 'view':
           writeDisplayParameters();
           displayDirty = true;
-          if (state.view === 'surface') {
-            activePycno = getPycno(state.iterations, state.kernel);
-            pycnoDirty = true;
-          }
+          if (state.view === 'surface') requestPycno(state.iterations, state.kernel);
           break;
         case 'iterations':
         case 'kernel':
           if (state.view === 'surface') {
-            activePycno = getPycno(state.iterations, state.kernel);
+            requestPycno(state.iterations, state.kernel);
           } else {
             activePycno = null;
           }
@@ -1495,8 +1555,8 @@ export async function createChangeOfSupport(
         displayDirty = true;
         markChanged();
       }
-      if (o.view === 'surface' && pycnoDirty) {
-        activePycno ??= getPycno(o.iterations, o.kernel);
+      // While the rung is still compiling there is nothing to encode; the commit marks it dirty.
+      if (o.view === 'surface' && pycnoDirty && activePycno) {
         activePycno.compiled.encode(commandEncoder, {parameters: undefined});
         pycnoDirty = false;
         displayDirty = true;

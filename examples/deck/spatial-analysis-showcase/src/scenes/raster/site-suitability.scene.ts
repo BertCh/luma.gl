@@ -541,27 +541,27 @@ graph.add(new GPUWeightedOverlay({
   output: {score, scoreRange}
 }));
 graph.add(new GPURasterCellStatistics({stack: normalizedStack, layerCount: 5, cellCount,
-  parameters: statisticsParameters, output: {mean, standardDeviation, minimum, maximum, range, count}}));
-graph.add(new GPURasterSampling({width, height, values: score, positions: sites, pointCount,
+  parameters: statisticsParameters, output: {mean, standardDeviation, minimum, maximum, range, counts}}));
+graph.add(new GPURasterSampling({grid, values: score, positions: sites, pointCount,
   parameters: samplingParameters, output: {values: siteScores}}));
-graph.add(new GPURasterZonalStatistics({width, height, zones, values: scoreBand, zoneCapacity: 8,
-  sumOrder: '${state.zonalOrder}', output: {cellCounts, means, minimums, maximums}, overflow}));
-const compiled = graph.compile();          // once
+graph.add(new GPURasterZonalStatistics({grid, zones, values: scoreBand, zoneCapacity: 8,
+  sumOrder: '${state.zonalOrder}', output: {cellCounts, means, minimums, maximums, status: {overflow}}}));
+const compiled = await graph.compileAsync();  // once
 
 // per frame, no recompile
 parameters.write(getGPUWeightedOverlayParameterValues({
   normalizeWeights: ${state.normalizeWeights}, noDataPolicy: '${state.noDataPolicy}',
   layers: [
-    {weight: ${state.weightSeverity}, inputMin: ${state.severityRange[0]}, inputMax: ${state.severityRange[1]}},
-    {weight: ${state.weightSlope}, inputMin: ${state.slopeRange[0]}, inputMax: ${state.slopeRange[1]}},
+    {weight: ${state.weightSeverity}, inputMinimum: ${state.severityRange[0]}, inputMaximum: ${state.severityRange[1]}},
+    {weight: ${state.weightSlope}, inputMinimum: ${state.slopeRange[0]}, inputMaximum: ${state.slopeRange[1]}},
     {weight: ${state.weightCover}, mode: 'table', breakCount: 8},          // NaN value = restricted
-    {weight: ${state.weightProximity}, inputMin: ${state.proximityRange[0]}, inputMax: ${state.proximityRange[1]}, invert: true},
-    {weight: ${state.weightGreenness}, inputMin: ${state.greennessRange[0]}, inputMax: ${state.greennessRange[1]}, invert: true}
+    {weight: ${state.weightProximity}, inputMinimum: ${state.proximityRange[0]}, inputMaximum: ${state.proximityRange[1]}, invert: true},
+    {weight: ${state.weightGreenness}, inputMinimum: ${state.greennessRange[0]}, inputMaximum: ${state.greennessRange[1]}, invert: true}
   ]}));
 statisticsParameters.write(getGPURasterCellStatisticsParameterValues({
   noDataPolicy: '${state.statisticsPolicy}', minimumValidCount: ${state.minimumValid}}));
 samplingParameters.write(getGPURasterSamplingParameterValues({
-  width, height, extent, method: '${state.sampleMethod}', noDataPolicy: '${state.sampleNoData}'}));
+  method: '${state.sampleMethod}', noDataPolicy: '${state.sampleNoData}'}, grid));  // grid: local UTM meters, row 0 north
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {

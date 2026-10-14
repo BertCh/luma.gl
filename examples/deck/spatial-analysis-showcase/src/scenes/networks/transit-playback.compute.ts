@@ -4,8 +4,8 @@
 
 import type {Layer} from '@deck.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -152,28 +152,38 @@ export async function createTransitPlayback(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
-      speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
+        speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -185,7 +195,7 @@ export async function createTransitPlayback(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -225,25 +235,6 @@ export async function createTransitPlayback(
           )
         }
       ],
-      output: {
-        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
       trackIds: importGraphBuffer(
         trailGraph,
         'segment-trips',
@@ -251,20 +242,41 @@ export async function createTransitPlayback(
         'uint32',
         segmentCount
       ),
-      trackVisibleCounts: importGraphBuffer(
-        trailGraph,
-        'trip-visible-counts',
-        tripVisibleCounts,
-        'uint32',
-        trackCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+      output: {
+        ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        },
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        trackVisibleCounts: importGraphBuffer(
+          trailGraph,
+          'trip-visible-counts',
+          tripVisibleCounts,
+          'uint32',
+          trackCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- State ------------------------------------------------------------------------------------
   const clock = createPlaybackClock(
@@ -635,13 +647,13 @@ export async function createTransitPlayback(
       ctx.setReadout('clock', `${formatTransitClock(playhead)} CEST`);
       publishFurniture();
 
-      playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
+      playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: 0}));
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
 
       if (options.showTrails) {
         const trailSeconds = options.trailMinutes * 60;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds * options.tailFade

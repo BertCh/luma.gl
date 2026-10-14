@@ -483,8 +483,10 @@ import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@lum
 graph.add(new GPUTrajectoryMetrics({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets, parameters: stopParameters.importToGraph(graph),
-  trackLengths, averageSpeeds, maximumSpeeds, stepSpeeds, trackStopCounts,
-  stops: {output: {ids, count, overflow}, centroids, durations, startRows, endRows}
+  output: {
+    trackLengths, averageSpeeds, maximumSpeeds, stepSpeeds, trackStopCounts,
+    stops: {ids, status: {count, overflow}, centroids, durations, startRows, endRows}
+  }
 }));
 stopParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${state.stopSpeed}, stopMinimumDuration: ${state.stopHours * 3600}   // m/s, s
@@ -493,32 +495,34 @@ stopParameters.write(getGPUTrajectoryMetricsParameterValues({
 // 2. Simplification: importance once, selection per tolerance
 importanceGraph.add(new GPULineSimplification({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positions, trackOffsets, importance, metric: '${state.simplifyMetric}',
+  positions, lineOffsets: trackOffsets, importance, metric: '${state.simplifyMetric}',
   timestamps,                                       // needed for 'time-ratio'
-  maximumRounds: 96
+  maximumIterations: 96,
+  output: {status: {converged, iterationCount}}
 }));
 selectionGraph.add(new GPULineSimplification({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positions, trackOffsets, importance, metric: '${state.simplifyMetric}', computeImportance: false,
+  positions, lineOffsets: trackOffsets, importance, metric: '${state.simplifyMetric}', computeImportance: false,
   parameters: toleranceParameters.importToGraph(selectionGraph),
-  selection: {output: {ids: keptIds, count: keptCount, overflow}}
+  output: {ids: keptIds, status: {count: keptCount, overflow}}
 }));
 toleranceParameters.write(getGPULineSimplificationParameterValues({tolerance: ${Math.round(10 ** state.toleranceLog * 1000)}}));   // meters
 
 // 3. Routes: 96 samples each, then every pair
 graph.add(new GPUTrajectoryResample({
-  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, positions, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes}));
+  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'}, positions, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', output: {samples: routes}}));
 graph.add(new GPUTrackSimilarity({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positionsA: routes, offsetsA: routeOffsets, pairA, pairB,   // 465 pairs
-  hausdorff, frechet, maxFrechetVertices: 96
+  linesA: {kind: 'lines', positions: routes, lineOffsets: routeOffsets}, pairA, pairB,   // 465 pairs
+  maximumFrechetVertexCount: 96,
+  output: {hausdorff, frechet}
 }));
 
 // 4. One row per (bird, bucket of ${state.bucketDays} days)
 graph.add(new GPUTemporalReduction({
   cellIds: birdOfFix, timestamps, values: latitudeOfFix,
   parameters: bucketParameters.importToGraph(graph), cellCount: 31, bucketCount: 64,
-  output: {counts, min, max, first, last, occupiedSlots}
+  output: {counts, minimums, maximums, first, last, occupiedSlots: {ids, status: {count, overflow}}}
 }));
 bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketDays * 86400}));   // origin, width (s)`,
 

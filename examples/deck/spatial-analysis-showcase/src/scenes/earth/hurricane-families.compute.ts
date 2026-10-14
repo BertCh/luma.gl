@@ -8,11 +8,15 @@ import type {Buffer} from '@luma.gl/core';
 import {
   GPU_EARTH_MEAN_RADIUS_METERS,
   GPUKMeans,
+  GPU_KMEANS_PARAMETER_LENGTH,
+  getGPUKMeansParameterValues,
+  type GPUParameterBuffer,
   GPUTrackSimilarity,
   GPUTrajectoryResample
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -139,6 +143,7 @@ type RouteVariant = {
 
 type KMeansVariant = {
   key: string;
+  parameters: GPUParameterBuffer<'uint32'>;
   compiled: CompiledGPUCommandGraph<void>;
   encoded: boolean;
 };
@@ -227,7 +232,8 @@ export async function createHurricaneFamilies(
   const labelsBuffer = resources.createBuffer('labels', trackCount * 4);
   const centersBuffer = resources.createBuffer('centers', MAXIMUM_FAMILIES * 8);
   const sizesBuffer = resources.createBuffer('sizes', MAXIMUM_FAMILIES * 4);
-  const convergenceBuffer = resources.createBuffer('convergence', 8);
+  const iterationCountBuffer = resources.createBuffer('iteration-count', 4);
+  const convergedBuffer = resources.createBuffer('converged', 4);
   const squaredDistancesBuffer = resources.createBuffer('squared-distances', trackCount * 4);
 
   // ---- State -----------------------------------------------------------------------------------
@@ -249,7 +255,10 @@ export async function createHurricaneFamilies(
   selectedStorm = katrina >= 0 ? katrina : findLongestStorm(storms);
 
   // ---- Route variants (compile-time sample count and spacing) ----------------------------------
-  function buildRoutes(sampleCount: number, spacing: 'arc-length' | 'time'): RouteVariant {
+  async function buildRoutes(
+    sampleCount: number,
+    spacing: 'arc-length' | 'time'
+  ): Promise<RouteVariant> {
     const key = `${sampleCount}-${spacing}`;
     const routes = resources.createBuffer(`routes-${key}`, trackCount * sampleCount * 8);
     const routeSegments = resources.createBuffer(
@@ -300,7 +309,7 @@ export async function createHurricaneFamilies(
         ),
         sampleCount,
         spacing,
-        samples: routesView
+        output: {samples: routesView}
       })
     );
     addKernelPass(resampleGraph, {
@@ -340,38 +349,49 @@ export async function createHurricaneFamilies(
           metric: 'great-circle',
           units: 'meters'
         },
-        positionsA: importGraphBuffer(
-          similarityGraph,
-          'routes',
-          routes,
-          'float32x2',
-          trackCount * sampleCount
-        ),
-        offsetsA: importGraphBuffer(
-          similarityGraph,
-          'route-offsets',
-          routeOffsets,
-          'uint32',
-          trackCount + 1
-        ),
         pairA: importGraphBuffer(similarityGraph, 'pair-a', pairABuffer, 'uint32', pairCount),
         pairB: importGraphBuffer(similarityGraph, 'pair-b', pairBBuffer, 'uint32', pairCount),
-        hausdorff: importGraphBuffer(
-          similarityGraph,
-          'pair-hausdorff',
-          pairHausdorff,
-          'float32',
-          pairCount
-        ),
-        frechet: importGraphBuffer(
-          similarityGraph,
-          'pair-frechet',
-          pairFrechet,
-          'float32',
-          pairCount
-        ),
-        status: importGraphBuffer(similarityGraph, 'pair-status', pairStatus, 'uint32', pairCount),
-        maxFrechetVertices: sampleCount
+        maximumFrechetVertexCount: sampleCount,
+        output: {
+          hausdorff: importGraphBuffer(
+            similarityGraph,
+            'pair-hausdorff',
+            pairHausdorff,
+            'float32',
+            pairCount
+          ),
+          frechet: importGraphBuffer(
+            similarityGraph,
+            'pair-frechet',
+            pairFrechet,
+            'float32',
+            pairCount
+          ),
+          pairStatus: importGraphBuffer(
+            similarityGraph,
+            'pair-status',
+            pairStatus,
+            'uint32',
+            pairCount
+          )
+        },
+        linesA: {
+          kind: 'lines',
+          positions: importGraphBuffer(
+            similarityGraph,
+            'routes',
+            routes,
+            'float32x2',
+            trackCount * sampleCount
+          ),
+          lineOffsets: importGraphBuffer(
+            similarityGraph,
+            'route-offsets',
+            routeOffsets,
+            'uint32',
+            trackCount + 1
+          )
+        }
       })
     );
     return {
@@ -380,58 +400,93 @@ export async function createHurricaneFamilies(
       routes,
       routeOffsets,
       routeSegments,
-      resample: resources.track(resampleGraph.compile()),
-      similarity: resources.track(similarityGraph.compile()),
+      resample: resources.track(await resampleGraph.compileAsync()),
+      similarity: resources.track(await similarityGraph.compileAsync()),
       encoded: false
     };
   }
 
-  function replaceRoutes(sampleCount: number, spacing: 'arc-length' | 'time'): void {
+  function releaseRoutes(variant: RouteVariant): void {
+    resources.release(variant.similarity);
+    resources.release(variant.resample);
+    resources.release(variant.routes);
+    resources.release(variant.routeOffsets);
+    resources.release(variant.routeSegments);
+  }
+
+  /** Swaps a compiled route variant in, then releases the one it replaces. */
+  function commitRoutes(next: RouteVariant): void {
+    routeReader?.stop();
     const previous = routeVariant;
-    routeVariant = buildRoutes(sampleCount, spacing);
-    if (previous) {
-      resources.release(previous.similarity);
-      resources.release(previous.resample);
-      resources.release(previous.routes);
-      resources.release(previous.routeOffsets);
-      resources.release(previous.routeSegments);
-    }
+    routeVariant = next;
+    routeReader = createRouteReader(next);
+    routesSnapshot = null;
+    if (previous) releaseRoutes(previous);
     similarityDirty = true;
   }
 
+  const routeSwap = resources.track(new GraphSwap());
+  const kmeansSwap = resources.track(new GraphSwap());
+
   // ---- k-means variant (compile-time k, iterations, initialization, seed) ----------------------
-  function buildKMeans(options: HurricaneFamiliesOptions): KMeansVariant {
+  async function buildKMeans(options: HurricaneFamiliesOptions): Promise<KMeansVariant> {
     const k = options.familyCount;
     const key = `${k}-${options.iterations}-${options.initialization}-${options.seed}`;
     const graph = new GPUCommandGraph<void>(device, {id: `hurricane-kmeans-${key}`});
+    const kmeansParameters = resources.createParameterBuffer(
+      `kmeans-parameters-${key}`,
+      'uint32',
+      GPU_KMEANS_PARAMETER_LENGTH,
+      getGPUKMeansParameterValues({seed: options.seed})
+    );
     graph.add(
       new GPUKMeans({
         id: 'families',
         positions: importGraphBuffer(graph, 'embedding', embeddingBuffer, 'float32x2', trackCount),
         k,
-        iterations: options.iterations,
+        maximumIterations: options.iterations,
         initialization: options.initialization,
-        seed: options.seed,
-        labels: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', trackCount),
-        centers: importGraphBuffer(graph, 'centers', centersBuffer, 'float32x2', k),
-        sizes: importGraphBuffer(graph, 'sizes', sizesBuffer, 'uint32', k),
-        convergence: importGraphBuffer(graph, 'convergence', convergenceBuffer, 'uint32', 2),
-        squaredDistances: importGraphBuffer(
-          graph,
-          'squared-distances',
-          squaredDistancesBuffer,
-          'float32',
-          trackCount
-        )
+        parameters: kmeansParameters.importToGraph(graph),
+        output: {
+          labels: importGraphBuffer(graph, 'labels', labelsBuffer, 'uint32', trackCount),
+          centers: importGraphBuffer(graph, 'centers', centersBuffer, 'float32x2', k),
+          sizes: importGraphBuffer(graph, 'sizes', sizesBuffer, 'uint32', k),
+          status: {
+            iterationCount: importGraphBuffer(
+              graph,
+              'iteration-count',
+              iterationCountBuffer,
+              'uint32',
+              1
+            ),
+            converged: importGraphBuffer(graph, 'converged', convergedBuffer, 'uint32', 1)
+          },
+          squaredDistances: importGraphBuffer(
+            graph,
+            'squared-distances',
+            squaredDistancesBuffer,
+            'float32',
+            trackCount
+          )
+        }
       })
     );
-    return {key, compiled: resources.track(graph.compile()), encoded: false};
+    return {
+      key,
+      parameters: kmeansParameters,
+      compiled: resources.track(await graph.compileAsync()),
+      encoded: false
+    };
   }
 
-  function replaceKMeans(): void {
+  /** Swaps a compiled k-means variant in, then releases the one it replaces. */
+  function commitKMeans(next: KMeansVariant): void {
     const previous = kmeansVariant;
-    kmeansVariant = buildKMeans(ctx.options as HurricaneFamiliesOptions);
-    if (previous) resources.release(previous.compiled);
+    kmeansVariant = next;
+    if (previous) {
+      resources.release(previous.compiled);
+      resources.release(previous.parameters);
+    }
     kmeansDirty = embedding !== null;
   }
 
@@ -479,7 +534,8 @@ export async function createHurricaneFamilies(
     [
       {buffer: labelsBuffer, size: trackCount * 4},
       {buffer: sizesBuffer, size: MAXIMUM_FAMILIES * 4},
-      {buffer: convergenceBuffer, size: 8},
+      {buffer: iterationCountBuffer, size: 4},
+      {buffer: convergedBuffer, size: 4},
       {buffer: squaredDistancesBuffer, size: trackCount * 4}
     ],
     bytes => {
@@ -873,9 +929,8 @@ export async function createHurricaneFamilies(
     'storms',
     `${formatCount(trackCount)} storms, ${formatCount(vertexCount)} six-hourly fixes, seasons ${Math.min(...storms.season)} to ${Math.max(...storms.season)}`
   );
-  replaceRoutes(Number(ctx.options.routeSamples), ctx.options.routeSpacing);
-  routeReader = createRouteReader(routeVariant!);
-  replaceKMeans();
+  commitRoutes(await buildRoutes(Number(ctx.options.routeSamples), ctx.options.routeSpacing));
+  commitKMeans(await buildKMeans(ctx.options as HurricaneFamiliesOptions));
   writeSelectedOutline();
   updateSelection();
 
@@ -890,10 +945,14 @@ export async function createHurricaneFamilies(
       switch (id) {
         case 'routeSamples':
         case 'routeSpacing':
-          routeReader?.stop();
-          replaceRoutes(Number(state.routeSamples), state.routeSpacing);
-          routeReader = createRouteReader(routeVariant!);
-          routesSnapshot = null;
+          void routeSwap.request({
+            build: () => buildRoutes(Number(state.routeSamples), state.routeSpacing),
+            commit: next => {
+              commitRoutes(next);
+              ctx.requestLayers();
+            },
+            discard: releaseRoutes
+          });
           break;
         case 'distanceMeasure':
           buildMatrixAndEmbedding();
@@ -902,7 +961,14 @@ export async function createHurricaneFamilies(
         case 'initialization':
         case 'seed':
         case 'iterations':
-          replaceKMeans();
+          void kmeansSwap.request({
+            build: () => buildKMeans(ctx.options as HurricaneFamiliesOptions),
+            commit: next => {
+              commitKMeans(next);
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next.compiled)
+          });
           break;
         case 'similarityRangeKm':
           updateDistanceChart();

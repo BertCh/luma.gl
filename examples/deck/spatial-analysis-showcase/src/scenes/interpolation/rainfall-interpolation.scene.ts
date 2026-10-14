@@ -480,6 +480,7 @@ export default defineScene<RainfallOptions>({
   },
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {
   GPUInverseDistanceWeighting, GPUKriging, GPUFocalStatistics,
   getGPUInverseDistanceWeightingParameterValues, getGPUKrigingParameterValues,
@@ -493,7 +494,7 @@ variogramGraph.add(new GPUVariogram({
   positions, values, mask,                  // mask: 0 = held-out gauge
   parameters: variogramParameters.importToGraph(variogramGraph),
   gridSize: [32, 32], lagCount: 16, directionCount: 4,
-  semivariances, pairCounts, meanDistances, robustSemivariances
+  output: {semivariances, pairCounts, meanDistances, robustSemivariances, statistics, status: {overflow}}
 }));
 variogramParameters.write(getGPUVariogramParameterValues({
   bounds: indexBounds, maximumDistance: ${state.maximumLagKm * 1000}
@@ -504,26 +505,33 @@ const model = fitVariogramModel(
 );
 
 // 2. One graph: IDW + kriging + focal statistics over a raster that follows the camera
-const common = {positions, values, mask, width: 384, height: 240,
+const grid = makeGPURasterMetadata({width: 384, height: 240});  // placement is per frame
+const common = {positions, values, mask, grid,
   indexGridSize: [64, 64], indexBounds};
 graph.add(new GPUInverseDistanceWeighting({...common, maximumNeighborCount: 32,
   parameters: idwParameters.importToGraph(graph), output: {values: idw, counts}}));
 graph.add(new GPUKriging({...common, maximumNeighborCount: 16,
   parameters: krigingParameters.importToGraph(graph), output: {values: kriging, variance}}));
-graph.add(new GPUFocalStatistics({values: selected, width: 384, height: 240,
+graph.add(new GPUFocalStatistics({values: selected, grid,
   maximumRadius: 8, parameters: focalParameters.importToGraph(graph),
   output: {mean, max, range}}));
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 
 // 3. Every frame: parameter writes, then encode
+// The viewport's grid: rows advance north from the bounds' minimum corner
+const [minX, minY, maxX, maxY] = viewBounds;
+const viewGrid = makeGPURasterMetadata({
+  width: 384, height: 240, cellSize: [(maxX - minX) / 384, (maxY - minY) / 240],
+  origin: [minX, minY], rowDirection: 'north'
+});
 idwParameters.write(getGPUInverseDistanceWeightingParameterValues({
-  extent: viewBounds, searchRadius: ${state.searchRadiusKm * 1000}, power: ${state.power},
+  searchRadius: ${state.searchRadiusKm * 1000}, power: ${state.power},
   neighborCount: ${state.neighborCount}, minimumNeighborCount: ${state.minimumStations}
-}));
+}, viewGrid));
 krigingParameters.write(getGPUKrigingParameterValues({
-  extent: viewBounds, searchRadius: ${state.searchRadiusKm * 1000},
+  searchRadius: ${state.searchRadiusKm * 1000},
   neighborCount: ${state.krigingNeighborCount}, variogram: model   // {model, nugget, sill, range}
-}));
+}, viewGrid));
 focalParameters.write(getGPUFocalStatisticsParameterValues({
   radius: ${state.focalRadius}, shape: '${state.focalShape}', minimumCount: ${state.focalMinimumCount}
 }));

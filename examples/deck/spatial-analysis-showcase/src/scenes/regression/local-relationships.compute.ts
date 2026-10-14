@@ -25,6 +25,7 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createNamedReader} from './b6-reader';
@@ -251,7 +252,7 @@ export async function createLocalRelationships(
 
   // ---- Graphs. The grid-indexed variant is the default; the scan variant compiles on demand. ----
   const gwrGraphs = new Map<boolean, CompiledGPUCommandGraph<void>>();
-  const getGwrGraph = (indexed: boolean) => {
+  const getGwrGraph = async (indexed: boolean) => {
     let compiled = gwrGraphs.get(indexed);
     if (compiled) return compiled;
     const graph = new GPUCommandGraph<void>(device, {id: `gwr-${indexed ? 'indexed' : 'scan'}`});
@@ -316,7 +317,7 @@ export async function createLocalRelationships(
         }
       })
     );
-    compiled = resources.track(graph.compile());
+    compiled = resources.track(await graph.compileAsync());
     gwrGraphs.set(indexed, compiled);
     return compiled;
   };
@@ -364,13 +365,13 @@ export async function createLocalRelationships(
           'float32',
           GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
         ),
-        status: importGraphBuffer(olsGraph, 'ols-status', olsStatus, 'uint32', 1),
+        status: {code: importGraphBuffer(olsGraph, 'ols-status', olsStatus, 'uint32', 1)},
         residuals: importGraphBuffer(olsGraph, 'ols-residuals', olsResiduals, 'float32', rowCount),
         fitted: importGraphBuffer(olsGraph, 'ols-fitted', olsFitted, 'float32', rowCount)
       }
     })
   );
-  const compiledOls = resources.track(olsGraph.compile());
+  const compiledOls = resources.track(await olsGraph.compileAsync());
 
   const testGraph = new GPUCommandGraph<void>(device, {id: 'gwr-nonstationarity-test'});
   let testError: string | null = null;
@@ -429,7 +430,7 @@ export async function createLocalRelationships(
   } catch (error) {
     testError = error instanceof Error ? error.message : String(error);
   }
-  const compiledTest = testError ? null : resources.track(testGraph.compile());
+  const compiledTest = testError ? null : resources.track(await testGraph.compileAsync());
 
   // ---- State. ----
   // The grid index adds storage bindings to the fit kernel; a default 8-binding device cannot run it.
@@ -473,14 +474,15 @@ export async function createLocalRelationships(
     permutationParameters.write(
       getGPUPermutationParameterValues({
         seed: ctx.options.seed,
-        permutations: ctx.options.permutations
+        permutationCount: ctx.options.permutations
       })
     );
     testValid = false;
   };
   writeParameters();
   writePermutations();
-  getGwrGraph(activeIndexed);
+  await getGwrGraph(activeIndexed);
+  const graphSwap = resources.track(new GraphSwap());
   ctx.setReadout(
     'index',
     activeIndexed ? 'grid-indexed (fixed bisquare visits nearby cells only)' : 'full scan'
@@ -650,7 +652,7 @@ export async function createLocalRelationships(
       // Monte Carlo test.
       const testSummaryValues = get('testSummary').f32;
       const testValues = get('testTable').f32;
-      const permutationCount = testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.permutations];
+      const permutationCount = testSummaryValues[GPU_GWR_NONSTATIONARITY_SUMMARY.permutationCount];
       if (testValid && permutationCount > 0) {
         const labels = ['Intercept', ...COUNTY_PREDICTOR_LABELS];
         const parts = labels.map((label, index) => {
@@ -672,7 +674,7 @@ export async function createLocalRelationships(
 
   return {
     getCompiledGraphs: () => [
-      getGwrGraph(activeIndexed),
+      gwrGraphs.get(activeIndexed)!,
       compiledOls,
       ...(compiledTest ? [compiledTest] : [])
     ],
@@ -690,17 +692,26 @@ export async function createLocalRelationships(
         return;
       }
       if (id === 'spatialIndex') {
-        activeIndexed = ctx.options.spatialIndex && indexSupported;
-        ctx.setReadout(
-          'index',
-          ctx.options.spatialIndex && !indexSupported
-            ? `unavailable: this device allows ${device.limits.maxStorageBuffersPerShaderStage} storage buffers per stage, the indexed kernel needs 10`
-            : activeIndexed
-              ? 'grid-indexed (fixed bisquare visits nearby cells only)'
-              : 'full scan'
-        );
-        getGwrGraph(activeIndexed);
-        dirty = true;
+        // The previous variant keeps encoding until the new one has compiled. Variants stay
+        // cached (and owned by `resources`), so a superseded build needs no discard.
+        const wantIndexed = ctx.options.spatialIndex && indexSupported;
+        const unavailable = ctx.options.spatialIndex && !indexSupported;
+        void graphSwap.request({
+          build: () => getGwrGraph(wantIndexed),
+          commit: () => {
+            activeIndexed = wantIndexed;
+            ctx.setReadout(
+              'index',
+              unavailable
+                ? `unavailable: this device allows ${device.limits.maxStorageBuffersPerShaderStage} storage buffers per stage, the indexed kernel needs 10`
+                : activeIndexed
+                  ? 'grid-indexed (fixed bisquare visits nearby cells only)'
+                  : 'full scan'
+            );
+            dirty = true;
+            ctx.requestLayers();
+          }
+        });
         return;
       }
       if (id === 'permutations' || id === 'seed') {
@@ -732,7 +743,7 @@ export async function createLocalRelationships(
           olsDirty = false;
         }
         if (dirty) {
-          getGwrGraph(activeIndexed).encode(commandEncoder, {parameters: undefined});
+          gwrGraphs.get(activeIndexed)!.encode(commandEncoder, {parameters: undefined});
           dirty = false;
         }
         if (testRequested && compiledTest) {

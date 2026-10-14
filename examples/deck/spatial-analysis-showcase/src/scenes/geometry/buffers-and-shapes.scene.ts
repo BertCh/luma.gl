@@ -460,7 +460,7 @@ The readout compares the mean hop between consecutive stops along the curve with
       headline: 'Clipping creates vertices at boundaries',
       textAlternative:
         'Chicago street lines are clipped to a movable axis-aligned rectangle and coloured by source road class, with surviving vertices and pieces reported; clipping is planar and output beyond the fixed capacity is truncated and flagged.',
-      body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here 100 000 street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourcePaths\` output, so it can be coloured by road class.
+      body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here 100 000 street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourceLineIndices\` output, so it can be coloured by road class.
 
 The readouts show the vertices that survive, the number of pieces and whether the output overflowed. The rectangle is a per-frame parameter, so dragging costs only a parameter write and one encode.`,
       camera: {longitude: -87.64, latitude: 41.88, zoom: 11.3, transitionMs: 1500},
@@ -534,7 +534,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
         state.clipGeometry === 'roads'
           ? {
               kind: 'categories',
-              title: 'Street class of each clipped piece (sourcePaths)',
+              title: 'Street class of each clipped piece (sourceLineIndices)',
               entries: ROAD_CLASS_LABELS.map((label, index) => ({
                 color: [...B3_PALETTE[index], 255] as const,
                 label
@@ -591,7 +591,7 @@ The readouts show the vertices that survive, the number of pieces and whether th
 
 graph.add(new GPUOutlineGeometry({
   positions,                                  // float32x2, ${state.bufferSystem === 'spherical' ? 'longitude/latitude degrees' : 'local metres'}
-  geometryType: '${state.bufferSource === 'stations' ? 'points' : state.bufferSource}',${state.bufferSource === 'stations' ? '' : '\n  pathOffsets,                                // path or ring starts'}
+  geometryType: '${state.bufferSource === 'stations' ? 'points' : state.bufferSource === 'lines' ? 'lines' : 'polygons'}',${state.bufferSource === 'stations' ? '' : state.bufferSource === 'lines' ? '\n  lineOffsets,                                // line starts' : '\n  featureOffsets, polygonOffsets, ringOffsets, // four-level polygon layout, rings are stroked closed'}
   ${state.bufferSystem === 'spherical' ? GREAT_CIRCLE_SNIPPET : PLANAR_SNIPPET}
   joinSegments: ${state.joinSegments},
   parameters: distance.importToGraph(graph),  // GPUParameterBuffer, length 4
@@ -629,7 +629,7 @@ graph.add(new GPUGridGenerator({
   output: {positions: cells, centers}
 }));
 graph.add(new GPUHilbertKeys({
-  order: ${state.hilbertOrder}, points: centers,
+  order: ${state.hilbertOrder}, positions: centers,
   bounds: bounds.importToGraph(graph),        // [minX, minY, maxX, maxY]
   output: {keys, sortedRows}                  // stable radix sort in curve order
 }));
@@ -642,10 +642,10 @@ gridParameters.write(getGPUGridGeneratorParameterValues({
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPURectangleClip({
-  positions, pathOffsets,
-  geometryType: '${state.clipGeometry === 'roads' ? 'lines' : 'polygons'}',
+  positions,
+  geometryType: '${state.clipGeometry === 'roads' ? 'lines' : 'polygons'}',${state.clipGeometry === 'roads' ? '\n  lineOffsets,' : '\n  featureOffsets, polygonOffsets, ringOffsets,'}
   parameters: clipParameters.importToGraph(graph),
-  output: {positions: out, pathOffsets: outOffsets, count, overflow${state.clipGeometry === 'roads' ? ', requiredCount, pathCount, sourcePaths' : ''}}
+  output: {positions: out, lineOffsets: outOffsets, status: {count, overflow${state.clipGeometry === 'roads' ? ', requiredCount, lineCount' : ''}}${state.clipGeometry === 'roads' ? ', sourceLineIndices' : ''}}
 }));
 
 // the rectangle is a per-frame parameter

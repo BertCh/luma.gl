@@ -322,8 +322,10 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
           queryMask: toFacilities ? undefined : facilityMaskView,
           parameters,
           gridSize: [64, 64],
-          weights,
-          overflow: view(`${name}-overflow`, csr.overflow, 'uint32', 1)
+          output: {
+            ...weights,
+            status: {overflow: view(`${name}-overflow`, csr.overflow, 'uint32', 1)}
+          }
         })
       );
     };
@@ -362,15 +364,17 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
           demand: demandView,
           facilityWeights: catchmentFacilityWeights,
           demandWeights: catchmentDemandWeights,
-          accessibility: view(
-            `accessibility-${method}`,
-            accessibilityBuffer,
-            'float32',
-            demandCount
-          ),
-          ratios: view(`ratios-${method}`, ratiosBuffer, 'float32', facilityCount),
-          // Both methods report the same count, so only the first writes it.
-          reachableFacilities: method === '2sfca' ? reachableView : undefined
+          output: {
+            accessibility: view(
+              `accessibility-${method}`,
+              accessibilityBuffer,
+              'float32',
+              demandCount
+            ),
+            ratios: view(`ratios-${method}`, ratiosBuffer, 'float32', facilityCount),
+            // Both methods report the same count, so only the first writes it.
+            reachableFacilities: method === '2sfca' ? reachableView : undefined
+          }
         })
       );
     }
@@ -389,9 +393,11 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
         facilityWeights: huffFacilityWeights,
         demand: demandView,
         parameters: huffExponentParameter.importToGraph(graph),
-        tradeArea: tradeAreaView,
-        tradeAreaProbability: probabilityView,
-        expectedDemand: view('expected-demand', expectedDemand, 'float32', facilityCount)
+        output: {
+          tradeArea: tradeAreaView,
+          tradeAreaProbability: probabilityView,
+          expectedDemand: view('expected-demand', expectedDemand, 'float32', facilityCount)
+        }
       })
     );
     // Spokes from each demand cell to its modal facility, faded by the Huff probability.
@@ -438,7 +444,7 @@ export const tradeAreasMode: SpatialAnalysisModeDefinition = {
   segments[segmentsOffset + index * 4u + 3u] = facilityPositions[facilityPositionsOffset + facility * 2u + 1u];
   fade[fadeOffset + index] = probability[probabilityOffset + index] * parameters[parametersOffset];`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
     const accessibilityRanges = new Map<string, number>();
     // Summary readback: statistics sources, then both accessibilities and the expected demand.

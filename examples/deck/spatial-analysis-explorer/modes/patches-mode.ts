@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPURasterSieveParameterValues,
+  makeGPURasterMetadata,
   GPURasterConnectedComponents,
   GPURasterDenseComponents,
   GPURasterPatchMetrics,
@@ -179,11 +180,17 @@ export const patchesMode: SpatialAnalysisModeDefinition = {
         overflow,
         capacity: PATCH_CAPACITY
       }).addToGraph(graph);
-      const patchInput = {
+      // The patch contributors place pixels with the grid affine (north-up, top-left corner).
+      const grid = makeGPURasterMetadata({
         width,
         height,
+        cellSize,
+        origin: [bounds[0], bounds[3]]
+      });
+      const patchInput = {
+        grid,
         labels,
-        labelValidity,
+        validity: labelValidity,
         converged: sparseConverged,
         componentCount,
         overflow
@@ -192,7 +199,6 @@ export const patchesMode: SpatialAnalysisModeDefinition = {
         new GPURasterPatchMetrics({
           ...patchInput,
           id: 'metrics',
-          affine: [cellSize[0], 0, bounds[0], 0, -cellSize[1], bounds[3]],
           output: {
             pixelCounts: view('pixel-counts', buffers.pixelCounts, 'uint32', PATCH_CAPACITY),
             areas: view('areas', buffers.areas, 'float32', PATCH_CAPACITY),
@@ -224,7 +230,7 @@ export const patchesMode: SpatialAnalysisModeDefinition = {
         );
       }
     }
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
     // State.
     let display: Display = 'remove';

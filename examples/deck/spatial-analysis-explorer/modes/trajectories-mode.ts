@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -193,105 +194,107 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
           tripCount + 1
         ),
         parameters: parameterBuffer.importToGraph(graph),
-        trackLengths: importGraphBuffer(
-          graph,
-          'track-lengths',
-          trackLengthsBuffer,
-          'float32',
-          tripCount
-        ),
-        trackDurations: importGraphBuffer(
-          graph,
-          'track-durations',
-          trackDurationsBuffer,
-          'float32',
-          tripCount
-        ),
-        averageSpeeds: importGraphBuffer(
-          graph,
-          'average-speeds',
-          averageSpeedsBuffer,
-          'float32',
-          tripCount
-        ),
-        maximumSpeeds: importGraphBuffer(
-          graph,
-          'maximum-speeds',
-          maximumSpeedsBuffer,
-          'float32',
-          tripCount
-        ),
-        stepSpeeds: importGraphBuffer(
-          graph,
-          'step-speeds',
-          stepSpeedsBuffer,
-          'float32',
-          vertexCount
-        ),
-        stepHeadings: importGraphBuffer(
-          graph,
-          'step-headings',
-          stepHeadingsBuffer,
-          'float32',
-          vertexCount
-        ),
-        stepAccelerations: importGraphBuffer(
-          graph,
-          'step-accelerations',
-          stepAccelerationsBuffer,
-          'float32',
-          vertexCount
-        ),
-        trackStopCounts: importGraphBuffer(
-          graph,
-          'track-stop-counts',
-          trackStopCountsBuffer,
-          'uint32',
-          tripCount
-        ),
-        stops: {
-          output: {
-            ids: importGraphBuffer(graph, 'stop-ids', stopIdsBuffer, 'uint32', STOP_CAPACITY),
-            count: importGraphBuffer(graph, 'stop-count', stopCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'stop-overflow', stopOverflowBuffer, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'stop-total', stopTotalBuffer, 'uint32', 1)
-          },
-          drawInstanceCount: graph.importGPUData(
-            'stop-draw-count',
-            drawCommands.getInstanceCountData(0)
-          ),
-          startRows: importGraphBuffer(
+        output: {
+          trackLengths: importGraphBuffer(
             graph,
-            'stop-start-rows',
-            stopStartRowsBuffer,
-            'uint32',
-            STOP_CAPACITY
-          ),
-          endRows: importGraphBuffer(
-            graph,
-            'stop-end-rows',
-            stopEndRowsBuffer,
-            'uint32',
-            STOP_CAPACITY
-          ),
-          centroids: importGraphBuffer(
-            graph,
-            'stop-centroids',
-            stopCentroidsBuffer,
-            'float32x2',
-            STOP_CAPACITY
-          ),
-          durations: importGraphBuffer(
-            graph,
-            'stop-durations',
-            stopDurationsBuffer,
+            'track-lengths',
+            trackLengthsBuffer,
             'float32',
-            STOP_CAPACITY
-          )
+            tripCount
+          ),
+          trackDurations: importGraphBuffer(
+            graph,
+            'track-durations',
+            trackDurationsBuffer,
+            'float32',
+            tripCount
+          ),
+          averageSpeeds: importGraphBuffer(
+            graph,
+            'average-speeds',
+            averageSpeedsBuffer,
+            'float32',
+            tripCount
+          ),
+          maximumSpeeds: importGraphBuffer(
+            graph,
+            'maximum-speeds',
+            maximumSpeedsBuffer,
+            'float32',
+            tripCount
+          ),
+          stepSpeeds: importGraphBuffer(
+            graph,
+            'step-speeds',
+            stepSpeedsBuffer,
+            'float32',
+            vertexCount
+          ),
+          stepHeadings: importGraphBuffer(
+            graph,
+            'step-headings',
+            stepHeadingsBuffer,
+            'float32',
+            vertexCount
+          ),
+          stepAccelerations: importGraphBuffer(
+            graph,
+            'step-accelerations',
+            stepAccelerationsBuffer,
+            'float32',
+            vertexCount
+          ),
+          trackStopCounts: importGraphBuffer(
+            graph,
+            'track-stop-counts',
+            trackStopCountsBuffer,
+            'uint32',
+            tripCount
+          ),
+          stops: {
+            ids: importGraphBuffer(graph, 'stop-ids', stopIdsBuffer, 'uint32', STOP_CAPACITY),
+            drawInstanceCount: graph.importGPUData(
+              'stop-draw-count',
+              drawCommands.getInstanceCountData(0)
+            ),
+            startRows: importGraphBuffer(
+              graph,
+              'stop-start-rows',
+              stopStartRowsBuffer,
+              'uint32',
+              STOP_CAPACITY
+            ),
+            endRows: importGraphBuffer(
+              graph,
+              'stop-end-rows',
+              stopEndRowsBuffer,
+              'uint32',
+              STOP_CAPACITY
+            ),
+            centroids: importGraphBuffer(
+              graph,
+              'stop-centroids',
+              stopCentroidsBuffer,
+              'float32x2',
+              STOP_CAPACITY
+            ),
+            durations: importGraphBuffer(
+              graph,
+              'stop-durations',
+              stopDurationsBuffer,
+              'float32',
+              STOP_CAPACITY
+            ),
+            status: {
+              count: importGraphBuffer(graph, 'stop-count', stopCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'stop-overflow', stopOverflowBuffer, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'stop-total', stopTotalBuffer, 'uint32', 1)
+            }
+          }
         }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     let stopSpeedThreshold = DEFAULT_STOP_SPEED_THRESHOLD;
     let stopMinimumDuration = DEFAULT_STOP_MINIMUM_DURATION;
@@ -413,7 +416,7 @@ export const trajectoriesMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       readbackRequested = false;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         const floats = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);

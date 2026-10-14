@@ -132,7 +132,7 @@ export default defineScene<QuakePlateBoundariesOptions>({
       step: 50,
       default: 2000,
       format: value => (value >= 2000 ? 'no limit' : `${value} km`),
-      help: 'Cells (and events) farther than this from every seed get no distance (maxDistance). Events beyond the cap drop out of the distance tables and count as far in the Gutenberg-Richter subset.'
+      help: 'Cells (and events) farther than this from every seed get no distance (maximumDistance). Events beyond the cap drop out of the distance tables and count as far in the Gutenberg-Richter subset.'
     },
     {
       kind: 'select',
@@ -594,14 +594,16 @@ export default defineScene<QuakePlateBoundariesOptions>({
     }
   ],
 
-  snippet:
-    state => `import {GPUDistanceField, getGPUDistanceFieldParameterValues} from '@luma.gl/experimental/gpu-raster';
+  snippet: state => `import {
+  GPUDistanceField, getGPUDistanceFieldParameterValues, makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
 
 // Seeds: points along the PB2002 steps every 0.8 cells, family id as the seed id.
 distanceGraph.add(new GPUDistanceField({
-  width: 1024, height: 1024, mode: '${state.algorithm === 'exact' ? 'exact' : 'jump-flood'}',
-  settings, seedPositions, seedIds, seedCount,
+  grid,                                         // 1024 x 1024, origin at the south-west corner, rows advance north
+  mode: '${state.algorithm === 'exact' ? 'exact' : 'jump-flood'}',
+  parameters, seedPositions, seedIds, seedCount,
   output: {distances, allocation, nearestCells}
 }));
 
@@ -610,14 +612,15 @@ statisticsGraph.add(new GPUGroupStatistics({
   keys: keyDistance, mask: maskMagnitude, keyCount: 64, variance: '${state.variance}',
   percentiles,                                  // [${state.lowerFraction}, 0.5, ${state.upperFraction}]
   columns: [{values: depth, statistics: ['mean', 'standardDeviation', 'percentiles'], output}],
-  output: {keys, counts, count, overflow}
+  output: {keys, counts, status: {count, overflow}}
 }));
 // Counts by (depth class, bin) and by magnitude bin: the same contributor with no value column.
 
 // Per change (parameter writes, no recompile):
-settings.write(getGPUDistanceFieldParameterValues({
-  origin, cellSize: [cell, cell], maxDistance: ${state.maximumDistance >= 2000 ? 'Infinity' : state.maximumDistance * 1000}
-}));`,
+const grid = makeGPURasterMetadata({width: 1024, height: 1024, cellSize: cell, origin, rowDirection: 'north'});
+parameters.write(getGPUDistanceFieldParameterValues({
+  maximumDistance: ${state.maximumDistance >= 2000 ? 'Infinity' : state.maximumDistance * 1000}
+}, grid));`,
 
   create: async ctx =>
     (await import('./quake-plate-boundaries.compute')).createQuakePlateBoundaries(ctx)

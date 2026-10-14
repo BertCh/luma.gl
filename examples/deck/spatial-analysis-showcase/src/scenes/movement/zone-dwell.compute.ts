@@ -20,6 +20,7 @@ import {getClassTableLayerProps, getClassIndexOf} from '../../cartography/class-
 import {formatArea, formatCount, formatPercent} from '../../cartography/live-text';
 import type {ClassTable, LngLat, MapAnnotation, MapHighlight} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
 import {SpatialAnalysisResources} from '../../engine/resources';
@@ -229,9 +230,6 @@ export async function createZoneDwell(
     trackStartTimes[track] = vessels.timestamps[vessels.offsets[track]];
   }
   const trackStartBuffer = resources.createBuffer('track-start-times', trackStartTimes);
-  const edgeZonesBuffer = resources.createBuffer('edge-zones', zones.edgeZones);
-  const edgeStartsBuffer = resources.createBuffer('edge-starts', zones.edgeStarts);
-  const edgeEndsBuffer = resources.createBuffer('edge-ends', zones.edgeEnds);
   const polygonBuffers = {
     positions: resources.createBuffer('polygon-positions', zones.polygonPositions),
     featureOffsets: resources.createBuffer('feature-offsets', zones.featureOffsets),
@@ -524,7 +522,7 @@ export async function createZoneDwell(
   }
 
   // ---- Variant graphs ------------------------------------------------------------------------
-  function buildInside(eventsPerVessel: number): VariantState {
+  async function buildInside(eventsPerVessel: number): Promise<VariantState> {
     const id = `inside-${eventsPerVessel}`;
     const zoneTable = createTable(id);
     const displayValues = resources.createBuffer(
@@ -541,19 +539,46 @@ export async function createZoneDwell(
     ) => importGraphBuffer(graph, name, buffer, format, length);
     addFleetDwellZoneEventsRecipe(graph, {
       id: 'zones',
-      positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-      timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
-      trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1),
-      edgeStarts: importGraphBuffer(graph, 'edge-starts', edgeStartsBuffer, 'float32x2', edgeCount),
-      edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
-      edgeZones: view('edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
-      zoneCount,
+      trajectories: {
+        kind: 'trajectories',
+        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+        timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
+        trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1)
+      },
+      zones: {
+        kind: 'polygons',
+        positions: importGraphBuffer(
+          graph,
+          'polygon-positions',
+          polygonBuffers.positions,
+          'float32x2',
+          zones.polygonPositions.length / 2
+        ),
+        featureOffsets: view(
+          'feature-offsets',
+          polygonBuffers.featureOffsets,
+          'uint32',
+          zones.featureOffsets.length
+        ),
+        polygonOffsets: view(
+          'polygon-offsets',
+          polygonBuffers.polygonOffsets,
+          'uint32',
+          zones.polygonOffsets.length
+        ),
+        ringOffsets: view(
+          'ring-offsets',
+          polygonBuffers.ringOffsets,
+          'uint32',
+          zones.ringOffsets.length
+        )
+      },
       candidateCapacity: EVENT_CANDIDATE_CAPACITY,
-      maxEventsPerTrack: eventsPerVessel,
+      trackEventCapacity: eventsPerVessel,
       outputs: {
         events: {
-          output: {
-            ids: view('event-tracks', eventTracks, 'uint32', capacity),
+          ids: view('event-tracks', eventTracks, 'uint32', capacity),
+          status: {
             count: view('event-count', eventCount, 'uint32', 1),
             overflow: view('event-overflow', eventOverflow, 'uint32', 1)
           },
@@ -568,7 +593,7 @@ export async function createZoneDwell(
             capacity
           )
         },
-        diagnostics: {
+        status: {
           candidateCount: view('candidate-count', candidateCount, 'uint32', 1),
           candidateOverflow: view('candidate-overflow', candidateOverflow, 'uint32', 1),
           trackOverflow: view('track-overflow', trackOverflow, 'uint32', 1),
@@ -583,8 +608,8 @@ export async function createZoneDwell(
       },
       scratch: {
         visitTable: {
-          output: {
-            ids: view('visit-tracks', visitTracks, 'uint32', VISIT_CAPACITY),
+          ids: view('visit-tracks', visitTracks, 'uint32', VISIT_CAPACITY),
+          status: {
             count: view('visit-count', visitCount, 'uint32', 1),
             overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
           },
@@ -593,7 +618,7 @@ export async function createZoneDwell(
         }
       }
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const state: VariantState = {
       variant: 'inside',
       compiled,
@@ -611,7 +636,7 @@ export async function createZoneDwell(
     return state;
   }
 
-  function buildStopped(): VariantState {
+  async function buildStopped(): Promise<VariantState> {
     const zoneTable = createTable('stopped');
     const displayValues = resources.createBuffer(
       'stopped-display',
@@ -626,13 +651,17 @@ export async function createZoneDwell(
     ) => importGraphBuffer(graph, name, buffer, format, length);
     addFleetDwellRecipe(graph, {
       id: 'zone-stops',
-      positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-      timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
-      trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1),
+      trajectories: {
+        kind: 'trajectories',
+        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+        timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
+        trackOffsets: view('offsets', offsetsBuffer, 'uint32', trackCount + 1)
+      },
       parameters: stopParameters.importToGraph(graph),
       stopCapacity: STOP_CAPACITY,
       zones: {
-        polygonPositions: importGraphBuffer(
+        kind: 'polygons',
+        positions: importGraphBuffer(
           graph,
           'polygon-positions',
           polygonBuffers.positions,
@@ -662,8 +691,6 @@ export async function createZoneDwell(
       outputs: {
         stops: {
           ids: view('stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: view('stop-count', stopCount, 'uint32', 1),
-          overflow: view('stop-overflow', stopOverflow, 'uint32', 1),
           centroids: importGraphBuffer(
             graph,
             'stop-centroids',
@@ -671,9 +698,13 @@ export async function createZoneDwell(
             'float32x2',
             STOP_CAPACITY
           ),
-          durations: view('stop-durations', stopDurations, 'float32', STOP_CAPACITY)
+          durations: view('stop-durations', stopDurations, 'float32', STOP_CAPACITY),
+          status: {
+            count: view('stop-count', stopCount, 'uint32', 1),
+            overflow: view('stop-overflow', stopOverflow, 'uint32', 1)
+          }
         },
-        joinOverflow: view('join-overflow', joinOverflow, 'uint32', 1),
+        status: {joinOverflow: view('join-overflow', joinOverflow, 'uint32', 1)},
         table: {
           counts: view('zone-counts', zoneTable.counts, 'uint32', zoneCount),
           sumValues: view('zone-sums', zoneTable.sums, 'float32', zoneCount),
@@ -683,7 +714,7 @@ export async function createZoneDwell(
       },
       scratch: {stopZones: view('stop-zones', stopZones, 'uint32', STOP_CAPACITY)}
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const state: VariantState = {
       variant: 'stopped',
       compiled,
@@ -698,6 +729,16 @@ export async function createZoneDwell(
       stays: null
     };
     return state;
+  }
+
+  /** Stops a replaced or discarded variant's readers and releases its graph and buffers. */
+  function releaseVariant(state: VariantState): void {
+    state.tableReader.release();
+    state.listReader.release();
+    state.eventReader?.release();
+    resources.release(state.compiled);
+    resources.release(state.displayValues);
+    for (const buffer of Object.values(state.table)) resources.release(buffer);
   }
 
   const markChanged = () => {
@@ -1422,8 +1463,9 @@ export async function createZoneDwell(
 
   // ---- Boot --------------------------------------------------------------------------------------
   writeStopParameters();
-  inside = buildInside(Number(ctx.options.eventsPerVessel));
-  stopped = buildStopped();
+  inside = await buildInside(Number(ctx.options.eventsPerVessel));
+  stopped = await buildStopped();
+  const insideSwap = resources.track(new GraphSwap());
 
   // ---- Instance ---------------------------------------------------------------------------------
   return {
@@ -1432,11 +1474,19 @@ export async function createZoneDwell(
     setOption(id, _value, state) {
       switch (id) {
         case 'eventsPerVessel':
-          inside = buildInside(Number(state.eventsPerVessel));
-          eventTable = null;
-          followed = null;
-          markChanged();
-          refresh();
+          void insideSwap.request({
+            build: () => buildInside(Number(state.eventsPerVessel)),
+            commit: next => {
+              const previous = inside;
+              inside = next;
+              releaseVariant(previous);
+              eventTable = null;
+              followed = null;
+              markChanged();
+              refresh();
+            },
+            discard: releaseVariant
+          });
           break;
         case 'metric':
         case 'unit':

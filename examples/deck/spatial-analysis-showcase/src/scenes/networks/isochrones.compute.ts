@@ -7,14 +7,17 @@ import type {Buffer} from '@luma.gl/core';
 import {geodesicCircle} from '../../cartography/reference-geometry';
 import {makeClassTable} from '../../cartography/class-table';
 import {
+  addDriveTimeCatchmentRecipe,
   GPU_NETWORK_REACHABILITY_NONE,
-  getGPUNetworkIsochroneParameterValues,
+  getGPUNetworkIsochronesParameterValues,
   GPUNetworkIsochrones,
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
-import {getGPUDistanceFieldParameterValues} from '@luma.gl/experimental/gpu-raster';
 import {
-  addDriveTimeCatchmentRecipe,
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
+import {
   addStraightLineCatchmentsRecipe,
   GPU_SPATIAL_JOIN_NO_FEATURE,
   GPUPointInPolygonJoin
@@ -33,6 +36,7 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -122,6 +126,13 @@ type BuiltGraphs = {
   catchment: CompiledGPUCommandGraph<void>;
   straight: CompiledGPUCommandGraph<void>;
   facilityCount: number;
+  facilityRows: number[];
+  facilityPositions: Float32Array<ArrayBuffer>;
+  facilityPositionsBuffer: Buffer;
+  seedCount: {write: (values: Uint32Array) => void};
+  statistics: Buffer[];
+  /** Buffers created for this build, released with it. */
+  perBuild: {destroy: () => void}[];
 };
 
 /**
@@ -198,6 +209,17 @@ export async function createIsochrones(
       (straightBounds[2] - straightBounds[0])
   );
   const straightCellCount = STRAIGHT_LINE_WIDTH * straightHeight;
+  // Row 0 is the southern row: the origin is the bottom-left corner and rows advance north.
+  const straightGrid = makeGPURasterMetadata({
+    width: STRAIGHT_LINE_WIDTH,
+    height: straightHeight,
+    cellSize: [
+      (straightBounds[2] - straightBounds[0]) / STRAIGHT_LINE_WIDTH,
+      (straightBounds[3] - straightBounds[1]) / straightHeight
+    ],
+    origin: [straightBounds[0], straightBounds[1]],
+    rowDirection: 'north'
+  });
   const populationRaster = rasterizeTractValues(
     demand,
     demand.population,
@@ -321,7 +343,6 @@ export async function createIsochrones(
   // ---- State ------------------------------------------------------------------------------
   let destroyed = false;
   let built: BuiltGraphs | null = null;
-  let perBuild: {destroy: () => void}[] = [];
   let facilityPositionsBuffer!: Buffer;
   let seedCountParameter!: {write: (values: Uint32Array) => void; importToGraph: never};
   let statisticsBuffers: Buffer[] = [];
@@ -370,11 +391,10 @@ export async function createIsochrones(
 
   const writeStraightSettings = () => {
     distanceSettings.write(
-      getGPUDistanceFieldParameterValues({
-        bounds: straightBounds,
-        gridSize: [STRAIGHT_LINE_WIDTH, straightHeight],
-        maxDistance: ctx.options.straightRadius
-      })
+      getGPUDistanceFieldParameterValues(
+        {maximumDistance: ctx.options.straightRadius},
+        straightGrid
+      )
     );
     straightDirty = Math.max(straightDirty, 1);
   };
@@ -401,18 +421,26 @@ export async function createIsochrones(
     ctx.setReadout('moved', movedFacilities.size ? `${movedFacilities.size} moved` : 'none');
   };
 
-  const loadFacilityRows = () => {
+  /** Picks the facility rows and positions for the current options without touching live state. */
+  const selectFacilityRows = () => {
     const category = CATEGORY_INDEX[ctx.options.facilityType];
-    facilityRows = [];
+    let rows: number[] = [];
     for (let row = 0; row < facilityCategory.length; row++) {
-      if (facilityCategory[row] === category) facilityRows.push(row);
+      if (facilityCategory[row] === category) rows.push(row);
     }
-    if (ctx.options.comparisonMode) facilityRows = facilityRows.slice(0, 1);
-    facilityPositions = new Float32Array(facilityRows.length * 2);
-    facilityRows.forEach((row, slot) => {
-      facilityPositions[slot * 2] = facilityPosition[row * 2];
-      facilityPositions[slot * 2 + 1] = facilityPosition[row * 2 + 1];
+    if (ctx.options.comparisonMode) rows = rows.slice(0, 1);
+    const positions = new Float32Array(rows.length * 2);
+    rows.forEach((row, slot) => {
+      positions[slot * 2] = facilityPosition[row * 2];
+      positions[slot * 2 + 1] = facilityPosition[row * 2 + 1];
     });
+    return {rows, positions};
+  };
+
+  const loadFacilityRows = () => {
+    const selection = selectFacilityRows();
+    facilityRows = selection.rows;
+    facilityPositions = selection.positions;
     movedFacilities = new Set();
   };
 
@@ -577,32 +605,27 @@ export async function createIsochrones(
     }
   );
 
+  const graphSwap = resources.track(new GraphSwap());
+
   // ---- Graph construction -----------------------------------------------------------------
-  function buildGraphs(): void {
-    if (built) {
-      statisticsReader?.stop();
-      resources.release(built.catchment);
-      resources.release(built.straight);
-      for (const resource of perBuild) resources.release(resource);
-      perBuild = [];
-    }
-    loadFacilityRows();
-    const facilityCount = facilityRows.length;
+  /** Builds and compiles both graphs and their buffers; the running graphs keep encoding meanwhile. */
+  async function buildGraphs(): Promise<BuiltGraphs> {
+    const {rows: nextFacilityRows, positions: nextFacilityPositions} = selectFacilityRows();
+    const facilityCount = nextFacilityRows.length;
     const options = ctx.options;
+    const nextPerBuild: {destroy: () => void}[] = [];
     const track = <T extends {destroy: () => void}>(resource: T): T => {
-      perBuild.push(resource);
+      nextPerBuild.push(resource);
       return resource;
     };
-    facilityPositionsBuffer = track(
-      resources.createBuffer('facility-positions', facilityPositions)
+    const nextFacilityPositionsBuffer = track(
+      resources.createBuffer('facility-positions', nextFacilityPositions)
     );
     const seedCount = track(resources.createParameterBuffer('seed-count', 'uint32', 1));
     seedCount.write(Uint32Array.of(facilityCount));
-    seedCountParameter = seedCount as never;
     const statistics = ['cell-counts', 'value-counts', 'sums', 'means', 'minimums', 'maximums'].map(
       name => track(resources.createBuffer(`stat-${name}`, facilityCount * 4))
     );
-    statisticsBuffers = statistics;
 
     const importer = (graph: GPUCommandGraph<void>) => {
       const cache = new Map<Buffer, GraphDataView>();
@@ -633,18 +656,18 @@ export async function createIsochrones(
       const assignments = view(assignmentsBuffer, 'uint32', nodeCount);
       const recipe = addDriveTimeCatchmentRecipe(catchmentGraph, {
         id: 'catchment',
-        network: {
+        topology: {
           offsets,
           neighbors,
           weights,
           nodePositions: view(nodePositionsBuffer, 'float32x2', nodeCount)
         },
-        facilities: view(facilityPositionsBuffer, 'float32x2', facilityCount),
+        facilities: view(nextFacilityPositionsBuffer, 'float32x2', facilityCount),
         demand: view(demandPositionsBuffer, 'float32x2', demand.count),
         demandValues: view(demandPopulationBuffer, 'float32', demand.count),
         costLimit: costLimitParameter.importToGraph(catchmentGraph),
-        maxIterations: MAXIMUM_ITERATIONS,
-        bandBreaks: breaks,
+        maximumIterations: MAXIMUM_ITERATIONS,
+        costBreaks: breaks,
         bandCapacity: BAND_TABLE_CAPACITY,
         outputs: {
           assignments,
@@ -654,14 +677,16 @@ export async function createIsochrones(
           bands: {
             keys: view(bandKeys, 'uint32', BAND_TABLE_CAPACITY),
             counts: view(bandCounts, 'uint32', BAND_TABLE_CAPACITY),
-            count: view(bandCount, 'uint32', 1),
-            overflow: view(bandOverflow, 'uint32', 1),
+            status: {
+              count: view(bandCount, 'uint32', 1),
+              overflow: view(bandOverflow, 'uint32', 1)
+            },
             sumValues: view(bandSums, 'float32', BAND_TABLE_CAPACITY),
             means: view(bandMeans, 'float32', BAND_TABLE_CAPACITY)
           }
         },
         isochrones: {
-          breaks,
+          costBreaks: breaks,
           parameters,
           raster: {
             width: RASTER_WIDTH,
@@ -672,9 +697,11 @@ export async function createIsochrones(
             output: {
               triangles: view(triangles, 'float32x2', TRIANGLE_CAPACITY * 3),
               triangleBands: view(triangleBands, 'uint32', TRIANGLE_CAPACITY),
-              count: view(triangleCount, 'uint32', 1),
-              overflow: view(triangleOverflow, 'uint32', 1),
-              vertexCount: view(bandVertexCount, 'uint32', 1)
+              status: {
+                count: view(triangleCount, 'uint32', 1),
+                vertexCount: view(bandVertexCount, 'uint32', 1),
+                overflow: view(triangleOverflow, 'uint32', 1)
+              }
             }
           }
         }
@@ -719,12 +746,14 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       catchmentGraph.add(
         new GPUNetworkIsochrones({
           id: 'catchment-rings',
-          offsets,
-          neighbors,
-          weights,
-          nodePositions: view(nodeLngLatBuffer, 'float32x2', nodeCount),
+          topology: {
+            offsets,
+            neighbors,
+            weights,
+            nodePositions: view(nodeLngLatBuffer, 'float32x2', nodeCount)
+          },
           costs: nodeCostsView,
-          breaks,
+          costBreaks: breaks,
           parameters,
           cellOutline: {
             family: choice.family,
@@ -732,8 +761,10 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
             table: {
               cells: view(tableCells, 'uint32x2', nodeCount),
               counts: view(tableCounts, 'uint32', nodeCount),
-              count: view(tableCount, 'uint32', 1),
-              overflow: view(tableOverflow, 'uint32', 1)
+              status: {
+                count: view(tableCount, 'uint32', 1),
+                overflow: view(tableOverflow, 'uint32', 1)
+              }
             },
             rings: {
               normalizeWinding: true,
@@ -742,11 +773,13 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
                 positions: view(ringPositions, 'float32x2', RING_VERTEX_CAPACITY),
                 ringIsHole: view(ringIsHole, 'uint32', RING_CAPACITY),
                 ringShells: view(ringShells, 'uint32', RING_CAPACITY),
-                count: view(ringCount, 'uint32', 1),
-                overflow: view(ringOverflow, 'uint32', 1),
-                requiredCount: view(ringTotal, 'uint32', 1),
-                openSegmentCount: view(ringOpen, 'uint32', 1),
-                touchingSegmentCount: view(ringTouching, 'uint32', 1),
+                status: {
+                  count: view(ringCount, 'uint32', 1),
+                  overflow: view(ringOverflow, 'uint32', 1),
+                  requiredCount: view(ringTotal, 'uint32', 1),
+                  openSegmentCount: view(ringOpen, 'uint32', 1),
+                  touchingSegmentCount: view(ringTouching, 'uint32', 1)
+                },
                 polygons: {
                   kind: 'polygons',
                   positions: polygonPositionsView,
@@ -761,9 +794,11 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
               cells: view(outlineCells, 'uint32x2', SEGMENT_CAPACITY),
               edgeIndices: view(outlineEdges, 'uint32', SEGMENT_CAPACITY),
               endpoints: view(outlineEndpoints, 'float32x4', SEGMENT_CAPACITY),
-              count: view(outlineCount, 'uint32', 1),
-              overflow: view(outlineOverflow, 'uint32', 1),
-              requiredCount: view(outlineTotal, 'uint32', 1)
+              status: {
+                count: view(outlineCount, 'uint32', 1),
+                overflow: view(outlineOverflow, 'uint32', 1),
+                requiredCount: view(outlineTotal, 'uint32', 1)
+              }
             }
           }
         })
@@ -771,14 +806,22 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       catchmentGraph.add(
         new GPUPointInPolygonJoin({
           id: 'catchment-join',
-          points: view(demandLngLatBuffer, 'float32x2', demand.count),
-          polygonPositions: polygonPositionsView,
-          featureOffsets: polygonFeatureOffsetsView,
-          polygonOffsets: polygonOffsetsView,
-          ringOffsets: polygonRingOffsetsView,
+          points: {
+            kind: 'points',
+            positions: view(demandLngLatBuffer, 'float32x2', demand.count)
+          },
+          polygons: {
+            kind: 'polygons',
+            positions: polygonPositionsView,
+            featureOffsets: polygonFeatureOffsetsView,
+            polygonOffsets: polygonOffsetsView,
+            ringOffsets: polygonRingOffsetsView
+          },
           candidateCapacity: Math.max(65536, demand.count * 8),
-          pointFeatureIds: view(demandInside, 'uint32', demand.count),
-          overflow: view(joinOverflow, 'uint32', 1)
+          output: {
+            pointFeatureIds: view(demandInside, 'uint32', demand.count),
+            status: {overflow: view(joinOverflow, 'uint32', 1)}
+          }
         })
       );
       // Display adapter: the facility (not the snapped seed row) that serves each node.
@@ -805,11 +848,13 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       const view = importer(straightGraph);
       addStraightLineCatchmentsRecipe(straightGraph, {
         id: 'straight',
-        width: STRAIGHT_LINE_WIDTH,
-        height: straightHeight,
-        settings: distanceSettings.importToGraph(straightGraph),
-        seedPositions: view(facilityPositionsBuffer, 'float32x2', facilityCount),
-        seedCount: seedCount.importToGraph(straightGraph),
+        grid: straightGrid,
+        parameters: distanceSettings.importToGraph(straightGraph),
+        facilities: {
+          kind: 'points',
+          positions: view(nextFacilityPositionsBuffer, 'float32x2', facilityCount)
+        },
+        facilityCount: seedCount.importToGraph(straightGraph),
         values: view(populationRasterBuffer, 'float32', straightCellCount),
         mode: options.distanceMode,
         sumOrder: options.sumOrder,
@@ -828,19 +873,48 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
       });
     }
 
-    built = {
-      catchment: resources.track(catchmentGraph.compile()),
-      straight: resources.track(straightGraph.compile()),
-      facilityCount
+    const catchment = resources.track(await catchmentGraph.compileAsync());
+    let straight: CompiledGPUCommandGraph<void>;
+    try {
+      straight = resources.track(await straightGraph.compileAsync());
+    } catch (error) {
+      resources.release(catchment);
+      for (const resource of nextPerBuild) resources.release(resource);
+      throw error;
+    }
+    return {
+      catchment,
+      straight,
+      facilityCount,
+      facilityRows: nextFacilityRows,
+      facilityPositions: nextFacilityPositions,
+      facilityPositionsBuffer: nextFacilityPositionsBuffer,
+      seedCount,
+      statistics,
+      perBuild: nextPerBuild
     };
-    builtOptions = {
-      facilityType: options.facilityType,
-      comparisonMode: options.comparisonMode,
-      cellChoice: options.cellChoice,
-      rasterMode: options.rasterMode,
-      distanceMode: options.distanceMode,
-      sumOrder: options.sumOrder
-    };
+  }
+
+  /** Releases the graphs and buffers of one build. */
+  function releaseBuild(target: BuiltGraphs): void {
+    resources.release(target.catchment);
+    resources.release(target.straight);
+    for (const resource of target.perBuild) resources.release(resource);
+  }
+
+  /** Swaps a build in, then releases the build it replaces. */
+  function commitGraphs(next: BuiltGraphs): void {
+    const previous = built;
+    statisticsReader?.stop();
+    built = next;
+    facilityRows = next.facilityRows;
+    facilityPositions = next.facilityPositions;
+    movedFacilities = new Set();
+    facilityPositionsBuffer = next.facilityPositionsBuffer;
+    seedCountParameter = next.seedCount as never;
+    statisticsBuffers = next.statistics;
+    const {statistics, facilityCount} = next;
+
     statisticsReader = new SummaryReader(
       resources,
       `isochrones-straight-${facilityCount}`,
@@ -880,6 +954,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
     ctx.setReadout('moved', 'none');
     catchmentDirty = 2;
     straightDirty = 2;
+    if (previous) releaseBuild(previous);
   }
 
   ctx.setReadout('nodes', `${formatInteger(nodeCount)} / ${formatInteger(edgeCount)}`);
@@ -890,7 +965,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
   writeCosts();
   writeBudget();
   writeStraightSettings();
-  buildGraphs();
+  commitGraphs(await buildGraphs());
   writeFacilities();
 
   const getBandPalette = (): [number, number, number, number][] =>
@@ -915,9 +990,24 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
             builtOptions.distanceMode !== state.distanceMode ||
             builtOptions.sumOrder !== state.sumOrder
           ) {
-            buildGraphs();
-            writeFacilities();
-            ctx.requestLayers();
+            // Records the requested values, so changing back while a build runs requests again.
+            builtOptions = {
+              facilityType: state.facilityType,
+              comparisonMode: state.comparisonMode,
+              cellChoice: state.cellChoice,
+              rasterMode: state.rasterMode,
+              distanceMode: state.distanceMode,
+              sumOrder: state.sumOrder
+            };
+            void graphSwap.request({
+              build: buildGraphs,
+              commit: next => {
+                commitGraphs(next);
+                writeFacilities();
+                ctx.requestLayers();
+              },
+              discard: releaseBuild
+            });
           }
           break;
         case 'trafficSlowdown':
@@ -1040,7 +1130,7 @@ boundary[boundaryOffset + index] = select(0u, 1u, sourceFinite && targetFinite &
         if (extentDue) extentChanged = false;
         const effectiveBuffer = Math.min(options.walkBuffer, MAXIMUM_BUFFER_PIXELS * pixelSize);
         isochroneParameters.write(
-          getGPUNetworkIsochroneParameterValues({
+          getGPUNetworkIsochronesParameterValues({
             breakCount: FIXED_BAND_COUNT,
             extent,
             bufferRadius: effectiveBuffer,

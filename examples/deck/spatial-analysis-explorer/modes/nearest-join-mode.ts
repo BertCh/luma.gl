@@ -27,6 +27,7 @@
  * drawn from that CSR; the readout shows rows and nonzeros.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
@@ -39,6 +40,7 @@ import {
   GPUSpatialJoinPrepared,
   type GPUNearestFeatureGeometry
 } from '@luma.gl/experimental/gpu-spatial-analysis';
+import {GraphSwap} from '../graph-swap';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -147,7 +149,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
   description:
     'Each point of interest snaps to its nearest road segment within a radius, computed on the GPU. ' +
     'Drag the radius slider: the join re-runs every frame without recompiling. Switch the join to "k nearest" for ' +
-    'foot-point links to the k closest roads, polylines or polygons, with ties and a per-frame maxDistance; weighted links show the GPUNearestFeatureWeights CSR.',
+    'foot-point links to the k closest roads, polylines or polygons, with ties and a per-frame radius; weighted links show the GPUNearestFeatureWeights CSR.',
   initialViewState: {longitude: -73.985, latitude: 40.755, zoom: 15},
 
   async create(context) {
@@ -187,14 +189,17 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
     const matchCount = resources.createBuffer('match-count', 4);
     const matchOverflow = resources.createBuffer('match-overflow', 4);
 
-    const buildGraph = (spatialSort: boolean): CompiledGPUCommandGraph<void> => {
+    const buildGraph = async (spatialSort: boolean): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `nearest-join-${spatialSort ? 'sorted' : 'unsorted'}`
       });
       graph.add(
         new GPUNearestFeatureJoin({
           id: 'nearest-join',
-          points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
+          queries: {
+            kind: 'points',
+            positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+          },
           features: {
             kind: 'segments',
             starts: importGraphBuffer(graph, 'starts', startsBuffer, 'float32x2', segmentCount),
@@ -204,40 +209,53 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
           // Sized for the maximum radius; the candidate readout shows the real demand.
           candidateCapacity: Math.min(pointCount * CANDIDATES_PER_POINT, MAXIMUM_CANDIDATES),
           spatialSort,
-          nearestFeatureIds: importGraphBuffer(
-            graph,
-            'nearest-feature-ids',
-            nearestFeatureIds,
-            'uint32',
-            pointCount
-          ),
-          nearestDistances: importGraphBuffer(
-            graph,
-            'nearest-distances',
-            nearestDistances,
-            'float32',
-            pointCount
-          ),
-          featureCounts: importGraphBuffer(
-            graph,
-            'feature-counts',
-            featureCounts,
-            'uint32',
-            segmentCount
-          ),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1),
-          matches: {
-            ids: importGraphBuffer(graph, 'match-ids', matchIds, 'uint32', pointCount),
-            count: importGraphBuffer(graph, 'match-count', matchCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'match-overflow', matchOverflow, 'uint32', 1)
+          output: {
+            nearestFeatureIds: importGraphBuffer(
+              graph,
+              'nearest-feature-ids',
+              nearestFeatureIds,
+              'uint32',
+              pointCount
+            ),
+            nearestDistances: importGraphBuffer(
+              graph,
+              'nearest-distances',
+              nearestDistances,
+              'float32',
+              pointCount
+            ),
+            featureCounts: importGraphBuffer(
+              graph,
+              'feature-counts',
+              featureCounts,
+              'uint32',
+              segmentCount
+            ),
+            matches: {
+              ids: importGraphBuffer(graph, 'match-ids', matchIds, 'uint32', pointCount),
+              status: {
+                count: importGraphBuffer(graph, 'match-count', matchCount, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'match-overflow', matchOverflow, 'uint32', 1)
+              }
+            },
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+              candidateCount: importGraphBuffer(
+                graph,
+                'candidate-count',
+                candidateCount,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
-      return graph.compile();
+      return await graph.compileAsync();
     };
     let spatialSort = false;
-    let compiled = resources.track(buildGraph(spatialSort));
+    let compiled = resources.track(await buildGraph(spatialSort));
+    const sortSwap = resources.track(new GraphSwap());
 
     const readbackRing = new GPUReadbackRing(device, {id: 'nearest-join-readback', byteLength: 16});
     resources.track({destroy: () => readbackRing.destroy()});
@@ -371,7 +389,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       if (build.prepared) build.prepared.destroy();
     };
 
-    const buildNeighborGraph = (): NonNullable<typeof neighborBuild> => {
+    const buildNeighborGraph = async (): Promise<NonNullable<typeof neighborBuild>> => {
       const stride = neighborTies === 'all' ? NEIGHBOR_TIE_CAPACITY : NEIGHBOR_K;
       const graph = new GPUCommandGraph<void>(device, {
         id: `nearest-neighbors-${neighborFeatureKind}-${neighborTies}`
@@ -450,24 +468,36 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUNearestFeatureJoin({
           id: 'neighbors',
-          points: view('queries', queryBuffer, 'float32x2', queryCount),
+          queries: {
+            kind: 'points',
+            positions: view('queries', queryBuffer, 'float32x2', queryCount)
+          },
           features,
           k: NEIGHBOR_K,
           neighborCapacity: stride,
           ties: neighborTies,
-          maxDistance: neighborMaxDistance.importToGraph(graph),
+          radius: neighborMaxDistance.importToGraph(graph),
           ...(prepared ? {prepared} : {}),
-          neighborIds: joinNeighborIds,
-          neighborCounts: joinNeighborCounts,
-          neighborDistances: joinNeighborDistances,
-          neighborFootPoints: view('neighbor-feet', neighborFeet, 'float32x2', queryCount * stride),
-          neighborSegmentIndices: view(
-            'neighbor-segments',
-            neighborSegments,
-            'uint32',
-            queryCount * stride
-          ),
-          overflow: view('neighbor-overflow', neighborOverflow, 'uint32', 1)
+          output: {
+            neighborIds: joinNeighborIds,
+            neighborCounts: joinNeighborCounts,
+            neighborDistances: joinNeighborDistances,
+            neighborFootPoints: view(
+              'neighbor-feet',
+              neighborFeet,
+              'float32x2',
+              queryCount * stride
+            ),
+            neighborSegmentIndices: view(
+              'neighbor-segments',
+              neighborSegments,
+              'uint32',
+              queryCount * stride
+            ),
+            status: {
+              overflow: view('neighbor-overflow', neighborOverflow, 'uint32', 1)
+            }
+          }
         })
       );
       // Cross weights from every query to its `weightK` nearest features. `k` and the rule are
@@ -481,16 +511,23 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
           slotCapacity: stride,
           k: weightK,
           weightType: weightRule,
-          weights: {
+          output: {
             offsets: view('weight-offsets', weightOffsets, 'uint32', queryCount + 1),
             neighbors: view('weight-neighbors', weightNeighbors, 'uint32', queryCount * NEIGHBOR_K),
             weights: view('weight-values', weightValues, 'float32', queryCount * NEIGHBOR_K),
-            distances: view('weight-distances', weightDistances, 'float32', queryCount * NEIGHBOR_K)
-          },
-          overflow: view('weight-overflow', weightOverflow, 'uint32', 1)
+            distances: view(
+              'weight-distances',
+              weightDistances,
+              'float32',
+              queryCount * NEIGHBOR_K
+            ),
+            status: {
+              overflow: view('weight-overflow', weightOverflow, 'uint32', 1)
+            }
+          }
         })
       );
-      const compiled = resources.track(graph.compile());
+      const compiled = resources.track(await graph.compileAsync());
       const build: NonNullable<typeof neighborBuild> = {
         compiled,
         prepared,
@@ -558,18 +595,30 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       return build;
     };
 
-    const rebuildNeighbors = () => {
-      const previous = neighborBuild;
-      neighborBuild = buildNeighborGraph();
-      if (previous) {
-        // The old graph is freed once no frame can encode it any more.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) releaseNeighborBuild(previous);
-          })
-        );
-      }
-      context.updateLayers();
+    const neighborSwap = resources.track(new GraphSwap());
+    /** Builds (or, with `enabled` false, drops) the k nearest graph for the current options. */
+    const requestNeighborBuild = (enabled: boolean) => {
+      void neighborSwap
+        .request<NonNullable<typeof neighborBuild> | null>({
+          build: async () => (enabled ? await buildNeighborGraph() : null),
+          commit: next => {
+            const previous = neighborBuild;
+            neighborBuild = next;
+            if (previous) {
+              // The old graph is freed once no frame can encode it any more.
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  if (!destroyed) releaseNeighborBuild(previous);
+                })
+              );
+            }
+            context.updateLayers();
+          },
+          discard: next => {
+            if (next) releaseNeighborBuild(next);
+          }
+        })
+        .catch(error => context.setStatus(`Error: ${(error as Error).message}`));
     };
 
     context.controls.addSelect<JoinKind>({
@@ -581,7 +630,9 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       value: join,
       onChange: value => {
         join = value;
-        if (join === 'neighbors' && !neighborBuild) neighborBuild = buildNeighborGraph();
+        if (join === 'neighbors' && (!neighborBuild || neighborSwap.pending)) {
+          requestNeighborBuild(true);
+        }
         context.updateLayers();
       }
     });
@@ -595,11 +646,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       value: neighborFeatureKind,
       onChange: value => {
         neighborFeatureKind = value;
-        if (join === 'neighbors') rebuildNeighbors();
-        else if (neighborBuild) {
-          releaseNeighborBuild(neighborBuild);
-          neighborBuild = null;
-        }
+        requestNeighborBuild(join === 'neighbors');
       }
     });
     context.controls.addSelect<NeighborTies>({
@@ -611,11 +658,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       value: neighborTies,
       onChange: value => {
         neighborTies = value;
-        if (join === 'neighbors') rebuildNeighbors();
-        else if (neighborBuild) {
-          releaseNeighborBuild(neighborBuild);
-          neighborBuild = null;
-        }
+        requestNeighborBuild(join === 'neighbors');
       }
     });
     context.controls.addSelect<string>({
@@ -624,7 +667,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       value: String(weightK),
       onChange: value => {
         weightK = Number(value);
-        if (join === 'neighbors') rebuildNeighbors();
+        requestNeighborBuild(join === 'neighbors');
       }
     });
     context.controls.addSelect<WeightRule>({
@@ -636,7 +679,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       value: weightRule,
       onChange: value => {
         weightRule = value;
-        if (join === 'neighbors') rebuildNeighbors();
+        requestNeighborBuild(join === 'neighbors');
       }
     });
     context.controls.addToggle({
@@ -660,7 +703,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSlider({
-      label: 'k nearest: maxDistance (per-frame parameter)',
+      label: 'k nearest: radius (per-frame parameter)',
       min: 20,
       max: 1500,
       step: 10,
@@ -704,16 +747,25 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       label: 'spatialSort (compile-time: rebuilds graph)',
       value: spatialSort,
       onChange: value => {
-        spatialSort = value;
-        const previous = compiled;
-        compiled = resources.track(buildGraph(spatialSort));
-        // The old graph is freed once no frame can encode it any more.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) resources.release(previous);
+        void sortSwap
+          .request({
+            build: async () => resources.track(await buildGraph(value)),
+            commit: next => {
+              const previous = compiled;
+              compiled = next;
+              spatialSort = value;
+              // The old graph is freed once no frame can encode it any more.
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  if (!destroyed) resources.release(previous);
+                })
+              );
+              if (measuring) measureAgain = true;
+              context.updateLayers();
+            },
+            discard: next => resources.release(next)
           })
-        );
-        if (measuring) measureAgain = true;
+          .catch(error => context.setStatus(`Error: ${(error as Error).message}`));
       }
     });
     context.controls.addToggle({
@@ -799,7 +851,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteLength: 12});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 3);
         matchedReadout.setValue(`${formatCount(words[0])} of ${formatCount(pointCount)}`);
@@ -824,7 +876,7 @@ export const nearestJoinMode: SpatialAnalysisModeDefinition = {
       try {
         const activeSort = spatialSort;
         const active = compiled;
-        temporary = buildGraph(!activeSort);
+        temporary = await buildGraph(!activeSort);
         const options = {parameters: undefined, completionBuffer: overflow, signal: context.signal};
         const activeTiming = await measureCompiledGraph(device, active, options);
         const otherTiming = await measureCompiledGraph(device, temporary, options);

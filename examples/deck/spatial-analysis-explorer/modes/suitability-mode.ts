@@ -21,6 +21,7 @@
  * toggle is a buffer write; the graphs are compiled once and encoded only when an input changed.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -38,6 +39,7 @@ import {
   getGPURasterSamplingParameterValues,
   getGPUWeightedOverlayParameterLength,
   getGPUWeightedOverlayParameterValues,
+  makeGPURasterMetadata,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   GPU_RASTER_ARITHMETIC_PARAMETER_LENGTH,
   GPU_RASTER_CELL_STATISTICS_PARAMETER_LENGTH,
@@ -196,6 +198,17 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       bounds[2],
       -bounds[1]
     ];
+    // Terrain grid: row 0 at the north edge, rows stepping south.
+    const grid = makeGPURasterMetadata({width, height, cellSize});
+    // The distance field, sampling and profiles work in y-flipped coordinates (see `flippedExtent`),
+    // where row 0 is at the minimum y and rows step toward +y.
+    const flippedGrid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [flippedExtent[0], flippedExtent[1]],
+      rowDirection: 'north'
+    });
 
     // --- Data buffers --------------------------------------------------------------------------
     const validityValues = new Uint32Array(cellCount);
@@ -347,8 +360,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
     prepareGraph.add(
       new GPUTerrainDerivatives({
         id: 'slope',
-        width,
-        height,
+        grid,
         elevation: {
           id: 'elevation',
           format: 'float32',
@@ -364,8 +376,10 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
           },
           validity: importGraphBuffer(prepareGraph, 'validity', validityBuffer, 'uint32', cellCount)
         },
-        settings: derivativesSettings.importToGraph(prepareGraph),
-        slope: importGraphBuffer(prepareGraph, 'slope', slopeBuffer, 'float32', cellCount),
+        parameters: derivativesSettings.importToGraph(prepareGraph),
+        output: {
+          slope: importGraphBuffer(prepareGraph, 'slope', slopeBuffer, 'float32', cellCount)
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -373,10 +387,9 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
     prepareGraph.add(
       new GPUDistanceField({
         id: 'distance',
-        width,
-        height,
+        grid: flippedGrid,
         mode: 'exact',
-        settings: distanceSettings.importToGraph(prepareGraph),
+        parameters: distanceSettings.importToGraph(prepareGraph),
         seedPositions: importGraphBuffer(
           prepareGraph,
           'parking',
@@ -403,7 +416,9 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const prepared: CompiledGPUCommandGraph<void> = resources.track(prepareGraph.compile());
+    const prepared: CompiledGPUCommandGraph<void> = resources.track(
+      await prepareGraph.compileAsync()
+    );
 
     const suitabilityGraph = new GPUCommandGraph<void>(device, {id: 'suitability'});
     {
@@ -551,7 +566,9 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
         })
       );
     }
-    const suitability: CompiledGPUCommandGraph<void> = resources.track(suitabilityGraph.compile());
+    const suitability: CompiledGPUCommandGraph<void> = resources.track(
+      await suitabilityGraph.compileAsync()
+    );
 
     const pathGraph = new GPUCommandGraph<void>(device, {id: 'suitability-path'});
     {
@@ -578,22 +595,23 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPURasterProfile({
           id: 'elevation-profile',
-          width,
-          height,
+          grid: flippedGrid,
           values: elevation,
           validity,
-          pathPositions,
-          pathOffsets,
+          positions: pathPositions,
+          lineOffsets: pathOffsets,
           parameters: profileView,
           output: {
-            count: importGraphBuffer(graph, 'profile-count', elevationProfile.count, 'uint32', 1),
-            overflow: importGraphBuffer(
-              graph,
-              'profile-overflow',
-              elevationProfile.overflow,
-              'uint32',
-              1
-            ),
+            status: {
+              count: importGraphBuffer(graph, 'profile-count', elevationProfile.count, 'uint32', 1),
+              overflow: importGraphBuffer(
+                graph,
+                'profile-overflow',
+                elevationProfile.overflow,
+                'uint32',
+                1
+              )
+            },
             sampleDistances: importGraphBuffer(
               graph,
               'profile-distances',
@@ -608,23 +626,35 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
               'float32',
               PROFILE_CAPACITY
             ),
-            pathLength: importGraphBuffer(
+            lineLengths: importGraphBuffer(
               graph,
               'profile-length',
               elevationProfile.length,
               'float32',
               1
             ),
-            pathGain: importGraphBuffer(graph, 'profile-gain', elevationProfile.gain, 'float32', 1),
-            pathLoss: importGraphBuffer(graph, 'profile-loss', elevationProfile.loss, 'float32', 1),
-            pathMinimum: importGraphBuffer(
+            lineGains: importGraphBuffer(
+              graph,
+              'profile-gain',
+              elevationProfile.gain,
+              'float32',
+              1
+            ),
+            lineLosses: importGraphBuffer(
+              graph,
+              'profile-loss',
+              elevationProfile.loss,
+              'float32',
+              1
+            ),
+            lineMinimums: importGraphBuffer(
               graph,
               'profile-minimum',
               elevationProfile.minimum,
               'float32',
               1
             ),
-            pathMaximum: importGraphBuffer(
+            lineMaximums: importGraphBuffer(
               graph,
               'profile-maximum',
               elevationProfile.maximum,
@@ -637,22 +667,29 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPURasterProfile({
           id: 'score-profile',
-          width,
-          height,
+          grid: flippedGrid,
           values: score,
-          pathPositions,
-          pathOffsets,
+          positions: pathPositions,
+          lineOffsets: pathOffsets,
           parameters: profileView,
           sampleCapacity: PROFILE_CAPACITY,
           output: {
-            count: importGraphBuffer(graph, 'score-profile-count', scoreProfile.count, 'uint32', 1),
-            overflow: importGraphBuffer(
-              graph,
-              'score-profile-overflow',
-              scoreProfile.overflow,
-              'uint32',
-              1
-            ),
+            status: {
+              count: importGraphBuffer(
+                graph,
+                'score-profile-count',
+                scoreProfile.count,
+                'uint32',
+                1
+              ),
+              overflow: importGraphBuffer(
+                graph,
+                'score-profile-overflow',
+                scoreProfile.overflow,
+                'uint32',
+                1
+              )
+            },
             sampleValues: importGraphBuffer(
               graph,
               'profile-scores',
@@ -660,14 +697,14 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
               'float32',
               PROFILE_CAPACITY
             ),
-            pathMinimum: importGraphBuffer(
+            lineMinimums: importGraphBuffer(
               graph,
               'score-profile-minimum',
               scoreProfile.minimum,
               'float32',
               1
             ),
-            pathMaximum: importGraphBuffer(
+            lineMaximums: importGraphBuffer(
               graph,
               'score-profile-maximum',
               scoreProfile.maximum,
@@ -687,8 +724,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
         graph.add(
           new GPURasterSampling({
             id: `probe-${name}`,
-            width,
-            height,
+            grid: flippedGrid,
             values,
             positions: probePosition,
             parameters: samplingView,
@@ -699,8 +735,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPURasterSampling({
           id: 'parking-slope',
-          width,
-          height,
+          grid: flippedGrid,
           values: slope,
           positions: importGraphBuffer(graph, 'parking', parkingBuffer, 'float32x2', parkingCount),
           parameters: samplingView,
@@ -716,7 +751,9 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
         })
       );
     }
-    const pathCompiled: CompiledGPUCommandGraph<void> = resources.track(pathGraph.compile());
+    const pathCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await pathGraph.compileAsync()
+    );
 
     // --- State ---------------------------------------------------------------------------------
     const good: Record<Criterion, number> = {
@@ -948,10 +985,8 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
     }
 
     function writeStaticSettings(): void {
-      derivativesSettings.write(getGPUTerrainDerivativesParameterValues({cellSize}));
-      distanceSettings.write(
-        getGPUDistanceFieldParameterValues({bounds: flippedExtent, gridSize: [width, height]})
-      );
+      derivativesSettings.write(getGPUTerrainDerivativesParameterValues({}, grid));
+      distanceSettings.write(getGPUDistanceFieldParameterValues({}, flippedGrid));
       equalOverlayParameters.write(
         getGPUWeightedOverlayParameterValues({
           layers: CRITERIA.map(() => ({weight: 1, inputMin: 1, inputMax: RATINGS[0]})),
@@ -965,9 +1000,11 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
     }
 
     function writeSampling(): void {
-      const settings = {width, height, extent: flippedExtent, method: samplingMethod} as const;
-      samplingParameters.write(getGPURasterSamplingParameterValues(settings));
-      profileParameters.write(getGPURasterProfileParameterValues({...settings, spacing}));
+      const settings = {method: samplingMethod} as const;
+      samplingParameters.write(getGPURasterSamplingParameterValues(settings, flippedGrid));
+      profileParameters.write(
+        getGPURasterProfileParameterValues({...settings, spacing}, flippedGrid)
+      );
       pathDirty = true;
     }
 
@@ -1195,7 +1232,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_BYTE_LENGTH});
       summaryPending = true;
       try {
-        const bytes = (await ticket.read()).slice(0, SUMMARY_BYTE_LENGTH);
+        const bytes = (await scheduleReadback(() => ticket.read())).slice(0, SUMMARY_BYTE_LENGTH);
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, 0, SUMMARY_BYTE_LENGTH / 4);
         const floats = new Float32Array(bytes.buffer, 0, SUMMARY_BYTE_LENGTH / 4);
@@ -1261,7 +1298,7 @@ export const suitabilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: PATH_BYTE_LENGTH});
       pathPending = true;
       try {
-        const bytes = (await ticket.read()).slice(0, PATH_BYTE_LENGTH);
+        const bytes = (await scheduleReadback(() => ticket.read())).slice(0, PATH_BYTE_LENGTH);
         if (destroyed) return;
         pathData = {
           scalars: new Float32Array(bytes.buffer, PATH_SCALARS_OFFSET, PATH_SCALAR_COUNT),

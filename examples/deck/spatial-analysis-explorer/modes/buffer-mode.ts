@@ -13,6 +13,7 @@
  * timed on vs off outside the frame.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -22,6 +23,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUBufferSelection} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
@@ -119,14 +121,17 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
     );
 
     /** Compiles a graph for one `spatialSort` value over the shared caller-owned buffers. */
-    const buildGraph = (spatialSort: boolean): CompiledGPUCommandGraph<void> => {
+    const buildGraph = async (spatialSort: boolean): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `buffer-${spatialSort ? 'sorted' : 'plain'}`
       });
       graph.add(
         new GPUBufferSelection({
           id: 'buffer',
-          points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
+          points: {
+            kind: 'points',
+            positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+          },
           features: {
             kind: 'segments',
             starts: importGraphBuffer(graph, 'starts', startsBuffer, 'float32x2', segmentCount),
@@ -135,27 +140,35 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
           distance: distance.importToGraph(graph),
           candidateCapacity: Math.min(pointCount * CANDIDATES_PER_POINT, MAXIMUM_CANDIDATES),
           spatialSort,
-          outputMask: importGraphBuffer(graph, 'output-mask', outputMask, 'uint32', pointCount),
           output: {
-            ids: importGraphBuffer(graph, 'output-ids', outputIds, 'uint32', pointCount),
-            count: importGraphBuffer(graph, 'output-count', outputCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'output-overflow', outputOverflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'output-total', outputTotal, 'uint32', 1)
-          },
-          // The clamped selected count lands directly in the indirect draw record.
-          drawInstanceCount: graph.importGPUData(
-            'draw-instance-count',
-            drawCommands.getInstanceCountData(0)
-          ),
-          distances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
-          overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
+            outputMask: importGraphBuffer(graph, 'output-mask', outputMask, 'uint32', pointCount),
+            matches: {
+              ids: importGraphBuffer(graph, 'output-ids', outputIds, 'uint32', pointCount),
+              status: {
+                count: importGraphBuffer(graph, 'output-count', outputCount, 'uint32', 1),
+                overflow: importGraphBuffer(graph, 'output-overflow', outputOverflow, 'uint32', 1),
+                requiredCount: importGraphBuffer(graph, 'output-total', outputTotal, 'uint32', 1)
+              }
+            },
+            // The clamped selected count lands directly in the indirect draw record.
+            drawInstanceCount: graph.importGPUData(
+              'draw-instance-count',
+              drawCommands.getInstanceCountData(0)
+            ),
+            distances: importGraphBuffer(graph, 'distances', distances, 'float32', pointCount),
+            status: {
+              overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
+            }
+          }
         })
       );
-      return graph.compile();
+      return await graph.compileAsync();
     };
 
     let spatialSort = false;
-    let compiled = resources.track(buildGraph(spatialSort));
+    let requestedSort = spatialSort;
+    const graphSwap = resources.track(new GraphSwap());
+    let compiled = resources.track(await buildGraph(spatialSort));
 
     const readbackRing = new GPUReadbackRing(device, {id: 'buffer-readback', byteLength: 16});
     resources.track({destroy: () => readbackRing.destroy()});
@@ -275,17 +288,25 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
       label: 'spatialSort (compile-time: rebuilds graph)',
       value: spatialSort,
       onChange: value => {
-        if (value === spatialSort) return;
-        spatialSort = value;
-        const previous = compiled;
-        compiled = resources.track(buildGraph(spatialSort));
-        // Deck may still encode the previous graph this frame; destroy it two frames later.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) resources.release(previous);
-          })
-        );
-        context.updateLayers();
+        if (value === requestedSort) return;
+        requestedSort = value;
+        // The current graph keeps encoding until the replacement has compiled.
+        void graphSwap.request({
+          build: () => buildGraph(value),
+          commit: next => {
+            spatialSort = value;
+            const previous = compiled;
+            compiled = resources.track(next);
+            // Deck may still encode the previous graph this frame; destroy it two frames later.
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                if (!destroyed) resources.release(previous);
+              })
+            );
+            context.updateLayers();
+          },
+          discard: next => next.destroy()
+        });
       }
     });
     const measureButton = context.controls.addButton({
@@ -329,8 +350,9 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
       if (measuring || destroyed) return;
       measuring = true;
       measureButton.setDisabled(true);
-      const other = buildGraph(!spatialSort);
+      let other: CompiledGPUCommandGraph<void> | null = null;
       try {
+        other = await buildGraph(!spatialSort);
         const current = spatialSort;
         const optionsFor = {parameters: undefined, completionBuffer: outputCount};
         const currentTiming = await measureCompiledGraph(device, compiled, optionsFor);
@@ -345,7 +367,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
       } catch {
         // Device destroyed or measurement aborted.
       } finally {
-        other.destroy();
+        other?.destroy();
         measuring = false;
         if (!destroyed) measureButton.setDisabled(false);
       }
@@ -367,7 +389,7 @@ export const bufferMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteLength: 12});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, 3);
         const percent = pointCount ? (100 * words[0]) / pointCount : 0;

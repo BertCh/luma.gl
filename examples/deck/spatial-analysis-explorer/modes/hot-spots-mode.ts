@@ -21,6 +21,7 @@
  * `GPUGlobalPermutationTest` reports the pseudo p-value of the global Moran's I for the same tail.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
@@ -38,13 +39,13 @@ import {
   GPULocalMoran,
   GPULocalPermutationTest,
   GPUNeighborSearch,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_PERMUTATION_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   type GPULocalMoranQuadrantGating,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer, type SpatialAnalysisColor} from '../spatial-analysis-layers';
@@ -62,7 +63,7 @@ const MORAN_CLASS_COUNT = 5;
 const OVERFLOW_WORD = GI_BIN_COUNT + GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH;
 const PERMUTATION_OVERFLOW_WORD = OVERFLOW_WORD + 1;
 const PERMUTATION_RESULTS_WORD = PERMUTATION_OVERFLOW_WORD + 1;
-const PERMUTATION_COUNTS_WORD = PERMUTATION_RESULTS_WORD + GPU_GLOBAL_PERMUTATION_RESULT.length;
+const PERMUTATION_COUNTS_WORD = PERMUTATION_RESULTS_WORD + GPU_GLOBAL_PERMUTATION_SUMMARY.length;
 const SUMMARY_WORDS = PERMUTATION_COUNTS_WORD + 2;
 /** Largest per-frame permutation count (compile-time bound of the permutation tests). */
 const MAXIMUM_PERMUTATIONS = 499;
@@ -99,7 +100,7 @@ const MORAN_COLORS: Record<number, SpatialAnalysisColor> = {
 type Statistic = 'gi-star' | 'local-moran';
 /** `'permutation'` gates the ungated Moran quadrant by a conditional permutation test. */
 type Gating = GPULocalMoranQuadrantGating | 'permutation';
-type Alternative = Exclude<GPUPermutationAlternative, 'less'>;
+type Alternative = GPUInferenceAlternative;
 
 const ALTERNATIVES: readonly {value: Alternative; label: string}[] = [
   {value: 'directed', label: 'Directed (legacy esda default, tail on the observed side)'},
@@ -213,7 +214,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       significantCounts: resources.createBuffer('perm-significant-counts', 2 * 4),
       globalResults: resources.createBuffer(
         'perm-global-results',
-        GPU_GLOBAL_PERMUTATION_RESULT.length * 4
+        GPU_GLOBAL_PERMUTATION_SUMMARY.length * 4
       )
     };
     const permutationParameters = resources.createParameterBuffer(
@@ -247,20 +248,24 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           pointCount
         ),
         parameters: searchParameters.importToGraph(searchGraph),
-        weights: importWeights(searchGraph),
-        overflow: importGraphBuffer(searchGraph, 'overflow', overflowBuffer, 'uint32', 1)
+        output: {
+          ...importWeights(searchGraph),
+          status: {
+            overflow: importGraphBuffer(searchGraph, 'overflow', overflowBuffer, 'uint32', 1)
+          }
+        }
       })
     );
-    const searchCompiled = resources.track(searchGraph.compile());
+    const searchCompiled = resources.track(await searchGraph.compileAsync());
 
     // FDR is a compile-time option of both contributors, so both settings are compiled up front and the
     // toggle selects between graphs that share one set of output buffers.
-    function compileVariant(
+    async function compileVariant(
       kind: Statistic,
       fdr: boolean,
       variantGating: Gating = 'analytic',
       variantAlternative: Alternative = 'two-sided'
-    ): Variant {
+    ): Promise<Variant> {
       const graph = new GPUCommandGraph<void>(device, {
         id: `hot-spots-${kind}${fdr ? '-fdr' : ''}-${variantGating}-${variantAlternative}`
       });
@@ -284,9 +289,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
             weights,
             values,
             parameters: parameterView,
-            zScores,
-            bins,
-            globalStatistics: statistics,
+            output: {zScores, bins, globalStatistics: statistics},
             multipleTesting: fdr ? 'benjamini-hochberg' : 'none'
           })
         );
@@ -316,9 +319,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
             weights,
             values,
             parameters: parameterView,
-            zScores,
-            quadrants,
-            globalStatistics: statistics,
+            output: {zScores, quadrants, globalStatistics: statistics},
             quadrantGating: variantGating === 'analytic' ? 'analytic' : 'none',
             multipleTesting: fdr ? 'benjamini-hochberg' : 'none'
           })
@@ -342,22 +343,32 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
               parameters: permutationView,
               maximumPermutations: MAXIMUM_PERMUTATIONS,
               maximumNeighbors: PERMUTATION_MAXIMUM_NEIGHBORS,
-              exceedances: importGraphBuffer(
-                graph,
-                'perm-exceedances',
-                permutation.exceedances,
-                'uint32',
-                pointCount
-              ),
-              pseudoPValues: importGraphBuffer(
-                graph,
-                'perm-pseudo-p',
-                permutation.pseudoPValues,
-                'float32',
-                pointCount
-              ),
-              significant,
-              overflow: importGraphBuffer(graph, 'perm-overflow', permutation.overflow, 'uint32', 1)
+              output: {
+                exceedances: importGraphBuffer(
+                  graph,
+                  'perm-exceedances',
+                  permutation.exceedances,
+                  'uint32',
+                  pointCount
+                ),
+                pseudoPValues: importGraphBuffer(
+                  graph,
+                  'perm-pseudo-p',
+                  permutation.pseudoPValues,
+                  'float32',
+                  pointCount
+                ),
+                significant,
+                status: {
+                  overflow: importGraphBuffer(
+                    graph,
+                    'perm-overflow',
+                    permutation.overflow,
+                    'uint32',
+                    1
+                  )
+                }
+              }
             })
           );
           graph.add(
@@ -392,13 +403,15 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
               alternative: variantAlternative,
               parameters: permutationView,
               maximumPermutations: MAXIMUM_PERMUTATIONS,
-              results: importGraphBuffer(
-                graph,
-                'perm-global-results',
-                permutation.globalResults,
-                'float32',
-                GPU_GLOBAL_PERMUTATION_RESULT.length
-              )
+              output: {
+                summary: importGraphBuffer(
+                  graph,
+                  'perm-global-results',
+                  permutation.globalResults,
+                  'float32',
+                  GPU_GLOBAL_PERMUTATION_SUMMARY.length
+                )
+              }
             })
           );
         }
@@ -411,21 +424,23 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           })
         );
       }
-      return {compiled: resources.track(graph.compile())};
+      return {compiled: resources.track(await graph.compileAsync())};
     }
 
     const variants: Record<`${Statistic}:${'plain' | 'fdr'}` | 'local-moran:none', Variant> = {
-      'gi-star:plain': compileVariant('gi-star', false),
-      'gi-star:fdr': compileVariant('gi-star', true),
-      'local-moran:plain': compileVariant('local-moran', false),
-      'local-moran:fdr': compileVariant('local-moran', true),
-      'local-moran:none': compileVariant('local-moran', false, 'none')
+      'gi-star:plain': await compileVariant('gi-star', false),
+      'gi-star:fdr': await compileVariant('gi-star', true),
+      'local-moran:plain': await compileVariant('local-moran', false),
+      'local-moran:fdr': await compileVariant('local-moran', true),
+      'local-moran:none': await compileVariant('local-moran', false, 'none')
     };
     const permutationVariants = Object.fromEntries(
-      ALTERNATIVES.map(({value}) => [
-        value,
-        compileVariant('local-moran', false, 'permutation', value)
-      ])
+      await Promise.all(
+        ALTERNATIVES.map(
+          async ({value}) =>
+            [value, await compileVariant('local-moran', false, 'permutation', value)] as const
+        )
+      )
     ) as Record<Alternative, Variant>;
     const getActiveVariant = () => {
       if (statistic === 'local-moran' && gating === 'none') return variants['local-moran:none'];
@@ -440,7 +455,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       );
       parameters.write(getGPUSpatialAutocorrelationParameterValues({significanceLevel}));
       permutationParameters.write(
-        getGPUPermutationParameterValues({seed, permutations, significanceLevel})
+        getGPUPermutationParameterValues({seed, permutationCount: permutations, significanceLevel})
       );
       weightsDirty = true;
       dirty = true;
@@ -664,7 +679,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           sourceBuffer: permutation.globalResults,
           destinationBuffer: ticket.buffer,
           destinationOffset: PERMUTATION_RESULTS_WORD * 4,
-          size: GPU_GLOBAL_PERMUTATION_RESULT.length * 4
+          size: GPU_GLOBAL_PERMUTATION_SUMMARY.length * 4
         });
       }
       if (reportedPermutation) {
@@ -679,7 +694,7 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       needsReadback = false;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
         const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
@@ -715,9 +730,9 @@ export const hotSpotsMode: SpatialAnalysisModeDefinition = {
           if (reportedPermutation) {
             const base = PERMUTATION_RESULTS_WORD;
             globalReadout.setValue(
-              `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.observed].toFixed(3)} / ` +
-                `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.pseudoPValue].toFixed(4)} / ` +
-                `${floats[base + GPU_GLOBAL_PERMUTATION_RESULT.zSimulated].toFixed(2)}`
+              `${floats[base + GPU_GLOBAL_PERMUTATION_SUMMARY.observed].toFixed(3)} / ` +
+                `${floats[base + GPU_GLOBAL_PERMUTATION_SUMMARY.pseudoPValue].toFixed(4)} / ` +
+                `${floats[base + GPU_GLOBAL_PERMUTATION_SUMMARY.zSimulated].toFixed(2)}`
             );
           } else {
             globalReadout.setValue('n/a (permutation gating only)');

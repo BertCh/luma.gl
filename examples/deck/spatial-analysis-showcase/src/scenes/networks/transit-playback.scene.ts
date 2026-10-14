@@ -273,31 +273,36 @@ export default defineScene<TransitPlaybackOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // positions: float32x2 planar meters, timestamps: float32 seconds since 07:00, trackOffsets: uint32 (trips + 1)
 const playGraph = new GPUCommandGraph(device, {id: 'timetable-playhead'});
 playGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playGraph),
-  currentPositions, headings, speeds, status,
-  activeTracks: {ids: activeIds, count: activeCount, overflow: activeOverflow},
-  drawInstanceCount                         // indirect draw record: no readback to draw
+  output: {
+    currentPositions, headings, speeds, trackStatus: status,
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow: activeOverflow}},
+    drawInstanceCount                       // indirect draw record: no readback to draw
+  }
 }));
-const play = playGraph.compile();           // once
+const play = await playGraph.compileAsync();  // once
 
 const trailGraph = new GPUCommandGraph(device, {id: 'timetable-trails'});
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStarts, endTimestamps: segmentEnds,   // interval mode: one row per segment
   window: windowParameters.importToGraph(trailGraph),
   additionalPredicates: [{kind: 'selection', mask: modeMask}],   // ${state.modeFilter === 'all' ? 'all modes' : `only ${state.modeFilter}`}
-  output: {ids: trailIds, count: trailCount, overflow: trailOverflow},
-  fadeWeights, clipFractions, trackIds: segmentTrips, trackVisibleCounts, drawInstanceCount
+  trackIds: segmentTrips,
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    fadeWeights, clipFractions, trackVisibleCounts, drawInstanceCount
+  }
 }));
 
 // every frame: parameters are plain buffer writes
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
-windowParameters.write(getGPUTimeWindowParameterValues({
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: 0}));
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: playhead - ${state.trailMinutes * 60}, end: playhead, startFadeDuration: ${Math.round(state.trailMinutes * 60 * state.tailFade)}
 }));
 play.encode(commandEncoder, {parameters: undefined});`,

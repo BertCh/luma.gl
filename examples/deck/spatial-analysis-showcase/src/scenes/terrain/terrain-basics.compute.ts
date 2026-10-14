@@ -17,6 +17,7 @@ import type {CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {ALPS} from '../../cartography/gazetteer';
 import type {MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {loadAlpsGrid} from './b14a-grid';
@@ -168,10 +169,9 @@ export async function createTerrainBasics(
   await ground.prepare();
   ctx.signal.throwIfAborted();
 
-  const pipeline: ElevationPipeline = createElevationPipeline(ctx, resources, session, grid);
+  const pipeline: ElevationPipeline = await createElevationPipeline(ctx, resources, session, grid);
   const cellMeters = grid.groundCellSize;
   const mercatorMeters = grid.mercatorCellSize;
-  const cellSettings = grid.cellSettings;
   const glacierAnnotations = glacierLabels(context, {
     window: grid.lngLatBounds,
     names: ['Gornergletscher'],
@@ -272,7 +272,7 @@ export async function createTerrainBasics(
     seenSummaryVersion: -1
   });
 
-  function buildDecoded(): Entry {
+  async function buildDecoded(): Promise<Entry> {
     const builder = session.builder('decoded');
     const settings = builder.settings(PAINT_PARAMETER_LENGTH);
     const paint = builder.words('paint');
@@ -289,24 +289,23 @@ export async function createTerrainBasics(
       settings: settings.view,
       output: paint
     });
-    const stage = builder.finishStage({
+    const stage = await builder.finishStage({
       write: () => settings.parameters.write(getPaintParameterValues(getPaintSettings('decoded')))
     });
     const build = session.createBuild('decoded', stage, session.elevationBuffer, 'float32');
     return makeEntry('decoded', '', build, builder.getBuffer('paint'), {});
   }
 
-  function buildSlope(state: BasicsOptions): Entry {
+  async function buildSlope(state: BasicsOptions): Promise<Entry> {
     const builder = session.builder('slope');
     const elevation = builder.elevation();
     const settings = builder.settings(GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH);
     const slopeOnGround = builder.floats('ground');
     const slopeOnMercator = builder.floats('mercator');
     const common = {
-      width,
-      height,
+      grid: grid.grid,
       elevation,
-      settings: settings.view,
+      parameters: settings.view,
       rowDirection: 'south' as const,
       borderMode: state.borderMode
     };
@@ -316,7 +315,7 @@ export async function createTerrainBasics(
       new GPUTerrainDerivatives({
         ...common,
         id: 'derivatives-ground',
-        slope: slopeOnGround,
+        output: {slope: slopeOnGround},
         cellSizeMode: 'web-mercator'
       })
     );
@@ -324,7 +323,7 @@ export async function createTerrainBasics(
       new GPUTerrainDerivatives({
         ...common,
         id: 'derivatives-mercator',
-        slope: slopeOnMercator,
+        output: {slope: slopeOnMercator},
         cellSizeMode: 'uniform'
       })
     );
@@ -338,12 +337,12 @@ export async function createTerrainBasics(
       settings: paintSettings.view,
       output: paint
     });
-    const build = builder.finish({
+    const build = await builder.finish({
       value: 'ground',
       format: 'float32',
       write: () => {
         settings.parameters.write(
-          getGPUTerrainDerivativesParameterValues({...cellSettings, zFactor: ctx.options.zFactor})
+          getGPUTerrainDerivativesParameterValues({zFactor: ctx.options.zFactor}, grid.grid)
         );
         paintSettings.parameters.write(getPaintParameterValues(getPaintSettings('slope')));
       }
@@ -364,7 +363,7 @@ export async function createTerrainBasics(
     );
   }
 
-  function buildAspect(state: BasicsOptions): Entry {
+  async function buildAspect(state: BasicsOptions): Promise<Entry> {
     const builder = session.builder('aspect');
     const elevation = builder.elevation();
     const settings = builder.settings(GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH);
@@ -373,15 +372,13 @@ export async function createTerrainBasics(
     builder.graph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid: grid.grid,
         elevation,
-        settings: settings.view,
-        slope,
-        aspect,
+        parameters: settings.view,
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
-        borderMode: state.borderMode
+        borderMode: state.borderMode,
+        output: {slope, aspect}
       })
     );
     const paintSettings = builder.settings(PAINT_PARAMETER_LENGTH);
@@ -394,12 +391,12 @@ export async function createTerrainBasics(
       settings: paintSettings.view,
       output: paint
     });
-    const build = builder.finish({
+    const build = await builder.finish({
       value: 'aspect',
       format: 'float32',
       write: () => {
         settings.parameters.write(
-          getGPUTerrainDerivativesParameterValues({...cellSettings, zFactor: ctx.options.zFactor})
+          getGPUTerrainDerivativesParameterValues({zFactor: ctx.options.zFactor}, grid.grid)
         );
         paintSettings.parameters.write(getPaintParameterValues(getPaintSettings('aspect')));
       }
@@ -410,19 +407,17 @@ export async function createTerrainBasics(
     });
   }
 
-  function buildRuggedness(state: BasicsOptions, product: 'tpi' | 'tri'): Entry {
+  async function buildRuggedness(state: BasicsOptions, product: 'tpi' | 'tri'): Promise<Entry> {
     const builder = session.builder(product);
     const elevation = builder.elevation();
     const output = builder.floats(product);
     builder.graph.add(
       new GPUTerrainRuggedness({
         id: 'ruggedness',
-        width,
-        height,
+        grid: grid.grid,
         elevation,
-        ...(product === 'tpi'
-          ? {topographicPositionIndex: output}
-          : {terrainRuggednessIndex: output}),
+        output:
+          product === 'tpi' ? {topographicPositionIndex: output} : {terrainRuggednessIndex: output},
         terrainRuggednessAlgorithm: state.triAlgorithm,
         edgeMode: state.edgeMode
       })
@@ -436,7 +431,7 @@ export async function createTerrainBasics(
       settings: paintSettings.view,
       output: paint
     });
-    const build = builder.finish({
+    const build = await builder.finish({
       value: product,
       format: 'float32',
       write: () =>
@@ -445,7 +440,7 @@ export async function createTerrainBasics(
     return makeEntry(product, getConfigKey(state, product), build, builder.getBuffer('paint'), {});
   }
 
-  function buildVectorRuggedness(state: BasicsOptions): Entry {
+  async function buildVectorRuggedness(state: BasicsOptions): Promise<Entry> {
     const builder = session.builder('vrm');
     const elevation = builder.elevation();
     const settings = builder.settings(GPU_TERRAIN_VECTOR_RUGGEDNESS_PARAMETER_LENGTH);
@@ -453,15 +448,14 @@ export async function createTerrainBasics(
     builder.graph.add(
       new GPUTerrainVectorRuggedness({
         id: 'vector-ruggedness',
-        width,
-        height,
+        grid: grid.grid,
         elevation,
-        settings: settings.view,
-        radius: state.vrmRadius,
-        vectorRuggedness: output,
+        parameters: settings.view,
+        maximumRadius: state.vrmRadius,
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
-        borderMode: state.borderMode
+        borderMode: state.borderMode,
+        output: {vectorRuggedness: output}
       })
     );
     const paintSettings = builder.settings(PAINT_PARAMETER_LENGTH);
@@ -473,16 +467,18 @@ export async function createTerrainBasics(
       settings: paintSettings.view,
       output: paint
     });
-    const build = builder.finish({
+    const build = await builder.finish({
       value: 'vrm',
       format: 'float32',
       minIntervalMs: 120,
       write: () => {
         settings.parameters.write(
-          getGPUTerrainVectorRuggednessParameterValues({
-            ...cellSettings,
-            zFactor: ctx.options.zFactor
-          })
+          getGPUTerrainVectorRuggednessParameterValues(
+            {
+              zFactor: ctx.options.zFactor
+            },
+            grid.grid
+          )
         );
         paintSettings.parameters.write(getPaintParameterValues(getPaintSettings('vrm')));
       }
@@ -490,38 +486,65 @@ export async function createTerrainBasics(
     return makeEntry('vrm', getConfigKey(state, 'vrm'), build, builder.getBuffer('paint'), {});
   }
 
-  const decodedEntry = buildDecoded();
+  const decodedEntry = await buildDecoded();
+  await session.prepareBuild(decodedEntry.build);
   session.addBuild(decodedEntry.build, '');
 
-  /** The entry of a product, built the first time and again when a compile option changed. */
-  function getEntry(state: BasicsOptions): Entry {
-    const {product} = state;
-    const key = getConfigKey(state, product);
-    const existing = entries.get(product);
-    if (existing && existing.configKey === key) return existing;
+  /** The cached entry of the selected product, if it matches the compile options. */
+  function findEntry(state: BasicsOptions): Entry | undefined {
+    const existing = entries.get(state.product);
+    return existing && existing.configKey === getConfigKey(state, state.product)
+      ? existing
+      : undefined;
+  }
+
+  /**
+   * Builds the entry of a product and compiles its paint passes. Nothing is registered, so the
+   * displayed product keeps running meanwhile.
+   */
+  async function buildEntry(state: BasicsOptions): Promise<Entry> {
     let entry: Entry;
-    switch (product) {
+    switch (state.product) {
       case 'slope':
-        entry = buildSlope(state);
+        entry = await buildSlope(state);
         break;
       case 'aspect':
-        entry = buildAspect(state);
+        entry = await buildAspect(state);
         break;
       case 'tpi':
       case 'tri':
-        entry = buildRuggedness(state, product);
+        entry = await buildRuggedness(state, state.product);
         break;
       case 'vrm':
-        entry = buildVectorRuggedness(state);
+        entry = await buildVectorRuggedness(state);
         break;
     }
-    session.addBuild(entry.build, key);
-    if (entry.mercatorBuild) session.addBuild(entry.mercatorBuild, key);
-    entries.set(product, entry);
-    compiledProducts++;
-    ctx.setReadout('rebuilds', `${compiledProducts} product graphs compiled`);
+    try {
+      await Promise.all(
+        [entry.build, entry.mercatorBuild].map(build => build && session.prepareBuild(build))
+      );
+    } catch (error) {
+      discardEntry(entry);
+      throw error;
+    }
     return entry;
   }
+
+  function discardEntry(entry: Entry): void {
+    session.discardBuild(entry.build);
+    if (entry.mercatorBuild) session.discardBuild(entry.mercatorBuild);
+  }
+
+  /** Registers a built entry, releasing the entry of the same product that it replaces. */
+  function registerEntry(entry: Entry): void {
+    session.addBuild(entry.build, entry.configKey);
+    if (entry.mercatorBuild) session.addBuild(entry.mercatorBuild, entry.configKey);
+    entries.set(entry.product, entry);
+    compiledProducts++;
+    ctx.setReadout('rebuilds', `${compiledProducts} product graphs compiled`);
+  }
+
+  const entrySwap = resources.track(new GraphSwap());
 
   // --- Summaries read back from the GPU rasters ---------------------------------------------------
   const slopeSummaries: Partial<Record<'ground' | 'mercator', SlopeSummary>> = {};
@@ -790,12 +813,27 @@ export async function createTerrainBasics(
   }
 
   // --- Showing a product ---------------------------------------------------------------------------
+  /**
+   * Shows the selected product. A product that is not built yet (or whose compile options
+   * changed) is built asynchronously; the displayed product keeps running until it is swapped in.
+   */
   function selectBuild(): void {
     const state = ctx.options;
-    let entry: Entry;
+    let entry: Entry | undefined;
     let build: ProductBuild;
     if (state.view === 'analysis') {
-      entry = getEntry(state);
+      entry = findEntry(state);
+      if (!entry) {
+        void entrySwap.request({
+          build: () => buildEntry(ctx.options),
+          commit: next => {
+            registerEntry(next);
+            selectBuild();
+          },
+          discard: discardEntry
+        });
+        return;
+      }
       build =
         state.product === 'slope' && state.cellModel === 'mercator' && entry.mercatorBuild
           ? entry.mercatorBuild
@@ -838,6 +876,9 @@ export async function createTerrainBasics(
   );
   ctx.setReadout('rebuilds', 'none yet');
 
+  if (ctx.options.view === 'analysis' && !findEntry(ctx.options)) {
+    registerEntry(await buildEntry(ctx.options));
+  }
   selectBuild();
   requestElevationCheck();
 

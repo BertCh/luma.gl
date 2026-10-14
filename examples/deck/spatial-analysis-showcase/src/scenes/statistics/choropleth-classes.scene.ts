@@ -209,7 +209,7 @@ import {GPUClassAssignment, GPUClassificationFit} from '@luma.gl/experimental/gp
 // One graph, compiled once: percentile filter -> breaks -> colours.
 graph.add(new GPUColumnQuantiles({
   values, parameters: quantileParameters, quantileCount: 3,
-  output: {quantiles, validCount, filterMask, filterBounds}
+  output: {quantiles, validCount, outputMask: filterMask, filterBounds}
 }));
 graph.add(new GPUClassBreaks({
   values, mask: filterMask, parameters: breaksParameters,

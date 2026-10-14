@@ -122,13 +122,13 @@ function getSnippet(state: SimilarPlacesOptions): string {
   GPUSimilarLocations, getGPUSimilarLocationsParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// attributes: 3,109 counties x 12 float32 (row-major); selection: uint32 per county (1 = reference)
+// values: 3,109 counties x 12 float32 (row-major); referenceMask: uint32 per county (1 = reference)
 graph.add(new GPUSimilarLocations({
-  attributes, attributeCount: 12, selection,
+  values, columnCount: 12, referenceMask,
   parameters: similarityParameters,
   standardization: '${state.standardization}',   // compile-time
-  maximumResultCount: 32,
-  output: {ranks, distances, topIds, count}      // rank 0 = most similar
+  resultCapacity: 32,
+  output: {ranks, distances, topIds, status: {count}}      // rank 0 = most similar
 }));
 
 // A small kernel turns ranks into rank classes (0..${state.resultCount - 1} | <50 | <200 | <600 | rest)
@@ -139,7 +139,7 @@ similarityParameters.write(getGPUSimilarLocationsParameterValues({
   resultCount: ${state.resultCount}, direction: '${state.direction}', excludeReference: ${state.excludeReference},
   weights: [${weights}]
 }, 12));
-selection.write(referenceMask);   // a click writes one 1 and re-encodes`;
+referenceMask.write(referenceFlags);   // a click writes one 1 and re-encodes`;
 }
 
 export default defineScene<SimilarPlacesOptions>({

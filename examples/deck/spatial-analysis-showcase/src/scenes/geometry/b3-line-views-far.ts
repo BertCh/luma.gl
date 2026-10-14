@@ -22,6 +22,7 @@ import {
   GPUCommandGraph,
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {
   geodesicCircle,
@@ -70,7 +71,7 @@ const SMOOTH_LEVEL_LIMIT = 5;
  * once per metric, then the per-frame tolerance only re-selects the kept vertices; Chaikin smoothing
  * is compiled per iteration count.
  */
-export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
+export async function createTracksView(env: TrackEnvironment): Promise<GeometryView<Options>> {
   const {ctx, vessels} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'tracks');
@@ -180,7 +181,7 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
   let currentTolerance = 0;
   const parameterValues = new Float32Array(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH);
 
-  const buildImportance = (options: Options): Importance => {
+  const buildImportance = async (options: Options): Promise<Importance> => {
     const key = `${options.simplifyMetric}|${options.simplifyRounds}`;
     const cached = importances.get(key);
     if (cached) return cached;
@@ -199,7 +200,7 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
         imp,
         base: {
           positions: imp('positions', positions, 'float32x2', vertexCount),
-          trackOffsets: imp('track-offsets', trackOffsets, 'uint32', trackCount + 1),
+          lineOffsets: imp('track-offsets', trackOffsets, 'uint32', trackCount + 1),
           timestamps: imp('timestamps', timeBuffer, 'float32', vertexCount),
           metric: options.simplifyMetric,
           importance: imp('importance', importance, 'float32', vertexCount)
@@ -213,10 +214,12 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
         new GPULineSimplification({
           id: 'importance',
           ...base,
-          maximumRounds,
-          status: {
-            converged: imp('converged', converged, 'uint32', 1),
-            roundCount: imp('rounds', rounds, 'uint32', 1)
+          maximumIterations: maximumRounds,
+          output: {
+            status: {
+              converged: imp('converged', converged, 'uint32', 1),
+              iterationCount: imp('rounds', rounds, 'uint32', 1)
+            }
           }
         })
       );
@@ -230,9 +233,9 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
           ...base,
           computeImportance: false,
           parameters: parameters.importToGraph(selectionGraph),
-          selection: {
-            output: {
-              ids: imp('ids', ids, 'uint32', vertexCount),
+          output: {
+            ids: imp('ids', ids, 'uint32', vertexCount),
+            status: {
               count: imp('count', count, 'uint32', 1),
               overflow: imp('overflow', overflow, 'uint32', 1),
               requiredCount: imp('total', total, 'uint32', 1)
@@ -246,10 +249,10 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
       importance,
       converged,
       rounds,
-      compiled: resources.track(importanceGraph.compile()),
+      compiled: resources.track(await importanceGraph.compileAsync()),
       encoded: false,
       selection: {
-        compiled: resources.track(selectionGraph.compile()),
+        compiled: resources.track(await selectionGraph.compileAsync()),
         ids,
         count,
         overflow,
@@ -313,7 +316,7 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
     GPU_LINE_SMOOTH_PARAMETER_LENGTH
   );
   let smoothDirty = true;
-  const buildSmooth = (iterations: number): Smooth => {
+  const buildSmooth = async (iterations: number): Promise<Smooth> => {
     const existing = smoothLevels.get(iterations);
     if (existing) return existing;
     const capacity = vertexCount * 2 ** iterations + 16;
@@ -324,8 +327,8 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
       new GPULineSmooth({
         id: `smooth-${iterations}`,
         positions: imp('positions', positions, 'float32x2', vertexCount),
-        pathOffsets: imp('offsets', trackOffsets, 'uint32', trackCount + 1),
-        iterations,
+        lineOffsets: imp('offsets', trackOffsets, 'uint32', trackCount + 1),
+        iterationCount: iterations,
         closed: false,
         parameters: smoothParameters.importToGraph(graph),
         output: importPathOutput(graph, output)
@@ -346,17 +349,28 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
         );
       }
     );
-    const level: Smooth = {iterations, compiled: resources.track(graph.compile()), output, reader};
+    const level: Smooth = {
+      iterations,
+      compiled: resources.track(await graph.compileAsync()),
+      output,
+      reader
+    };
     smoothLevels.set(iterations, level);
     return level;
   };
 
-  const select = (options: Options) => {
+  /** Compiles (or finds cached) the graphs the selected tool needs; changes no live state. */
+  const prepareTool = async (options: Options): Promise<Importance | null> => {
+    if (options.trackTool === 'simplify') return await buildImportance(options);
+    await buildSmooth(Math.min(options.smoothIterations, SMOOTH_LEVEL_LIMIT));
+    return null;
+  };
+
+  const select = (options: Options, importance: Importance | null) => {
     if (options.trackTool === 'simplify') {
-      activeImportance = buildImportance(options);
+      activeImportance = importance;
       startReaderIfNeeded(options);
     } else {
-      buildSmooth(Math.min(options.smoothIterations, SMOOTH_LEVEL_LIMIT));
       smoothParameters.write(getGPULineSmoothParameterValues({ratio: options.smoothRatio}));
       smoothDirty = true;
       ctx.setReadout(
@@ -381,7 +395,10 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
       readbackNeeded = true;
     }
   };
-  select(ctx.options);
+  // Importances and smooth levels stay cached (and owned by `resources`), so a superseded build
+  // needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
+  select(ctx.options, await prepareTool(ctx.options));
 
   return {
     getCompiledGraphs() {
@@ -403,7 +420,14 @@ export function createTracksView(env: TrackEnvironment): GeometryView<Options> {
         id === 'simplifyRounds' ||
         id === 'smoothIterations'
       ) {
-        select(options);
+        // The previous tool keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => prepareTool(ctx.options),
+          commit: importance => {
+            select(ctx.options, importance);
+            ctx.requestLayers();
+          }
+        });
       }
       if (id === 'smoothRatio') {
         smoothParameters.write(getGPULineSmoothParameterValues({ratio: options.smoothRatio}));
@@ -621,7 +645,7 @@ function _makeGreatCirclePath(
  * bearing from a chosen hub to every airport (`GPUGeodesicPairs`, sphere or WGS84), and a geodesic
  * range ring around the hub (`GPUGeodesicDestination`).
  */
-export function createWorldView(env: WorldEnvironment): GeometryView<WorldOptions> {
+export async function createWorldView(env: WorldEnvironment): Promise<GeometryView<WorldOptions>> {
   const {ctx, flows, airportRows} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'world');
@@ -730,13 +754,13 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
         id: 'arcs',
         sources: imp('sources', sources, 'float32x2', pairCount),
         targets: imp('targets', targets, 'float32x2', pairCount),
-        maximumSegments: ARC_MAXIMUM_SEGMENTS,
+        maximumSegmentCount: ARC_MAXIMUM_SEGMENTS,
         parameters: arcParameters.importToGraph(arcGraph),
         output: importPathOutput(arcGraph, arcs)
       })
     );
   }
-  const compiledArcs = resources.track(arcGraph.compile());
+  const compiledArcs = resources.track(await arcGraph.compileAsync());
 
   // Hub to every airport: distance, bearing and the great-circle midpoint.
   const hubOrigins = resources.createBuffer('hub-origins', new Float32Array(airportCount * 2));
@@ -746,7 +770,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   const airportBearings = resources.createBuffer('airport-bearings', airportCount * 4);
   const airportConverged = resources.createBuffer('airport-converged', airportCount * 4);
   const pairGraphs = new Map<WorldOptions['geodesicModel'], CompiledGPUCommandGraph<void>>();
-  const buildPairs = (model: WorldOptions['geodesicModel']) => {
+  const buildPairs = async (model: WorldOptions['geodesicModel']) => {
     let compiled = pairGraphs.get(model);
     if (!compiled) {
       const graph = new GPUCommandGraph<void>(device, {id: `geodesic-pairs-${model}`});
@@ -770,7 +794,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
           }
         })
       );
-      compiled = resources.track(graph.compile());
+      compiled = resources.track(await graph.compileAsync());
       pairGraphs.set(model, compiled);
     }
     return compiled;
@@ -794,7 +818,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
     Uint32Array.of(0, RING_VERTEX_COUNT)
   );
   const ringGraphs = new Map<WorldOptions['geodesicModel'], CompiledGPUCommandGraph<void>>();
-  const buildRing = (model: WorldOptions['geodesicModel']) => {
+  const buildRing = async (model: WorldOptions['geodesicModel']) => {
     let compiled = ringGraphs.get(model);
     if (!compiled) {
       const graph = new GPUCommandGraph<void>(device, {id: `geodesic-ring-${model}`});
@@ -815,7 +839,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
           }
         })
       );
-      compiled = resources.track(graph.compile());
+      compiled = resources.track(await graph.compileAsync());
       ringGraphs.set(model, compiled);
     }
     return compiled;
@@ -861,7 +885,7 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   bearing360[bearing360Offset + index] = (bearings[bearingsOffset + index] + 360.0) % 360.0;`
     });
   }
-  const compiledValues = resources.track(valueGraph.compile());
+  const compiledValues = resources.track(await valueGraph.compileAsync());
   const valueReader = new SummaryReader(
     resources,
     'airport-distances',
@@ -942,8 +966,8 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
   writeHub(ctx.options);
   writeRing(ctx.options);
   writeArcs(ctx.options);
-  buildPairs(ctx.options.geodesicModel);
-  buildRing(ctx.options.geodesicModel);
+  await buildPairs(ctx.options.geodesicModel);
+  await buildRing(ctx.options.geodesicModel);
   ctx.setReadout(
     'worldInputs',
     `${formatCount(airportCount)} airports, ${formatCount(pairCount)} routes`
@@ -965,6 +989,9 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
     }
   );
 
+  // Model graphs stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
+
   return {
     getCompiledGraphs() {
       return [
@@ -982,10 +1009,18 @@ export function createWorldView(env: WorldEnvironment): GeometryView<WorldOption
       if (id === 'ringDistance') writeRing(options);
       if (id === 'arcMinimumSegments' || id === 'arcMaximumLength') writeArcs(options);
       if (id === 'geodesicModel') {
-        buildPairs(options.geodesicModel);
-        buildRing(options.geodesicModel);
-        dirtyHub = true;
-        dirtyRing = true;
+        // The previous model keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: async () => {
+            await buildPairs(options.geodesicModel);
+            await buildRing(options.geodesicModel);
+          },
+          commit: () => {
+            dirtyHub = true;
+            dirtyRing = true;
+            ctx.requestLayers();
+          }
+        });
       }
     },
     encode(commandEncoder) {

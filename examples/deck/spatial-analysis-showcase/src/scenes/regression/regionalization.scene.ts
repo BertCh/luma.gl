@@ -303,29 +303,42 @@ export default defineScene<RegionalizationOptions>({
 
   snippet: state => `import {
   GPUContiguityWeights, GPUSpatialWeightsMinimumSpanningTree, GPUSkaterRegions,
-  GPURegionPartitionEvaluation, GPUKMeans
+  GPURegionPartitionEvaluation, GPUKMeans, getGPUSkaterRegionsParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-graph.add(new GPUContiguityWeights({criterion: '${state.criterion}', positions: vertices, ringOffsets, polygonOffsets, weights, overflow}));
+// One row per tract (feature); a multipart tract is one row.
+graph.add(new GPUContiguityWeights({
+  criterion: '${state.criterion}',
+  polygons: {kind: 'polygons', positions: vertices, featureOffsets, polygonOffsets, ringOffsets},
+  output: {...weights, status: {overflow, candidateOverflow}}
+}));
 
 // Cheapest tree over attribute dissimilarity (Boruvka)
 graph.add(new GPUSpatialWeightsMinimumSpanningTree({
   weights, values, columnCount: 8, standardize: ${state.standardize},
-  treeEdgeFlags, componentLabels, standardizedValues,
-  edges: {ids, count, overflow}, edgeCosts
+  output: {
+    treeEdgeFlags, componentLabels, standardizedValues,
+    edges: {ids, status: {count, overflow}}, edgeDissimilarities
+  }
 }));
 
 // Greedy cuts of that tree. Region count and minimum size are a parameter buffer.
 graph.add(new GPUSkaterRegions({
   weights, treeEdgeFlags, componentLabels, values: standardizedValues, columnCount: 8,
-  maximumRegionCount: 20, parameters,          // [regions, minimumSize]
-  labels, regionCount, cutEdges, cutGains
+  maximumRegionCount: 20, parameters,          // [regionCount, minimumRegionSize]
+  output: {labels, regionCount, cutEdges, cutGains}
 }));
-skaterParameters.write(new Uint32Array([${state.regions}, ${state.minimumSize}]));
+skaterParameters.write(getGPUSkaterRegionsParameterValues({regionCount: ${state.regions}, minimumRegionSize: ${state.minimumSize}}));
 
 // Score any partition on the same attributes, SKATER or k-means
-graph.add(new GPURegionPartitionEvaluation({values: standardizedValues, columnCount: 8, labels, weights, summary}));
-graph.add(new GPUKMeans({positions: principalPlane, k: ${state.kmeansClusters}, iterations: 24, initialization: 'kmeans++', labels: kLabels, centers}));`,
+graph.add(new GPURegionPartitionEvaluation({
+  values: standardizedValues, columnCount: 8, labels, weights, output: {summary}
+}));
+graph.add(new GPUKMeans({
+  positions: principalPlane, k: ${state.kmeansClusters}, maximumIterations: 24, initialization: 'kmeans++',
+  parameters: kmeansParameters,                // getGPUKMeansParameterValues({seed: 7})
+  output: {labels: kLabels, centers, status: {iterationCount, converged}}
+}));`,
 
   about: {
     what: '`GPUSpatialWeightsMinimumSpanningTree` joins neighbouring tracts into the cheapest tree where an edge costs the squared difference of their attributes. `GPUSkaterRegions` makes greedy cuts: each removes the tree edge whose removal reduces the within-region sum of squares most, so every region stays connected. `GPURegionPartitionEvaluation` scores any partition (SKATER or k-means) on the same attributes.',

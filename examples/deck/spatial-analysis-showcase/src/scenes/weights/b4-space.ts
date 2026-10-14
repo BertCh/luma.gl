@@ -86,7 +86,11 @@ export type AnalysisSpace = {
   /** Choice of the display kernel (a buffer write). */
   setDisplayChoice: (display: SpaceDisplay, summary: SummaryChoice) => number;
   /** Compiles the neighbourhood variant a configuration needs; true when it compiled. */
-  prepare: (includeFocal: boolean, focalWeight: number, rowStandardized: boolean) => boolean;
+  prepare: (
+    includeFocal: boolean,
+    focalWeight: number,
+    rowStandardized: boolean
+  ) => Promise<boolean>;
   /** Encodes summary, transpose, lag, focus links, neighbourhood summary and the display kernels. */
   encode: (commandEncoder: CommandEncoder, options: SpaceEncodeOptions) => void;
   /** Reads the weights summary and the tooltip snapshot; call after `encode` when stale. */
@@ -179,7 +183,7 @@ const VALID_BODY = /* wgsl */ `
  * (`GPUNeighborhoodSummary`, lazily compiled per `includeFocal` / `focalWeight`), the focus row and
  * the kernels that prepare what the map fill shows. Polygons and lattice cells share it.
  */
-export function createAnalysisSpace(props: {
+export async function createAnalysisSpace(props: {
   device: Device;
   resources: SpatialAnalysisResources;
   id: string;
@@ -195,8 +199,8 @@ export function createAnalysisSpace(props: {
   /** Category per row for the dominant neighbour and the entropy (state, community area). */
   categories: Uint32Array;
   drawAllLinks: boolean;
-  producer: {overflow: Buffer; total: Buffer};
-}): AnalysisSpace {
+  producer: {overflow: Buffer; total: Buffer; candidateOverflow?: Buffer};
+}): Promise<AnalysisSpace> {
   const {device, resources, id, rows, slots, positions, values, mask} = props;
   const displayMask = props.displayMask ?? mask;
   const create = (name: string, data: number | Float32Array | Uint32Array) =>
@@ -206,7 +210,7 @@ export function createAnalysisSpace(props: {
     neighbors: create('analysis-neighbors', slots * 4),
     weights: create('analysis-weights', slots * 4)
   };
-  const kit = createWeightsKit({
+  const kit = await createWeightsKit({
     device,
     resources,
     id: `${id}-kit`,
@@ -241,11 +245,11 @@ export function createAnalysisSpace(props: {
     focalWeight: number,
     rowStandardized: boolean
   ) => `${includeFocal ? 'focal' : 'plain'}-${focalWeight}-${rowStandardized ? 'row' : 'raw'}`;
-  const prepare = (
+  const prepare = async (
     includeFocal: boolean,
     focalWeight: number,
     rowStandardized: boolean
-  ): boolean => {
+  ): Promise<boolean> => {
     const key = getNeighborhoodKey(includeFocal, focalWeight, rowStandardized);
     if (neighborhoodGraphs.has(key)) return false;
     const graph = new GPUCommandGraph<void>(device, {id: `${id}-neighborhood-${key}`});
@@ -256,7 +260,7 @@ export function createAnalysisSpace(props: {
           offsets: importGraphBuffer(graph, 'offsets', csr.offsets, 'uint32', rows + 1),
           neighbors: importGraphBuffer(graph, 'neighbors', csr.neighbors, 'uint32', slots),
           weights: importGraphBuffer(graph, 'weights', csr.weights, 'float32', slots),
-          info: getWeightsInfo(rows, rowStandardized)
+          information: getWeightsInfo(rows, rowStandardized)
         },
         values: importGraphBuffer(graph, 'values', values, 'float32', rows),
         mask: importGraphBuffer(graph, 'mask', mask, 'uint32', rows),
@@ -264,17 +268,21 @@ export function createAnalysisSpace(props: {
         includeFocal,
         focalWeight,
         statistics: SUMMARY_STATISTICS,
-        output: importGraphBuffer(graph, 'table', table, 'float32', rows * NEIGHBORHOOD_COLUMNS),
         maximumNeighbors: MAXIMUM_NEIGHBORHOOD_MEMBERS,
-        overflow: importGraphBuffer(graph, 'overflow', neighborhoodOverflow, 'uint32', 1),
-        modes: importGraphBuffer(graph, 'modes', modes, 'uint32', rows),
-        entropy: importGraphBuffer(graph, 'entropy', entropy, 'float32', rows)
+        output: {
+          table: importGraphBuffer(graph, 'table', table, 'float32', rows * NEIGHBORHOOD_COLUMNS),
+          modes: importGraphBuffer(graph, 'modes', modes, 'uint32', rows),
+          entropy: importGraphBuffer(graph, 'entropy', entropy, 'float32', rows),
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', neighborhoodOverflow, 'uint32', 1)
+          }
+        }
       })
     );
-    neighborhoodGraphs.set(key, resources.track(graph.compile()));
+    neighborhoodGraphs.set(key, resources.track(await graph.compileAsync()));
     return true;
   };
-  prepare(false, 1, false);
+  await prepare(false, 1, false);
 
   // Classification kernels (isolates, one-way links, focus class) and the display select.
   const displayGraph = new GPUCommandGraph<void>(device, {id: `${id}-display`});
@@ -409,7 +417,7 @@ export function createAnalysisSpace(props: {
       })
     );
   }
-  const displayCompiled = resources.track(displayGraph.compile());
+  const displayCompiled = resources.track(await displayGraph.compileAsync());
 
   // Tooltip snapshot: a handful of row-sized buffers, read only when something changed.
   let snapshotHandler: ((snapshot: SpaceSnapshot) => void) | null = null;
@@ -485,16 +493,16 @@ export function createAnalysisSpace(props: {
     },
 
     encode(commandEncoder, options) {
+      // `prepare` compiles the variant before the options that need it are applied.
+      const neighborhood = neighborhoodGraphs.get(
+        getNeighborhoodKey(options.includeFocal, options.focalWeight, options.rowStandardized)
+      );
+      if (!neighborhood) return;
       kit.encodeAnalysis(commandEncoder, {
         normalizeLag: options.normalizeLag,
         matrix: options.matrix
       });
-      prepare(options.includeFocal, options.focalWeight, options.rowStandardized);
-      neighborhoodGraphs
-        .get(
-          getNeighborhoodKey(options.includeFocal, options.focalWeight, options.rowStandardized)
-        )!
-        .encode(commandEncoder, {parameters: undefined});
+      neighborhood.encode(commandEncoder, {parameters: undefined});
       displayCompiled.encode(commandEncoder, {parameters: undefined});
     },
 

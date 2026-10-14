@@ -35,6 +35,7 @@ import {
 import {createFeatureLocator, getGeometryPolygons} from '../../cartography/picking';
 import type {LngLat, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer, submitGraph} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisPolygonLayer,
@@ -307,7 +308,7 @@ export async function createLassoExplorer(
         overflow: view.overflow
       })
     );
-    submitGraph(device, resources.track(indexGraph.compile()));
+    submitGraph(device, resources.track(await indexGraph.compileAsync()));
   }
 
   function importGridIndexView(graph: GPUCommandGraph<void>): GPUGridIndexView {
@@ -434,7 +435,7 @@ export async function createLassoExplorer(
     ].join('|');
   }
 
-  function compileVariant(options: LassoOptions): Variant {
+  async function compileVariant(options: LassoOptions): Promise<Variant> {
     const key = getVariantKey(options);
     const graphKey = getGraphKey(options);
     const kind = VALUE_KINDS[options.value];
@@ -482,9 +483,13 @@ export async function createLassoExplorer(
       graph.add(
         new GPUPickRegionMask({
           id: 'lasso-pick-region-mask',
-          result,
-          outputMask: mask,
-          overflow: importGraphBuffer(graph, 'pick-overflow', pick.overflow, 'uint32', 1)
+          picks: result,
+          output: {
+            mask,
+            status: {
+              overflow: importGraphBuffer(graph, 'pick-overflow', pick.overflow, 'uint32', 1)
+            }
+          }
         })
       );
       selection = {kind: 'mask', mask};
@@ -501,14 +506,18 @@ export async function createLassoExplorer(
           id: 'lasso-region-mask',
           positions: positionsView,
           region: graphKey.startsWith('mask-polygon') ? polygonShape() : rectangleShape(),
-          outputMask: mask,
-          overflow: importGraphBuffer(
-            graph,
-            'region-mask-overflow',
-            regionMaskOverflow,
-            'uint32',
-            1
-          )
+          output: {
+            mask,
+            status: {
+              overflow: importGraphBuffer(
+                graph,
+                'region-mask-overflow',
+                regionMaskOverflow,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       selection = {kind: 'mask', mask};
@@ -519,38 +528,47 @@ export async function createLassoExplorer(
     graph.add(
       new GPURegionStatistics({
         id,
-        selection,
+        region: selection,
         ...(selection.kind === 'mask' ? {} : {positions: positionsView}),
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount),
         histogram: {
           binCount: kind.binCount,
           domain: options.domain === 'selection' ? 'selection' : kind.domain
         },
-        outputMask:
-          options.withMask && !wantsIds && selection.kind !== 'mask'
-            ? importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pointCount)
-            : undefined,
-        ...(wantsIds
-          ? {
-              output: {
-                ids: importGraphBuffer(graph, 'selected-ids', idsBuffer, 'uint32', idCapacity),
-                count: importGraphBuffer(graph, 'selected-ids-count', idsCount, 'uint32', 1),
-                overflow: importGraphBuffer(
-                  graph,
-                  'selected-ids-overflow',
-                  idsOverflow,
-                  'uint32',
-                  1
-                ),
-                requiredCount: importGraphBuffer(graph, 'selected-ids-total', idsTotal, 'uint32', 1)
-              },
-              drawInstanceCount: graph.importGPUData(
-                'draw-instance-count',
-                drawCommands.getInstanceCountData(0)
-              )
-            }
-          : {}),
-        summary: importGraphBuffer(graph, 'summary', summary, 'uint32', summaryLength),
+        output: {
+          summary: importGraphBuffer(graph, 'summary', summary, 'uint32', summaryLength),
+          ...(options.withMask && !wantsIds && selection.kind !== 'mask'
+            ? {mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pointCount)}
+            : {}),
+          ...(wantsIds
+            ? {
+                selectedRows: {
+                  ids: importGraphBuffer(graph, 'selected-ids', idsBuffer, 'uint32', idCapacity),
+                  status: {
+                    count: importGraphBuffer(graph, 'selected-ids-count', idsCount, 'uint32', 1),
+                    overflow: importGraphBuffer(
+                      graph,
+                      'selected-ids-overflow',
+                      idsOverflow,
+                      'uint32',
+                      1
+                    ),
+                    requiredCount: importGraphBuffer(
+                      graph,
+                      'selected-ids-total',
+                      idsTotal,
+                      'uint32',
+                      1
+                    )
+                  }
+                },
+                drawInstanceCount: graph.importGPUData(
+                  'draw-instance-count',
+                  drawCommands.getInstanceCountData(0)
+                )
+              }
+            : {})
+        },
         spatialIndex: withGrid
           ? {
               kind: 'grid',
@@ -575,7 +593,7 @@ export async function createLassoExplorer(
     }
     return {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       summary,
       readback,
       binCount: kind.binCount,
@@ -583,33 +601,63 @@ export async function createLassoExplorer(
     };
   }
 
-  function ensureVariant(): void {
+  const variantSwap = resources.track(new GraphSwap());
+
+  /**
+   * Caches a freshly compiled variant, or releases it when a concurrent compile of the same key
+   * (a swap and a measure run can overlap) cached one first, and returns the cached one.
+   */
+  function cacheVariant(variant: Variant): Variant {
+    const existing = variants.get(variant.key);
+    if (existing) {
+      resources.release(variant.compiled);
+      resources.release(variant.summary);
+      return existing;
+    }
+    variants.set(variant.key, variant);
+    return variant;
+  }
+
+  /**
+   * Selects the variant for the current options once it is compiled (cached in `variants`, which
+   * `resources` owns). The displayed variant keeps encoding until then. Rejects only when the
+   * first variant cannot be compiled.
+   */
+  function requestVariant(): Promise<boolean> {
     const key = getVariantKey(ctx.options);
-    let variant = variants.get(key);
-    if (!variant) {
-      try {
-        variant = compileVariant(ctx.options);
-      } catch (error) {
-        if (!displayed) throw error;
-        ctx.setStatus(`That combination cannot be compiled: ${String(error).slice(0, 120)}`);
-        return;
+    return variantSwap.request({
+      build: async () => {
+        let variant = variants.get(key);
+        if (!variant) {
+          try {
+            variant = await compileVariant(ctx.options);
+          } catch (error) {
+            if (!displayed) throw error;
+            ctx.setStatus(`That combination cannot be compiled: ${String(error).slice(0, 120)}`);
+            return null;
+          }
+          variant = cacheVariant(variant);
+        }
+        return variant;
+      },
+      commit: variant => {
+        if (!variant || displayed?.key === variant.key) return;
+        displayed = variant;
+        latestResult = null;
+        cpuSignature = '';
+        chartSignature = '';
+        showExtraReadout();
+        updateOptionReadouts();
+        framesSinceBuild = 0;
+        autoMeasurePending = true;
+        ctx.setCost({
+          records: pointCount,
+          passes: ctx.options.path === 'mask' ? 2 : ctx.options.path === 'pick' ? 3 : 1
+        });
+        updateStatus();
+        ctx.requestLayers();
       }
-      variants.set(key, variant);
-    }
-    if (displayed?.key !== key) {
-      displayed = variant;
-      latestResult = null;
-      cpuSignature = '';
-      chartSignature = '';
-      showExtraReadout();
-      updateOptionReadouts();
-      framesSinceBuild = 0;
-      autoMeasurePending = true;
-      ctx.setCost({
-        records: pointCount,
-        passes: ctx.options.path === 'mask' ? 2 : ctx.options.path === 'pick' ? 3 : 1
-      });
-    }
+    });
   }
 
   const extraReader = new SummaryReader(
@@ -1250,7 +1298,7 @@ export async function createLassoExplorer(
     }
     cpuSignature = '';
     overlaySignature = '';
-    ensureVariant();
+    void requestVariant();
   }
 
   function applyArea(): void {
@@ -1264,7 +1312,7 @@ export async function createLassoExplorer(
       lastScreenSpace = false;
       screenConversionStableFrames = 0;
       screenConversionThreshold = 1;
-      ensureVariant();
+      void requestVariant();
     }
     cpuSignature = '';
     overlaySignature = '';
@@ -1287,8 +1335,7 @@ export async function createLassoExplorer(
       const otherKey = getVariantKey(otherOptions);
       let other = variants.get(otherKey);
       if (!other) {
-        other = compileVariant(otherOptions);
-        variants.set(otherKey, other);
+        other = cacheVariant(await compileVariant(otherOptions));
       }
       if (!target) return;
       const measureOptions = {
@@ -1334,7 +1381,7 @@ export async function createLassoExplorer(
   applyCircleAnchor();
   syncEqualAreaRadius();
   refreshPinned();
-  ensureVariant();
+  await requestVariant();
   updateStatus();
   updateOptionReadouts();
   updateAreaReadouts();
@@ -1366,7 +1413,7 @@ export async function createLassoExplorer(
       } else if (id === 'value') {
         writeValues();
         refreshPinned();
-        ensureVariant();
+        void requestVariant();
       } else if (id === 'space') {
         screenConversionStableFrames = 0;
         screenConversionThreshold = 1;
@@ -1392,7 +1439,7 @@ export async function createLassoExplorer(
         }
         overlaySignature = '';
         chartSignature = '';
-        ensureVariant();
+        void requestVariant();
         updateStatus();
         updateOptionReadouts();
         ctx.requestLayers();
@@ -1490,8 +1537,9 @@ export async function createLassoExplorer(
         const ticket = variant.readback.encodeRead(commandEncoder, variant.summary);
         if (ticket) {
           nextTicketFrame = frame.frameIndex + READBACK_INTERVAL_FRAMES;
-          variant.readback
-            .read(ticket)
+          // Deck submits this frame's encoder synchronously before the next task maps the slot.
+          void new Promise<void>(resolve => setTimeout(resolve, 0))
+            .then(() => variant.readback.read(ticket))
             .then(result => {
               if (!destroyed && displayed === variant) showResult(result);
             })

@@ -38,7 +38,7 @@ import {
   GPUNeighborSearch,
   GPUPointInPolygonJoin,
   GPUSpatialEmpiricalBayesRates,
-  type GPUPermutationAlternative
+  type GPUInferenceAlternative
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
@@ -61,7 +61,7 @@ const MAXIMUM_K = 6;
 const MAXIMUM_PERMUTATIONS = 999;
 const MAXIMUM_LOCAL_NEIGHBORS = 16;
 const CLASS_COUNT = 5;
-const ALTERNATIVES: readonly GPUPermutationAlternative[] = [
+const ALTERNATIVES: readonly GPUInferenceAlternative[] = [
   'directed',
   'two-sided',
   'greater',
@@ -256,7 +256,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
     let neighborChoice: NeighborChoice = 'k4';
     let variable: Variable = 'standardized';
     let mapKind: MapKind = 'cluster';
-    let alternative: GPUPermutationAlternative = 'two-sided';
+    let alternative: GPUInferenceAlternative = 'two-sided';
     let populationSpread = 1;
     let populationCoupling = 0.7;
     let eventsKnown = false;
@@ -348,45 +348,55 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
     joinGraph.add(
       new GPUPointInPolygonJoin({
         id: 'rates-polygon-join',
-        points: importGraphBuffer(joinGraph, 'points', parkingBuffer, 'float32x2', pointCount),
-        polygonPositions: importGraphBuffer(
-          joinGraph,
-          'polygon-positions',
-          polygonPositions,
-          'float32x2',
-          zips.polygonPositions.length / 2
-        ),
-        featureOffsets: importGraphBuffer(
-          joinGraph,
-          'feature-offsets',
-          featureOffsets,
-          'uint32',
-          zips.featureOffsets.length
-        ),
-        polygonOffsets: importGraphBuffer(
-          joinGraph,
-          'polygon-offsets',
-          polygonOffsets,
-          'uint32',
-          zips.polygonOffsets.length
-        ),
-        ringOffsets: importGraphBuffer(
-          joinGraph,
-          'ring-offsets',
-          ringOffsets,
-          'uint32',
-          zips.ringOffsets.length
-        ),
+        points: {
+          kind: 'points',
+          positions: importGraphBuffer(joinGraph, 'points', parkingBuffer, 'float32x2', pointCount)
+        },
+        polygons: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
+            joinGraph,
+            'polygon-positions',
+            polygonPositions,
+            'float32x2',
+            zips.polygonPositions.length / 2
+          ),
+          featureOffsets: importGraphBuffer(
+            joinGraph,
+            'feature-offsets',
+            featureOffsets,
+            'uint32',
+            zips.featureOffsets.length
+          ),
+          polygonOffsets: importGraphBuffer(
+            joinGraph,
+            'polygon-offsets',
+            polygonOffsets,
+            'uint32',
+            zips.polygonOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
+            joinGraph,
+            'ring-offsets',
+            ringOffsets,
+            'uint32',
+            zips.ringOffsets.length
+          )
+        },
         candidateCapacity: Math.max(1024, pointCount * 4),
-        pointFeatureIds: importGraphBuffer(
-          joinGraph,
-          'point-features',
-          pointFeatures,
-          'uint32',
-          pointCount
-        ),
-        featureCounts: featureCountsView,
-        overflow: importGraphBuffer(joinGraph, 'join-overflow', joinOverflow, 'uint32', 1)
+        output: {
+          pointFeatureIds: importGraphBuffer(
+            joinGraph,
+            'point-features',
+            pointFeatures,
+            'uint32',
+            pointCount
+          ),
+          featureCounts: featureCountsView,
+          status: {
+            overflow: importGraphBuffer(joinGraph, 'join-overflow', joinOverflow, 'uint32', 1)
+          }
+        }
       })
     );
     addKernelPass(joinGraph, {
@@ -408,7 +418,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
       ],
       body: /* wgsl */ `events[eventsOffset + index] = f32(counts[countsOffset + index]);`
     });
-    const joinCompiled = resources.track(joinGraph.compile());
+    const joinCompiled = resources.track(await joinGraph.compileAsync());
 
     // Rate graph: raw, smoothed and standardized rates, then the chosen variable is copied to
     // `values` for the spatial statistics (a buffer-write choice, no recompile).
@@ -439,19 +449,21 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           'float32',
           featureCount
         ),
-        standardizedRates: standardized,
-        smoothedRates: smoothed,
-        rawRates: raw,
-        summary: importGraphBuffer(
-          rateGraph,
-          'summary',
-          summaryBuffer,
-          'float32',
-          GPU_EMPIRICAL_BAYES_SUMMARY.length
-        )
+        output: {
+          standardizedRates: standardized,
+          smoothedRates: smoothed,
+          rawRates: raw,
+          summary: importGraphBuffer(
+            rateGraph,
+            'summary',
+            summaryBuffer,
+            'float32',
+            GPU_EMPIRICAL_BAYES_SUMMARY.length
+          )
+        }
       })
     );
-    const rateCompiled = resources.track(rateGraph.compile());
+    const rateCompiled = resources.track(await rateGraph.compileAsync());
 
     const importWeights = (graph: GPUCommandGraph<void>) => ({
       offsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', featureCount + 1),
@@ -459,7 +471,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
       weights: importGraphBuffer(graph, 'weights', weightsBuffer, 'float32', capacity)
     });
 
-    const compileSearch = (k: number): CompiledGPUCommandGraph<void> => {
+    const compileSearch = async (k: number): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id: `rates-search-k${k}`});
       graph.add(
         new GPUNeighborSearch({
@@ -475,16 +487,28 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
             featureCount
           ),
           parameters: searchParameters.importToGraph(graph),
-          weights: importWeights(graph),
-          overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
-          totalNeighbors: importGraphBuffer(graph, 'total-neighbors', totalNeighbors, 'uint32', 1)
+          output: {
+            ...importWeights(graph),
+            status: {
+              overflow: importGraphBuffer(graph, 'search-overflow', searchOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(
+                graph,
+                'total-neighbors',
+                totalNeighbors,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // The tail of the permutation test is compile-time: one analysis graph per alternative.
-    const compileAnalysis = (tail: GPUPermutationAlternative): CompiledGPUCommandGraph<void> => {
+    const compileAnalysis = async (
+      tail: GPUInferenceAlternative
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id: `rates-analysis-${tail}`});
       const weights = importWeights(graph);
       const values = importGraphBuffer(graph, 'values', valuesBuffer, 'float32', featureCount);
@@ -516,7 +540,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           weights,
           values,
           statistics: ['moran'],
-          results: statistics
+          output: {summary: statistics}
         })
       );
       graph.add(
@@ -529,23 +553,27 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           parameters: permutationParameters.importToGraph(graph),
           maximumPermutations: MAXIMUM_PERMUTATIONS,
           maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS,
-          exceedances: importGraphBuffer(
-            graph,
-            'exceedances',
-            exceedancesBuffer,
-            'uint32',
-            featureCount
-          ),
-          pseudoPValues: importGraphBuffer(
-            graph,
-            'pseudo-p',
-            pseudoPBuffer,
-            'float32',
-            featureCount
-          ),
-          observed,
-          significant,
-          overflow: importGraphBuffer(graph, 'local-overflow', localOverflow, 'uint32', 1)
+          output: {
+            exceedances: importGraphBuffer(
+              graph,
+              'exceedances',
+              exceedancesBuffer,
+              'uint32',
+              featureCount
+            ),
+            pseudoPValues: importGraphBuffer(
+              graph,
+              'pseudo-p',
+              pseudoPBuffer,
+              'float32',
+              featureCount
+            ),
+            observed,
+            significant,
+            status: {
+              overflow: importGraphBuffer(graph, 'local-overflow', localOverflow, 'uint32', 1)
+            }
+          }
         })
       );
       // Cluster class from the sign of the local statistic and of the centered value.
@@ -586,7 +614,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           edges: [0, 1, 2, 3, 4, 5]
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // Spatial graph (after the weights exist): neighborhood-prior empirical-Bayes rates, then the
@@ -626,7 +654,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
           featureCount
         ),
         weights: importWeights(spatialGraph),
-        smoothedRates: spatialRates
+        output: {smoothedRates: spatialRates}
       })
     );
     addKernelPass(spatialGraph, {
@@ -662,12 +690,12 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
   }
   values[valuesOffset + index] = value;`
     });
-    const spatialCompiled = resources.track(spatialGraph.compile());
+    const spatialCompiled = resources.track(await spatialGraph.compileAsync());
 
     const searchVariants = new Map<NeighborChoice, CompiledGPUCommandGraph<void>>();
-    for (const k of K_CHOICES) searchVariants.set(`k${k}`, compileSearch(k));
-    const analysisVariants = new Map<GPUPermutationAlternative, CompiledGPUCommandGraph<void>>();
-    for (const tail of ALTERNATIVES) analysisVariants.set(tail, compileAnalysis(tail));
+    for (const k of K_CHOICES) searchVariants.set(`k${k}`, await compileSearch(k));
+    const analysisVariants = new Map<GPUInferenceAlternative, CompiledGPUCommandGraph<void>>();
+    for (const tail of ALTERNATIVES) analysisVariants.set(tail, await compileAnalysis(tail));
 
     const writeSearch = () => {
       searchParameters.write(
@@ -682,7 +710,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
     };
     const writePermutation = () => {
       permutationParameters.write(
-        getGPUPermutationParameterValues({seed, permutations, significanceLevel})
+        getGPUPermutationParameterValues({seed, permutationCount: permutations, significanceLevel})
       );
       dirty = true;
       needsReadback = true;
@@ -730,7 +758,7 @@ export const ratesMode: SpatialAnalysisModeDefinition = {
         context.updateLayers();
       }
     });
-    context.controls.addSelect<GPUPermutationAlternative>({
+    context.controls.addSelect<GPUInferenceAlternative>({
       label: 'Permutation tail (compile-time: all four graphs precompiled)',
       options: [
         {value: 'directed', label: 'directed (legacy esda default)'},

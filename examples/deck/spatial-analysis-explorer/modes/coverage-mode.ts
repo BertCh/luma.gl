@@ -17,8 +17,8 @@
  *   counts the shared vertices one neighbor keeps and the other drops, and marks them.
  * - `GPUContiguityWeights` (rook) feeds `GPUMapColoring` in one graph. Polygon fills take their
  *   color from the GPU color IDs, so adjacent ZIP codes never share a color. The seed is a
- *   compile-time property of the coloring, so moving it rebuilds that one graph after a short
- *   debounce (the footer counts it); the tolerance never recompiles anything.
+ *   per-frame parameter of the coloring, so moving it re-encodes that one graph; neither the seed
+ *   nor the tolerance recompiles anything.
  *
  * Fills use a one-time CPU triangulation of the static input; every outline comes from GPU keep
  * masks and every color from the GPU color buffer.
@@ -28,11 +28,14 @@ import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPULineSimplificationParameterValues,
+  getGPUMapColoringParameterValues,
   GPUContiguityWeights,
   GPUCoverageSimplification,
   GPULineSimplification,
   GPUMapColoring,
+  GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH,
   GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH,
+  GPU_MAP_COLORING_PARAMETER_LENGTH,
   GPU_MAP_COLORING_UNCOLORED
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
@@ -51,11 +54,10 @@ const DEFAULT_LOG_TOLERANCE = 1.9;
 /** Neighbor slots per polygon in the contiguity capacity. */
 const NEIGHBORS_PER_POLYGON = 24;
 /** Douglas-Peucker round cap (compile-time); the SF rings have up to about 1,000 vertices. */
-const MAXIMUM_ROUNDS = 256;
+const MAXIMUM_ITERATIONS = 256;
 const MAXIMUM_SEED = 31;
 /** Compile-time detect-and-repair rounds of the topology-preserving coverage graph. */
 const TOPOLOGY_ROUNDS = 6;
-const REBUILD_DEBOUNCE_MILLISECONDS = 200;
 const FILL_PALETTE = [
   [78, 201, 255, 255],
   [255, 148, 72, 255],
@@ -105,11 +107,13 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'coverage');
+    // Contiguity rows, colors and fills are per feature (a multipart ZIP code is one row).
+    const featureCount = zones.featureOffsets.length - 1;
     const polygonCount = zones.polygonOffsets.length - 1;
     const ringCount = zones.ringOffsets.length - 1;
     const vertexCount = zones.polygonPositions.length / 2;
     const segmentCount = zones.outlineSegments.length / 4;
-    const neighborCapacity = polygonCount * NEIGHBORS_PER_POLYGON;
+    const neighborCapacity = featureCount * NEIGHBORS_PER_POLYGON;
     const coordinateOrigin: [number, number, number] = [zones.origin[0], zones.origin[1], 0];
 
     // Static CPU inputs: ring of every vertex, fill triangles, and the groups of identical vertices
@@ -134,12 +138,14 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const triangles = triangulatePolygons(
       zones.polygonPositions,
       zones.ringOffsets,
-      zones.polygonOffsets
+      zones.polygonOffsets,
+      zones.featureOffsets
     );
     const triangleCount = triangles.owners.length;
 
     const positionsBuffer = resources.createBuffer('positions', zones.polygonPositions);
     const ringOffsetsBuffer = resources.createBuffer('ring-offsets', zones.ringOffsets);
+    const featureOffsetsBuffer = resources.createBuffer('feature-offsets', zones.featureOffsets);
     const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', zones.polygonOffsets);
     const vertexRingsBuffer = resources.createBuffer('vertex-rings', vertexRings);
     const triangleVertices = resources.createBuffer('triangle-vertices', triangles.corners);
@@ -148,14 +154,19 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     const markerBuffer = resources.createBuffer('gap-markers', Math.max(1, vertexCount) * 8);
 
     // Contiguity and coloring.
-    const weightOffsets = resources.createBuffer('weight-offsets', (polygonCount + 1) * 4);
+    const weightOffsets = resources.createBuffer('weight-offsets', (featureCount + 1) * 4);
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
-    const colors = resources.createBuffer('colors', polygonCount * 4);
+    const colors = resources.createBuffer('colors', featureCount * 4);
     const colorCount = resources.createBuffer('color-count', 4);
     const conflictCount = resources.createBuffer('conflict-count', 4);
     const coloringConverged = resources.createBuffer('coloring-converged', 4);
+    const coloringParameters = resources.createParameterBuffer(
+      'coloring-parameters',
+      'uint32',
+      GPU_MAP_COLORING_PARAMETER_LENGTH
+    );
     const coloringRounds = resources.createBuffer('coloring-rounds', 4);
 
     // Coverage simplification outputs.
@@ -190,10 +201,10 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       length: number
     ) => importGraphBuffer(graph, name, buffer, format, length);
 
-    const buildColoringGraph = (seed: number): CompiledGPUCommandGraph<void> => {
-      const graph = new GPUCommandGraph<void>(device, {id: `coverage-coloring-${seed}`});
+    const buildColoringGraph = async (): Promise<CompiledGPUCommandGraph<void>> => {
+      const graph = new GPUCommandGraph<void>(device, {id: 'coverage-coloring'});
       const weights = {
-        offsets: importAll(graph, 'weight-offsets', weightOffsets, 'uint32', polygonCount + 1),
+        offsets: importAll(graph, 'weight-offsets', weightOffsets, 'uint32', featureCount + 1),
         neighbors: importAll(
           graph,
           'weight-neighbors',
@@ -201,49 +212,79 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
           'uint32',
           neighborCapacity
         ),
-        weights: importAll(graph, 'weight-values', weightValues, 'float32', neighborCapacity)
+        weights: importAll(graph, 'weight-values', weightValues, 'float32', neighborCapacity),
+        status: {
+          overflow: importAll(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+        }
       };
       graph.add(
         new GPUContiguityWeights({
           id: 'contiguity',
           criterion: 'rook',
-          positions: importAll(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-          ringOffsets: importAll(graph, 'ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
-          polygonOffsets: importAll(
-            graph,
-            'polygon-offsets',
-            polygonOffsetsBuffer,
-            'uint32',
-            polygonCount + 1
-          ),
-          weights,
-          overflow: importAll(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+          polygons: {
+            kind: 'polygons',
+            positions: importAll(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
+            featureOffsets: importAll(
+              graph,
+              'feature-offsets',
+              featureOffsetsBuffer,
+              'uint32',
+              featureCount + 1
+            ),
+            polygonOffsets: importAll(
+              graph,
+              'polygon-offsets',
+              polygonOffsetsBuffer,
+              'uint32',
+              polygonCount + 1
+            ),
+            ringOffsets: importAll(
+              graph,
+              'ring-offsets',
+              ringOffsetsBuffer,
+              'uint32',
+              ringCount + 1
+            )
+          },
+          output: weights
         })
       );
       graph.add(
         new GPUMapColoring({
           id: 'coloring',
           weights,
-          colors: importAll(graph, 'colors', colors, 'uint32', polygonCount),
-          colorCount: importAll(graph, 'color-count', colorCount, 'uint32', 1),
-          conflictCount: importAll(graph, 'conflict-count', conflictCount, 'uint32', 1),
-          converged: importAll(graph, 'coloring-converged', coloringConverged, 'uint32', 1),
-          roundCount: importAll(graph, 'coloring-rounds', coloringRounds, 'uint32', 1),
-          seed
+          parameters: coloringParameters.importToGraph(graph),
+          output: {
+            colors: importAll(graph, 'colors', colors, 'uint32', featureCount),
+            colorCount: importAll(graph, 'color-count', colorCount, 'uint32', 1),
+            conflictCount: importAll(graph, 'conflict-count', conflictCount, 'uint32', 1),
+            status: {
+              converged: importAll(graph, 'coloring-converged', coloringConverged, 'uint32', 1),
+              iterationCount: importAll(graph, 'coloring-rounds', coloringRounds, 'uint32', 1)
+            }
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
-    const buildCoverageGraph = (topologyRounds: number): CompiledGPUCommandGraph<void> => {
+    const buildCoverageGraph = async (
+      topologyIterationCount: number
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
-        id: `coverage-simplification-${topologyRounds}`
+        id: `coverage-simplification-${topologyIterationCount}`
       });
       graph.add(
         new GPUCoverageSimplification({
           id: 'coverage',
           positions: importAll(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-          ringOffsets: importAll(graph, 'ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
+          featureOffsets: importAll(
+            graph,
+            'feature-offsets',
+            featureOffsetsBuffer,
+            'uint32',
+            featureCount + 1
+          ),
           polygonOffsets: importAll(
             graph,
             'polygon-offsets',
@@ -251,10 +292,10 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
             'uint32',
             polygonCount + 1
           ),
+          ringOffsets: importAll(graph, 'ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
           parameters: parameterBuffer.importToGraph(graph),
-          maximumRounds: MAXIMUM_ROUNDS,
-          topologyRounds,
-          converged: importAll(graph, 'coverage-converged', coverageConverged, 'uint32', 1),
+          maximumIterations: MAXIMUM_ITERATIONS,
+          topologyIterationCount,
           output: {
             positions: importAll(
               graph,
@@ -270,24 +311,33 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
               'uint32',
               ringCount + 1
             ),
-            keepMask: importAll(
+            outputMask: importAll(
               graph,
               'coverage-keep-mask',
               coverageKeepMask,
               'uint32',
               vertexCount
             ),
-            overflow: importAll(graph, 'coverage-overflow', coverageOverflow, 'uint32', 1),
-            topologyStats: importAll(graph, 'coverage-topology', coverageTopology, 'uint32', 4)
+            topologyStatistics: importAll(
+              graph,
+              'coverage-topology',
+              coverageTopology,
+              'uint32',
+              GPU_COVERAGE_SIMPLIFICATION_TOPOLOGY_STATISTICS_LENGTH
+            ),
+            status: {
+              converged: importAll(graph, 'coverage-converged', coverageConverged, 'uint32', 1),
+              overflow: importAll(graph, 'coverage-overflow', coverageOverflow, 'uint32', 1)
+            }
           }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     const importanceView = (graph: GPUCommandGraph<void>) => ({
       positions: importAll(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-      trackOffsets: importAll(graph, 'ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
+      lineOffsets: importAll(graph, 'ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
       importance: importAll(graph, 'importance', importance, 'float32', vertexCount)
     });
     const importanceGraph = new GPUCommandGraph<void>(device, {id: 'coverage-importance'});
@@ -295,20 +345,28 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       new GPULineSimplification({
         id: 'independent-importance',
         ...importanceView(importanceGraph),
-        maximumRounds: MAXIMUM_ROUNDS,
-        status: {
-          converged: importAll(
-            importanceGraph,
-            'importance-converged',
-            importanceConverged,
-            'uint32',
-            1
-          ),
-          roundCount: importAll(importanceGraph, 'importance-rounds', importanceRounds, 'uint32', 1)
+        maximumIterations: MAXIMUM_ITERATIONS,
+        output: {
+          status: {
+            converged: importAll(
+              importanceGraph,
+              'importance-converged',
+              importanceConverged,
+              'uint32',
+              1
+            ),
+            iterationCount: importAll(
+              importanceGraph,
+              'importance-rounds',
+              importanceRounds,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
-    const compiledImportance = resources.track(importanceGraph.compile());
+    const compiledImportance = resources.track(await importanceGraph.compileAsync());
     const selectionGraph = new GPUCommandGraph<void>(device, {id: 'coverage-independent'});
     selectionGraph.add(
       new GPULineSimplification({
@@ -316,13 +374,13 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         ...importanceView(selectionGraph),
         computeImportance: false,
         parameters: parameterBuffer.importToGraph(selectionGraph),
-        selection: {
-          output: {
-            ids: importAll(selectionGraph, 'kept-ids', keptIds, 'uint32', vertexCount),
+        output: {
+          ids: importAll(selectionGraph, 'kept-ids', keptIds, 'uint32', vertexCount),
+          status: {
             count: importAll(selectionGraph, 'kept-count', keptCount, 'uint32', 1),
             overflow: importAll(selectionGraph, 'kept-overflow', keptOverflow, 'uint32', 1)
           },
-          keepMask: importAll(
+          outputMask: importAll(
             selectionGraph,
             'independent-keep-mask',
             independentKeepMask,
@@ -332,13 +390,12 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const compiledSelection = resources.track(selectionGraph.compile());
-    const compiledRepaired = buildCoverageGraph(TOPOLOGY_ROUNDS);
-    const compiledPlain = buildCoverageGraph(0);
+    const compiledSelection = resources.track(await selectionGraph.compileAsync());
+    const compiledRepaired = await buildCoverageGraph(TOPOLOGY_ROUNDS);
+    const compiledPlain = await buildCoverageGraph(0);
 
     let seed = 0;
-    let compiledColoring = buildColoringGraph(seed);
-    const retiredColoring: CompiledGPUCommandGraph<void>[] = [];
+    const compiledColoring = await buildColoringGraph();
     let coloringDirty = true;
     let importanceEncoded = false;
     let logTolerance = DEFAULT_LOG_TOLERANCE;
@@ -350,7 +407,6 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
     let baselineEncoded = false;
     let markerCount = 0;
     let destroyed = false;
-    let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
     const parameterValues = new Float32Array(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH);
 
     // --- Controls ------------------------------------------------------------------------------
@@ -399,7 +455,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       }
     });
     context.controls.addSlider({
-      label: 'Coloring seed (compile-time, rebuilds the coloring graph)',
+      label: 'Coloring seed (per-frame parameter)',
       min: 0,
       max: MAXIMUM_SEED,
       step: 1,
@@ -407,22 +463,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       format: value => `seed ${value}`,
       onChange: value => {
         seed = value;
-        clearTimeout(rebuildTimer);
-        rebuildTimer = setTimeout(() => {
-          if (destroyed) return;
-          const previous = compiledColoring;
-          compiledColoring = buildColoringGraph(seed);
-          coloringDirty = true;
-          // Deck's frame encoder may still reference the old graph for a frame or two.
-          retiredColoring.push(previous);
-          setTimeout(() => {
-            const index = retiredColoring.indexOf(previous);
-            if (index >= 0) {
-              retiredColoring.splice(index, 1);
-              resources.release(previous);
-            }
-          }, 400);
-        }, REBUILD_DEBOUNCE_MILLISECONDS);
+        coloringDirty = true;
       }
     });
     context.controls.addLegend({
@@ -447,8 +488,8 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         'Douglas-Peucker. The independent control never preserves topology.'
     );
     context.controls.addReadout(
-      'Polygons / rings / vertices',
-      `${formatCount(polygonCount)} / ${formatCount(ringCount)} / ${formatCount(vertexCount)}`
+      'Features / rings / vertices',
+      `${formatCount(featureCount)} / ${formatCount(ringCount)} / ${formatCount(vertexCount)}`
     );
     const toleranceReadout = context.controls.addReadout('Tolerance');
     const neighborsReadout = context.controls.addReadout('Rook adjacencies');
@@ -477,12 +518,12 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         return start;
       };
       return {
-        colors: next(polygonCount),
+        colors: next(featureCount),
         colorCount: next(1),
         conflicts: next(1),
         converged: next(1),
         rounds: next(1),
-        offsets: next(polygonCount + 1),
+        offsets: next(featureCount + 1),
         weightOverflow: next(1),
         coverageOverflow: next(1),
         coverageConverged: next(1),
@@ -499,12 +540,12 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       resources,
       'coverage',
       [
-        {buffer: colors, size: polygonCount * 4},
+        {buffer: colors, size: featureCount * 4},
         {buffer: colorCount, size: 4},
         {buffer: conflictCount, size: 4},
         {buffer: coloringConverged, size: 4},
         {buffer: coloringRounds, size: 4},
-        {buffer: weightOffsets, size: (polygonCount + 1) * 4},
+        {buffer: weightOffsets, size: (featureCount + 1) * 4},
         {buffer: weightOverflow, size: 4},
         {buffer: coverageOverflow, size: 4},
         {buffer: coverageConverged, size: 4},
@@ -519,12 +560,12 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
         if (destroyed) return;
         const words = new Uint32Array(bytes);
         const at = (offset: number) => words[offset];
-        const colorIds = words.subarray(layoutWords.colors, layoutWords.colors + polygonCount);
+        const colorIds = words.subarray(layoutWords.colors, layoutWords.colors + featureCount);
         const uncolored = colorIds.filter(value => value === GPU_MAP_COLORING_UNCOLORED).length;
         neighborsReadout.setValue(
-          `${formatCount(at(layoutWords.offsets + polygonCount))} directed (${(
-            at(layoutWords.offsets + polygonCount) / Math.max(polygonCount, 1)
-          ).toFixed(1)} per polygon)${at(layoutWords.weightOverflow) ? ', OVERFLOW' : ''}`
+          `${formatCount(at(layoutWords.offsets + featureCount))} directed (${(
+            at(layoutWords.offsets + featureCount) / Math.max(featureCount, 1)
+          ).toFixed(1)} per feature)${at(layoutWords.weightOverflow) ? ', OVERFLOW' : ''}`
         );
         colorsReadout.setValue(
           `${at(layoutWords.colorCount)}${uncolored ? ` (${uncolored} uncolored)` : ''}`
@@ -639,6 +680,7 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
           importanceEncoded = true;
         }
         if (coloringDirty) {
+          coloringParameters.write(getGPUMapColoringParameterValues({seed}));
           compiledColoring.encode(commandEncoder, {parameters: undefined});
           coloringDirty = false;
           seedShown = seed;
@@ -738,7 +780,6 @@ export const coverageMode: SpatialAnalysisModeDefinition = {
       },
       destroy() {
         destroyed = true;
-        clearTimeout(rebuildTimer);
         summary.stop();
         resources.destroy();
       }

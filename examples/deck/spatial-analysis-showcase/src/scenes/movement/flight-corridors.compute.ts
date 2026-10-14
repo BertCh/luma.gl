@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -25,6 +25,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
@@ -211,33 +212,43 @@ export async function createFlightCorridors(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      currentElevations: importGraphBuffer(
-        playheadGraph,
-        'current-elevations',
-        currentElevations,
-        'float32',
-        trackCount
-      ),
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        currentElevations: importGraphBuffer(
+          playheadGraph,
+          'current-elevations',
+          currentElevations,
+          'float32',
+          trackCount
+        ),
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -248,7 +259,7 @@ export async function createFlightCorridors(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -290,30 +301,32 @@ export async function createFlightCorridors(
       ],
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Line density: grid, subsets and variants -------------------------------------------------
   const allTracks: TrackSubset = {
@@ -417,17 +430,17 @@ export async function createFlightCorridors(
       parameters,
       lengths,
       densities,
-      overflow,
-      totalRecords,
       capacity: new Map(),
-      reader
+      reader,
+      overflow,
+      totalRecords
     };
     grids.set(cell, grid);
     return grid;
   }
 
   const variants = new Map<string, DensityVariant>();
-  function getVariant(cell: number, direction: number): DensityVariant {
+  async function getVariant(cell: number, direction: number): Promise<DensityVariant> {
     const key = `${cell}|${direction}`;
     let variant = variants.get(key);
     if (variant) return variant;
@@ -447,7 +460,7 @@ export async function createFlightCorridors(
           'float32x2',
           subset.vertexCount
         ),
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           graph,
           'path-offsets',
           subset.offsets,
@@ -462,17 +475,19 @@ export async function createFlightCorridors(
           metric: 'great-circle',
           units: 'meters'
         },
-        maximumRecords: capacity,
+        recordCapacity: capacity,
         parameters: grid.parameters.importToGraph(graph),
         output: {
           lengths: importGraphBuffer(graph, 'lengths', grid.lengths, 'float32', cells),
           densities: importGraphBuffer(graph, 'densities', grid.densities, 'float32', cells),
-          overflow: importGraphBuffer(graph, 'overflow', grid.overflow, 'uint32', 1),
-          totalRecords: importGraphBuffer(graph, 'total-records', grid.totalRecords, 'uint32', 1)
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', grid.overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'total-records', grid.totalRecords, 'uint32', 1)
+          }
         }
       })
     );
-    variant = {compiled: resources.track(graph.compile()), grid, encoded: false};
+    variant = {compiled: resources.track(await graph.compileAsync()), grid, encoded: false};
     variants.set(key, variant);
     return variant;
   }
@@ -504,13 +519,13 @@ export async function createFlightCorridors(
       ),
       lengths: resources.createBuffer(`direction-${direction}-lengths-${cell}`, cells * 4),
       densities: resources.createBuffer(`direction-${direction}-densities-${cell}`, cells * 4),
+      capacity: new Map(),
       overflow: resources.createBuffer(`direction-${direction}-overflow-${cell}`, 4),
-      totalRecords: resources.createBuffer(`direction-${direction}-records-${cell}`, 4),
-      capacity: new Map()
+      totalRecords: resources.createBuffer(`direction-${direction}-records-${cell}`, 4)
     };
   }
 
-  function getDirectionBalance(cell: number): DirectionBalanceVariant {
+  async function getDirectionBalance(cell: number): Promise<DirectionBalanceVariant> {
     let variant = directionBalances.get(cell);
     if (variant) return variant;
     const east = createDirectionDensityGrid(cell, 'east');
@@ -538,7 +553,7 @@ export async function createFlightCorridors(
             'float32x2',
             subset.vertexCount
           ),
-          pathOffsets: importGraphBuffer(
+          lineOffsets: importGraphBuffer(
             graph,
             `${id}-offsets`,
             subset.offsets,
@@ -552,7 +567,7 @@ export async function createFlightCorridors(
             metric: 'great-circle',
             units: 'meters'
           },
-          maximumRecords: capacity,
+          recordCapacity: capacity,
           parameters: grid.parameters.importToGraph(graph),
           output: {
             lengths: importGraphBuffer(graph, `${id}-lengths`, grid.lengths, 'float32', cells),
@@ -563,8 +578,16 @@ export async function createFlightCorridors(
               'float32',
               cells
             ),
-            overflow: importGraphBuffer(graph, `${id}-overflow`, grid.overflow, 'uint32', 1),
-            totalRecords: importGraphBuffer(graph, `${id}-records`, grid.totalRecords, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(graph, `${id}-overflow`, grid.overflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(
+                graph,
+                `${id}-records`,
+                grid.totalRecords,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
@@ -623,7 +646,7 @@ export async function createFlightCorridors(
       balance,
       eastCapacity,
       westCapacity,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       reader,
       encoded: false
     };
@@ -759,8 +782,10 @@ export async function createFlightCorridors(
     {range: [0, SECONDS_PER_DAY], rate: 1, step: 60}
   );
   let playhead = ctx.options.time;
+  // The direction and cell whose density variants are committed, encoded and drawn.
   let currentDirection = DIRECTION_CODES[ctx.options.direction];
   let currentCell = Number(ctx.options.cellDegrees);
+  const graphSwap = resources.track(new GraphSwap());
   let densityDirty = true;
   let statusStale = true;
   let chartMarker = -1;
@@ -884,8 +909,27 @@ export async function createFlightCorridors(
     segmentMaskBuffer.write(mask);
   }
   writeSegmentMask();
-  getVariant(currentCell, currentDirection);
-  getDirectionBalance(currentCell);
+  await getVariant(currentCell, currentDirection);
+  await getDirectionBalance(currentCell);
+
+  /** Compiles the density variants for the chosen cell and direction, then swaps them in. */
+  function requestDensityVariants(): void {
+    const cell = Number(ctx.options.cellDegrees);
+    const direction = DIRECTION_CODES[ctx.options.direction];
+    void graphSwap.request({
+      build: async () => {
+        await getVariant(cell, direction);
+        await getDirectionBalance(cell);
+        return {cell, direction};
+      },
+      commit: next => {
+        currentCell = next.cell;
+        currentDirection = next.direction;
+        densityDirty = true;
+        ctx.requestLayers();
+      }
+    });
+  }
 
   // ---- Status readback --------------------------------------------------------------------------
   const statusReader = new SummaryReader(
@@ -933,28 +977,20 @@ export async function createFlightCorridors(
       playheadCompiled,
       trailCompiled,
       ctx.options.densityView === 'direction-balance'
-        ? getDirectionBalance(currentCell).compiled
-        : getVariant(currentCell, currentDirection).compiled
+        ? directionBalances.get(currentCell)!.compiled
+        : variants.get(`${currentCell}|${currentDirection}`)!.compiled
     ],
 
     setOption(id) {
       switch (id) {
         case 'direction':
           writeSegmentMask();
-          currentDirection = DIRECTION_CODES[ctx.options.direction];
-          getVariant(currentCell, currentDirection);
-          densityDirty = true;
-          ctx.requestLayers();
+          requestDensityVariants();
           break;
         case 'cellDegrees':
-          currentCell = Number(ctx.options.cellDegrees);
-          getVariant(currentCell, currentDirection);
-          getDirectionBalance(currentCell);
-          densityDirty = true;
-          ctx.requestLayers();
+          requestDensityVariants();
           break;
         case 'densityView':
-          if (ctx.options.densityView === 'direction-balance') getDirectionBalance(currentCell);
           densityDirty = true;
           ctx.requestLayers();
           break;
@@ -979,7 +1015,7 @@ export async function createFlightCorridors(
       ctx.setReadout('clock', formatClockUtc(playhead));
 
       if (options.densityView === 'direction-balance') {
-        const variant = getDirectionBalance(currentCell);
+        const variant = directionBalances.get(currentCell)!;
         if (densityDirty || !variant.encoded) {
           variant.compiled.encode(commandEncoder, {parameters: undefined});
           variant.encoded = true;
@@ -989,7 +1025,7 @@ export async function createFlightCorridors(
           variant.reader.flush(commandEncoder);
         }
       } else {
-        const variant = getVariant(currentCell, currentDirection);
+        const variant = variants.get(`${currentCell}|${currentDirection}`)!;
         if (densityDirty || !variant.encoded) {
           variant.compiled.encode(commandEncoder, {parameters: undefined});
           variant.encoded = true;
@@ -1001,14 +1037,14 @@ export async function createFlightCorridors(
       }
 
       playheadParameters.write(
-        getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: options.maxGapMinutes * 60})
+        getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: options.maxGapMinutes * 60})
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
 
       if (options.showTrails) {
         const seconds = options.trailMinutes * 60;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - seconds,
             end: playhead,
             startFadeDuration: seconds * options.tailFade
@@ -1050,7 +1086,7 @@ export async function createFlightCorridors(
         );
       }
       if (options.showDensity && options.densityView === 'direction-balance') {
-        const balance = getDirectionBalance(currentCell);
+        const balance = directionBalances.get(currentCell)!;
         layers.push(
           new SpatialAnalysisRasterLayer({
             id: `flight-direction-balance-${balance.cell}`,

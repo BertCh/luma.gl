@@ -166,7 +166,7 @@ export const geometryMode: SpatialAnalysisModeDefinition = {
     let instance: ViewInstance;
     switch (view) {
       case 'arcs':
-        instance = createArcsView(context, resources);
+        instance = await createArcsView(context, resources);
         break;
       case 'densify':
         instance = await createDensifyView(context, resources);
@@ -285,7 +285,7 @@ type PathOutputBuffers = {
   requiredCount: Buffer;
   pathCount: Buffer;
   measures: Buffer;
-  sourcePaths: Buffer;
+  sourceLineIndices: Buffer;
   offsetCount: number;
   drawCommands: DrawCommandBuffer;
 };
@@ -304,7 +304,7 @@ function createPathOutputBuffers(
     requiredCount: resources.createBuffer(`${name}-total`, 4),
     pathCount: resources.createBuffer(`${name}-path-count`, 4),
     measures: resources.createBuffer(`${name}-measures`, vertexCapacity * 4),
-    sourcePaths: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
+    sourceLineIndices: resources.createBuffer(`${name}-source-paths`, pathCapacity * 4),
     offsetCount: pathCapacity + 1,
     drawCommands: resources.track(
       new DrawCommandBuffer(resources.device, {
@@ -337,7 +337,7 @@ function importPathOutput(
   output: PathOutputBuffers,
   vertexCapacity: number,
   pathCapacity: number,
-  options: {measures?: boolean; pathCount?: boolean; sourcePaths?: boolean} = {}
+  options: {measures?: boolean; lineCount?: boolean; sourceLineIndices?: boolean} = {}
 ) {
   return {
     positions: importGraphBuffer(
@@ -347,25 +347,27 @@ function importPathOutput(
       'float32x2',
       vertexCapacity
     ),
-    pathOffsets: importGraphBuffer(
+    lineOffsets: importGraphBuffer(
       graph,
       'out-offsets',
       output.offsets,
       'uint32',
       pathCapacity + 1
     ),
-    count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
-    overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
-    requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
-    ...(options.pathCount
-      ? {pathCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
-      : {}),
-    ...(options.sourcePaths
+    status: {
+      count: importGraphBuffer(graph, 'out-count', output.count, 'uint32', 1),
+      overflow: importGraphBuffer(graph, 'out-overflow', output.overflow, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'out-total', output.requiredCount, 'uint32', 1),
+      ...(options.lineCount
+        ? {lineCount: importGraphBuffer(graph, 'out-path-count', output.pathCount, 'uint32', 1)}
+        : {})
+    },
+    ...(options.sourceLineIndices
       ? {
-          sourcePaths: importGraphBuffer(
+          sourceLineIndices: importGraphBuffer(
             graph,
             'out-source-paths',
-            output.sourcePaths,
+            output.sourceLineIndices,
             'uint32',
             pathCapacity
           )
@@ -471,10 +473,10 @@ function makeWorldDestinations(count: number): Float32Array {
   return destinations;
 }
 
-function createArcsView(
+async function createArcsView(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources
-): ViewInstance {
+): Promise<ViewInstance> {
   const {device} = context;
   const destinations = makeWorldDestinations(ARC_PAIR_COUNT);
   const vertexCapacity = ARC_PAIR_COUNT * (ARC_MAXIMUM_SEGMENTS + 1);
@@ -526,7 +528,9 @@ function createArcsView(
 
       output: {
         distances: importGraphBuffer(arcGraph, 'distances', distances, 'float32', ARC_PAIR_COUNT),
-        converged: importGraphBuffer(arcGraph, 'converged', converged, 'uint32', ARC_PAIR_COUNT)
+        status: {
+          converged: importGraphBuffer(arcGraph, 'converged', converged, 'uint32', ARC_PAIR_COUNT)
+        }
       }
     })
   );
@@ -535,12 +539,12 @@ function createArcsView(
       id: 'arcs',
       sources: arcSources,
       targets: arcTargets,
-      maximumSegments: ARC_MAXIMUM_SEGMENTS,
+      maximumSegmentCount: ARC_MAXIMUM_SEGMENTS,
       parameters: arcParameters.importToGraph(arcGraph),
       output: importPathOutput(arcGraph, arcs, vertexCapacity, ARC_PAIR_COUNT)
     })
   );
-  const compiledArcs = resources.track(arcGraph.compile());
+  const compiledArcs = resources.track(await arcGraph.compileAsync());
 
   const ringGraph = new GPUCommandGraph<void>(device, {id: 'geometry-ring'});
   ringGraph.add(
@@ -578,7 +582,7 @@ function createArcsView(
       }
     })
   );
-  const compiledRing = resources.track(ringGraph.compile());
+  const compiledRing = resources.track(await ringGraph.compileAsync());
 
   const writeHub = () => {
     const [longitude, latitude] = HUBS[hubIndex].position;
@@ -842,13 +846,13 @@ async function createDensifyView(
         'float32x2',
         inputVertexCount
       ),
-      pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
-      maximumPiecesPerSegment: DENSIFY_MAXIMUM_PIECES,
+      lineOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
+      maximumPieceCount: DENSIFY_MAXIMUM_PIECES,
       parameters: parameters.importToGraph(graph),
       output: importPathOutput(graph, output, capacity, pathCount, {measures: true})
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeParameters = () => {
     parameters.write(getGPULineSegmentizeParameterValues({maximumSegmentLength: maximumLength}));
@@ -962,35 +966,42 @@ async function createSmoothView(
     GPU_LINE_SMOOTH_PARAMETER_LENGTH
   );
   // One prebuilt graph per iteration count (the count is compile-time).
-  const levels = SMOOTH_ITERATION_OPTIONS.map(iterations => {
-    const capacity = vertexCount * 2 ** iterations + 16;
-    const output = createPathOutputBuffers(resources, `smooth-${iterations}`, capacity, tripCount);
-    const graph = new GPUCommandGraph<void>(device, {id: `geometry-smooth-${iterations}`});
-    graph.add(
-      new GPULineSmooth({
-        id: `smooth-${iterations}`,
-        positions: importGraphBuffer(
-          graph,
-          'positions',
-          tripPaths.positions,
-          'float32x2',
-          vertexCount
-        ),
-        pathOffsets: importGraphBuffer(
-          graph,
-          'offsets',
-          tripPaths.offsets,
-          'uint32',
-          tripCount + 1
-        ),
-        iterations,
-        closed: false,
-        parameters: parameters.importToGraph(graph),
-        output: importPathOutput(graph, output, capacity, tripCount)
-      })
-    );
-    return {iterations, capacity, output, compiled: resources.track(graph.compile())};
-  });
+  const levels = await Promise.all(
+    SMOOTH_ITERATION_OPTIONS.map(async iterations => {
+      const capacity = vertexCount * 2 ** iterations + 16;
+      const output = createPathOutputBuffers(
+        resources,
+        `smooth-${iterations}`,
+        capacity,
+        tripCount
+      );
+      const graph = new GPUCommandGraph<void>(device, {id: `geometry-smooth-${iterations}`});
+      graph.add(
+        new GPULineSmooth({
+          id: `smooth-${iterations}`,
+          positions: importGraphBuffer(
+            graph,
+            'positions',
+            tripPaths.positions,
+            'float32x2',
+            vertexCount
+          ),
+          lineOffsets: importGraphBuffer(
+            graph,
+            'offsets',
+            tripPaths.offsets,
+            'uint32',
+            tripCount + 1
+          ),
+          iterationCount: iterations,
+          closed: false,
+          parameters: parameters.importToGraph(graph),
+          output: importPathOutput(graph, output, capacity, tripCount)
+        })
+      );
+      return {iterations, capacity, output, compiled: resources.track(await graph.compileAsync())};
+    })
+  );
 
   let levelIndex = 2;
   let ratio = 0.25;
@@ -1178,16 +1189,16 @@ async function createChunkView(
         'float32x2',
         inputVertexCount
       ),
-      pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
+      lineOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
       mode,
       parameters: parameters.importToGraph(graph),
       output: importPathOutput(graph, output, vertexCapacity, pieceCapacity, {
-        pathCount: true,
-        sourcePaths: chunkMode
+        lineCount: true,
+        sourceLineIndices: chunkMode
       })
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeParameters = () => {
     parameters.write(
@@ -1224,7 +1235,7 @@ async function createChunkView(
     });
     context.controls.addNote(
       'Consecutive chunks of one road share their boundary point. The piece count is data ' +
-        'dependent: pathCount reports it and the offsets past it equal the vertex count.'
+        'dependent: lineCount reports it and the offsets past it equal the vertex count.'
     );
   } else {
     context.controls.addSlider({
@@ -1362,7 +1373,7 @@ async function createSnapView(
   graph.add(
     new GPULinearReferencing({
       id: 'snap',
-      points: importGraphBuffer(graph, 'points', points, 'float32x2', pointCount),
+      queryPositions: importGraphBuffer(graph, 'points', points, 'float32x2', pointCount),
       positions: importGraphBuffer(
         graph,
         'positions',
@@ -1370,7 +1381,7 @@ async function createSnapView(
         'float32x2',
         inputVertexCount
       ),
-      pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
+      lineOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
       radius: radiusBuffer.importToGraph(graph),
       candidateCapacity,
       spatialSort: true,
@@ -1385,13 +1396,15 @@ async function createSnapView(
           'float32',
           pointCount
         ),
-        pathIndices: importGraphBuffer(graph, 'path-indices', pathIndices, 'uint32', pointCount)
-      },
-      overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-      candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+        lineIndices: importGraphBuffer(graph, 'path-indices', pathIndices, 'uint32', pointCount),
+        status: {
+          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+        }
+      }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const colorNote = context.controls.addNote('');
   const describeColor = () =>
@@ -1600,8 +1613,14 @@ async function createLocateView(
         'float32x2',
         inputVertexCount
       ),
-      pathOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
-      eventPaths: importGraphBuffer(graph, 'event-paths', eventPathBuffer, 'uint32', EVENT_COUNT),
+      lineOffsets: importGraphBuffer(graph, 'offsets', roadPaths.offsets, 'uint32', pathCount + 1),
+      eventLineIndices: importGraphBuffer(
+        graph,
+        'event-paths',
+        eventPathBuffer,
+        'uint32',
+        EVENT_COUNT
+      ),
       eventMeasures: importGraphBuffer(
         graph,
         'event-measures',
@@ -1637,7 +1656,7 @@ async function createLocateView(
       }
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const writeParameters = () => {
     parameters.write(
@@ -1847,7 +1866,8 @@ async function createMeasuresView(
   const planarPositions = resources.createBuffer('planar-positions', zones.polygonPositions);
   const geographicPositions = resources.createBuffer('geographic-positions', geographic);
   const ringOffsets = resources.createBuffer('ring-offsets', zones.ringOffsets);
-  const featureRings = resources.createBuffer('feature-rings', featureRingOffsets);
+  const featureOffsetsBuffer = resources.createBuffer('feature-offsets', zones.featureOffsets);
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', zones.polygonOffsets);
   const groupBuffer = resources.createBuffer('group-ids', groupIds);
   const segmentsBuffer = resources.createBuffer('edge-segments', zones.outlineSegments);
   const featureRowsBuffer = resources.createBuffer('edge-feature-rows', zones.outlineFeatureRows);
@@ -1862,12 +1882,19 @@ async function createMeasuresView(
   const groupCounts = resources.createBuffer('group-counts', GROUP_COUNT * 4);
 
   const graph = new GPUCommandGraph<void>(device, {id: 'geometry-measures'});
-  const featureRingView = importGraphBuffer(
+  const featureOffsetsView = importGraphBuffer(
     graph,
-    'feature-rings',
-    featureRings,
+    'feature-offsets',
+    featureOffsetsBuffer,
     'uint32',
     featureCount + 1
+  );
+  const polygonOffsetsView = importGraphBuffer(
+    graph,
+    'polygon-offsets',
+    polygonOffsetsBuffer,
+    'uint32',
+    zones.polygonOffsets.length
   );
   const ringView = importGraphBuffer(
     graph,
@@ -1901,10 +1928,9 @@ async function createMeasuresView(
           vertexCount
         ),
         geometryType: 'polygons',
+        featureOffsets: featureOffsetsView,
+        polygonOffsets: polygonOffsetsView,
         ringOffsets: ringView,
-        featureRingOffsets: featureRingView,
-
-        holeRule: 'first-ring-exterior',
         output: {
           areas: importGraphBuffer(
             graph,
@@ -1958,7 +1984,7 @@ async function createMeasuresView(
       })
     );
   }
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   const updateRange = () => {
     const offset = MEASURE_SYSTEMS.findIndex(entry => entry.id === system) * featureCount;

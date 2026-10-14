@@ -310,8 +310,9 @@ export default defineScene<SatelliteConstellationsOptions>({
 graph.add(new GPUKMeans({
   positions: features,
   k: ${state.k},                    // compile-time: a new k compiles a new graph
-  iterations: 24, initialization: 'kmeans++', seed: ${state.seed},
-  labels, centers, sizes, convergence   // [iterationsUsed, converged]
+  maximumIterations: 24, initialization: 'kmeans++',
+  parameters: kmeansParameters.importToGraph(graph),   // getGPUKMeansParameterValues({seed: ${state.seed}})
+  output: {labels, centers, sizes, status: {iterationCount, converged}}
 }));
 compiled.encode(commandEncoder, {parameters: undefined});
 

@@ -13,6 +13,7 @@ import {
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -56,7 +57,7 @@ export type ShapeMetric =
 export type WildfireShapesOptions = {
   metric: ShapeMetric;
   areaSystem: 'planar' | 'spherical' | 'wgs84' | 'geodesic';
-  holeRule: 'winding' | 'first-ring-exterior';
+  ringGrouping: 'parts' | 'merged';
   largeRings: 'cooperative' | 'serial';
   convexityMethod: 'auto' | 'gift-wrapping' | 'monotone-chain';
   sliverThreshold: number;
@@ -207,6 +208,30 @@ export async function createWildfireShapes(
   const planarBuffer = resources.createBuffer('planar', data.mercator);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', layout.ringOffsets);
   const featureRingsBuffer = resources.createBuffer('feature-rings', layout.featureRingOffsets);
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', layout.polygonOffsets);
+  const featureOffsetsBuffer = resources.createBuffer('feature-offsets', layout.featureOffsets);
+  // One polygon per feature: every ring of a fire joins one polygon (the 'merged' grouping).
+  const mergedFeatureOffsetsBuffer = resources.createBuffer(
+    'merged-feature-offsets',
+    Uint32Array.from({length: count + 1}, (_, fire) => fire)
+  );
+  // Ring roles are positional (the first ring of each polygon is its shell, later rings are
+  // holes), so the grouping of rings into polygons decides which rings are holes: 'parts' keeps the
+  // real polygon parts, 'merged' puts every ring of a fire into one polygon.
+  const importPolygonStructure = (
+    imp: ReturnType<typeof createGraphImporter>,
+    ringGrouping: WildfireShapesOptions['ringGrouping']
+  ) => ({
+    featureOffsets:
+      ringGrouping === 'parts'
+        ? imp('feature-offsets', featureOffsetsBuffer, 'uint32', count + 1)
+        : imp('feature-offsets', mergedFeatureOffsetsBuffer, 'uint32', count + 1),
+    polygonOffsets:
+      ringGrouping === 'parts'
+        ? imp('polygon-offsets', polygonOffsetsBuffer, 'uint32', layout.partCount + 1)
+        : imp('polygon-offsets', featureRingsBuffer, 'uint32', count + 1),
+    ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1)
+  });
   const triangulated = triangulatePolygons(layout);
   const fill = {
     corners: resources.createBuffer('fill-corners', triangulated.corners),
@@ -270,7 +295,9 @@ export async function createWildfireShapes(
   );
 
   // ---- Graphs -----------------------------------------------------------------------------------
-  const buildMeasures = (options: WildfireShapesOptions): CompiledGPUCommandGraph<void> => {
+  const buildMeasures = async (
+    options: WildfireShapesOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'wildfire-measures'});
     const imp = createGraphImporter(graph);
     // Spread objects: the props exist in the contributor source; spreading keeps tsc quiet when the
@@ -278,8 +305,7 @@ export async function createWildfireShapes(
     const largeRingProps = options.largeRings === 'serial' ? {cooperativeRingRows: 0} : {};
     const lngLat = imp('lnglat', lngLatBuffer, 'float32x2', vertexCount);
     const planar = imp('planar', planarBuffer, 'float32x2', vertexCount);
-    const ringOffsets = imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1);
-    const featureRings = imp('feature-rings', featureRingsBuffer, 'uint32', count + 1);
+    const polygonStructure = importPolygonStructure(imp, options.ringGrouping);
     const view = (name: string, buffer: Buffer, rows = count) => imp(name, buffer, 'float32', rows);
     for (const system of SYSTEMS) {
       graph.add(
@@ -297,11 +323,8 @@ export async function createWildfireShapes(
           ellipsoidalEdgeModel: system === 'wgs84' ? 'coordinate-linear' : undefined,
           id: `measures-${system}`,
           positions: system === 'planar' ? planar : lngLat,
-          ringOffsets,
-          featureRingOffsets: featureRings,
           geometryType: 'polygons',
-
-          holeRule: options.holeRule,
+          ...polygonStructure,
           ...largeRingProps,
           output: {
             areas: view(`area-${system}`, area[system]),
@@ -340,10 +363,12 @@ export async function createWildfireShapes(
       ],
       body: /* wgsl */ `values[valuesOffset + index] = f32(counts[countsOffset + index]);`
     });
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
-  const buildShape = (options: WildfireShapesOptions): CompiledGPUCommandGraph<void> => {
+  const buildShape = async (
+    options: WildfireShapesOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'wildfire-shape'});
     const imp = createGraphImporter(graph);
     const convexityProps = {convexityMethod: options.convexityMethod};
@@ -352,9 +377,7 @@ export async function createWildfireShapes(
       new GPUShapeDescriptors({
         id: 'shape',
         positions: imp('planar', planarBuffer, 'float32x2', vertexCount),
-        ringOffsets: imp('ring-offsets', ringOffsetsBuffer, 'uint32', ringCount + 1),
-        featureRingOffsets: imp('feature-rings', featureRingsBuffer, 'uint32', count + 1),
-        holeRule: options.holeRule,
+        ...importPolygonStructure(imp, options.ringGrouping),
         ...convexityProps,
         parameters: shapeParameters.importToGraph(graph),
         output: {
@@ -377,7 +400,7 @@ export async function createWildfireShapes(
       ],
       body: /* wgsl */ `values[valuesOffset + index] = f32(flags[flagsOffset + index]);`
     });
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
   // Hides filtered fires: NaN for the float display column, the no-data word for the category column.
@@ -436,9 +459,9 @@ export async function createWildfireShapes(
   }`
     });
   }
-  const maskGraph = resources.track(maskGraphSource.compile());
-  let measures = buildMeasures(ctx.options);
-  let shape = buildShape(ctx.options);
+  const maskGraph = resources.track(await maskGraphSource.compileAsync());
+  let measures = await buildMeasures(ctx.options);
+  let shape = await buildShape(ctx.options);
 
   // ---- Readback table ---------------------------------------------------------------------------
   const tableSources: {buffer: Buffer; size: number}[] = [
@@ -837,24 +860,56 @@ export async function createWildfireShapes(
   updateVisibility();
   ctx.setReadout('selected', 'Click a fire');
 
+  // Graphs whose compile-time options changed and still need a rebuild. One swap serves both, so a
+  // later request must also cover what an earlier, superseded one asked for.
+  let measuresStale = false;
+  let shapeStale = false;
+  const graphSwap = resources.track(new GraphSwap());
+  const requestRebuild = () => {
+    // The previous graphs keep encoding until the new ones have compiled.
+    void graphSwap.request({
+      build: async () => ({
+        nextMeasures: measuresStale ? await buildMeasures(ctx.options) : null,
+        nextShape: shapeStale ? await buildShape(ctx.options) : null
+      }),
+      commit: ({nextMeasures, nextShape}) => {
+        if (nextMeasures) {
+          const previous = measures;
+          measures = nextMeasures;
+          resources.release(previous);
+          measuresStale = false;
+          dirty.measures = true;
+        }
+        if (nextShape) {
+          const previous = shape;
+          shape = nextShape;
+          resources.release(previous);
+          shapeStale = false;
+          dirty.shape = true;
+        }
+        dirty.display = true;
+        dirty.table = true;
+        ctx.requestLayers();
+      },
+      discard: ({nextMeasures, nextShape}) => {
+        if (nextMeasures) resources.release(nextMeasures);
+        if (nextShape) resources.release(nextShape);
+      }
+    });
+  };
+
   return {
     getCompiledGraphs: () => [measures, shape, maskGraph],
 
     setOption(id, _value, options) {
       lastChange = performance.now();
-      if (id === 'holeRule' || id === 'largeRings') {
-        resources.release(measures);
-        measures = buildMeasures(options);
-        dirty.measures = true;
-        if (id === 'holeRule') {
-          resources.release(shape);
-          shape = buildShape(options);
-          dirty.shape = true;
-        }
+      if (id === 'ringGrouping' || id === 'largeRings') {
+        measuresStale = true;
+        if (id === 'ringGrouping') shapeStale = true;
+        requestRebuild();
       } else if (id === 'convexityMethod') {
-        resources.release(shape);
-        shape = buildShape(options);
-        dirty.shape = true;
+        shapeStale = true;
+        requestRebuild();
       } else if (id === 'sliverThreshold') {
         shapeParameters.write(
           getGPUShapeDescriptorsParameterValues({sliverThreshold: options.sliverThreshold})

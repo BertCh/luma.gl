@@ -26,6 +26,7 @@ import type {LngLat, MapAnnotation} from '../../cartography/types';
 import {DENSE_POINT_RADIUS_STOPS} from '../../cartography/zoom';
 import {fetchJson, type GeoJsonCollection} from '../../data/loaders';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -238,7 +239,8 @@ export async function createNatureDensity(
 
   const getDisplayed = (): DensityGraph | undefined => {
     if (!current) return undefined;
-    if (ctx.options.binning === 'hexagon') return current.hexagon;
+    // The set decides, not the live option: a binning change swaps the set in asynchronously.
+    if (current.hexagon) return current.hexagon;
     return ctx.options.smoothing === 'gaussian-separable' ? current.separable : current.dense;
   };
 
@@ -270,13 +272,13 @@ export async function createNatureDensity(
     return [red, green, blue, 255];
   };
 
-  function buildDensityGraph(
+  async function buildDensityGraph(
     id: string,
     options: NatureDensityOptions,
     gridSize: readonly [number, number],
     binning: 'grid' | 'hexagon',
     useSeparable: boolean
-  ): DensityGraph {
+  ): Promise<DensityGraph> {
     const cellCount = gridSize[0] * gridSize[1];
     const values = resources.createBuffer(`${id}-values`, cellCount * 4);
     const extent = resources.createBuffer(`${id}-extent`, 8);
@@ -330,7 +332,7 @@ export async function createNatureDensity(
       }
     );
     return {
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       values,
       extent,
       histogram,
@@ -657,13 +659,13 @@ export async function createNatureDensity(
     }, 0);
   }
 
-  function buildSet(options: NatureDensityOptions): DensitySet {
+  async function buildSet(options: NatureDensityOptions): Promise<DensitySet> {
     const key = getKey(options);
     const id = key.replace(/:/g, '-');
     if (options.binning === 'grid') {
       const gridSize = GRID_SIZES[options.resolution];
-      const dense = buildDensityGraph(`${id}-dense`, options, gridSize, 'grid', false);
-      const separable = buildDensityGraph(`${id}-separable`, options, gridSize, 'grid', true);
+      const dense = await buildDensityGraph(`${id}-dense`, options, gridSize, 'grid', false);
+      const separable = await buildDensityGraph(`${id}-separable`, options, gridSize, 'grid', true);
       const cellCount = gridSize[0] * gridSize[1];
       const compareReader = new SummaryReader(
         resources,
@@ -696,36 +698,51 @@ export async function createNatureDensity(
     const gridSize = HEXAGON_SIZES[options.resolution];
     return {
       gridSize,
-      hexagon: buildDensityGraph(`${id}-hexagon`, options, gridSize, 'hexagon', false),
+      hexagon: await buildDensityGraph(`${id}-hexagon`, options, gridSize, 'hexagon', false),
       compareReader: null
     };
   }
 
-  function selectSet(): void {
-    const key = getKey(ctx.options);
-    if (key === currentKey && current) return;
-    let next = sets.get(key);
-    if (!next) {
-      next = buildSet(ctx.options);
-      sets.set(key, next);
-    }
-    current = next;
-    currentKey = key;
-    snapshot = null;
-    const [columnsCount, rowsCount] = next.gridSize;
-    ctx.setReadout(
-      'grid',
-      `${columnsCount} × ${rowsCount} ${ctx.options.binning === 'hexagon' ? 'hexagons' : 'cells'}`
-    );
-    if (ctx.options.binning === 'hexagon') {
-      for (const id of ['difference', 'denseTime', 'separableTime', 'speedup'])
-        ctx.setReadout(id, 'n/a (square grid only)');
-    } else {
-      for (const id of ['difference', 'denseTime', 'separableTime', 'speedup'])
-        ctx.setReadout(id, null);
-    }
-    markChanged();
-    publishCost();
+  const setSwap = resources.track(new GraphSwap());
+
+  /**
+   * Selects the density set for the current options once it is compiled (cached in `sets`, which
+   * `resources` owns). The current set keeps encoding until then.
+   */
+  function requestSet(): Promise<boolean> {
+    const options = {...ctx.options};
+    const key = getKey(options);
+    if (key === currentKey && current) return Promise.resolve(true);
+    return setSwap.request({
+      build: async () => {
+        let next = sets.get(key);
+        if (!next) {
+          next = await buildSet(options);
+          sets.set(key, next);
+        }
+        return next;
+      },
+      commit: next => {
+        current = next;
+        currentKey = key;
+        snapshot = null;
+        const [columnsCount, rowsCount] = next.gridSize;
+        ctx.setReadout(
+          'grid',
+          `${columnsCount} × ${rowsCount} ${options.binning === 'hexagon' ? 'hexagons' : 'cells'}`
+        );
+        if (options.binning === 'hexagon') {
+          for (const id of ['difference', 'denseTime', 'separableTime', 'speedup'])
+            ctx.setReadout(id, 'n/a (square grid only)');
+        } else {
+          for (const id of ['difference', 'denseTime', 'separableTime', 'speedup'])
+            ctx.setReadout(id, null);
+        }
+        markChanged();
+        publishCost();
+        ctx.requestLayers();
+      }
+    });
   }
 
   function writeMask(): void {
@@ -785,7 +802,7 @@ export async function createNatureDensity(
 
   writeMask();
   writeWeights();
-  selectSet();
+  await requestSet();
   publishKernelProfile();
   updateContextAnnotations();
   if (ctx.options.showContext) computeParkShare();
@@ -801,8 +818,7 @@ export async function createNatureDensity(
 
     setOption(id, _value, state) {
       if (['binning', 'resolution', 'statistic', 'sumAccumulation'].includes(id)) {
-        selectSet();
-        ctx.requestLayers();
+        void requestSet();
       } else if (id === 'smoothing' || id === 'sigma') {
         writeKernels(kernel, lineKernel, state.smoothing === 'off' ? 0 : state.sigma);
         markChanged();
@@ -915,7 +931,7 @@ export async function createNatureDensity(
     encode(commandEncoder, frame) {
       const displayed = getDisplayed();
       if (!displayed || !current) return;
-      const {binning} = ctx.options;
+      const binning = current.hexagon ? 'hexagon' : 'grid';
       const viewBounds = getViewportMetricBounds(frame.viewport, projection);
       const boundsData = Float32Array.from(viewBounds);
       const boundsChanged =
@@ -965,7 +981,8 @@ export async function createNatureDensity(
     getLayers() {
       const displayed = getDisplayed();
       if (!displayed || !current) return [];
-      const {binning, ramp, opacity, view, statistic, blending, showContext} = ctx.options;
+      const {ramp, opacity, view, statistic, blending, showContext} = ctx.options;
+      const binning = current.hexagon ? 'hexagon' : 'grid';
       const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
       const layers: Layer[] = [];
       // Tier 3, context: park outlines and the lake shore, thin and grey, under everything.

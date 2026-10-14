@@ -13,6 +13,7 @@
  * indirect draw records. Only small summaries are read back through a `GPUReadbackRing`.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -291,7 +292,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
         outputValues: importGraphBuffer(csrGraph, 'csr-weights', csrWeights, 'float32', edgeCount)
       })
     );
-    const importCSR = (graph: GPUCommandGraph<void>) => ({
+    const importTopology = (graph: GPUCommandGraph<void>) => ({
       offsets: importGraphBuffer(graph, 'csr-offsets', csrOffsets, 'uint32', nodeCount + 1),
       neighbors: importGraphBuffer(graph, 'csr-neighbors', csrNeighbors, 'uint32', edgeCount),
       weights: importGraphBuffer(graph, 'csr-weights', csrWeights, 'float32', edgeCount)
@@ -312,13 +313,15 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
       overflow: Buffer
     ) => ({
       ids: importOutput(graph, `${name}-ids`, ids, 'uint32', capacity),
-      count: importOutput(graph, `${name}-count`, count, 'uint32', 1),
-      overflow: importOutput(graph, `${name}-overflow`, overflow, 'uint32', 1)
+      status: {
+        count: importOutput(graph, `${name}-count`, count, 'uint32', 1),
+        overflow: importOutput(graph, `${name}-overflow`, overflow, 'uint32', 1)
+      }
     });
 
     const routeGraph = new GPUCommandGraph<void>(device, {id: 'network-route'});
     {
-      const csr = importCSR(routeGraph);
+      const topology = importTopology(routeGraph);
       const costsView = importOutput(routeGraph, 'route-costs', routeCosts, 'float32', nodeCount);
       const predecessorsView = importOutput(
         routeGraph,
@@ -330,14 +333,24 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
       routeGraph.add(
         new GPUNetworkReachability({
           id: 'route-reachability',
-          ...csr,
-          sources: origin.importToGraph(routeGraph),
-          maxIterations: ROUTE_MAXIMUM_ITERATIONS,
+          topology,
+          startNodes: origin.importToGraph(routeGraph),
+          maximumIterations: ROUTE_MAXIMUM_ITERATIONS,
           localIterations: LOCAL_ITERATIONS,
-          costs: costsView,
-          predecessors: predecessorsView,
-          converged: importOutput(routeGraph, 'route-converged', routeConverged, 'uint32', 1),
-          iterationCount: importOutput(routeGraph, 'route-iterations', routeIterations, 'uint32', 1)
+          output: {
+            costs: costsView,
+            predecessors: predecessorsView,
+            status: {
+              converged: importOutput(routeGraph, 'route-converged', routeConverged, 'uint32', 1),
+              iterationCount: importOutput(
+                routeGraph,
+                'route-iterations',
+                routeIterations,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       routeGraph.add(
@@ -346,19 +359,21 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           predecessors: predecessorsView,
           costs: costsView,
           targets: destination.importToGraph(routeGraph),
-          maxPathLength: ROUTE_MAXIMUM_PATH,
-          output: compact(
-            routeGraph,
-            'route-nodes',
-            routeNodeIds,
-            ROUTE_MAXIMUM_PATH,
-            routeNodeCount,
-            routeNodeOverflow
-          ),
-          pathCosts: importOutput(routeGraph, 'route-path-cost', routePathCost, 'float32', 1),
-          pathFound: importOutput(routeGraph, 'route-path-found', routePathFound, 'uint32', 1),
+          maximumPathLength: ROUTE_MAXIMUM_PATH,
+          output: {
+            ...compact(
+              routeGraph,
+              'route-nodes',
+              routeNodeIds,
+              ROUTE_MAXIMUM_PATH,
+              routeNodeCount,
+              routeNodeOverflow
+            ),
+            pathCosts: importOutput(routeGraph, 'route-path-cost', routePathCost, 'float32', 1),
+            pathFound: importOutput(routeGraph, 'route-path-found', routePathFound, 'uint32', 1)
+          },
           edges: {
-            ...csr,
+            topology,
             output: compact(
               routeGraph,
               'route-edges',
@@ -376,75 +391,91 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
     serviceGraph.add(
       new GPUNetworkServiceAreas({
         id: 'service-areas',
-        ...importCSR(serviceGraph),
+        topology: importTopology(serviceGraph),
         facilities: facilities.importToGraph(serviceGraph),
         costLimit: serviceCostLimit.importToGraph(serviceGraph),
-        maxIterations: SERVICE_MAXIMUM_ITERATIONS,
+        maximumIterations: SERVICE_MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        assignments: importOutput(
-          serviceGraph,
-          'service-assignments',
-          serviceAssignments,
-          'uint32',
-          nodeCount
-        ),
-        costs: importOutput(serviceGraph, 'service-costs', serviceCosts, 'float32', nodeCount),
-        facilityNodeCounts: importOutput(
-          serviceGraph,
-          'service-node-counts',
-          serviceNodeCounts,
-          'uint32',
-          FACILITY_COUNT
-        ),
-        facilityCostSums: importOutput(
-          serviceGraph,
-          'service-cost-sums',
-          serviceCostSums,
-          'float32',
-          FACILITY_COUNT
-        ),
-        converged: importOutput(serviceGraph, 'service-converged', serviceConverged, 'uint32', 1)
+        output: {
+          assignments: importOutput(
+            serviceGraph,
+            'service-assignments',
+            serviceAssignments,
+            'uint32',
+            nodeCount
+          ),
+          costs: importOutput(serviceGraph, 'service-costs', serviceCosts, 'float32', nodeCount),
+          facilityNodeCounts: importOutput(
+            serviceGraph,
+            'service-node-counts',
+            serviceNodeCounts,
+            'uint32',
+            FACILITY_COUNT
+          ),
+          facilityCostSums: importOutput(
+            serviceGraph,
+            'service-cost-sums',
+            serviceCostSums,
+            'float32',
+            FACILITY_COUNT
+          ),
+          status: {
+            converged: importOutput(
+              serviceGraph,
+              'service-converged',
+              serviceConverged,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
 
     const hoodGraph = new GPUCommandGraph<void>(device, {id: 'network-hood'});
     {
-      const csr = importCSR(hoodGraph);
+      const csr = importTopology(hoodGraph);
       hoodGraph.add(
         new GPUNetworkNeighborhood({
           id: 'neighborhood',
-          offsets: csr.offsets,
-          neighbors: csr.neighbors,
-          seeds: seeds.importToGraph(hoodGraph),
+          topology: {offsets: csr.offsets, neighbors: csr.neighbors},
+          startNodes: seeds.importToGraph(hoodGraph),
           hops: hopsParameter.importToGraph(hoodGraph),
-          maxHops: MAXIMUM_HOPS,
-          hopDistances: importOutput(hoodGraph, 'hop-distances', hopDistances, 'uint32', nodeCount),
-          nodes: compact(
-            hoodGraph,
-            'hood-nodes',
-            hoodNodeIds,
-            NODE_CAPACITY,
-            hoodNodeCount,
-            hoodNodeOverflow
-          ),
-          edges: compact(
-            hoodGraph,
-            'hood-edges',
-            hoodEdgeIds,
-            EDGE_CAPACITY,
-            hoodEdgeCount,
-            hoodEdgeOverflow
-          )
+          maximumHops: MAXIMUM_HOPS,
+          output: {
+            hopDistances: importOutput(
+              hoodGraph,
+              'hop-distances',
+              hopDistances,
+              'uint32',
+              nodeCount
+            ),
+            nodes: compact(
+              hoodGraph,
+              'hood-nodes',
+              hoodNodeIds,
+              NODE_CAPACITY,
+              hoodNodeCount,
+              hoodNodeOverflow
+            ),
+            edges: compact(
+              hoodGraph,
+              'hood-edges',
+              hoodEdgeIds,
+              EDGE_CAPACITY,
+              hoodEdgeCount,
+              hoodEdgeOverflow
+            )
+          }
         })
       );
     }
 
     const analyticsGraph = new GPUCommandGraph<void>(device, {id: 'network-analytics'});
-    const analyticsCSR = importCSR(analyticsGraph);
+    const analyticsTopology = importTopology(analyticsGraph);
     const analytics = new GPUNetworkAnalyticsColumns({
       id: 'network-analytics',
-      offsets: analyticsCSR.offsets,
-      neighbors: analyticsCSR.neighbors,
+      topology: {offsets: analyticsTopology.offsets, neighbors: analyticsTopology.neighbors},
       degree: {
         output: importOutput(analyticsGraph, 'degree', degreeRaw, 'uint32', nodeCount),
         normalized: importOutput(
@@ -464,7 +495,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           'float32',
           nodeCount
         ),
-        iterations: 100,
+        iterationCount: 100,
         residual: importOutput(analyticsGraph, 'page-rank-residual', pageRankResidual, 'float32', 1)
       },
       coreNumber: {
@@ -476,32 +507,41 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
           'float32',
           nodeCount
         ),
-        iterations: 256,
+        maximumIterations: 256,
         degeneracy: importOutput(analyticsGraph, 'core-degeneracy', coreDegeneracy, 'uint32', 1),
-        converged: importOutput(analyticsGraph, 'core-converged', coreConverged, 'uint32', 1)
+        status: {
+          converged: importOutput(analyticsGraph, 'core-converged', coreConverged, 'uint32', 1)
+        }
       },
       communities: {
         output: importOutput(analyticsGraph, 'communities', communityLabels, 'uint32', nodeCount),
-        converged: importOutput(
-          analyticsGraph,
-          'community-converged',
-          communityConverged,
-          'uint32',
-          1
-        )
+        status: {
+          converged: importOutput(
+            analyticsGraph,
+            'community-converged',
+            communityConverged,
+            'uint32',
+            1
+          )
+        }
       }
     });
     analyticsGraph.add(analytics);
 
-    // The analytics contributor owns a 16-byte buffer: track it before the compiled graphs so the
-    // reverse-order teardown destroys it after them.
-    resources.track(analytics);
-    const compiledCSR: CompiledGPUCommandGraph<void> = resources.track(csrGraph.compile());
-    const compiledRoute: CompiledGPUCommandGraph<void> = resources.track(routeGraph.compile());
-    const compiledService: CompiledGPUCommandGraph<void> = resources.track(serviceGraph.compile());
-    const compiledHood: CompiledGPUCommandGraph<void> = resources.track(hoodGraph.compile());
+    const compiledCSR: CompiledGPUCommandGraph<void> = resources.track(
+      await csrGraph.compileAsync()
+    );
+    const compiledRoute: CompiledGPUCommandGraph<void> = resources.track(
+      await routeGraph.compileAsync()
+    );
+    const compiledService: CompiledGPUCommandGraph<void> = resources.track(
+      await serviceGraph.compileAsync()
+    );
+    const compiledHood: CompiledGPUCommandGraph<void> = resources.track(
+      await hoodGraph.compileAsync()
+    );
     const compiledAnalytics: CompiledGPUCommandGraph<void> = resources.track(
-      analyticsGraph.compile()
+      await analyticsGraph.compileAsync()
     );
     const compiledGraphs = [
       compiledCSR,
@@ -751,7 +791,7 @@ export const networkAnalysisMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = bytes.slice();
         showSummary(

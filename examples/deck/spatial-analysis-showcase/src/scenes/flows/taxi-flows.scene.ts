@@ -546,7 +546,7 @@ export default defineScene<TaxiFlowOptions>({
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
-import {getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 const graph = new GPUCommandGraph(device, {id: 'flows'});
 graph.add(
@@ -574,14 +574,16 @@ graph.add(
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: ${state.source === 'taxi' ? '16384' : '131072'},
-    output: {ids, count, overflow, requiredCount},         // top-${TOP_FLOW_COUNT} pairs, heaviest first
-    flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
-    zoneOutWeights, zoneInWeights                       // per-zone totals
+    output: {
+      ids, status: {count, overflow, requiredCount},       // top-${TOP_FLOW_COUNT} pairs, heaviest first
+      flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
+      zoneOutWeights, zoneInWeights              // per-zone totals
+    }
   })
 );
-const compiled = graph.compile();   // once
+const compiled = await graph.compileAsync();  // once
 // every frame: write parameter buffers, then
-windowParams.write(getGPUTimeWindowParameterValues({start: 13, end: 16}));
+windowParams.write(getGPUTimeWindowFilterParameterValues({start: 13, end: 16}));
 compiled.encode(commandEncoder, {parameters: undefined});
 // when the list settles: a few kilobytes back, then arrows
 const arrows = buildFlowArrows({originZones, destinationZones, weights, count, getZoneCenter, limit: ${state.arcs}});

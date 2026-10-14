@@ -21,6 +21,7 @@
  * toggle invalidates the handle every frame to show the cost of rebuilding.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
@@ -33,6 +34,7 @@ import {
   GPUSpatialJoinPrepared
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -98,8 +100,10 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     type BuiltGraph = {
       compiled: CompiledGPUCommandGraph<void>;
       prepared: GPUSpatialJoinPrepared | null;
+      /** The tracked wrapper that destroys `prepared`; set by `trackBuilt`. */
+      preparedOwner?: {destroy: () => void};
     };
-    const buildGraph = (spatialSort: boolean, usePrepared: boolean): BuiltGraph => {
+    const buildGraph = async (spatialSort: boolean, usePrepared: boolean): Promise<BuiltGraph> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `polygon-join-${spatialSort ? 'sorted' : 'unsorted'}${usePrepared ? '-prepared' : ''}`
       });
@@ -142,51 +146,63 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUPointInPolygonJoin({
           id: 'polygon-join',
-          points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
-          polygonPositions: polygons.positions,
-          featureOffsets: polygons.featureOffsets,
-          polygonOffsets: polygons.polygonOffsets,
-          ringOffsets: polygons.ringOffsets,
+          points: {
+            kind: 'points',
+            positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+          },
+          polygons,
           candidateCapacity: Math.max(1024, pointCount * 4),
           // With a prepared handle the sort order belongs to the handle.
           ...(prepared ? {prepared} : {spatialSort}),
-          pointFeatureIds: importGraphBuffer(
-            graph,
-            'point-features',
-            pointFeatures,
-            'uint32',
-            pointCount
-          ),
-          featureCounts: importGraphBuffer(
-            graph,
-            'feature-counts',
-            featureCounts,
-            'uint32',
-            featureCount
-          ),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+          output: {
+            pointFeatureIds: importGraphBuffer(
+              graph,
+              'point-features',
+              pointFeatures,
+              'uint32',
+              pointCount
+            ),
+            featureCounts: importGraphBuffer(
+              graph,
+              'feature-counts',
+              featureCounts,
+              'uint32',
+              featureCount
+            ),
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+              candidateCount: importGraphBuffer(
+                graph,
+                'candidate-count',
+                candidateCount,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
-      return {compiled: graph.compile(), prepared};
+      return {compiled: await graph.compileAsync(), prepared};
     };
     /** Tracks a built graph so it is destroyed before the handle that its graph imports. */
     const trackBuilt = (built: BuiltGraph): BuiltGraph => {
+      let preparedOwner: {destroy: () => void} | undefined;
       if (built.prepared) {
         const {prepared} = built;
-        resources.track({destroy: () => prepared.destroy()});
+        preparedOwner = resources.track({destroy: () => prepared.destroy()});
       }
       resources.track(built.compiled);
-      return built;
+      return {...built, preparedOwner};
     };
+    /** Releases a replaced graph, then its handle; untracking keeps scene destroy from repeating it. */
     const releaseBuilt = (built: BuiltGraph) => {
       resources.release(built.compiled);
-      built.prepared?.destroy();
+      if (built.preparedOwner) resources.release(built.preparedOwner);
     };
     let spatialSort = false;
     let usePrepared = false;
     let invalidateEveryFrame = false;
-    let built = trackBuilt(buildGraph(spatialSort, usePrepared));
+    let built = trackBuilt(await buildGraph(spatialSort, usePrepared));
     let compiled = built.compiled;
 
     const summaryWords = featureCount + 2;
@@ -210,17 +226,25 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
     let readbackPending = false;
     let countRangeMaximum = Math.max(1, Math.ceil((pointCount / featureCount) * 3));
 
+    const graphSwap = resources.track(new GraphSwap());
+    /** Rebuilds for the current toggles; the running graph encodes until the new one compiled. */
     const replaceGraph = () => {
-      const previous = built;
-      built = trackBuilt(buildGraph(spatialSort, usePrepared));
-      compiled = built.compiled;
-      builtFrames = 0;
-      // Deck still draws with buffers only; the old graph is freed once no frame can encode it.
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          if (!destroyed) releaseBuilt(previous);
-        })
-      );
+      void graphSwap.request({
+        build: async () => trackBuilt(await buildGraph(spatialSort, usePrepared)),
+        commit: next => {
+          const previous = built;
+          built = next;
+          compiled = built.compiled;
+          builtFrames = 0;
+          // Deck still draws with buffers only; the old graph is freed once no frame can encode it.
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              if (!destroyed) releaseBuilt(previous);
+            })
+          );
+        },
+        discard: releaseBuilt
+      });
     };
     let builtFrames = 0;
 
@@ -323,7 +347,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteLength: summaryWords * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, summaryWords);
         const ranked = Array.from({length: featureCount}, (_, row) => row)
@@ -363,7 +387,7 @@ export const polygonJoinMode: SpatialAnalysisModeDefinition = {
       try {
         const activeSort = spatialSort;
         const active = compiled;
-        temporaryBuilt = buildGraph(!activeSort, usePrepared);
+        temporaryBuilt = await buildGraph(!activeSort, usePrepared);
         temporary = temporaryBuilt.compiled;
         const options = {parameters: undefined, completionBuffer: overflow, signal: context.signal};
         const activeTiming = await measureCompiledGraph(device, active, options);

@@ -11,7 +11,7 @@ import {
   GPUSpatialWeightsTransform,
   type GPUNeighborSearchKernel,
   type GPUNeighborSearchWeightKind,
-  type GPUSpatialWeightsInfo,
+  type GPUSpatialWeightsInformation,
   type GPUSpatialWeightsKernel
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -68,11 +68,14 @@ export function isRowStandardized(config: Pick<WeightsConfig, 'transform' | 'row
 }
 
 /**
- * `GPUSpatialWeights.info` for hand-assembled weights. With `transform: 'row'` the statistics
+ * `GPUSpatialWeights.information` for hand-assembled weights. With `transform: 'row'` the statistics
  * re-standardize each row over the neighbours left after masking, so a masked neighbour does not
  * shrink the row's total weight. Otherwise the state is unknown and the weights are used as given.
  */
-export function getWeightsInfo(rowCount: number, rowStandardized: boolean): GPUSpatialWeightsInfo {
+export function getWeightsInfo(
+  rowCount: number,
+  rowStandardized: boolean
+): GPUSpatialWeightsInformation {
   return {
     rowCount,
     transform: rowStandardized ? 'row' : 'unknown',
@@ -94,10 +97,17 @@ export type WeightsCore = {
   positions: Buffer;
   /** Slot capacity of `csr`. */
   slots: number;
+  /** Producer `status.overflow`: one when the neighbors or the contiguity pair list did not fit. */
   overflow: Buffer;
+  /** Producer `status.requiredCount`: the unclamped neighbor slot total. */
   total: Buffer;
-  /** Compiles any graph the configuration needs (no-op when cached). Returns true when it compiled. */
-  prepare: (config: WeightsConfig) => boolean;
+  /**
+   * Contiguity `status.candidateOverflow`: one when the intermediate pair list overflowed, which
+   * makes `total` a lower bound. Never written by the search producers.
+   */
+  candidateOverflow: Buffer;
+  /** Compiles any graph the configuration needs (no-op when cached). Resolves true when it compiled. */
+  prepare: (config: WeightsConfig) => Promise<boolean>;
   /** Writes the parameter buffers of the search. */
   writeParameters: (config: WeightsConfig) => void;
   /** Encodes the producer and then the transform. */
@@ -114,7 +124,7 @@ export type WeightsCore = {
   createPartner: (name: string) => {
     csr: WeightsCsr;
     slots: number;
-    prepare: (k: number) => boolean;
+    prepare: (k: number) => Promise<boolean>;
     encode: (commandEncoder: CommandEncoder, k: number) => void;
   };
 };
@@ -146,7 +156,8 @@ export function createWeightsCore(props: {
   const positions = create('centroids', geography.centroids);
   const verticesBuffer = create('contiguity-vertices', geography.contiguityVertices);
   const ringOffsetsBuffer = create('contiguity-ring-offsets', geography.contiguityRingOffsets);
-  const polygonOffsetsBuffer = create('feature-ring-offsets', geography.featureRingOffsets);
+  const featureOffsetsBuffer = create('feature-polygon-offsets', geography.featurePolygonOffsets);
+  const polygonOffsetsBuffer = create('polygon-ring-offsets', geography.polygonRingOffsets);
   const csr: WeightsCsr = {
     offsets: create('offsets', (rowCount + 1) * 4),
     neighbors: create('neighbors', slots * 4),
@@ -155,6 +166,7 @@ export function createWeightsCore(props: {
   };
   const overflow = create('overflow', 4);
   const total = create('total', 4);
+  const candidateOverflow = create('candidate-overflow', 4);
   const scratch = create('transform-scratch', slots * 4);
   const searchParameters = resources.createParameterBuffer(
     'search-parameters',
@@ -170,9 +182,12 @@ export function createWeightsCore(props: {
   ];
 
   const compiled = new Map<string, CompiledGPUCommandGraph<void>>();
-  const getOrCompile = (key: string, build: () => GPUCommandGraph<void>): boolean => {
+  const getOrCompile = async (
+    key: string,
+    build: () => GPUCommandGraph<void>
+  ): Promise<boolean> => {
     if (compiled.has(key)) return false;
-    compiled.set(key, resources.track(build().compile()));
+    compiled.set(key, resources.track(await build().compileAsync()));
     return true;
   };
 
@@ -190,6 +205,33 @@ export function createWeightsCore(props: {
       : {})
   });
 
+  /** The CSR views plus the producer status scalars of a `GPUSpatialWeightsOutput`. */
+  const importOutput = (
+    graph: GPUCommandGraph<void>,
+    target: WeightsCsr,
+    status: {overflow: Buffer; total?: Buffer; candidateOverflow?: Buffer},
+    withDistances: boolean
+  ) => ({
+    ...importCsr(graph, target, withDistances),
+    status: {
+      overflow: importGraphBuffer(graph, 'overflow', status.overflow, 'uint32', 1),
+      ...(status.total
+        ? {requiredCount: importGraphBuffer(graph, 'total', status.total, 'uint32', 1)}
+        : {}),
+      ...(status.candidateOverflow
+        ? {
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              status.candidateOverflow,
+              'uint32',
+              1
+            )
+          }
+        : {})
+    }
+  });
+
   const buildContiguity = (criterion: 'queen' | 'rook', snapTolerance: number) => {
     const graph = new GPUCommandGraph<void>(device, {
       id: `${id}-${criterion}-snap${snapTolerance}`
@@ -199,30 +241,38 @@ export function createWeightsCore(props: {
         id: 'contiguity',
         criterion,
         snapTolerance: snapTolerance > 0 ? snapTolerance : undefined,
-        positions: importGraphBuffer(
-          graph,
-          'vertices',
-          verticesBuffer,
-          'float32x2',
-          geography.contiguityVertices.length / 2
-        ),
-        ringOffsets: importGraphBuffer(
-          graph,
-          'ring-offsets',
-          ringOffsetsBuffer,
-          'uint32',
-          geography.contiguityRingOffsets.length
-        ),
-        polygonOffsets: importGraphBuffer(
-          graph,
-          'polygon-offsets',
-          polygonOffsetsBuffer,
-          'uint32',
-          rowCount + 1
-        ),
-        weights: importCsr(graph, csr, false),
-        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-        totalNeighbors: importGraphBuffer(graph, 'total', total, 'uint32', 1)
+        polygons: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
+            graph,
+            'vertices',
+            verticesBuffer,
+            'float32x2',
+            geography.contiguityVertices.length / 2
+          ),
+          featureOffsets: importGraphBuffer(
+            graph,
+            'feature-offsets',
+            featureOffsetsBuffer,
+            'uint32',
+            geography.featurePolygonOffsets.length
+          ),
+          polygonOffsets: importGraphBuffer(
+            graph,
+            'polygon-offsets',
+            polygonOffsetsBuffer,
+            'uint32',
+            geography.polygonRingOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'ring-offsets',
+            ringOffsetsBuffer,
+            'uint32',
+            geography.contiguityRingOffsets.length
+          )
+        },
+        output: importOutput(graph, csr, {overflow, total, candidateOverflow}, false)
       })
     );
     return graph;
@@ -238,9 +288,7 @@ export function createWeightsCore(props: {
         gridSize: SEARCH_GRID,
         positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
         parameters: searchParameters.importToGraph(graph),
-        weights: importCsr(graph, csr, true),
-        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-        totalNeighbors: importGraphBuffer(graph, 'total', total, 'uint32', 1)
+        output: importOutput(graph, csr, {overflow, total}, true)
       })
     );
     return graph;
@@ -298,7 +346,7 @@ export function createWeightsCore(props: {
         weights: {
           ...importCsr(graph, csr, withDistances),
           // 'adaptive' reads the neighbour criterion from the provenance.
-          info: {
+          information: {
             rowCount,
             transform: 'unknown',
             symmetric: 'unknown',
@@ -331,25 +379,26 @@ export function createWeightsCore(props: {
     slots,
     overflow,
     total,
+    candidateOverflow,
     hasDistances,
     getBandMeters,
     getKernelBandwidth,
 
-    prepare(rawConfig) {
+    async prepare(rawConfig) {
       const config = effectiveTransform(rawConfig);
       let didCompile = false;
       const producerKey = getProducerKey(config);
       didCompile =
-        getOrCompile(producerKey, () =>
+        (await getOrCompile(producerKey, () =>
           config.source === 'knn'
             ? buildSearch('knn', config.k)
             : config.source === 'band'
               ? buildSearch('radius', 1)
               : buildContiguity(config.source, config.snapTolerance)
-        ) || didCompile;
+        )) || didCompile;
       const transformKey = getTransformKey(config);
       if (transformKey) {
-        didCompile = getOrCompile(transformKey, () => buildTransform(config)) || didCompile;
+        didCompile = (await getOrCompile(transformKey, () => buildTransform(config))) || didCompile;
       }
       return didCompile;
     },
@@ -416,8 +465,7 @@ export function createWeightsCore(props: {
             gridSize: SEARCH_GRID,
             positions: importGraphBuffer(graph, 'positions', positions, 'float32x2', rowCount),
             parameters: partnerParameters.importToGraph(graph),
-            weights: importCsr(graph, partnerCsr, false),
-            overflow: importGraphBuffer(graph, 'overflow', partnerOverflow, 'uint32', 1)
+            output: importOutput(graph, partnerCsr, {overflow: partnerOverflow}, false)
           })
         );
         return graph;

@@ -19,6 +19,7 @@
  * Window sliders rewrite two mask buffers; each graph is re-encoded only when its inputs change.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -409,12 +410,12 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
      * One classified display: select a metric slot, classify it, color it. It owns its parameter
      * and output buffers and one compiled graph.
      */
-    function createClassifiedDisplay(props: {
+    async function createClassifiedDisplay(props: {
       id: string;
       capacity: number;
       metrics: Buffer;
       count: Buffer;
-    }): ClassifiedDisplay {
+    }): Promise<ClassifiedDisplay> {
       const {id, capacity} = props;
       const selection = resources.createParameterBuffer(`${id}-selection`, 'uint32', 2);
       const breaksParameters = resources.createParameterBuffer(
@@ -491,7 +492,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      const compiled = resources.track(graph.compile());
+      const compiled = resources.track(await graph.compileAsync());
       return {
         graph: compiled,
         colors,
@@ -607,15 +608,17 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
           output: {
             keys: importGraphBuffer(zoneGraph, 'io-zone-keys', zoneKeys, 'uint32x2', ZONE_CAPACITY),
             counts: slices.view(ZONE_ROWS_SLOT, 'uint32'),
-            count: importGraphBuffer(zoneGraph, 'io-zone-count', zoneCount, 'uint32', 1),
-            overflow: importGraphBuffer(zoneGraph, 'io-zone-overflow', zoneOverflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(zoneGraph, 'io-zone-total', zoneTotal, 'uint32', 1)
+            status: {
+              count: importGraphBuffer(zoneGraph, 'io-zone-count', zoneCount, 'uint32', 1),
+              overflow: importGraphBuffer(zoneGraph, 'io-zone-overflow', zoneOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(zoneGraph, 'io-zone-total', zoneTotal, 'uint32', 1)
+            }
           }
         })
       );
     }
-    const zonesCompiled = resources.track(zoneGraph.compile());
-    const zoneDisplay = createClassifiedDisplay({
+    const zonesCompiled = resources.track(await zoneGraph.compileAsync());
+    const zoneDisplay = await createClassifiedDisplay({
       id: 'zones',
       capacity: ZONE_CAPACITY,
       metrics: zoneMetrics,
@@ -647,9 +650,11 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
           'uint32',
           ZONE_CAPACITY
         ),
-        count: importGraphBuffer(compareGraph, table.count.id, table.count, 'uint32', 1),
-        overflow: importGraphBuffer(compareGraph, table.overflow.id, table.overflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(compareGraph, table.total.id, table.total, 'uint32', 1),
+        status: {
+          count: importGraphBuffer(compareGraph, table.count.id, table.count, 'uint32', 1),
+          overflow: importGraphBuffer(compareGraph, table.overflow.id, table.overflow, 'uint32', 1),
+          requiredCount: importGraphBuffer(compareGraph, table.total.id, table.total, 'uint32', 1)
+        },
         mask: importGraphBuffer(
           compareGraph,
           `mask-${index ? 'b' : 'a'}`,
@@ -715,21 +720,23 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
             ratio: outputViews.ratio,
             percentChange: outputViews.percentChange,
             zScore: outputViews.zScore,
-            count: importGraphBuffer(compareGraph, 'io-compare-count', compareCount, 'uint32', 1),
-            overflow: importGraphBuffer(
-              compareGraph,
-              'io-compare-overflow',
-              compareOverflow,
-              'uint32',
-              1
-            ),
-            requiredCount: importGraphBuffer(
-              compareGraph,
-              'io-compare-total',
-              compareTotal,
-              'uint32',
-              1
-            )
+            status: {
+              count: importGraphBuffer(compareGraph, 'io-compare-count', compareCount, 'uint32', 1),
+              overflow: importGraphBuffer(
+                compareGraph,
+                'io-compare-overflow',
+                compareOverflow,
+                'uint32',
+                1
+              ),
+              requiredCount: importGraphBuffer(
+                compareGraph,
+                'io-compare-total',
+                compareTotal,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
@@ -778,8 +785,8 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
         })
       );
     }
-    const compareCompiled = resources.track(compareGraph.compile());
-    const compareDisplay = createClassifiedDisplay({
+    const compareCompiled = resources.track(await compareGraph.compileAsync());
+    const compareDisplay = await createClassifiedDisplay({
       id: 'compare',
       capacity: COMPARE_CAPACITY,
       metrics: compareMetrics,
@@ -1168,7 +1175,7 @@ export const groupStatisticsMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: readbackByteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = new ArrayBuffer(bytes.byteLength);
         new Uint8Array(copy).set(bytes);

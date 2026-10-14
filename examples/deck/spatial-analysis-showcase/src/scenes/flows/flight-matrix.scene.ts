@@ -503,36 +503,39 @@ import {
   GPUAdjacencyMatrix,
   GPUAdjacencyMatrixOrder,
   GPUNetworkCoarsening,
-  encodeGPUAdjacencyMatrixWindow
+  getGPUAdjacencyMatrixParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 // 1. airport -> matrix position: sort by group, then by tie key (two stable GPU sorts)
-orderGraph.add(new GPUAdjacencyMatrixOrder({groups, tieKeys, order}));
+orderGraph.add(new GPUAdjacencyMatrixOrder({groups, tieKeys, output: {order}}));
 
 // 2. R x R image of the CSR graph through that order (one graph per resolution)
 matrixGraph.add(
   new GPUAdjacencyMatrix({
-    offsets, neighbors, order: displayOrder,
-    window: window.importToGraph(matrixGraph),   // [rowStart, rowEnd, colStart, colEnd)
+    topology: {offsets, neighbors}, order: displayOrder,
+    parameters: window.importToGraph(matrixGraph),   // [rowStart, rowEnd, colStart, colEnd)
     resolution: ${2 ** state.resolutionPower},
-    output: {counts, maxCount}
+    output: {counts, maximumCount}
   })
 );
 // A window holds fewer airports than bins? Make end - start an exact multiple of R, so every
 // cell covers k whole airports and no bin is skipped:
 const k = Math.ceil(extent / ${2 ** state.resolutionPower});
-window.write(encodeGPUAdjacencyMatrixWindow(
-  {rowStart, rowEnd: rowStart + k * ${2 ** state.resolutionPower}, colStart, colEnd: colStart + k * ${2 ** state.resolutionPower}},
-  ${2 ** state.resolutionPower}
-));
+window.write(getGPUAdjacencyMatrixParameterValues({
+  rowStart, rowEnd: rowStart + k * ${2 ** state.resolutionPower},
+  colStart, colEnd: colStart + k * ${2 ** state.resolutionPower},
+  resolution: ${2 ** state.resolutionPower}
+}));
 
 // 3. supernodes and superedges by label (${state.coarsenBy})
 coarsenGraph.add(
   new GPUNetworkCoarsening({
-    offsets, neighbors, labels,
+    topology: {offsets, neighbors}, labels,
     groupCapacity: 256,
-    groupVertexCount, groupIntraEdgeCount,
-    edges: {ids, count, overflow}, edgeTargets, edgeCounts, summary
+    output: {
+      groupNodeCount, groupIntraEdgeCount,
+      edges: {ids, status: {count, overflow}}, edgeTargetGroups: edgeTargets, edgeCounts, summary
+    }
   })
 );
 // Reorder: the matrix reads displayOrder; slide it from old to new positions, then copy the

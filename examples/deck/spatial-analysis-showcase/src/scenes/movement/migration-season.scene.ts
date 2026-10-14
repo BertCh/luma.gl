@@ -203,27 +203,31 @@ export default defineScene<MigrationSeasonOptions>({
   ],
 
   snippet: state => `import {GPUCommandGraph, DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 import {GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues} from '@luma.gl/experimental/gpu-spatial-analysis';
 
 // 1. Every track interpolated at the playhead, on the GPU (positions: lng/lat degrees, timestamps: float32 s of the year)
 playheadGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets, parameters: playheadParameters.importToGraph(playheadGraph),
-  currentPositions, status,
-  activeTracks: {ids: activeIds, count: activeCount, overflow},
-  drawInstanceCount: playheadGraph.importGPUData('marker-count', markerDraw.getInstanceCountData(0))
+  output: {
+    currentPositions, trackStatus: status,
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow}},
+    drawInstanceCount: playheadGraph.importGPUData('marker-count', markerDraw.getInstanceCountData(0))
+  }
 }));
 
 // 2. The segments of the last ${state.trailDays} days, with a fade
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStartTimes, endTimestamps: segmentEndTimes, window: windowParameters.importToGraph(trailGraph),
-  output: {ids: trailIds, count: trailCount, overflow}, fadeWeights, clipFractions,
-  drawInstanceCount: trailGraph.importGPUData('trail-count', trailDraw.getInstanceCountData(0))
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow}, fadeWeights, clipFractions,
+    drawInstanceCount: trailGraph.importGPUData('trail-count', trailDraw.getInstanceCountData(0))
+  }
 }));
 
 // Per frame: two parameter writes and two encodes, nothing else
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: day * 86400, maxGap: ${state.maxGapHours * 3600}}));
-windowParameters.write(getGPUTimeWindowParameterValues({
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead: day * 86400, maximumGap: ${state.maxGapHours * 3600}}));
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: day * 86400 - ${state.trailDays * 86400}, end: day * 86400, startFadeDuration: ${Math.round(state.trailDays * 86400 * state.tailFade)}
 }));`,
 

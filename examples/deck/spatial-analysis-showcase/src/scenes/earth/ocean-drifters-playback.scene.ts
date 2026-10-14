@@ -370,38 +370,42 @@ import {
   GPUTrajectoryPlayhead, GPULineDensity,
   getGPUTrajectoryPlayheadParameterValues, getGPULineDensityParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // positions: float32x2 lon/lat, timestamps: float32 days since 1 Jan 2017, trackOffsets: uint32
 const playGraph = new GPUCommandGraph(device, {id: 'playback'});
 playGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playGraph),
-  currentPositions, status, segmentRows, segmentFractions,    // rows + fractions give the SST at the playhead
-  activeTracks: {ids: activeIds, count: activeCount, overflow: activeOverflow},
-  drawInstanceCount
+  output: {
+    currentPositions, trackStatus: status, segmentRows, segmentFractions,    // rows + fractions give the SST at the playhead
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow: activeOverflow}},
+    drawInstanceCount
+  }
 }));
 
 const trailGraph = new GPUCommandGraph(device, {id: 'trails'});
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStarts, endTimestamps: segmentEnds,      // interval mode: one row per segment
   window: windowParameters.importToGraph(trailGraph),
-  output: {ids: trailIds, count: trailCount, overflow: trailOverflow},
-  fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  }
 }));
 
 const densityGraph = new GPUCommandGraph(device, {id: 'density'});
 densityGraph.add(new GPULineDensity({
-  positions, pathOffsets: trackOffsets,
+  positions, lineOffsets: trackOffsets,
   columns: ${Math.round(360 / Number(state.densityCell))}, rows: ${Math.round(160 / Number(state.densityCell))},       // compile-time: ${state.densityCell} degree cells
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},                              // lengths are great-circle meters
   parameters: gridParameters.importToGraph(densityGraph),     // [west, south, cellWidth, cellHeight]
-  output: {lengths, densities, overflow}
+  output: {lengths, densities, status: {overflow}}
 }));
 
 // every frame: parameters are plain buffer writes
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: ${state.maxGapDays}}));
-windowParameters.write(getGPUTimeWindowParameterValues({
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: ${state.maxGapDays}}));
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: playhead - ${state.trailDays}, end: playhead, startFadeDuration: ${(state.trailDays * state.tailFade).toFixed(1)}
 }));
 play.encode(commandEncoder, {parameters: undefined});`,

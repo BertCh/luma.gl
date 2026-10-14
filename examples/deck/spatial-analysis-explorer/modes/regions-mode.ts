@@ -25,7 +25,8 @@ import {GPUContiguityWeights} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
   GPU_SKATER_NO_CUT,
-  GPU_SKATER_PARAMETER_LENGTH,
+  getGPUSkaterRegionsParameterValues,
+  GPU_SKATER_REGIONS_PARAMETER_LENGTH,
   GPURegionPartitionEvaluation,
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree
@@ -96,13 +97,15 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const resources = new SpatialAnalysisResources(device, 'regions');
-    const polygonCount = zones.polygonOffsets.length - 1;
+    // W rows are features (ZIP codes): a multipart ZIP is one row of the neighbor graph.
+    const featureCount = zones.featureOffsets.length - 1;
+    const polygonPartCount = zones.polygonOffsets.length - 1;
     const ringCount = zones.ringOffsets.length - 1;
     const vertexCount = zones.polygonPositions.length / 2;
     const segmentCount = zones.outlineSegments.length / 4;
-    const neighborCapacity = polygonCount * NEIGHBORS_PER_POLYGON;
+    const neighborCapacity = featureCount * NEIGHBORS_PER_POLYGON;
     const columnCount = ATTRIBUTES.length;
-    const maximumRegions = Math.min(MAXIMUM_REGIONS, polygonCount);
+    const maximumRegions = Math.min(MAXIMUM_REGIONS, featureCount);
     const stepCount = maximumRegions - 1;
     const coordinateOrigin: [number, number, number] = [zones.origin[0], zones.origin[1], 0];
 
@@ -110,34 +113,36 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
     const triangles = triangulatePolygons(
       zones.polygonPositions,
       zones.ringOffsets,
-      zones.polygonOffsets
+      zones.polygonOffsets,
+      zones.featureOffsets
     );
 
     // Static inputs and layer buffers.
     const positionsBuffer = resources.createBuffer('positions', zones.polygonPositions);
     const ringOffsetsBuffer = resources.createBuffer('ring-offsets', zones.ringOffsets);
     const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', zones.polygonOffsets);
+    const featureOffsetsBuffer = resources.createBuffer('feature-offsets', zones.featureOffsets);
     const triangleVertices = resources.createBuffer('triangle-vertices', triangles.corners);
     const triangleOwners = resources.createBuffer('triangle-owners', triangles.owners);
     const outlineBuffer = resources.createBuffer('outline', zones.outlineSegments);
     const centroidBuffer = resources.createBuffer('centroids', table.centroids);
-    const zoneColors = resources.createBuffer('zone-colors', new Uint32Array(polygonCount));
+    const zoneColors = resources.createBuffer('zone-colors', new Uint32Array(featureCount));
     // Contributor inputs and outputs.
-    const valuesBuffer = resources.createBuffer('values', polygonCount * columnCount * 4);
+    const valuesBuffer = resources.createBuffer('values', featureCount * columnCount * 4);
     const standardizedBuffer = resources.createBuffer(
       'standardized',
-      polygonCount * columnCount * 4
+      featureCount * columnCount * 4
     );
-    const weightOffsets = resources.createBuffer('weight-offsets', (polygonCount + 1) * 4);
+    const weightOffsets = resources.createBuffer('weight-offsets', (featureCount + 1) * 4);
     const weightNeighbors = resources.createBuffer('weight-neighbors', neighborCapacity * 4);
     const weightValues = resources.createBuffer('weight-values', neighborCapacity * 4);
     const weightOverflow = resources.createBuffer('weight-overflow', 4);
     const treeFlags = resources.createBuffer('tree-flags', neighborCapacity * 4);
-    const componentLabels = resources.createBuffer('component-labels', polygonCount * 4);
-    const edgeIds = resources.createBuffer('edge-ids', polygonCount * 4);
+    const componentLabels = resources.createBuffer('component-labels', featureCount * 4);
+    const edgeIds = resources.createBuffer('edge-ids', featureCount * 4);
     const edgeCount = resources.createBuffer('edge-count', 4);
     const edgeOverflow = resources.createBuffer('edge-overflow', 4);
-    const regionLabels = resources.createBuffer('region-labels', polygonCount * 4);
+    const regionLabels = resources.createBuffer('region-labels', featureCount * 4);
     const regionCount = resources.createBuffer('region-count', 4);
     const cutEdges = resources.createBuffer('cut-edges', Math.max(stepCount, 1) * 4);
     const cutGains = resources.createBuffer('cut-gains', Math.max(stepCount, 1) * 4);
@@ -145,12 +150,15 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       'summary',
       GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4
     );
-    const regionSizes = resources.createBuffer('region-sizes', polygonCount * 4);
-    const regionWithinSsd = resources.createBuffer('region-within-ssd', polygonCount * 4);
+    const regionSizes = resources.createBuffer('region-sizes', featureCount * 4);
+    const regionWithinSumOfSquares = resources.createBuffer(
+      'region-within-sum-of-squares',
+      featureCount * 4
+    );
     const parameters = resources.createParameterBuffer(
       'skater-parameters',
       'uint32',
-      GPU_SKATER_PARAMETER_LENGTH
+      GPU_SKATER_REGIONS_PARAMETER_LENGTH
     );
     // Per-slot segments (filled after the CSR read-back) and the cut mask the GPU log drives.
     const slotSegments = resources.createBuffer('slot-segments', neighborCapacity * 16);
@@ -163,7 +171,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         'weight-offsets',
         weightOffsets,
         'uint32',
-        polygonCount + 1
+        featureCount + 1
       ),
       neighbors: importGraphBuffer(
         graph,
@@ -186,43 +194,63 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       'component-labels',
       componentLabels,
       'uint32',
-      polygonCount
+      featureCount
     );
     const standardizedView = importGraphBuffer(
       graph,
       'standardized',
       standardizedBuffer,
       'float32',
-      polygonCount * columnCount
+      featureCount * columnCount
     );
     const regionLabelsView = importGraphBuffer(
       graph,
       'region-labels',
       regionLabels,
       'uint32',
-      polygonCount
+      featureCount
     );
     graph.add(
       new GPUContiguityWeights({
         id: 'contiguity',
         criterion: 'queen',
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-        ringOffsets: importGraphBuffer(
-          graph,
-          'ring-offsets',
-          ringOffsetsBuffer,
-          'uint32',
-          ringCount + 1
-        ),
-        polygonOffsets: importGraphBuffer(
-          graph,
-          'polygon-offsets',
-          polygonOffsetsBuffer,
-          'uint32',
-          polygonCount + 1
-        ),
-        weights,
-        overflow: importGraphBuffer(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+        polygons: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
+            graph,
+            'positions',
+            positionsBuffer,
+            'float32x2',
+            vertexCount
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'ring-offsets',
+            ringOffsetsBuffer,
+            'uint32',
+            ringCount + 1
+          ),
+          polygonOffsets: importGraphBuffer(
+            graph,
+            'polygon-offsets',
+            polygonOffsetsBuffer,
+            'uint32',
+            polygonPartCount + 1
+          ),
+          featureOffsets: importGraphBuffer(
+            graph,
+            'feature-offsets',
+            featureOffsetsBuffer,
+            'uint32',
+            featureCount + 1
+          )
+        },
+        output: {
+          ...weights,
+          status: {
+            overflow: importGraphBuffer(graph, 'weight-overflow', weightOverflow, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
@@ -234,16 +262,20 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
           'values',
           valuesBuffer,
           'float32',
-          polygonCount * columnCount
+          featureCount * columnCount
         ),
         columnCount,
-        treeEdgeFlags: treeFlagsView,
-        componentLabels: componentLabelsView,
-        standardizedValues: standardizedView,
-        edges: {
-          ids: importGraphBuffer(graph, 'edge-ids', edgeIds, 'uint32', polygonCount),
-          count: importGraphBuffer(graph, 'edge-count', edgeCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflow, 'uint32', 1)
+        output: {
+          treeEdgeFlags: treeFlagsView,
+          componentLabels: componentLabelsView,
+          standardizedValues: standardizedView,
+          edges: {
+            ids: importGraphBuffer(graph, 'edge-ids', edgeIds, 'uint32', featureCount),
+            status: {
+              count: importGraphBuffer(graph, 'edge-count', edgeCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflow, 'uint32', 1)
+            }
+          }
         }
       })
     );
@@ -257,10 +289,24 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         columnCount,
         maximumRegionCount: maximumRegions,
         parameters: parameters.importToGraph(graph),
-        labels: regionLabelsView,
-        regionCount: importGraphBuffer(graph, 'region-count', regionCount, 'uint32', 1),
-        cutEdges: importGraphBuffer(graph, 'cut-edges', cutEdges, 'uint32', Math.max(stepCount, 1)),
-        cutGains: importGraphBuffer(graph, 'cut-gains', cutGains, 'float32', Math.max(stepCount, 1))
+        output: {
+          labels: regionLabelsView,
+          regionCount: importGraphBuffer(graph, 'region-count', regionCount, 'uint32', 1),
+          cutEdges: importGraphBuffer(
+            graph,
+            'cut-edges',
+            cutEdges,
+            'uint32',
+            Math.max(stepCount, 1)
+          ),
+          cutGains: importGraphBuffer(
+            graph,
+            'cut-gains',
+            cutGains,
+            'float32',
+            Math.max(stepCount, 1)
+          )
+        }
       })
     );
     graph.add(
@@ -270,24 +316,32 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         columnCount,
         labels: regionLabelsView,
         weights,
-        summary: importGraphBuffer(
-          graph,
-          'summary',
-          summary,
-          'float32',
-          GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
-        ),
-        regionSizes: importGraphBuffer(graph, 'region-sizes', regionSizes, 'uint32', polygonCount),
-        regionWithinSsd: importGraphBuffer(
-          graph,
-          'region-within-ssd',
-          regionWithinSsd,
-          'float32',
-          polygonCount
-        )
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'summary',
+            summary,
+            'float32',
+            GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
+          ),
+          regionSizes: importGraphBuffer(
+            graph,
+            'region-sizes',
+            regionSizes,
+            'uint32',
+            featureCount
+          ),
+          regionWithinSumOfSquares: importGraphBuffer(
+            graph,
+            'region-within-sum-of-squares',
+            regionWithinSumOfSquares,
+            'float32',
+            featureCount
+          )
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
     // Interaction state.
     let targetRegions = Math.min(DEFAULT_REGIONS, maximumRegions);
@@ -297,8 +351,8 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
 
     const writeInputs = () => {
       // Switched-off attributes become constants, which the tree standardises to zero.
-      const values = new Float32Array(polygonCount * columnCount);
-      for (let zone = 0; zone < polygonCount; zone++) {
+      const values = new Float32Array(featureCount * columnCount);
+      for (let zone = 0; zone < featureCount; zone++) {
         for (let column = 0; column < columnCount; column++) {
           values[zone * columnCount + column] = enabled[column]
             ? table.values[zone * columnCount + column]
@@ -306,7 +360,12 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         }
       }
       valuesBuffer.write(values);
-      parameters.write(new Uint32Array([targetRegions, minimumSize]));
+      parameters.write(
+        getGPUSkaterRegionsParameterValues({
+          regionCount: targetRegions,
+          minimumRegionSize: minimumSize
+        })
+      );
     };
 
     // One-time CSR read-back: per-slot segments for the MST layer, CPU adjacency for coloring.
@@ -315,15 +374,15 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       resources,
       'regions-csr',
       [
-        {buffer: weightOffsets, size: (polygonCount + 1) * 4},
+        {buffer: weightOffsets, size: (featureCount + 1) * 4},
         {buffer: weightNeighbors, size: neighborCapacity * 4}
       ],
       bytes => {
-        const offsets = new Uint32Array(bytes, 0, polygonCount + 1);
-        const neighbors = new Uint32Array(bytes, (polygonCount + 1) * 4, neighborCapacity);
+        const offsets = new Uint32Array(bytes, 0, featureCount + 1);
+        const neighbors = new Uint32Array(bytes, (featureCount + 1) * 4, neighborCapacity);
         const segments = new Float32Array(neighborCapacity * 4);
-        const lists: number[][] = Array.from({length: polygonCount}, () => []);
-        for (let row = 0; row < polygonCount; row++) {
+        const lists: number[][] = Array.from({length: featureCount}, () => []);
+        for (let row = 0; row < featureCount; row++) {
           for (let slot = offsets[row]; slot < offsets[row + 1]; slot++) {
             const neighbor = neighbors[slot];
             lists[row].push(neighbor);
@@ -356,7 +415,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
     // Per-change read-back: summary words, labels, region count, the cut log and gains.
     const sources = [
       {buffer: summary, size: GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4},
-      {buffer: regionLabels, size: polygonCount * 4},
+      {buffer: regionLabels, size: featureCount * 4},
       {buffer: regionCount, size: 4},
       {buffer: cutEdges, size: Math.max(stepCount, 1) * 4},
       {buffer: cutGains, size: Math.max(stepCount, 1) * 4},
@@ -368,8 +427,8 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       let offset = 0;
       const summaryWords = new Float32Array(bytes, offset, words.length);
       offset += words.length * 4;
-      const labels = new Uint32Array(bytes, offset, polygonCount);
-      offset += polygonCount * 4;
+      const labels = new Uint32Array(bytes, offset, featureCount);
+      offset += featureCount * 4;
       const regions = new Uint32Array(bytes, offset, 1)[0];
       offset += 4;
       const cuts = new Uint32Array(bytes, offset, Math.max(stepCount, 1));
@@ -379,13 +438,15 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
       const treeEdges = new Uint32Array(bytes, offset, 1)[0];
       const treeOverflow = new Uint32Array(bytes, offset + 4, 1)[0];
 
-      const totalSsd = summaryWords[words.totalSsd];
-      const withinSsd = summaryWords[words.withinSsd];
+      const totalSsd = summaryWords[words.totalSumOfSquares];
+      const withinSsd = summaryWords[words.withinSumOfSquares];
       readouts.regions.setValue(
         `${regions} (target ${targetRegions}${regions < targetRegions ? ', floor binds' : ''})`
       );
       readouts.explained.setValue(
-        totalSsd > 0 ? `${((100 * summaryWords[words.betweenSsd]) / totalSsd).toFixed(1)}%` : 'n/a'
+        totalSsd > 0
+          ? `${((100 * summaryWords[words.betweenSumOfSquares]) / totalSsd).toFixed(1)}%`
+          : 'n/a'
       );
       readouts.within.setValue(`${withinSsd.toFixed(1)} of ${totalSsd.toFixed(1)}`);
       const pseudoF = summaryWords[words.pseudoF];
@@ -463,7 +524,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
         {color: [255, 60, 60], label: 'SKATER cut (tree edge removed)'}
       ]
     });
-    context.setStatus(`${formatCount(polygonCount)} ZIP codes`);
+    context.setStatus(`${formatCount(featureCount)} ZIP codes`);
 
     let firstEncode = true;
     const instance: SpatialAnalysisModeInstance = {
@@ -533,7 +594,7 @@ export const regionsMode: SpatialAnalysisModeDefinition = {
               id: 'regions-nodes',
               coordinateOrigin,
               positions: centroidBuffer,
-              instanceCount: polygonCount,
+              instanceCount: featureCount,
               radiusPixels: 3,
               color: [20, 30, 50, 255]
             })
@@ -604,16 +665,23 @@ function computeZoneTable(
     cellSize: readonly [number, number];
   }
 ): ZoneTable {
-  const zoneCount = zones.polygonOffsets.length - 1;
+  const zoneCount = zones.featureOffsets.length - 1;
   const columns = ATTRIBUTES.length;
   const values = new Float32Array(zoneCount * columns);
   const centroids = new Float32Array(zoneCount * 2);
   const positions = zones.polygonPositions;
   for (let zone = 0; zone < zoneCount; zone++) {
-    // Outer ring of the zone's first polygon part.
-    const ring = zones.polygonOffsets[zone];
-    const start = zones.ringOffsets[ring];
-    const end = zones.ringOffsets[ring + 1];
+    // A ZIP is one W row; a multipart ZIP is described by the outer rings (ring 0) of all its
+    // polygon parts: areas and perimeters add up, the centroid is area-weighted.
+    const shells: [number, number][] = [];
+    for (
+      let polygon = zones.featureOffsets[zone];
+      polygon < zones.featureOffsets[zone + 1];
+      polygon++
+    ) {
+      const ring = zones.polygonOffsets[polygon];
+      shells.push([zones.ringOffsets[ring], zones.ringOffsets[ring + 1]]);
+    }
     let area = 0;
     let centroidX = 0;
     let centroidY = 0;
@@ -622,38 +690,52 @@ function computeZoneTable(
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    for (let vertex = start; vertex < end; vertex++) {
-      const next = vertex + 1 < end ? vertex + 1 : start;
-      const x0 = positions[vertex * 2];
-      const y0 = positions[vertex * 2 + 1];
-      const x1 = positions[next * 2];
-      const y1 = positions[next * 2 + 1];
-      const cross = x0 * y1 - x1 * y0;
-      area += cross;
-      centroidX += (x0 + x1) * cross;
-      centroidY += (y0 + y1) * cross;
-      perimeter += Math.hypot(x1 - x0, y1 - y0);
-      minX = Math.min(minX, x0);
-      maxX = Math.max(maxX, x0);
-      minY = Math.min(minY, y0);
-      maxY = Math.max(maxY, y0);
+    for (const [start, end] of shells) {
+      let shellArea = 0;
+      let shellCentroidX = 0;
+      let shellCentroidY = 0;
+      for (let vertex = start; vertex < end; vertex++) {
+        const next = vertex + 1 < end ? vertex + 1 : start;
+        const x0 = positions[vertex * 2];
+        const y0 = positions[vertex * 2 + 1];
+        const x1 = positions[next * 2];
+        const y1 = positions[next * 2 + 1];
+        const cross = x0 * y1 - x1 * y0;
+        shellArea += cross;
+        shellCentroidX += (x0 + x1) * cross;
+        shellCentroidY += (y0 + y1) * cross;
+        perimeter += Math.hypot(x1 - x0, y1 - y0);
+        minX = Math.min(minX, x0);
+        maxX = Math.max(maxX, x0);
+        minY = Math.min(minY, y0);
+        maxY = Math.max(maxY, y0);
+      }
+      // Orient each part positively so parts wound either way add up.
+      const sign = shellArea < 0 ? -1 : 1;
+      area += sign * shellArea;
+      centroidX += sign * shellCentroidX;
+      centroidY += sign * shellCentroidY;
     }
     area *= 0.5;
-    const meanX = Math.abs(area) > 1e-6 ? centroidX / (6 * area) : (minX + maxX) / 2;
-    const meanY = Math.abs(area) > 1e-6 ? centroidY / (6 * area) : (minY + maxY) / 2;
-    area = Math.abs(area);
+    const meanX = area > 1e-6 ? centroidX / (6 * area) : (minX + maxX) / 2;
+    const meanY = area > 1e-6 ? centroidY / (6 * area) : (minY + maxY) / 2;
     const contains = (x: number, y: number) => {
-      let inside = false;
-      for (let vertex = start, previous = end - 1; vertex < end; previous = vertex++) {
-        const xi = positions[vertex * 2];
-        const yi = positions[vertex * 2 + 1];
-        const xj = positions[previous * 2];
-        const yj = positions[previous * 2 + 1];
-        if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
-          inside = !inside;
+      for (const [start, end] of shells) {
+        let inside = false;
+        for (let vertex = start, previous = end - 1; vertex < end; previous = vertex++) {
+          const xi = positions[vertex * 2];
+          const yi = positions[vertex * 2 + 1];
+          const xj = positions[previous * 2];
+          const yj = positions[previous * 2 + 1];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+            inside = !inside;
+          }
+        }
+        if (inside) {
+          return true;
         }
       }
-      return inside;
+      return false;
     };
     let parkingSpaces = 0;
     for (let point = 0; point < parking.spaces.length; point++) {

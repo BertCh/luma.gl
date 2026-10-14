@@ -130,7 +130,7 @@ graph.add(new GPUGroupStatistics({
     {values: category, statistics: ['mode', 'uniqueCount'], output: categoryOutput},
     {values: taxon, statistics: ['uniqueCount'], output: taxonOutput}
   ],
-  output: {keys, counts, count, overflow}
+  output: {keys, counts, status: {count, overflow}}
 }));
 // A contributor accepts up to four value columns; additional columns reuse the same keys and mask.
 graph.add(new GPUGroupStatistics({
@@ -157,7 +157,7 @@ graph.add(new GPUKeyJoin({
   kind: '${state.joinKind}', leftKeys: tractArea, rightKeys: areaIds,
   rightMask: areaHasEnoughRecords,
   gather: [{column: areaValue, output: tractValue}],
-  output: {matched${state.joinKind === 'inner' ? ',\n    rows: {ids, count, overflow}' : ''}}
+  output: {matched${state.joinKind === 'inner' ? ',\n    rows: {ids, status: {count, overflow}}' : ''}}
 }));`;
 }
 

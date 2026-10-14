@@ -5,9 +5,9 @@
 import type {Layer} from '@deck.gl/core';
 import {
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
   GPUParticleAdvection
 } from '@luma.gl/experimental/gpu-raster';
 import {
@@ -27,7 +27,14 @@ import {SummaryReader} from '../../engine/summary-reader';
 import type {RampName} from '../../engine/ramps';
 import type {SceneContext, SceneInstance} from '../scene';
 import {FlowTrailLayer} from './b15-flow-layers';
-import {createCanyonGrid, flipRows, formatInteger, getCellAt, NAN_DECLARATIONS} from './b15-common';
+import {
+  createCanyonGrid,
+  createSouthFirstRasterGrid,
+  flipRows,
+  formatInteger,
+  getCellAt,
+  NAN_DECLARATIONS
+} from './b15-common';
 
 /** Option state of the terrain-flow scene. */
 export type TerrainFlowOptions = {
@@ -105,15 +112,11 @@ export async function createTerrainFlow(
   const particleWords = resources.createParameterBuffer(
     'particle-words',
     'uint32',
-    GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+    GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
   );
 
-  // The raster is south-first, so the edge of row 0 is the south edge.
-  const flippedSettings = {
-    cellSize: grid.cellSize,
-    northEdge: grid.southEdge,
-    southEdge: grid.northEdge
-  };
+  // The raster is south-first (rows advance north), so row 0 starts at the south edge.
+  const southFirstGrid = createSouthFirstRasterGrid(grid);
   const elevationBand = (graph: GPUCommandGraph<void>) => ({
     id: 'elevation',
     format: 'float32' as const,
@@ -128,16 +131,19 @@ export async function createTerrainFlow(
   setupGraph.add(
     new GPUTerrainDerivatives({
       id: 'derivatives',
-      width,
-      height,
+      grid: southFirstGrid,
       elevation: elevationBand(setupGraph),
-      settings: derivativesSettings.importToGraph(setupGraph),
-      hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount),
+      parameters: derivativesSettings.importToGraph(setupGraph),
+      output: {
+        hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount)
+      },
       cellSizeMode: grid.cellSizeMode,
       rowDirection: 'north'
     })
   );
-  const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(setupGraph.compile());
+  const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(
+    await setupGraph.compileAsync()
+  );
 
   // Wind field graph: the deflected velocities, then their share of the free-stream speed.
   const windGraph = new GPUCommandGraph<void>(device, {id: 'terrain-flow-field'});
@@ -152,12 +158,11 @@ export async function createTerrainFlow(
   windGraph.add(
     new GPUTerrainFlowField({
       id: 'wind-field',
-      width,
-      height,
+      grid: southFirstGrid,
       elevation: elevationBand(windGraph),
-      settings: windSettingsView,
+      parameters: windSettingsView,
       cellSizeMode: grid.cellSizeMode,
-      velocities: velocityView
+      output: {velocities: velocityView}
     })
   );
   const ratioView = importGraphBuffer(windGraph, 'speed-ratio', ratioBuffer, 'float32', cellCount);
@@ -190,7 +195,9 @@ export async function createTerrainFlow(
       domain: [0, 1.0001]
     })
   );
-  const compiledWind: CompiledGPUCommandGraph<void> = resources.track(windGraph.compile());
+  const compiledWind: CompiledGPUCommandGraph<void> = resources.track(
+    await windGraph.compileAsync()
+  );
 
   // Particle graph: advection every frame.
   const particleGraph = new GPUCommandGraph<void>(device, {id: 'terrain-flow-particles'});
@@ -207,7 +214,7 @@ export async function createTerrainFlow(
       fieldWidth: width,
       fieldHeight: height,
       parameters: particleParameters.importToGraph(particleGraph),
-      wordParameters: particleWords.importToGraph(particleGraph),
+      uint32Parameters: particleWords.importToGraph(particleGraph),
       state: {
         positions: importGraphBuffer(
           particleGraph,
@@ -225,20 +232,24 @@ export async function createTerrainFlow(
           PARTICLE_COUNT
         )
       },
-      speeds: importGraphBuffer(particleGraph, 'speeds', speedBuffer, 'float32', PARTICLE_COUNT),
-      trails: {
-        positions: importGraphBuffer(
-          particleGraph,
-          'trails',
-          trailBuffer,
-          'float32x2',
-          PARTICLE_COUNT * TRAIL_LENGTH
-        ),
-        length: TRAIL_LENGTH
+      output: {
+        speeds: importGraphBuffer(particleGraph, 'speeds', speedBuffer, 'float32', PARTICLE_COUNT),
+        trails: {
+          positions: importGraphBuffer(
+            particleGraph,
+            'trails',
+            trailBuffer,
+            'float32x2',
+            PARTICLE_COUNT * TRAIL_LENGTH
+          ),
+          length: TRAIL_LENGTH
+        }
       }
     })
   );
-  const compiledParticles: CompiledGPUCommandGraph<void> = resources.track(particleGraph.compile());
+  const compiledParticles: CompiledGPUCommandGraph<void> = resources.track(
+    await particleGraph.compileAsync()
+  );
 
   // --- State --------------------------------------------------------------------------------
   let windDirty = true;
@@ -250,14 +261,16 @@ export async function createTerrainFlow(
     // Bearing is clockwise from north; the raster is south-first, so +y is north.
     const bearing = (ctx.options.windBearing * Math.PI) / 180;
     windSettings.write(
-      getGPUTerrainFlowFieldParameterValues({
-        ...flippedSettings,
-        wind: [
-          ctx.options.windSpeed * Math.sin(bearing),
-          ctx.options.windSpeed * Math.cos(bearing)
-        ],
-        verticalExaggeration: ctx.options.exaggeration
-      })
+      getGPUTerrainFlowFieldParameterValues(
+        {
+          wind: [
+            ctx.options.windSpeed * Math.sin(bearing),
+            ctx.options.windSpeed * Math.cos(bearing)
+          ],
+          verticalExaggeration: ctx.options.exaggeration
+        },
+        southFirstGrid
+      )
     );
     windDirty = true;
     describeStep();
@@ -271,11 +284,10 @@ export async function createTerrainFlow(
     );
   };
   derivativesSettings.write(
-    getGPUTerrainDerivativesParameterValues({
-      ...flippedSettings,
-      azimuthDegrees: SUN_AZIMUTH_DEGREES,
-      altitudeDegrees: SUN_ALTITUDE_DEGREES
-    })
+    getGPUTerrainDerivativesParameterValues(
+      {azimuthDegrees: SUN_AZIMUTH_DEGREES, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+      southFirstGrid
+    )
   );
   writeWind();
   ctx.setReadout('particles', PARTICLE_COUNT);
@@ -376,7 +388,7 @@ export async function createTerrainFlow(
         )
       );
       particleWords.write(
-        getGPUParticleAdvectionWordParameterValues({
+        getGPUParticleAdvectionUint32ParameterValues({
           seed: options.seed,
           frame: particleFrame,
           maximumAge: options.maximumAge,

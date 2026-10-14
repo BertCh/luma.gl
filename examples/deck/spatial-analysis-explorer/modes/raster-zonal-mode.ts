@@ -11,6 +11,7 @@
  * readback of every statistic column feeds the ranked readouts, the color range and the tooltip.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -25,7 +26,7 @@ import {
   GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH,
   GPUTerrainDerivatives
 } from '@luma.gl/experimental/gpu-terrain';
-import {GPURasterZonalStatistics} from '@luma.gl/experimental/gpu-raster';
+import {GPURasterZonalStatistics, makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -74,6 +75,7 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const pixelCount = width * height;
+    const grid = makeGPURasterMetadata({width, height, cellSize});
     const projection = new LocalMetricProjection(terrain.origin);
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'raster-zonal');
@@ -142,23 +144,26 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
     baseGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation: createBand(baseGraph, 'elevation', elevationBuffer, importValidity(baseGraph)),
-        settings: derivativesSettings.importToGraph(baseGraph),
-        slope: importGraphBuffer(baseGraph, 'slope', slopeBuffer, 'float32', pixelCount),
-        hillshade: importGraphBuffer(
-          baseGraph,
-          'hillshade',
-          hillshadeBuffer,
-          'float32',
-          pixelCount
-        ),
+        parameters: derivativesSettings.importToGraph(baseGraph),
+        output: {
+          slope: importGraphBuffer(baseGraph, 'slope', slopeBuffer, 'float32', pixelCount),
+          hillshade: importGraphBuffer(
+            baseGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            pixelCount
+          )
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
     );
-    const baseCompiled: CompiledGPUCommandGraph<void> = resources.track(baseGraph.compile());
+    const baseCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await baseGraph.compileAsync()
+    );
 
     const zonalGraph = new GPUCommandGraph<void>(device, {id: 'raster-zonal'});
     const zonesView = importGraphBuffer(zonalGraph, 'zones', zonesBuffer, 'uint32', pixelCount);
@@ -178,8 +183,7 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
       zonalGraph.add(
         new GPURasterZonalStatistics({
           id: `zonal-${name}`,
-          width,
-          height,
+          grid,
           zones: zonesView,
           values: createBand(zonalGraph, name, sourceBuffer, zonalValidity),
           zoneCapacity,
@@ -204,7 +208,9 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
         output: float32Column(`${name}-display-means`, displayMeans[name])
       });
     }
-    const zonalCompiled: CompiledGPUCommandGraph<void> = resources.track(zonalGraph.compile());
+    const zonalCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await zonalGraph.compileAsync()
+    );
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {
         id: 'raster-zonal-statistics',
@@ -227,11 +233,13 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
       slope: [0, 30]
     };
     derivativesSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize,
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {
+          azimuthDegrees: SUN_AZIMUTH_DEGREES,
+          altitudeDegrees: SUN_ALTITUDE_DEGREES
+        },
+        grid
+      )
     );
 
     const getZoneName = (zone: number) => {
@@ -329,7 +337,7 @@ export const rasterZonalMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       void (async () => {
         try {
-          const bytes = await ticket.read();
+          const bytes = await scheduleReadback(() => ticket.read());
           if (destroyed) return;
           // Copy: the staging view is only valid until the ticket is released.
           const words = new Uint32Array(

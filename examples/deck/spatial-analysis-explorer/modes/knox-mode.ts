@@ -210,7 +210,9 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
           weightKind: 'binary'
         })
       );
-      testParameters.write(getGPUSpaceTimeParameterValues({seed, permutations, timeThreshold}));
+      testParameters.write(
+        getGPUSpaceTimeParameterValues({seed, permutationCount: permutations, timeThreshold})
+      );
       drawParameters.write(Float32Array.of(timeThreshold, showSpatialOnly ? 0.12 : 0));
     }
     writeParameters();
@@ -238,8 +240,7 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
         positions: positionsView,
         parameters: searchParameters.importToGraph(graph),
         gridSize: [48, 48],
-        weights: pairs,
-        overflow: view('overflow', overflowBuffer, 'uint32', 1)
+        output: {...pairs, status: {overflow: view('overflow', overflowBuffer, 'uint32', 1)}}
       })
     );
     graph.add(
@@ -249,13 +250,15 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        statistics: view(
-          'knox-statistics',
-          knoxStatisticsBuffer,
-          'uint32',
-          MAXIMUM_PERMUTATIONS + 1
-        ),
-        summary: view('knox-summary', knoxSummaryBuffer, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        output: {
+          statistics: view(
+            'knox-statistics',
+            knoxStatisticsBuffer,
+            'uint32',
+            MAXIMUM_PERMUTATIONS + 1
+          ),
+          summary: view('knox-summary', knoxSummaryBuffer, 'float32', GPU_SPACE_TIME_SUMMARY_LENGTH)
+        }
       })
     );
     graph.add(
@@ -265,18 +268,20 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
         times: timesView,
         parameters: testParametersView,
         maximumPermutations: MAXIMUM_PERMUTATIONS,
-        statistics: view(
-          'mantel-statistics',
-          mantelStatisticsBuffer,
-          'float32',
-          MAXIMUM_PERMUTATIONS + 1
-        ),
-        summary: view(
-          'mantel-summary',
-          mantelSummaryBuffer,
-          'float32',
-          GPU_SPACE_TIME_SUMMARY_LENGTH
-        )
+        output: {
+          statistics: view(
+            'mantel-statistics',
+            mantelStatisticsBuffer,
+            'float32',
+            MAXIMUM_PERMUTATIONS + 1
+          ),
+          summary: view(
+            'mantel-summary',
+            mantelSummaryBuffer,
+            'float32',
+            GPU_SPACE_TIME_SUMMARY_LENGTH
+          )
+        }
       })
     );
     // One thread per pair slot finds its row by binary search and writes the drawable segment of
@@ -339,7 +344,7 @@ export const knoxMode: SpatialAnalysisModeDefinition = {
   let timeGap = abs(times[timesOffset + low] - times[timesOffset + neighbor]);
   fade[fadeOffset + index] = select(drawParameters[drawParametersOffset + 1u], 1.0, timeGap <= drawParameters[drawParametersOffset]);`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
 
     const reader = new SummaryReader(
       resources,

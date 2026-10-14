@@ -11,6 +11,7 @@ import {
   GPUPointDensity
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {type GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../spatial-analysis-layers';
@@ -99,6 +100,7 @@ export const densityMode: SpatialAnalysisModeDefinition = {
     let currentHexagonRadius = 50;
     let destroyed = false;
     let measuring = false;
+    const graphSwap = resources.track(new GraphSwap());
     let compareStale = true;
     let lastChangeTime = performance.now();
     let graphs: {dense?: DensityGraph; separable?: DensityGraph; hexagon?: DensityGraph} = {};
@@ -118,11 +120,12 @@ export const densityMode: SpatialAnalysisModeDefinition = {
       lastChangeTime = performance.now();
     }
 
-    function buildDensityGraph(
+    async function buildDensityGraph(
       id: string,
       gridSize: readonly [number, number],
-      useSeparable: boolean
-    ): DensityGraph {
+      useSeparable: boolean,
+      graphBinning: Binning
+    ): Promise<DensityGraph> {
       const cellCount = gridSize[0] * gridSize[1];
       const values = resources.createBuffer(`${id}-values`, cellCount * 4);
       const extent = resources.createBuffer(`${id}-extent`, 8);
@@ -142,8 +145,8 @@ export const densityMode: SpatialAnalysisModeDefinition = {
           mask: importGraphBuffer(graph, 'mask', maskBuffer, 'uint32', pointCount),
           bounds: bounds.importToGraph(graph),
           gridSize,
-          binning,
-          ...(binning === 'hexagon'
+          binning: graphBinning,
+          ...(graphBinning === 'hexagon'
             ? {hexagonRadius: hexagonRadius.importToGraph(graph)}
             : {
                 smoothing: lineView
@@ -167,25 +170,43 @@ export const densityMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      return {compiled: resources.track(graph.compile()), outputs: {values, extent}};
+      return {compiled: resources.track(await graph.compileAsync()), outputs: {values, extent}};
     }
 
-    function buildGraphs(): void {
-      for (const graph of Object.values(graphs)) resources.release(graph.compiled);
+    type DensityGraphs = typeof graphs;
+
+    /** Compiles the graphs of one binning without touching the live graphs. */
+    async function buildGraphs(requestedBinning: Binning): Promise<DensityGraphs> {
+      const gridSize = requestedBinning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE;
+      if (requestedBinning === 'grid') {
+        return {
+          dense: await buildDensityGraph('dense', gridSize, false, requestedBinning),
+          separable: await buildDensityGraph('separable', gridSize, true, requestedBinning)
+        };
+      }
+      return {hexagon: await buildDensityGraph('hexagon', gridSize, false, requestedBinning)};
+    }
+
+    function releaseGraphs(set: DensityGraphs): void {
+      for (const graph of Object.values(set)) resources.release(graph.compiled);
+    }
+
+    /** Swaps a compiled graph set in, releases the one it replaces and resets the readouts. */
+    function commitGraphs(next: DensityGraphs, committedBinning: Binning): void {
+      const previous = graphs;
+      graphs = next;
+      binning = committedBinning;
+      releaseGraphs(previous);
       compareReader?.stop();
       const gridSize = binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE;
-      if (binning === 'grid') {
-        graphs = {
-          dense: buildDensityGraph('dense', gridSize, false),
-          separable: buildDensityGraph('separable', gridSize, true)
-        };
+      if (graphs.dense && graphs.separable) {
         const cellBytes = gridSize[0] * gridSize[1] * 4;
         compareReader = new SummaryReader(
           resources,
           'density-compare',
           [
-            {buffer: graphs.dense!.outputs.values, size: cellBytes},
-            {buffer: graphs.separable!.outputs.values, size: cellBytes}
+            {buffer: graphs.dense.outputs.values, size: cellBytes},
+            {buffer: graphs.separable.outputs.values, size: cellBytes}
           ],
           bytes => {
             if (destroyed) return;
@@ -207,7 +228,6 @@ export const densityMode: SpatialAnalysisModeDefinition = {
           }
         );
       } else {
-        graphs = {hexagon: buildDensityGraph('hexagon', gridSize, false)};
         compareReader = null;
         differenceReadout.setValue('n/a (hexagon has no smoothing)');
         denseTimeReadout.setValue('n/a');
@@ -271,11 +291,17 @@ export const densityMode: SpatialAnalysisModeDefinition = {
       ],
       value: binning,
       onChange: value => {
-        binning = value;
-        smoothingSelect.setDisabled(binning === 'hexagon');
-        sigmaControl.setDisabled(binning === 'hexagon');
-        buildGraphs();
-        context.updateLayers();
+        // The current graphs and binning stay live until the replacements have compiled.
+        void graphSwap.request({
+          build: () => buildGraphs(value),
+          commit: next => {
+            commitGraphs(next, value);
+            smoothingSelect.setDisabled(binning === 'hexagon');
+            sigmaControl.setDisabled(binning === 'hexagon');
+            context.updateLayers();
+          },
+          discard: releaseGraphs
+        });
       }
     });
     const smoothingSelect = context.controls.addSelect<Smoothing>({
@@ -366,7 +392,7 @@ export const densityMode: SpatialAnalysisModeDefinition = {
     }
 
     writeMask();
-    buildGraphs();
+    commitGraphs(await buildGraphs(binning), binning);
     scheduleMeasurement();
 
     const instance: SpatialAnalysisModeInstance = {

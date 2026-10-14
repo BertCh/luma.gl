@@ -347,7 +347,7 @@ testGraph.add(new GPUGeographicallyWeightedRegressionNonstationarityTest({
   parameters: permutationParameters, maximumPermutations: 99,
   output: {table, summary}
 }));
-permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutations: ${state.permutations}}));`,
+permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutationCount: ${state.permutations}}));`,
 
   about: {
     what: '`GPUGeographicallyWeightedRegression` fits a weighted least-squares model around every county, giving each its own coefficients. Weights fall with distance (a bisquare or Gaussian kernel) and the bandwidth is chosen automatically by AICc, as in mgwr and ArcGIS GWR. `GPUOrdinaryLeastSquares` provides the national baseline and `GPUGeographicallyWeightedRegressionNonstationarityTest` checks whether the variation could be chance.',

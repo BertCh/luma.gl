@@ -20,8 +20,13 @@ export type PolygonLayout = {
   polygonRingOffsets: Uint32Array;
   /** Feature of every part. Parts of one feature are contiguous. */
   partFeature: Uint32Array;
-  /** Feature to ring offsets (`featureCount + 1`), the layout `addRateClusterMapRecipe` reads. */
+  /** Feature to ring offsets (`featureCount + 1`). */
   featureRingOffsets: Uint32Array;
+  /**
+   * Feature to part offsets (`featureCount + 1`): the `featureOffsets` of the four-level polygon
+   * port that `addRateClusterMapRecipe` reads, with `polygonRingOffsets` and `ringOffsets`.
+   */
+  featurePolygonOffsets: Uint32Array;
 };
 
 /** Reads the polygon columns of a dataset into a {@link PolygonLayout}. */
@@ -53,13 +58,19 @@ export function getPolygonLayout(dataset: LoadedDataset): PolygonLayout {
     while (part < partCount && partFeature[part] === feature) part++;
   }
   featureRingOffsets[featureCount] = polygonRingOffsets[partCount];
+  const featurePolygonOffsets = new Uint32Array(featureCount + 1);
+  for (let index = 0; index < partCount; index++) featurePolygonOffsets[partFeature[index] + 1]++;
+  for (let feature = 0; feature < featureCount; feature++) {
+    featurePolygonOffsets[feature + 1] += featurePolygonOffsets[feature];
+  }
   return {
     featureCount,
     vertices,
     ringOffsets,
     polygonRingOffsets,
     partFeature,
-    featureRingOffsets
+    featureRingOffsets,
+    featurePolygonOffsets
   };
 }
 

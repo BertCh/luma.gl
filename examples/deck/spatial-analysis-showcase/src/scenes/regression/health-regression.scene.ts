@@ -330,18 +330,19 @@ export default defineScene<HealthRegressionOptions>({
 // 1. Weights ${knn ? `(directed k nearest neighbours, row-standardized)` : `(${state.weights} contiguity from shared vertices, then row-standardized)`}
 ${
   knn
-    ? `graph.add(new GPUNeighborSearch({mode: 'knn', k: ${state.weights.slice(3)}, gridSize: [64, 64], positions, parameters, weights, overflow}));`
-    : `graph.add(new GPUContiguityWeights({criterion: '${state.weights}', positions: vertices, ringOffsets, polygonOffsets, weights, overflow}));
+    ? `graph.add(new GPUNeighborSearch({mode: 'knn', k: ${state.weights.slice(3)}, gridSize: [64, 64], positions, parameters, output: {...weights, status: {overflow}}}));`
+    : `graph.add(new GPUContiguityWeights({criterion: '${state.weights}', polygons: {kind: 'polygons', positions: vertices, featureOffsets, polygonOffsets, ringOffsets}, output: {...weights, status: {overflow, requiredCount, candidateOverflow}}}));
 graph.add(new GPUSpatialWeightsTransform({operation: 'row', weights}));`
 }
 
 // 2. OLS + LM diagnostics + residual local Moran, one recipe
 const regression = addSpatialRegressionRecipe(graph, {
   predictors, response, predictorCount: ${state.model === 'income' ? 1 : state.model === 'economic' ? 4 : 8},
-  weights, parameters: moranParameters,
+  weights, settings: {significanceLevel: ${state.significance}},   // result.setSettings repacks it per frame
+  parameters: moranParameters,         // GPUParameterBuffer the recipe fills from settings
   olsParameters: ridgeParameters,      // [lambda]: a per-frame buffer write
-  ols: {coefficients, standardErrors, tStatistics, summary, status, residuals, fitted},
-  diagnostics: {tests, summary, status},
+  ols: {coefficients, standardErrors, tStatistics, summary, status: {code: olsStatus}, residuals, fitted},
+  diagnostics: {tests, summary, status: {code: diagnosticsStatus}},
   residualMoran: {zScores, localI, quadrants, pValues}
 });
 
@@ -351,7 +352,7 @@ lagGraph.add(new GPUSpatialTwoStageLeastSquares({
 }));
 errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCount, output: error}));
 
-// 4. Per frame only on change: ridgeParameters.write(getGPUOrdinaryLeastSquaresParameterValues(${state.ridge <= -2 ? 0 : (10 ** state.ridge).toPrecision(2)}))`;
+// 4. Per frame only on change: ridgeParameters.write(getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: ${state.ridge <= -2 ? 0 : (10 ** state.ridge).toPrecision(2)}}))`;
   },
 
   about: {

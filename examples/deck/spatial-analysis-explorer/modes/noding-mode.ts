@@ -187,31 +187,39 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
         },
         intersectionCapacity,
         tolerance: tolerance.importToGraph(graph),
-        pieces: {
-          geometry: {
-            kind: 'lines',
-            positions: views.piecePositions,
-            lineOffsets: views.pieceOffsets
+        output: {
+          pieces: {
+            geometry: {
+              kind: 'lines',
+              positions: views.piecePositions,
+              lineOffsets: views.pieceOffsets
+            },
+            sourceIds: views.pieceLines,
+            status: {
+              count: views.pieceCount,
+              overflow: scalarView('piece-overflow', pieceOverflow, 'uint32', 1),
+              requiredCount: scalarView('piece-total', pieceTotal, 'uint32', 1)
+            }
           },
-          sourceIds: views.pieceLines,
-          status: {
-            count: views.pieceCount,
-            overflow: scalarView('piece-overflow', pieceOverflow, 'uint32', 1),
-            requiredCount: scalarView('piece-total', pieceTotal, 'uint32', 1)
-          }
-        },
-        nodes: {
-          positions: views.nodePositions,
-          count: views.nodeCount,
-          requiredCount: scalarView('node-total', nodeTotal, 'uint32', 1)
-        },
-        edges: {
-          fromNodes: views.fromNodes,
-          toNodes: views.toNodes,
-          lengths: scalarView('lengths', lengths, 'float32', pieceCapacity)
-        },
-        csr: {offsets: views.csrOffsets, neighbors: csrNeighborsView, weights: csrWeightsView},
-        overflow: scalarView('overflow', overflow, 'uint32', 1)
+          nodes: {
+            positions: views.nodePositions,
+            status: {
+              count: views.nodeCount,
+              requiredCount: scalarView('node-total', nodeTotal, 'uint32', 1)
+            }
+          },
+          edges: {
+            fromNodes: views.fromNodes,
+            toNodes: views.toNodes,
+            lengths: scalarView('lengths', lengths, 'float32', pieceCapacity)
+          },
+          topology: {
+            offsets: views.csrOffsets,
+            neighbors: csrNeighborsView,
+            weights: csrWeightsView
+          },
+          status: {overflow: scalarView('overflow', overflow, 'uint32', 1)}
+        }
       })
     );
     // Nearest node to the clicked point: one thread scans the nodes (a click is rare).
@@ -246,15 +254,19 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUNetworkReachability({
         id: 'noding-reachability',
-        offsets: views.csrOffsets,
-        neighbors: csrNeighborsView,
-        weights: csrWeightsView,
-        sources: views.source,
+        topology: {
+          offsets: views.csrOffsets,
+          neighbors: csrNeighborsView,
+          weights: csrWeightsView
+        },
+        startNodes: views.source,
         costLimit: costLimit.importToGraph(graph),
-        maxIterations: MAXIMUM_ITERATIONS,
+        maximumIterations: MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        costs: views.costs,
-        converged: scalarView('converged', converged, 'uint32', 1)
+        output: {
+          costs: views.costs,
+          status: {converged: scalarView('converged', converged, 'uint32', 1)}
+        }
       })
     );
     addNodingDisplayPasses(graph, {
@@ -271,7 +283,7 @@ export const nodingMode: SpatialAnalysisModeDefinition = {
       rowCosts: scalarView('row-costs', rowCosts, 'float32', vertexCapacity),
       nodeDegrees: scalarView('node-degrees', nodeDegrees, 'uint32', nodeCapacity)
     });
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     const toleranceReadout = context.controls.addReadout('Snap tolerance');
     const writeTolerance = () => {

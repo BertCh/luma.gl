@@ -189,7 +189,7 @@ export async function createSatelliteSwath(
           subset.vertexCount
         ),
         geometryType: 'lines',
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           nominalGraph,
           `${name}-offsets`,
           buffers.offsets,
@@ -216,7 +216,7 @@ export async function createSatelliteSwath(
     );
     classes.push({sensor, subset, swathKm, ...buffers});
   }
-  const nominalCompiled = resources.track(nominalGraph.compile());
+  const nominalCompiled = resources.track(await nominalGraph.compileAsync());
 
   const customBuffers = createOutlineBuffers('custom', all);
   const customParameters = resources.createParameterBuffer(
@@ -237,7 +237,7 @@ export async function createSatelliteSwath(
         all.vertexCount
       ),
       geometryType: 'lines',
-      pathOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         customGraph,
         'offsets',
         customBuffers.offsets,
@@ -262,7 +262,7 @@ export async function createSatelliteSwath(
       }
     })
   );
-  const customCompiled = resources.track(customGraph.compile());
+  const customCompiled = resources.track(await customGraph.compileAsync());
 
   // ---- Coverage kernel -----------------------------------------------------------------------------
   // One row per consecutive vertex pair of the Earth observation tracks.
@@ -386,7 +386,7 @@ ${GREAT_CIRCLE_ARC_WGSL}`,
   }
   firstCover[firstCoverOffset + index] = select(-1.0, bestTime, bestTime < 1.0e29);`
   });
-  const coverageCompiled = resources.track(coverageGraph.compile());
+  const coverageCompiled = resources.track(await coverageGraph.compileAsync());
 
   // ---- Selection and widths -----------------------------------------------------------------------
   const nominalWidthOf = (satellite: number) => infoOf(satellite).swathKm;

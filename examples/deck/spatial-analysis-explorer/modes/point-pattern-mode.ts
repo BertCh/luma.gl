@@ -21,20 +21,21 @@
  * summary of a few kilobytes that feeds the readouts and three small canvas charts.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, GPUReadbackRing} from '@luma.gl/gpgpu/gpu-core';
 import {
   fitVariogramModel,
   evaluateVariogramModel,
   getGPUPointPatternIndicesParameterValues,
-  getGPURipleyDistanceParameterValues,
+  getGPURipleyDistanceFunctionsParameterValues,
   getGPURipleyParameterValues,
   getGPUSpatialCorrelogramParameterValues,
   getGPUVariogramParameterValues,
   GPU_CLARK_EVANS_LENGTH,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_STATISTICS_LENGTH,
-  GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH,
+  GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
   GPU_RIPLEY_PARAMETER_LENGTH,
   GPU_SPATIAL_CORRELOGRAM_NO_BAND,
   GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,
@@ -291,7 +292,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       ripleyDistance: resources.createParameterBuffer(
         'ripley-distance',
         'float32',
-        GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH
+        GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
       ),
       variogram: resources.createParameterBuffer(
         'variogram',
@@ -385,14 +386,16 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           parameters: parameterBuffers.ripley.importToGraph(patternGraph),
           gridSize: GRID_SIZE,
           radiusCount: RIPLEY_RADII,
-          k: importGraphBuffer(
-            patternGraph,
-            'ripley-k',
-            resources.createBuffer('ripley-k', RIPLEY_RADII * 4),
-            'float32',
-            RIPLEY_RADII
-          ),
-          lMinusR: view('lMinusR', 'float32', RIPLEY_RADII)
+          output: {
+            k: importGraphBuffer(
+              patternGraph,
+              'ripley-k',
+              resources.createBuffer('ripley-k', RIPLEY_RADII * 4),
+              'float32',
+              RIPLEY_RADII
+            ),
+            lMinusR: view('lMinusR', 'float32', RIPLEY_RADII)
+          }
         })
       );
       patternGraph.add(
@@ -404,9 +407,11 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           gridSize: GRID_SIZE,
           referenceGrid: REFERENCE_GRID,
           radiusCount: RIPLEY_RADII,
-          g: view('ripleyG', 'float32', RIPLEY_RADII),
-          f: view('ripleyF', 'float32', RIPLEY_RADII),
-          j: view('ripleyJ', 'float32', RIPLEY_RADII)
+          output: {
+            g: view('ripleyG', 'float32', RIPLEY_RADII),
+            f: view('ripleyF', 'float32', RIPLEY_RADII),
+            j: view('ripleyJ', 'float32', RIPLEY_RADII)
+          }
         })
       );
       patternGraph.add(
@@ -419,11 +424,13 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           gridSize: GRID_SIZE,
           lagCount: LAG_COUNT,
           directionCount: DIRECTION_COUNT,
-          semivariances: view('semivariances', 'float32', LAG_COUNT * DIRECTION_COUNT),
-          pairCounts: view('variogramPairs', 'uint32', LAG_COUNT * DIRECTION_COUNT),
-          meanDistances: view('variogramDistances', 'float32', LAG_COUNT * DIRECTION_COUNT),
-          statistics: view('variogramStatistics', 'float32', GPU_VARIOGRAM_STATISTICS_LENGTH),
-          overflow: view('variogramOverflow', 'uint32', 1)
+          output: {
+            semivariances: view('semivariances', 'float32', LAG_COUNT * DIRECTION_COUNT),
+            pairCounts: view('variogramPairs', 'uint32', LAG_COUNT * DIRECTION_COUNT),
+            meanDistances: view('variogramDistances', 'float32', LAG_COUNT * DIRECTION_COUNT),
+            statistics: view('variogramStatistics', 'float32', GPU_VARIOGRAM_STATISTICS_LENGTH),
+            status: {overflow: view('variogramOverflow', 'uint32', 1)}
+          }
         })
       );
       patternGraph.add(
@@ -436,16 +443,18 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           gridSize: GRID_SIZE,
           bandCount: BAND_COUNT,
           bandMode: 'cumulative',
-          moransI: view('moransI', 'float32', BAND_COUNT),
-          zScores: view('zScores', 'float32', BAND_COUNT),
-          pairCounts: view('bandPairs', 'uint32', BAND_COUNT),
-          overflow: view('correlogramOverflow', 'uint32', 1),
-          peakBands: view('peakBands', 'uint32', 2),
-          statistics: view(
-            'correlogramStatistics',
-            'float32',
-            GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
-          )
+          output: {
+            moransI: view('moransI', 'float32', BAND_COUNT),
+            zScores: view('zScores', 'float32', BAND_COUNT),
+            pairCounts: view('bandPairs', 'uint32', BAND_COUNT),
+            status: {overflow: view('correlogramOverflow', 'uint32', 1)},
+            peakBands: view('peakBands', 'uint32', 2),
+            statistics: view(
+              'correlogramStatistics',
+              'float32',
+              GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH
+            )
+          }
         })
       );
       patternGraph.add(
@@ -456,19 +465,21 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
           parameters: parameterBuffers.indices.importToGraph(patternGraph),
           gridSize: GRID_SIZE,
           quadratGrid: QUADRAT_GRID,
-          clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
-          quadratStatistics: view('quadrat', 'float32', GPU_QUADRAT_STATISTICS_LENGTH),
-          quadratCounts: importGraphBuffer(
-            patternGraph,
-            'quadrat-counts',
-            resources.createBuffer('quadrat-counts', QUADRAT_GRID[0] * QUADRAT_GRID[1] * 4),
-            'uint32',
-            QUADRAT_GRID[0] * QUADRAT_GRID[1]
-          )
+          output: {
+            clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
+            quadratStatistics: view('quadrat', 'float32', GPU_QUADRAT_STATISTICS_LENGTH),
+            quadratCounts: importGraphBuffer(
+              patternGraph,
+              'quadrat-counts',
+              resources.createBuffer('quadrat-counts', QUADRAT_GRID[0] * QUADRAT_GRID[1] * 4),
+              'uint32',
+              QUADRAT_GRID[0] * QUADRAT_GRID[1]
+            )
+          }
         })
       );
     }
-    const patternCompiled = resources.track(patternGraph.compile());
+    const patternCompiled = resources.track(await patternGraph.compileAsync());
 
     // The distribution graph plus the passes that turn its rings into drawable segments.
     const distributionGraph = new GPUCommandGraph<void>(device, {id: 'distribution'});
@@ -554,7 +565,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         });
       }
     }
-    const distributionCompiled = resources.track(distributionGraph.compile());
+    const distributionCompiled = resources.track(await distributionGraph.compileAsync());
 
     const writePatternParameters = () => {
       const bounds = currentBounds;
@@ -563,7 +574,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
         getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection})
       );
       parameterBuffers.ripleyDistance.write(
-        getGPURipleyDistanceParameterValues({
+        getGPURipleyDistanceFunctionsParameterValues({
           bounds,
           maximumDistance,
           edgeCorrection: distanceEdgeCorrection
@@ -1204,7 +1215,7 @@ export const pointPatternMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       needsReadback = false;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         // Copy: the ring recycles its mapped memory.
         const copyBuffer = bytes.slice().buffer;

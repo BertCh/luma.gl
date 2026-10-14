@@ -24,6 +24,7 @@ import {
   GPURasterSieve,
   GPURasterStatistics,
   GPURasterStretch,
+  makeGPURasterMetadata,
   GPU_RASTER_SIEVE_PARAMETER_LENGTH,
   type GPURasterBufferBand,
   type GPURasterSieveMode
@@ -170,6 +171,13 @@ export async function createBurnSeverity(
   const resources = new SpatialAnalysisResources(device, 'burn');
 
   ctx.setReadout('grid', `${width} × ${height} px, 20 m`);
+  // Local UTM meters around the window centre; row 0 is the north edge.
+  const rasterGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: frame.cellSize,
+    origin: [-frame.halfWidth, frame.halfHeight]
+  });
 
   // --- Buffers ---------------------------------------------------------------------------------
   const input = {
@@ -322,7 +330,7 @@ export async function createBurnSeverity(
         parameters: cloudParameters.importToGraph(main),
         output: {
           values: f('cloud-flag', product.cloudFlag),
-          mask: w('cloud-mask', product.cloudMask)
+          outputMask: w('cloud-mask', product.cloudMask)
         }
       })
     );
@@ -344,7 +352,7 @@ export async function createBurnSeverity(
         parameters: burnedParameters.importToGraph(main),
         output: {
           values: f('burned-flag', product.burnedFlag),
-          mask: w('burned-mask', product.burnedMask)
+          outputMask: w('burned-mask', product.burnedMask)
         }
       })
     );
@@ -356,7 +364,7 @@ export async function createBurnSeverity(
         parameters: patchMaskParameters.importToGraph(main),
         output: {
           values: f('patch-flag', makeFloat('patch-flag')),
-          mask: w('patch-mask', product.patchMask)
+          outputMask: w('patch-mask', product.patchMask)
         }
       })
     );
@@ -373,7 +381,7 @@ export async function createBurnSeverity(
       })
     );
   }
-  const compiledMain = resources.track(main.compile());
+  const compiledMain = resources.track(await main.compileAsync());
 
   // One stretch graph per displayable continuous raster; only the displayed one is encoded.
   const stretchSources: Record<StretchLayer, Buffer> = {
@@ -392,8 +400,7 @@ export async function createBurnSeverity(
       new GPURasterStretch({
         id: `stretch-${layer}`,
         values: view('values', stretchSources[layer], 'float32', cellCount),
-        width,
-        height,
+        grid: rasterGrid,
         binCount: HISTOGRAM_BINS,
         parameters: stretchParameters.importToGraph(graph),
         output: {
@@ -403,7 +410,7 @@ export async function createBurnSeverity(
         }
       })
     );
-    compiledStretch[layer] = resources.track(graph.compile());
+    compiledStretch[layer] = resources.track(await graph.compileAsync());
   }
 
   // Statistics graph: GPU means and extents of every product, compared with the CPU reference.
@@ -434,10 +441,10 @@ export async function createBurnSeverity(
       }).addToGraph(statisticsGraph);
     });
   }
-  const compiledStatistics = resources.track(statisticsGraph.compile());
+  const compiledStatistics = resources.track(await statisticsGraph.compileAsync());
 
   // Patch graphs: label, measure and sieve the patch mask; one per connectivity.
-  const buildPatchGraph = (connectivity: 4 | 8): CompiledGPUCommandGraph<void> => {
+  const buildPatchGraph = async (connectivity: 4 | 8): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: `burn-patches-${connectivity}`});
     const view = createGraphViewer(graph);
     const w = (name: string, buffer: Buffer, length = cellCount) =>
@@ -478,13 +485,11 @@ export async function createBurnSeverity(
       capacity: PATCH_CAPACITY
     }).addToGraph(graph);
     const patchInput = {
-      width,
-      height,
+      grid: rasterGrid,
       labels,
-      labelValidity,
-      converged: sparseConverged,
-      componentCount,
-      overflow
+      validity: labelValidity,
+      // Guards from the labeling passes: metrics skip labels above the bounded component count.
+      status: {converged: sparseConverged, componentCount, overflow}
     };
     const column = <F extends 'uint32' | 'float32'>(
       name: (typeof COLUMN_NAMES)[number],
@@ -494,8 +499,7 @@ export async function createBurnSeverity(
       new GPURasterPatchMetrics({
         ...patchInput,
         id: 'metrics',
-        // Pixel to local UTM meters: x = 20 * column - half width, y = half height - 20 * row.
-        affine: [frame.cellSize, 0, -frame.halfWidth, 0, -frame.cellSize, frame.halfHeight],
+        // Areas and perimeters come from the grid: x = 20 * column - half width, y = half height - 20 * row.
         output: {
           pixelCounts: column('pixelCounts', 'uint32'),
           areas: column('areas', 'float32'),
@@ -526,9 +530,9 @@ export async function createBurnSeverity(
         })
       );
     }
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
-  const compiledPatches = {4: buildPatchGraph(4), 8: buildPatchGraph(8)};
+  const compiledPatches = {4: await buildPatchGraph(4), 8: await buildPatchGraph(8)};
 
   // --- Parameters ------------------------------------------------------------------------------
   let destroyed = false;

@@ -393,7 +393,7 @@ export default defineScene<CalendarPatternsOptions>({
   },
 
   snippet: state => `import {
-  getGPUCalendarBucketsParameterValues, getGPUTimeWindowWordParameterValues,
+  getGPUCalendarBucketsParameterValues, getGPUTimeWindowFilterWordParameterValues,
   GPUCalendarBuckets, GPUGroupStatistics, GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 
@@ -402,8 +402,8 @@ graph.add(new GPUTimeWindowFilter({
   timestamps: timeWords,                    // uint32x2 epoch milliseconds
   window: windowParameters,                 // 8 uint32 words
   additionalPredicates: [{kind: 'selection', mask: groupMask}],
-  output: {ids, count, overflow}, outputMask: windowMask,
-  drawInstanceCount: drawCommands.getInstanceCountData(0)   // indirect draw: no readback
+  output: {ids, status: {count, overflow}, outputMask: windowMask,
+    drawInstanceCount: drawCommands.getInstanceCountData(0)}   // indirect draw: no readback
 }));
 // 2. hour, weekday, day of year and the 7 x 24 count matrix
 graph.add(new GPUCalendarBuckets({
@@ -419,10 +419,10 @@ graph.add(new GPUGroupStatistics({
     {values: dayFloat, statistics: ['uniqueCount'], output: {uniqueCounts}},
     {values: researchGradeFlags, statistics: ['mean'], output: {means: researchGradeShare}}
   ],
-  output: {keys, counts, count, overflow}
+  output: {keys, counts, status: {count, overflow}}
 }));
 // parameters, per frame: no rebuild
-windowParameters.write(getGPUTimeWindowWordParameterValues({start: ${Date.UTC(2023, 0, 1 + state.dateRange[0])}, end: ${Date.UTC(2023, 0, 1 + state.dateRange[1]) - 1}}));
+windowParameters.write(getGPUTimeWindowFilterWordParameterValues({start: ${Date.UTC(2023, 0, 1 + state.dateRange[0])}, end: ${Date.UTC(2023, 0, 1 + state.dateRange[1]) - 1}}));
 calendarParameters.write(getGPUCalendarBucketsParameterValues(${state.utcOffset * 60}, ${state.firstDay}));`,
 
   about: {

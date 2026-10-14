@@ -6,9 +6,9 @@ import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
   GPUParticleAdvection
 } from '@luma.gl/experimental/gpu-raster';
 import {
@@ -208,7 +208,7 @@ export async function createOceanDriftersVsModel(
   const advectionWords = resources.createParameterBuffer(
     'advection-words',
     'uint32',
-    GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+    GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
   );
 
   // ---- Density ----------------------------------------------------------------------------------
@@ -267,7 +267,7 @@ export async function createOceanDriftersVsModel(
         fieldWidth: FIELD.width,
         fieldHeight: FIELD.height,
         parameters: advectionParameters.importToGraph(advectionGraph),
-        wordParameters: words,
+        uint32Parameters: words,
         state: {
           positions,
           ages: view('ages', particleAges, 'uint32', count),
@@ -296,7 +296,7 @@ export async function createOceanDriftersVsModel(
   snapshots[snapshotsOffset + slot + 1u] = positions[positionsOffset + 2u * index + 1u];`
     });
   }
-  const advectionCompiled = resources.track(advectionGraph.compile());
+  const advectionCompiled = resources.track(await advectionGraph.compileAsync());
 
   // ---- Graphs: geodesic pairs, one per distance model (compiled up front, switched by option) ----
   const pairsCompiled = {} as Record<
@@ -319,7 +319,7 @@ export async function createOceanDriftersVsModel(
         output: {distances: view('distances', distanceBuffer, 'float32', trackRows)}
       })
     );
-    pairsCompiled[model] = resources.track(graph.compile());
+    pairsCompiled[model] = resources.track(await graph.compileAsync());
   }
 
   // ---- Graph: line density of real and virtual tracks ---------------------------------------------
@@ -331,7 +331,7 @@ export async function createOceanDriftersVsModel(
       new GPULineDensity({
         id: 'real-density',
         positions: view('first-month', firstMonthPositions, 'float32x2'),
-        pathOffsets: view('first-month-offsets', firstMonthOffsets, 'uint32'),
+        lineOffsets: view('first-month-offsets', firstMonthOffsets, 'uint32'),
         columns: FIELD.width,
         rows: FIELD.height,
         spatialContext: {
@@ -343,7 +343,7 @@ export async function createOceanDriftersVsModel(
         output: {
           lengths: view('real-lengths', realLengths, 'float32', FIELD_CELLS),
           densities: view('real-densities', realDensities, 'float32', FIELD_CELLS),
-          overflow: view('real-overflow', realOverflow, 'uint32', 1)
+          status: {overflow: view('real-overflow', realOverflow, 'uint32', 1)}
         }
       })
     );
@@ -351,7 +351,7 @@ export async function createOceanDriftersVsModel(
       new GPULineDensity({
         id: 'model-density',
         positions: view('virtual-track', virtualTrackBuffer, 'float32x2', trackRows),
-        pathOffsets: view('model-offsets', modelOffsets, 'uint32', count + 1),
+        lineOffsets: view('model-offsets', modelOffsets, 'uint32', count + 1),
         columns: FIELD.width,
         rows: FIELD.height,
         spatialContext: {
@@ -363,12 +363,12 @@ export async function createOceanDriftersVsModel(
         output: {
           lengths: view('model-lengths', modelLengths, 'float32', FIELD_CELLS),
           densities: view('model-densities', modelDensities, 'float32', FIELD_CELLS),
-          overflow: view('model-overflow', modelOverflow, 'uint32', 1)
+          status: {overflow: view('model-overflow', modelOverflow, 'uint32', 1)}
         }
       })
     );
   }
-  const densityCompiled = resources.track(densityGraph.compile());
+  const densityCompiled = resources.track(await densityGraph.compileAsync());
 
   // ---- Graph: normalized difference of the two densities -----------------------------------------
   const differenceGraph = new GPUCommandGraph<void>(device, {id: 'drifters-difference'});
@@ -413,7 +413,7 @@ export async function createOceanDriftersVsModel(
   difference[differenceOffset + index] = result;`
     });
   }
-  const differenceCompiled = resources.track(differenceGraph.compile());
+  const differenceCompiled = resources.track(await differenceGraph.compileAsync());
 
   // ---- Graph: the drifters at the lead time ---------------------------------------------------------
   const nowGraph = new GPUCommandGraph<void>(device, {id: 'drifters-now'});
@@ -603,7 +603,7 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
   headReal[headRealBase + 3u] = realPosition.y;`
     });
   }
-  const nowCompiled = resources.track(nowGraph.compile());
+  const nowCompiled = resources.track(await nowGraph.compileAsync());
 
   // ---- Readback -----------------------------------------------------------------------------------
   const snapshotRing = resources.track(
@@ -1031,7 +1031,7 @@ fn isNonFinite(value: f32) -> bool { return (bitcast<u32>(value) & 0x7fffffffu) 
     );
     for (let day = 1; day <= LEAD_DAYS; day++) {
       advectionWords.write(
-        getGPUParticleAdvectionWordParameterValues({
+        getGPUParticleAdvectionUint32ParameterValues({
           seed: 1,
           frame: day,
           maximumAge: 0,

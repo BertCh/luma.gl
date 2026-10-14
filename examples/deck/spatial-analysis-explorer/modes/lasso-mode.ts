@@ -11,6 +11,7 @@
  * through `GPURegionStatisticsReadback` for the readouts.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer, Viewport} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -30,6 +31,7 @@ import {
   type GPURegionStatisticsResult
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer, submitGraph} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -204,15 +206,21 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
 
     // Compile-time options.
     let pointSource: PointSource = 'racks';
+    let committedSource: PointSource = pointSource;
+    const rebuildSwap = resources.track(new GraphSwap());
     let useGridIndex = false;
     let useMask = true;
     let candidateFraction = DEFAULT_CANDIDATE_FRACTION;
     let pointSetCount = 0;
-    let pointSet = createPointSet(pointSource);
+    let pointSet = await createPointSet(pointSource);
     let compiledGraphs = [...pointSet.compiledByKind.values()];
 
+    type RebuildResult =
+      | {kind: 'set'; source: PointSource; set: PointSet}
+      | {kind: 'graphs'; owner: PointSet; compiled: Map<GraphKey, CompiledGPUCommandGraph<void>>};
+
     /** Positions, values, mask and grid index for one point source, plus the graphs over them. */
-    function createPointSet(source: PointSource): PointSet {
+    async function createPointSet(source: PointSource): Promise<PointSet> {
       const setResources = new SpatialAnalysisResources(device, `lasso-set-${pointSetCount++}`);
       const {positions, spaces} =
         source === 'racks'
@@ -272,9 +280,9 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
           overflow: view.overflow
         })
       );
-      const compiledIndex = setResources.track(indexGraph.compile());
+      const compiledIndex = setResources.track(await indexGraph.compileAsync());
       submitGraph(device, compiledIndex);
-      for (const [graphKind, graph] of compileGraphs(set, useGridIndex, useMask, 'main')) {
+      for (const [graphKind, graph] of await compileGraphs(set, useGridIndex, useMask, 'main')) {
         set.compiledByKind.set(graphKind, graph);
       }
       set.extraReader = new SummaryReader(
@@ -322,13 +330,13 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
      * or without the grid candidate path and the selection mask. Every graph reuses the same
      * caller-owned buffers.
      */
-    function compileGraphs(
+    async function compileGraphs(
       set: PointSet,
       withGridIndex: boolean,
       withMask: boolean,
       tag: string,
       keys: readonly GraphKey[] = ALL_GRAPH_KEYS
-    ): Map<GraphKey, CompiledGPUCommandGraph<void>> {
+    ): Promise<Map<GraphKey, CompiledGPUCommandGraph<void>>> {
       const compiled = new Map<GraphKey, CompiledGPUCommandGraph<void>>();
       for (const graphKey of keys) {
         const direct = graphKey === 'polygon' || graphKey === 'radius' || graphKey === 'rectangle';
@@ -373,9 +381,19 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
           graph.add(
             new GPUPickRegionMask({
               id: 'lasso-pick-region-mask',
-              result,
-              outputMask: extraMask,
-              overflow: importGraphBuffer(graph, 'pick-overflow', set.pick.overflow, 'uint32', 1)
+              picks: result,
+              output: {
+                mask: extraMask,
+                status: {
+                  overflow: importGraphBuffer(
+                    graph,
+                    'pick-overflow',
+                    set.pick.overflow,
+                    'uint32',
+                    1
+                  )
+                }
+              }
             })
           );
           selection = {kind: 'mask', mask: extraMask};
@@ -395,14 +413,18 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
                 graphKey === 'mask-polygon'
                   ? polygonShape()
                   : {kind: 'rectangle', bounds: rectangleParameters.importToGraph(graph)},
-              outputMask: extraMask,
-              overflow: importGraphBuffer(
-                graph,
-                'region-mask-overflow',
-                set.regionMaskOverflow,
-                'uint32',
-                1
-              )
+              output: {
+                mask: extraMask,
+                status: {
+                  overflow: importGraphBuffer(
+                    graph,
+                    'region-mask-overflow',
+                    set.regionMaskOverflow,
+                    'uint32',
+                    1
+                  )
+                }
+              }
             })
           );
           selection = {kind: 'mask', mask: extraMask};
@@ -410,16 +432,18 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         graph.add(
           new GPURegionStatistics({
             id,
-            selection,
+            region: selection,
             ...(selection.kind === 'mask' ? {} : {positions}),
             values: importGraphBuffer(graph, 'spaces', set.valuesBuffer, 'float32', set.count),
             histogram: {binCount: HISTOGRAM_BINS, domain: HISTOGRAM_DOMAIN},
-            // A mask selection already is the mask; the contributor rejects a second outputMask.
-            outputMask:
-              withMask && selection.kind !== 'mask'
-                ? importGraphBuffer(graph, 'mask', set.maskBuffer, 'uint32', set.count)
-                : undefined,
-            summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'uint32', summaryLength),
+            output: {
+              summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'uint32', summaryLength),
+              // A mask selection already is the mask; the contributor rejects a second mask.
+              mask:
+                withMask && selection.kind !== 'mask'
+                  ? importGraphBuffer(graph, 'mask', set.maskBuffer, 'uint32', set.count)
+                  : undefined
+            },
             spatialIndex: gridForKey
               ? {
                   kind: 'grid',
@@ -431,21 +455,54 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
               : undefined
           })
         );
-        compiled.set(graphKey, set.resources.track(graph.compile()));
+        compiled.set(graphKey, set.resources.track(await graph.compileAsync()));
       }
       return compiled;
     }
 
-    /** Recompiles both graphs for the current options; the old ones are freed after two frames. */
-    function rebuildGraphs(): void {
-      const old = [...pointSet.compiledByKind.values()];
-      pointSet.compiledByKind = compileGraphs(pointSet, useGridIndex, useMask, 'main');
+    /**
+     * Rebuilds for the current compile-time options: a new point set when the source changed,
+     * otherwise new graphs over the current set. The running graphs keep encoding until commit.
+     */
+    function requestRebuild(): void {
+      void rebuildSwap
+        .request<RebuildResult>({
+          build: async () => {
+            if (pointSource !== committedSource) {
+              return {kind: 'set', source: pointSource, set: await createPointSet(pointSource)};
+            }
+            const owner = pointSet;
+            return {
+              kind: 'graphs',
+              owner,
+              compiled: await compileGraphs(owner, useGridIndex, useMask, 'main')
+            };
+          },
+          commit: next => {
+            if (next.kind === 'graphs') commitGraphs(next.owner, next.compiled);
+            else commitPointSet(next.source, next.set);
+          },
+          discard: next => {
+            if (next.kind === 'set') next.set.resources.destroy();
+            else for (const graph of next.compiled.values()) next.owner.resources.release(graph);
+          }
+        })
+        .catch(error => context.setStatus(`Error: ${(error as Error).message}`));
+    }
+
+    /** Swaps in recompiled graphs; the old ones are freed after two frames. */
+    function commitGraphs(
+      owner: PointSet,
+      compiled: Map<GraphKey, CompiledGPUCommandGraph<void>>
+    ): void {
+      const old = [...owner.compiledByKind.values()];
+      owner.compiledByKind = compiled;
       compiledGraphs = [...pointSet.compiledByKind.values()];
-      const owner = pointSet;
       destroyAfterFrames(() => {
         for (const graph of old) owner.resources.release(graph);
       });
       updateOptionReadouts();
+      context.updateLayers();
     }
 
     function destroyAfterFrames(callback: () => void): void {
@@ -454,12 +511,12 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       requestAnimationFrame(() => requestAnimationFrame(callback));
     }
 
-    function replacePointSet(source: PointSource): void {
+    function commitPointSet(source: PointSource, nextSet: PointSet): void {
       measurement.abort();
       const previous = pointSet;
       const previousDone = measurement.done;
-      pointSource = source;
-      pointSet = createPointSet(source);
+      committedSource = source;
+      pointSet = nextSet;
       compiledGraphs = [...pointSet.compiledByKind.values()];
       cpuSignature = '';
       latestResult = null;
@@ -508,9 +565,9 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
         }
         timingStatusReadout.setValue('measuring...');
         // Temporary graph for the other setting; not returned from getCompiledGraphs.
-        temporary = compileGraphs(target, !gridIsActive, useMask, 'measure', [measuredKind]).get(
-          measuredKind
-        );
+        temporary = (
+          await compileGraphs(target, !gridIsActive, useMask, 'measure', [measuredKind])
+        ).get(measuredKind);
         if (!temporary) return;
         const options = {parameters: undefined, completionBuffer: summaryBuffer, signal};
         // Two alternating rounds, keeping the faster of each, so GPU clock ramp-up and the order
@@ -635,7 +692,9 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       ],
       value: pointSource,
       onChange: value => {
-        if (value !== pointSource) replacePointSet(value);
+        if (value === pointSource) return;
+        pointSource = value;
+        requestRebuild();
       }
     });
     context.controls.addToggle({
@@ -643,7 +702,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       value: useGridIndex,
       onChange: value => {
         useGridIndex = value;
-        rebuildGraphs();
+        requestRebuild();
       }
     });
     context.controls.addSelect<string>({
@@ -655,7 +714,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       value: String(candidateFraction),
       onChange: value => {
         candidateFraction = Number(value);
-        rebuildGraphs();
+        requestRebuild();
       }
     });
     context.controls.addToggle({
@@ -663,8 +722,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
       value: useMask,
       onChange: value => {
         useMask = value;
-        rebuildGraphs();
-        context.updateLayers();
+        requestRebuild();
       }
     });
     context.controls.addButton({
@@ -983,8 +1041,7 @@ export const lassoMode: SpatialAnalysisModeDefinition = {
           const ticket = readback.encodeRead(commandEncoder, summaryBuffer);
           if (ticket) {
             nextTicketFrame = frame.frameIndex + READBACK_INTERVAL_FRAMES;
-            readback
-              .read(ticket)
+            scheduleReadback(() => readback.read(ticket))
               .then(result => {
                 if (!destroyed) showResult(result);
               })

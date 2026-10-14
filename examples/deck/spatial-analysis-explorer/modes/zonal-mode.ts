@@ -17,6 +17,7 @@
  * `sorted`). Per-frame: the animated point positions (re-aggregated every frame, no recompile).
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -30,6 +31,7 @@ import {
   type GPUZonalStatisticsSumOrder
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection, type SpatialAnalysisPolygons} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
@@ -164,10 +166,10 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
 
     let graphGeneration = 0;
     /** Builds and compiles the zonal graph over the shared caller-owned buffers. */
-    const buildGraph = (
+    const buildGraph = async (
       sumOrder: GPUZonalStatisticsSumOrder,
       statistic: Statistic
-    ): CompiledGPUCommandGraph<void> => {
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const id = `zonal-${sumOrder}-${statistic}-${graphGeneration++}`;
       const graph = new GPUCommandGraph<void>(device, {id});
       const view = <Format extends 'float32' | 'uint32' | 'float32x2'>(
@@ -182,7 +184,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
           sumOrder,
           features: {
             kind: 'polygons',
-            polygonPositions: view(
+            positions: view(
               'polygon-positions',
               polygonPositions,
               'float32x2',
@@ -203,7 +205,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
             ringOffsets: view('ring-offsets', ringOffsets, 'uint32', zips.ringOffsets.length),
             candidateCapacity: Math.max(1024, pointCount * 4)
           },
-          points: view('points', positionsBuffer, 'float32x2', pointCount),
+          positions: view('points', positionsBuffer, 'float32x2', pointCount),
           values: view('values', valuesBuffer, 'float32', pointCount),
           output: {
             counts: view('counts', countsBuffer, 'uint32', featureCount),
@@ -212,17 +214,20 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
             sums: view('sums', sumsBuffer, 'float32', featureCount),
             extent: view('extent', extentBuffer, 'float32', 2),
             extentStatistic: STATISTICS[statistic].extent,
-            overflow: view('overflow', overflowBuffer, 'uint32', 1),
-            uncertainCount: view('uncertain-count', uncertainCountBuffer, 'uint32', 1)
+            status: {
+              overflow: view('overflow', overflowBuffer, 'uint32', 1),
+              uncertainCount: view('uncertain-count', uncertainCountBuffer, 'uint32', 1)
+            }
           }
         })
       );
-      return graph.compile();
+      return await graph.compileAsync();
     };
 
     let statistic: Statistic = 'count';
     let sumOrder: GPUZonalStatisticsSumOrder = 'atomic';
-    let compiled = resources.track(buildGraph(sumOrder, statistic));
+    let compiled = resources.track(await buildGraph(sumOrder, statistic));
+    const graphSwap = resources.track(new GraphSwap());
 
     const summaryWords = featureCount * 4 + 4;
     const readbackRing = new GPUReadbackRing(device, {
@@ -405,8 +410,18 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
 
     /** Recompiles the graph for a compile-time option change and retires the old one safely. */
     function rebuildGraph(): void {
+      void graphSwap.request({
+        // The current graph keeps encoding until the replacement has compiled.
+        build: async () => resources.track(await buildGraph(sumOrder, statistic)),
+        commit: commitGraph,
+        discard: next => resources.release(next)
+      });
+    }
+
+    /** Swaps a compiled graph in and retires the previous one after Deck's in-flight frames. */
+    function commitGraph(next: CompiledGPUCommandGraph<void>): void {
       const previous = compiled;
-      compiled = resources.track(buildGraph(sumOrder, statistic));
+      compiled = next;
       resetReproducibility();
       summary = null;
       updateReproducibilityReadout();
@@ -423,10 +438,11 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
     async function measureSumOrders(): Promise<void> {
       if (measuring || destroyed) return;
       measuring = true;
-      const other: GPUZonalStatisticsSumOrder = sumOrder === 'atomic' ? 'sorted' : 'atomic';
-      const temporary = buildGraph(other, statistic);
+      // Capture the running graph and its order before awaiting the temporary compile.
       const current = compiled;
       const currentOrder = sumOrder;
+      const other: GPUZonalStatisticsSumOrder = currentOrder === 'atomic' ? 'sorted' : 'atomic';
+      const temporary = await buildGraph(other, statistic);
       try {
         const options = {
           parameters: undefined,
@@ -471,7 +487,7 @@ export const zonalMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteLength: summaryWords * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + summaryWords * 4);
         const words = new Uint32Array(copy);

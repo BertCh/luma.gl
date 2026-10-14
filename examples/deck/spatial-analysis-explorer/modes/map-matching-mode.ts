@@ -5,7 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
-  encodeGPUMapMatchingParameters,
+  getGPUMapMatchingParameterValues,
   GPUMapMatching,
   GPU_MAP_MATCHING_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
@@ -164,7 +164,7 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
     function writeParameters(): void {
       jitterParameters.write(Float32Array.of(jitter, jitterSeed));
       matchingParameters.write(
-        encodeGPUMapMatchingParameters({
+        getGPUMapMatchingParameterValues({
           sigma,
           beta,
           searchRadius: Math.min(searchRadius, MAXIMUM_SEARCH_RADIUS),
@@ -208,11 +208,13 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
     matchingGraph.add(
       new GPUMapMatching({
         id: 'matching',
-        points: noisyView,
+        positions: noisyView,
         trackOffsets: view('track-offsets', trackOffsets, 'uint32', trackCount + 1),
-        nodePositions: view('node-positions', nodePositions, 'float32x2', nodeCount),
-        offsets: view('offsets', adjacencyOffsets, 'uint32', nodeCount + 1),
-        edgeTargets: view('edge-targets', edgeTargets, 'uint32', edgeCount),
+        topology: {
+          offsets: view('offsets', adjacencyOffsets, 'uint32', nodeCount + 1),
+          neighbors: view('edge-targets', edgeTargets, 'uint32', edgeCount),
+          nodePositions: view('node-positions', nodePositions, 'float32x2', nodeCount)
+        },
         parameters: matchingParameters.importToGraph(matchingGraph),
         candidateCount: CANDIDATE_COUNT,
         routeNodeBudget: ROUTE_NODE_BUDGET,
@@ -224,8 +226,10 @@ export const mapMatchingMode: SpatialAnalysisModeDefinition = {
           breaks: breaksView,
           matchedCount: view('matched-count', matchedCount, 'uint32', 1),
           breakCount: view('break-count', breakCount, 'uint32', 1),
-          overflow: view('overflow', overflow, 'uint32', 1),
-          routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
+          status: {
+            overflow: view('overflow', overflow, 'uint32', 1),
+            routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
+          }
         }
       })
     );
@@ -289,7 +293,7 @@ const NONE: u32 = 0xffffffffu;`,
     matched[matchedOffset + next] != NONE && breaks[breaksOffset + next] == 0u;
   weights[weightsOffset + index] = select(0.0, 1.0, isDrawn);`
     });
-    const compiledMatching = resources.track(matchingGraph.compile());
+    const compiledMatching = resources.track(await matchingGraph.compileAsync());
 
     // Road chains: every road segment is a two-vertex line; chains join them between junctions.
     const mergeGraph = new GPUCommandGraph<void>(device, {id: 'map-matching-chains'});
@@ -331,7 +335,7 @@ const NONE: u32 = 0xffffffffu;`,
         output: {
           chainOffsets: chainOffsetsView,
           positions: chainPositionsView,
-          count: chainCountView
+          status: {count: chainCountView}
         }
       })
     );
@@ -400,7 +404,7 @@ const NONE: u32 = 0xffffffffu;`,
   weights[weightsOffset + index] = select(0.0, 1.0, isDrawn);
   values[valuesOffset + index] = low;`
     });
-    const compiledMerge = resources.track(mergeGraph.compile());
+    const compiledMerge = resources.track(await mergeGraph.compileAsync());
 
     const summaryReader = new SummaryReader(
       resources,

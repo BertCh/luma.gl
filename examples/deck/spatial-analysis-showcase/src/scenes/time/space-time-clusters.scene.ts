@@ -346,20 +346,20 @@ export default defineScene<SpaceTimeClustersOptions>({
   snippet: state => `import {
   getGPUNeighborSearchParameterValues,
   getGPUSpaceTimeParameterValues,
-  getGPUSpatialScanParameterValues,
+  getGPUSpatialScanStatisticParameterValues,
   GPUKnoxTest, GPUMantelTest, GPUNeighborSearch, GPUSpatialScanStatistic
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTemporalReduction} from '@luma.gl/experimental/gpu-dataframe';
 
 // Pairs: events within ${state.spatialRadius} m are the spatial pairs of both tests
 graph.add(new GPUNeighborSearch({mode: 'radius', positions, parameters: searchParameters,
-  gridSize: [64, 64], weights: pairs, overflow}));
+  gridSize: [64, 64], output: pairs}));   // pairs: CSR + status.overflow
 graph.add(new GPUKnoxTest({pairs, times: days, parameters: testParameters,
-  maximumPermutations: 999, statistics: knoxStatistics, summary: knoxSummary}));
+  maximumPermutations: 999, output: {statistics: knoxStatistics, summary: knoxSummary}}));
 graph.add(new GPUMantelTest({pairs, times: days, parameters: testParameters,
-  maximumPermutations: 999, statistics: mantelStatistics, summary: mantelSummary}));
+  maximumPermutations: 999, output: {statistics: mantelStatistics, summary: mantelSummary}}));
 testParameters.write(getGPUSpaceTimeParameterValues({
-  seed: 1, permutations: ${state.permutations}, timeThreshold: ${state.timeThreshold}   // days
+  seed: 1, permutationCount: ${state.permutations}, timeThreshold: ${state.timeThreshold}   // days
 }));
 
 // Scan: cases per (tract, fortnight) from a temporal reduction, then Kulldorff's statistic
@@ -368,10 +368,11 @@ graph.add(new GPUTemporalReduction({cellIds: tractIds, timestamps: seconds, valu
 graph.add(new GPUSpatialScanStatistic({
   positions: tractCentroids, cases: reduction.counts, baseline,
   timeBuckets: 26, maximumPermutations: 999, maximumClusters: 7,   // every tract may join a window
-  parameters: scanParameters, clusterIndices, clusterStatistics, statistics, summary, zoneStatistics
+  parameters: scanParameters,
+  output: {clusterIndices, clusterStatistics, statistics, summary, zoneStatistics}
 }));
-scanParameters.write(getGPUSpatialScanParameterValues({
-  seed: 1, permutations: ${state.scanPermutations},
+scanParameters.write(getGPUSpatialScanStatisticParameterValues({
+  seed: 1, permutationCount: ${state.scanPermutations},
   maximumPopulationFraction: ${state.maximumPopulationFraction}, maximumWindowZones: ${state.maximumWindowZones},
   maximumTimeBuckets: ${state.maximumTimeBuckets}, windowShape: '${state.windowShape}'
 }));`,

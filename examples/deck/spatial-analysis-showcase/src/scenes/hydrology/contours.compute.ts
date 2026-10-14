@@ -24,13 +24,20 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {RAMP_STOPS, type RampName} from '../../engine/ramps';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
 import type {SceneContext, SceneInstance} from '../scene';
-import {createCanyonGrid, flipRows, formatInteger, getCellAt} from './b15-common';
+import {
+  createCanyonGrid,
+  createSouthFirstRasterGrid,
+  flipRows,
+  formatInteger,
+  getCellAt
+} from './b15-common';
 import {IsobandTriangleLayer, PolylineLayer} from './b15-contour-layers';
 
 /** Option state of the contours scene. */
@@ -98,6 +105,9 @@ export async function createContours(
   const {width, height, cellCount} = grid;
   const origin: [number, number, number] = [grid.origin[0], grid.origin[1], 0];
   const extent = grid.bounds;
+  const rasterGrid = grid.rasterGrid;
+  // The elevation is flipped to row 0 at minimum y, so the derivatives read a south-first grid.
+  const southFirstGrid = createSouthFirstRasterGrid(grid);
   const resources = new SpatialAnalysisResources(device, 'contours');
   let destroyed = false;
 
@@ -184,8 +194,7 @@ export async function createContours(
   setupGraph.add(
     new GPUTerrainDerivatives({
       id: 'derivatives',
-      width,
-      height,
+      grid: southFirstGrid,
       elevation: {
         id: 'elevation',
         format: 'float32',
@@ -194,17 +203,21 @@ export async function createContours(
           values: importGraphBuffer(setupGraph, 'elevation', elevationBuffer, 'float32', cellCount)
         }
       },
-      settings: derivativesSettings.importToGraph(setupGraph),
-      slope: importGraphBuffer(setupGraph, 'slope', slopeBuffer, 'float32', cellCount),
-      hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount),
+      parameters: derivativesSettings.importToGraph(setupGraph),
+      output: {
+        slope: importGraphBuffer(setupGraph, 'slope', slopeBuffer, 'float32', cellCount),
+        hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount)
+      },
       cellSizeMode: grid.cellSizeMode,
       rowDirection: 'north'
     })
   );
-  const setup = resources.track(setupGraph.compile());
+  const setup = resources.track(await setupGraph.compileAsync());
 
   // --- Analysis graphs -------------------------------------------------------------------------
-  const compileAnalysis = (withPolylines: boolean): CompiledGPUCommandGraph<void> => {
+  const compileAnalysis = async (
+    withPolylines: boolean
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {
       id: withPolylines ? 'contours-stitched' : 'contours-plain'
     });
@@ -213,8 +226,7 @@ export async function createContours(
     graph.add(
       new GPUIsobands({
         id: 'bands',
-        width,
-        height,
+        grid: rasterGrid,
         values,
         breaks: levels,
         parameters: isobandParameters.importToGraph(graph),
@@ -233,29 +245,30 @@ export async function createContours(
             'uint32',
             TRIANGLE_CAPACITY
           ),
-          count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(
-            graph,
-            'triangle-overflow',
-            triangleOverflowBuffer,
-            'uint32',
-            1
-          ),
-          vertexCount: importGraphBuffer(
-            graph,
-            'band-vertex-count',
-            bandVertexCountBuffer,
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1),
+            vertexCount: importGraphBuffer(
+              graph,
+              'band-vertex-count',
+              bandVertexCountBuffer,
+              'uint32',
+              1
+            ),
+            overflow: importGraphBuffer(
+              graph,
+              'triangle-overflow',
+              triangleOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
     graph.add(
       new GPUIsolines({
         id: 'lines',
-        width,
-        height,
+        grid: rasterGrid,
         values,
         levels,
         parameters: isolineParameters.importToGraph(graph),
@@ -274,80 +287,83 @@ export async function createContours(
             'uint32',
             SEGMENT_CAPACITY
           ),
-          count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'segment-overflow', segmentOverflowBuffer, 'uint32', 1)
-        },
-        polylines: withPolylines
-          ? {
-              vertices: importGraphBuffer(
-                graph,
-                'polyline-vertices',
-                polylineVerticesBuffer,
-                'float32x2',
-                SEGMENT_CAPACITY * 2
-              ),
-              polylineOffsets: importGraphBuffer(
-                graph,
-                'polyline-offsets',
-                polylineOffsetsBuffer,
-                'uint32',
-                SEGMENT_CAPACITY + 1
-              ),
-              polylineLevels: importGraphBuffer(
-                graph,
-                'polyline-levels',
-                polylineLevelsBuffer,
-                'uint32',
-                SEGMENT_CAPACITY
-              ),
-              polylineClosed: importGraphBuffer(
-                graph,
-                'polyline-closed',
-                polylineClosedBuffer,
-                'uint32',
-                SEGMENT_CAPACITY
-              ),
-              polylineCount: importGraphBuffer(
-                graph,
-                'polyline-count',
-                polylineCountBuffer,
-                'uint32',
-                1
-              ),
-              vertexCount: importGraphBuffer(
-                graph,
-                'polyline-vertex-count',
-                polylineVertexCountBuffer,
-                'uint32',
-                1
-              ),
-              overflow: importGraphBuffer(
-                graph,
-                'polyline-overflow',
-                polylineOverflowBuffer,
-                'uint32',
-                1
-              )
-            }
-          : undefined
+          polylines: withPolylines
+            ? {
+                vertices: importGraphBuffer(
+                  graph,
+                  'polyline-vertices',
+                  polylineVerticesBuffer,
+                  'float32x2',
+                  SEGMENT_CAPACITY * 2
+                ),
+                polylineOffsets: importGraphBuffer(
+                  graph,
+                  'polyline-offsets',
+                  polylineOffsetsBuffer,
+                  'uint32',
+                  SEGMENT_CAPACITY + 1
+                ),
+                polylineLevels: importGraphBuffer(
+                  graph,
+                  'polyline-levels',
+                  polylineLevelsBuffer,
+                  'uint32',
+                  SEGMENT_CAPACITY
+                ),
+                polylineClosed: importGraphBuffer(
+                  graph,
+                  'polyline-closed',
+                  polylineClosedBuffer,
+                  'uint32',
+                  SEGMENT_CAPACITY
+                ),
+                polylineCount: importGraphBuffer(
+                  graph,
+                  'polyline-count',
+                  polylineCountBuffer,
+                  'uint32',
+                  1
+                ),
+                vertexCount: importGraphBuffer(
+                  graph,
+                  'polyline-vertex-count',
+                  polylineVertexCountBuffer,
+                  'uint32',
+                  1
+                )
+              }
+            : undefined,
+          status: {
+            count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(
+              graph,
+              'segment-overflow',
+              segmentOverflowBuffer,
+              'uint32',
+              1
+            ),
+            polylineOverflow: withPolylines
+              ? importGraphBuffer(graph, 'polyline-overflow', polylineOverflowBuffer, 'uint32', 1)
+              : undefined
+          }
+        }
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
-  const plainGraph = compileAnalysis(false);
-  const stitchedGraph = compileAnalysis(true);
+  const plainGraph = await compileAnalysis(false);
+  const stitchedGraph = await compileAnalysis(true);
 
   /** Ring graph for one tolerance and splitting choice (both compile-time). */
-  const compileRings = (
+  const compileRings = async (
     tolerance: ContoursOptions['ringTolerance'],
     split: boolean
-  ): CompiledGPUCommandGraph<void> => {
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'contours-rings'});
     graph.add(
       new GPUIsobandRings({
         id: 'band-rings',
-        width,
-        height,
+        grid: rasterGrid,
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
         breaks: importGraphBuffer(graph, 'levels', levelsBuffer, 'float32', LEVEL_SLOT_COUNT),
         parameters: isobandParameters.importToGraph(graph),
@@ -383,21 +399,23 @@ export async function createContours(
             'uint32',
             RING_CAPACITY
           ),
-          count: importGraphBuffer(graph, 'ring-count', ringCountBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflowBuffer, 'uint32', 1),
-          openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpenBuffer, 'uint32', 1),
-          edgeCount: importGraphBuffer(graph, 'edge-count', ringEdgeCountBuffer, 'uint32', 1),
-          edgeOverflow: importGraphBuffer(
-            graph,
-            'edge-overflow',
-            ringEdgeOverflowBuffer,
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, 'ring-count', ringCountBuffer, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflowBuffer, 'uint32', 1),
+            openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpenBuffer, 'uint32', 1),
+            edgeCount: importGraphBuffer(graph, 'edge-count', ringEdgeCountBuffer, 'uint32', 1),
+            edgeOverflow: importGraphBuffer(
+              graph,
+              'edge-overflow',
+              ringEdgeOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
-    return graph.compile();
+    return await graph.compileAsync();
   };
 
   // --- State --------------------------------------------------------------------------------
@@ -415,14 +433,29 @@ export async function createContours(
     return `${options.ringTolerance}-${options.splitTouchingRings}`;
   }
 
-  function ensureRingsGraph(): void {
+  const ringsSwap = resources.track(new GraphSwap());
+
+  /**
+   * Requests the ring graph for the current options. The old graph keeps encoding until the new
+   * one is compiled; resolves once committed or superseded.
+   */
+  function requestRingsGraph(): Promise<boolean> {
     const options = ctx.options;
     const key = getRingKey(options);
-    if (ringsGraph && key === builtRingKey) return;
-    if (ringsGraph) resources.release(ringsGraph);
-    ringsGraph = resources.track(compileRings(options.ringTolerance, options.splitTouchingRings));
-    builtRingKey = key;
-    dirty = true;
+    if (ringsGraph && key === builtRingKey) return Promise.resolve(true);
+    return ringsSwap.request({
+      build: async () =>
+        resources.track(await compileRings(options.ringTolerance, options.splitTouchingRings)),
+      commit: next => {
+        const previous = ringsGraph;
+        ringsGraph = next;
+        builtRingKey = key;
+        if (previous) resources.release(previous);
+        dirty = true;
+        ctx.requestLayers();
+      },
+      discard: next => resources.release(next)
+    });
   }
 
   function writePalette(): void {
@@ -486,11 +519,9 @@ export async function createContours(
     lastStyleKey = key;
     levelsBuffer.write(next);
     levelStyleBuffer.write(styles);
-    isolineParameters.write(
-      getGPUIsolinesParameterValues({width, height, levelCount: count, extent})
-    );
+    isolineParameters.write(getGPUIsolinesParameterValues({levelCount: count, extent}, rasterGrid));
     isobandParameters.write(
-      getGPUIsobandsParameterValues({width, height, breakCount: count, extent, firstBand, lastBand})
+      getGPUIsobandsParameterValues({breakCount: count, extent, firstBand, lastBand}, rasterGrid)
     );
     ctx.setReadout(
       'levels',
@@ -584,7 +615,7 @@ export async function createContours(
         });
       const plain = await run(plainGraph);
       const stitched = await run(stitchedGraph);
-      ensureRingsGraph();
+      await requestRingsGraph();
       const rings = await run(ringsGraph!);
       ctx.setReadout(
         'timings',
@@ -599,13 +630,10 @@ export async function createContours(
   }
 
   derivativesSettings.write(
-    getGPUTerrainDerivativesParameterValues({
-      cellSize: grid.cellSize,
-      northEdge: grid.southEdge,
-      southEdge: grid.northEdge,
-      azimuthDegrees: SUN_AZIMUTH_DEGREES,
-      altitudeDegrees: SUN_ALTITUDE_DEGREES
-    })
+    getGPUTerrainDerivativesParameterValues(
+      {azimuthDegrees: SUN_AZIMUTH_DEGREES, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+      southFirstGrid
+    )
   );
   writePalette();
   writeLevels();
@@ -614,7 +642,7 @@ export async function createContours(
     'domain',
     `${formatInteger(minimumElevation)} to ${formatInteger(maximumElevation)} m elevation, 0 to ${SLOPE_DOMAIN_MAXIMUM}° slope`
   );
-  if (ctx.options.showRings) ensureRingsGraph();
+  if (ctx.options.showRings) await requestRingsGraph();
 
   return {
     getCompiledGraphs: () => [
@@ -641,7 +669,7 @@ export async function createContours(
         case 'showRings':
         case 'ringTolerance':
         case 'splitTouchingRings':
-          if (state.showRings) ensureRingsGraph();
+          if (state.showRings) void requestRingsGraph();
           dirty = true;
           break;
         case 'stitchLines':

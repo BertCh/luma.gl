@@ -7,9 +7,9 @@ import {Buffer} from '@luma.gl/core';
 import {
   and,
   column,
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPUDataFrame,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter,
   parameter,
   type GPUDataFrameQueryParameters
@@ -172,7 +172,7 @@ export async function createOsmImportWaves(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const windowDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -190,16 +190,18 @@ export async function createOsmImportWaves(
       window: windowParameters.importToGraph(mapGraph),
       output: {
         ids: v('ids', windowIds, 'uint32', count),
-        count: v('count', windowCount, 'uint32', 1),
-        overflow: v('overflow', windowOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: mapGraph.importGPUData(
-        'waves-draw-count',
-        windowDraw.getInstanceCountData(0)
-      )
+        status: {
+          count: v('count', windowCount, 'uint32', 1),
+          overflow: v('overflow', windowOverflow, 'uint32', 1)
+        },
+        drawInstanceCount: mapGraph.importGPUData(
+          'waves-draw-count',
+          windowDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const mapCompiled: CompiledGPUCommandGraph<void> = resources.track(mapGraph.compile());
+  const mapCompiled: CompiledGPUCommandGraph<void> = resources.track(await mapGraph.compileAsync());
 
   // ---- State ----------------------------------------------------------------------------------------
   const clock = createPlaybackClock(
@@ -376,7 +378,9 @@ export async function createOsmImportWaves(
       if (key !== windowKey) {
         windowKey = key;
         windowQuery.encode(commandEncoder, {from, to});
-        windowParameters.write(getGPUTimeWindowParameterValues({start: from, end: to - 0.01}));
+        windowParameters.write(
+          getGPUTimeWindowFilterParameterValues({start: from, end: to - 0.01})
+        );
         mapCompiled.encode(commandEncoder, {parameters: undefined});
         encoded = true;
         ctx.setReadout(

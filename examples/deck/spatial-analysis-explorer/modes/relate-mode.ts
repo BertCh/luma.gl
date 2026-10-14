@@ -34,6 +34,7 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Buffer} from '@luma.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -409,7 +410,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
     let grabOffset: [number, number] = [0, 0];
     const pinned: (readonly [number, number] | null)[] = [];
 
-    const buildScene = (): Build => {
+    const buildScene = async (): Promise<Build> => {
       const scene = createScene(querySet, zips);
       const leftCount = scene.shapes.length;
       const build = new SpatialAnalysisResources(device, `relate-${querySet}-${predicate}`);
@@ -506,19 +507,25 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       const innerJoin = new GPUSpatialPredicateJoin({
         ...common,
         id: 'relate-inner',
-        pairs: {
-          leftIds: view('left-ids', leftIds, 'uint32', pairCapacity),
-          rightIds: view('right-ids', rightIds, 'uint32', pairCapacity),
-          count: view('pair-count', pairCount, 'uint32', 1),
-          overflow: view('pair-overflow', pairOverflow, 'uint32', 1),
-          requiredCount: view('pair-total', pairTotal, 'uint32', 1)
-        },
-        // dwithin has no DE-9IM matrix.
-        ...(predicate === 'dwithin'
-          ? {}
-          : {relate: view('relate', relateBuffer, 'uint32', pairCapacity)}),
-        uncertainCount: view('uncertain', uncertain, 'uint32', 1),
-        candidateCount: view('candidate-total', candidateTotal, 'uint32', 1)
+        output: {
+          pairs: {
+            leftIds: view('left-ids', leftIds, 'uint32', pairCapacity),
+            rightIds: view('right-ids', rightIds, 'uint32', pairCapacity),
+            status: {
+              count: view('pair-count', pairCount, 'uint32', 1),
+              overflow: view('pair-overflow', pairOverflow, 'uint32', 1),
+              requiredCount: view('pair-total', pairTotal, 'uint32', 1)
+            }
+          },
+          // dwithin has no DE-9IM matrix.
+          ...(predicate === 'dwithin'
+            ? {}
+            : {relate: view('relate', relateBuffer, 'uint32', pairCapacity)}),
+          status: {
+            uncertainCount: view('uncertain', uncertain, 'uint32', 1),
+            candidateCount: view('candidate-total', candidateTotal, 'uint32', 1)
+          }
+        }
       });
       graph.add(innerJoin);
       const antiJoin = new GPUSpatialPredicateJoin({
@@ -527,10 +534,14 @@ export const relateMode: SpatialAnalysisModeDefinition = {
         ...(['intersects', 'contains', 'within', 'dwithin'].includes(predicate) ? {engine} : {}),
         id: 'relate-anti',
         how: 'anti',
-        unmatched: {
-          ids: view('anti-ids', antiIds, 'uint32', leftCount),
-          count: view('anti-count', antiCount, 'uint32', 1),
-          overflow: view('anti-overflow', antiOverflow, 'uint32', 1)
+        output: {
+          unmatched: {
+            ids: view('anti-ids', antiIds, 'uint32', leftCount),
+            status: {
+              count: view('anti-count', antiCount, 'uint32', 1),
+              overflow: view('anti-overflow', antiOverflow, 'uint32', 1)
+            }
+          }
         }
       });
       graph.add(antiJoin);
@@ -540,15 +551,17 @@ export const relateMode: SpatialAnalysisModeDefinition = {
           left,
           right,
           prepared,
-          pairs: {
+          output: {
             leftIds: view('candidate-left', candidateLeft, 'uint32', candidateCapacity),
             rightIds: view('candidate-right', candidateRight, 'uint32', candidateCapacity),
-            count: view('candidate-pair-count', candidatePairCount, 'uint32', 1),
-            overflow: view('candidate-overflow', candidateOverflow, 'uint32', 1)
+            status: {
+              count: view('candidate-pair-count', candidatePairCount, 'uint32', 1),
+              overflow: view('candidate-overflow', candidateOverflow, 'uint32', 1)
+            }
           }
         })
       );
-      const compiled = build.track(graph.compile());
+      const compiled = build.track(await graph.compileAsync());
       build.track({destroy: () => prepared.destroy()});
 
       const result: Build = {
@@ -715,9 +728,19 @@ export const relateMode: SpatialAnalysisModeDefinition = {
       measureTimer = setTimeout(() => void measureGraph(), REMEASURE_DELAY);
     };
 
+    const graphSwap = resources.track(new GraphSwap());
+    /** Rebuilds for the current options; the running build encodes until the new one compiled. */
     const rebuild = () => {
+      void graphSwap.request({
+        build: buildScene,
+        commit: commitScene,
+        discard: next => next.resources.destroy()
+      });
+    };
+    /** Swaps a compiled build in, then retires the previous one after Deck's in-flight frames. */
+    const commitScene = (next: Build) => {
       const previous = active;
-      active = buildScene();
+      active = next;
       pinned.length = 0;
       autoMeasureScheduled = false;
       if (previous) {
@@ -839,7 +862,7 @@ export const relateMode: SpatialAnalysisModeDefinition = {
     );
     context.controls.addReadout('Data', zips.attribution);
 
-    active = buildScene();
+    active = await buildScene();
 
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () => [active.compiled],

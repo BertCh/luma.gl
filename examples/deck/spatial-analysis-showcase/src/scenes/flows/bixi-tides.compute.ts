@@ -5,8 +5,8 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import type {GPUParameterBuffer} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
@@ -19,6 +19,7 @@ import {SpatialAnalysisFlowLayer} from '../../engine/flow-layer';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent} from '../scene';
@@ -294,8 +295,9 @@ export async function createBixiTides(
   }
 
   // ---- The graph ---------------------------------------------------------------------------------
-  function buildGraph(view: TidesView): TidesGraph {
+  async function buildGraph(view: TidesView): Promise<TidesGraph> {
     const id = ++serial;
+    const sumOrder = ctx.options.sumOrder;
     const graphResources = new SpatialAnalysisResources(device, `bixi-tides-${view.slot}-${id}`);
     const k = TIDES_TOP_FLOW_COUNT;
     const ids = graphResources.createBuffer('ids', k * 4);
@@ -312,7 +314,7 @@ export async function createBixiTides(
     const windowBuffer = graphResources.createParameterBuffer(
       'window',
       'float32',
-      GPU_TIME_WINDOW_PARAMETER_LENGTH
+      GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
     );
     const commandGraph = new GPUCommandGraph<void>(device, {
       id: `bixi-tides-${view.slot}-${id}`
@@ -336,54 +338,74 @@ export async function createBixiTides(
           window: windowBuffer.importToGraph(commandGraph)
         },
         excludeSelfFlows: ctx.options.excludeSelf,
-        sumOrder: ctx.options.sumOrder,
+        sumOrder,
         pairCapacity: 131072,
-        // rows * maxProbeCount must fit in a uint32; 128 probes is far above the expected chain length.
-        maxProbeCount: 128,
+        // rows * maximumProbeCount must fit in a uint32; 128 probes is far above the expected chain length.
+        maximumProbeCount: 128,
         output: {
           ids: importGraphBuffer(commandGraph, 'ids', ids, 'uint32', k),
-          count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
-          overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(commandGraph, 'total-count', requiredCount, 'uint32', 1)
-        },
-        flowOriginZoneIds: importGraphBuffer(commandGraph, 'flow-origin', originZones, 'uint32', k),
-        flowDestinationZoneIds: importGraphBuffer(
-          commandGraph,
-          'flow-destination',
-          destinationZones,
-          'uint32',
-          k
-        ),
-        flowWeights: importGraphBuffer(commandGraph, 'flow-weights', flowWeights, 'float32', k),
-        pairOverflow: importGraphBuffer(commandGraph, 'pair-overflow', pairOverflow, 'uint32', 1),
-        zoneOutWeights: importGraphBuffer(
-          commandGraph,
-          'zone-out-w',
-          zoneOutWeights,
-          'float32',
-          zoneCount
-        ),
-        zoneInWeights: importGraphBuffer(
-          commandGraph,
-          'zone-in-w',
-          zoneInWeights,
-          'float32',
-          zoneCount
-        ),
-        zoneOutCounts: importGraphBuffer(
-          commandGraph,
-          'zone-out-c',
-          zoneOutCounts,
-          'uint32',
-          zoneCount
-        )
+          status: {
+            pairOverflow: importGraphBuffer(
+              commandGraph,
+              'pair-overflow',
+              pairOverflow,
+              'uint32',
+              1
+            ),
+            count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
+            overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(
+              commandGraph,
+              'total-count',
+              requiredCount,
+              'uint32',
+              1
+            )
+          },
+          flowOriginZoneIds: importGraphBuffer(
+            commandGraph,
+            'flow-origin',
+            originZones,
+            'uint32',
+            k
+          ),
+          flowDestinationZoneIds: importGraphBuffer(
+            commandGraph,
+            'flow-destination',
+            destinationZones,
+            'uint32',
+            k
+          ),
+          flowWeights: importGraphBuffer(commandGraph, 'flow-weights', flowWeights, 'float32', k),
+          zoneOutWeights: importGraphBuffer(
+            commandGraph,
+            'zone-out-w',
+            zoneOutWeights,
+            'float32',
+            zoneCount
+          ),
+          zoneInWeights: importGraphBuffer(
+            commandGraph,
+            'zone-in-w',
+            zoneInWeights,
+            'float32',
+            zoneCount
+          ),
+          zoneOutCounts: importGraphBuffer(
+            commandGraph,
+            'zone-out-c',
+            zoneOutCounts,
+            'uint32',
+            zoneCount
+          )
+        }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const built: TidesGraph = {
       resources: graphResources,
       compiled,
-      sumOrder: ctx.options.sumOrder,
+      sumOrder,
       windowBuffer,
       reader: undefined as unknown as SummaryReader
     };
@@ -408,13 +430,46 @@ export async function createBixiTides(
     return built;
   }
 
-  function rebuild(): void {
-    for (const view of views) {
-      if (view.graph) retired.push({resources: view.graph.resources, frames: 0});
-      view.graph = buildGraph(view);
-      view.hour = -1;
+  /** Builds a graph for every view without touching the running ones. */
+  async function buildGraphs(): Promise<TidesGraph[]> {
+    const built: TidesGraph[] = [];
+    try {
+      for (const view of views) built.push(await buildGraph(view));
+    } catch (error) {
+      for (const graph of built) discardGraph(graph);
+      throw error;
     }
+    return built;
+  }
+
+  /** Swaps the finished graphs in; the replaced ones are retired and destroyed later. */
+  function commitGraphs(next: TidesGraph[]): void {
+    views.forEach((view, index) => {
+      if (view.graph) retired.push({resources: view.graph.resources, frames: 0});
+      view.graph = next[index];
+      view.hour = -1;
+    });
     markChanged();
+  }
+
+  function discardGraph(graph: TidesGraph): void {
+    graph.reader.stop();
+    graph.resources.destroy();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the graphs for the current options; the latest request wins. */
+  function requestGraphs(): Promise<boolean> {
+    return graphSwap.request({
+      build: buildGraphs,
+      commit: next => {
+        commitGraphs(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        for (const graph of next) discardGraph(graph);
+      }
+    });
   }
 
   // ---- Reading a window back ---------------------------------------------------------------------
@@ -883,7 +938,7 @@ export async function createBixiTides(
     'sourceBasis',
     `${formatCount(flows.totalRides)} retained rides after ${formatCount(sourceProperties.droppedShortRides ?? 0)} trips under 60 seconds were dropped; ${formatCount(flows.sameStationRides)} same-station rides are outside the station-to-station flows. Station totals remain exact because pairs below ${formatCount(sourceProperties.hourlyMin ?? 10)} August rides are folded into residual station rows; ranked arrows show frequent pairs only.`
   );
-  rebuild();
+  commitGraphs(await buildGraphs());
   writeMask();
   updateFurniture();
   publishCharts();
@@ -899,8 +954,7 @@ export async function createBixiTides(
       switch (id) {
         case 'excludeSelf':
         case 'sumOrder':
-          rebuild();
-          ctx.requestLayers();
+          void requestGraphs();
           break;
         case 'dayType':
           writeMask();
@@ -996,7 +1050,9 @@ export async function createBixiTides(
         if (hour !== view.hour) {
           view.hour = hour;
           // The window is closed at both ends: [hour, hour + 0.5] holds only the hour slot `hour`.
-          graph.windowBuffer.write(getGPUTimeWindowParameterValues({start: hour, end: hour + 0.5}));
+          graph.windowBuffer.write(
+            getGPUTimeWindowFilterParameterValues({start: hour, end: hour + 0.5})
+          );
           view.frames = Math.max(view.frames, ENCODE_FRAMES);
           view.stale = true;
           if (view.slot === 'a') {

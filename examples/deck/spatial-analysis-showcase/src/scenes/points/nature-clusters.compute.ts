@@ -7,10 +7,12 @@ import type {Buffer} from '@luma.gl/core';
 import {
   addClusterAndOutlineRecipe,
   getGPUGeographicDistributionParameterValues,
+  getGPUKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
   GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
+  GPU_KMEANS_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUGeographicDistribution,
   GPUGroupConvexHull,
@@ -160,7 +162,8 @@ type ClusterSet = {
   clusterCount: SetBuffer;
   clusterStoredCount: SetBuffer;
   clusterOverflow: SetBuffer;
-  convergence: SetBuffer;
+  iterationCount: SetBuffer;
+  converged: SetBuffer;
   sizes: SetBuffer;
   centroids: SetBuffer;
   geometryCounts: SetBuffer;
@@ -339,7 +342,7 @@ export async function createNatureClusters(
     return positions.length ? stacked / (positions.length / 2) : 0;
   };
 
-  function buildSet(options: NatureClusterOptions): ClusterSet {
+  async function buildSet(options: NatureClusterOptions): Promise<ClusterSet> {
     const setSerial = ++serial;
     const resources = new SpatialAnalysisResources(device, `nature-clusters-${setSerial}`);
     const indexes = getSubset(options.category);
@@ -391,7 +394,8 @@ export async function createNatureClusters(
     const clusterCount = resources.createBuffer('cluster-count', 4);
     const clusterStoredCount = resources.createBuffer('cluster-stored-count', 4);
     const clusterOverflow = resources.createBuffer('cluster-overflow', 4);
-    const convergence = resources.createBuffer('convergence', 8);
+    const iterationCount = resources.createBuffer('iteration-count', 4);
+    const converged = resources.createBuffer('converged', 4);
     const sizes = resources.createBuffer('sizes', groupCount * 4);
     const centroids = resources.createBuffer('centroids', groupCount * 8);
     const geometryCounts = resources.createBuffer('geometry-counts', groupCount * 4);
@@ -440,7 +444,10 @@ export async function createNatureClusters(
       ) => importGraphBuffer(graph, name, buffer, format, length);
       addClusterAndOutlineRecipe(graph, {
         id: 'cluster-outline',
-        positions: view('positions', positionsBuffer, 'float32x2', pointCount),
+        points: {
+          kind: 'points',
+          positions: view('positions', positionsBuffer, 'float32x2', pointCount)
+        },
         spatialContext: {coordinateSpace: 'planar', metric: 'native', units: 'native'},
         clusteringParameters: clusteringParameters.importToGraph(graph),
         gridSize: GRID_SIZE,
@@ -453,7 +460,7 @@ export async function createNatureClusters(
           clusterCount: view('cluster-count', clusterCount, 'uint32', 1),
           hullPositions: view('hull-positions', hullPositions, 'float32x2', HULL_CAPACITY),
           hullOffsets: view('hull-offsets', hullOffsets, 'uint32', groupCount + 1),
-          hullOverflow: view('hull-overflow', hullOverflow, 'uint32', 1),
+          status: {hullOverflow: view('hull-overflow', hullOverflow, 'uint32', 1)},
           areas: view('areas', areas, 'float32', groupCount),
           perimeters: view('perimeters', perimeters, 'float32', groupCount),
           centroids: view('hull-centroids', hullCentroids, 'float32x2', groupCount)
@@ -466,7 +473,7 @@ export async function createNatureClusters(
           hullCounts: view('hull-counts', hullCounts, 'uint32', groupCount)
         }
       });
-      clusterGraph = resources.track(graph.compile());
+      clusterGraph = resources.track(await graph.compileAsync());
     } else {
       if (isDbscan) {
         const graph = new GPUCommandGraph<void>(device, {id: `nature-dbscan-${setSerial}`});
@@ -485,39 +492,61 @@ export async function createNatureClusters(
             gridSize: GRID_SIZE,
             denseBoxShortcut: options.denseBoxShortcut,
             sumOrder: options.sumOrder,
-            labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
-            coreFlags: importGraphBuffer(graph, 'core-flags', coreFlags, 'uint32', pointCount),
-            clusterCount: importGraphBuffer(graph, 'cluster-count', clusterCount, 'uint32', 1),
-            clusters: {
-              ids: importGraphBuffer(graph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
-              count: importGraphBuffer(
+            output: {
+              labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
+              coreFlags: importGraphBuffer(graph, 'core-flags', coreFlags, 'uint32', pointCount),
+              clusterCount: importGraphBuffer(graph, 'cluster-count', clusterCount, 'uint32', 1),
+              clusters: {
+                ids: importGraphBuffer(
+                  graph,
+                  'cluster-ids',
+                  clusterIds,
+                  'uint32',
+                  CLUSTER_CAPACITY
+                ),
+                status: {
+                  count: importGraphBuffer(
+                    graph,
+                    'cluster-stored-count',
+                    clusterStoredCount,
+                    'uint32',
+                    1
+                  ),
+                  overflow: importGraphBuffer(
+                    graph,
+                    'cluster-overflow',
+                    clusterOverflow,
+                    'uint32',
+                    1
+                  )
+                }
+              },
+              clusterSizes: importGraphBuffer(
                 graph,
-                'cluster-stored-count',
-                clusterStoredCount,
+                'cluster-sizes',
+                sizes,
                 'uint32',
-                1
+                CLUSTER_CAPACITY
               ),
-              overflow: importGraphBuffer(graph, 'cluster-overflow', clusterOverflow, 'uint32', 1)
-            },
-            clusterSizes: importGraphBuffer(
-              graph,
-              'cluster-sizes',
-              sizes,
-              'uint32',
-              CLUSTER_CAPACITY
-            ),
-            clusterCentroids: importGraphBuffer(
-              graph,
-              'cluster-centroids',
-              centroids,
-              'float32x2',
-              CLUSTER_CAPACITY
-            )
+              clusterCentroids: importGraphBuffer(
+                graph,
+                'cluster-centroids',
+                centroids,
+                'float32x2',
+                CLUSTER_CAPACITY
+              )
+            }
           })
         );
-        clusterGraph = resources.track(graph.compile());
+        clusterGraph = resources.track(await graph.compileAsync());
       } else {
         const graph = new GPUCommandGraph<void>(device, {id: `nature-kmeans-${setSerial}`});
+        const kmeansParameters = resources.createParameterBuffer(
+          'kmeans-parameters',
+          'uint32',
+          GPU_KMEANS_PARAMETER_LENGTH,
+          getGPUKMeansParameterValues({seed: options.seed, tolerance: options.tolerance})
+        );
         graph.add(
           new GPUKMeans({
             id: 'kmeans',
@@ -529,17 +558,27 @@ export async function createNatureClusters(
               pointCount
             ),
             k: options.k,
-            iterations: getIterationCap(options),
-            tolerance: options.tolerance,
-            convergence: importGraphBuffer(graph, 'convergence', convergence, 'uint32', 2),
+            maximumIterations: getIterationCap(options),
+            parameters: kmeansParameters.importToGraph(graph),
             initialization: options.initialization,
-            seed: options.seed,
-            labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
-            centers: importGraphBuffer(graph, 'centers', centroids, 'float32x2', options.k),
-            sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', options.k)
+            output: {
+              status: {
+                iterationCount: importGraphBuffer(
+                  graph,
+                  'iteration-count',
+                  iterationCount,
+                  'uint32',
+                  1
+                ),
+                converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+              },
+              labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
+              centers: importGraphBuffer(graph, 'centers', centroids, 'float32x2', options.k),
+              sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', options.k)
+            }
           })
         );
-        clusterGraph = resources.track(graph.compile());
+        clusterGraph = resources.track(await graph.compileAsync());
       }
 
       // ---- Description graph: GPUGroupGeometry + GPUGroupConvexHull ----
@@ -592,7 +631,15 @@ export async function createNatureClusters(
             ),
             medoidIndices: importGraphBuffer(shapes, 'medoids', medoids, 'uint32', groupCount),
             ellipses: importGraphBuffer(shapes, 'ellipses', ellipses, 'float32', groupCount * 3),
-            overflow: importGraphBuffer(shapes, 'geometry-overflow', geometryOverflow, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(
+                shapes,
+                'geometry-overflow',
+                geometryOverflow,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
@@ -603,7 +650,7 @@ export async function createNatureClusters(
           labels: shapeLabels,
           groupCount,
           maximumVerticesPerGroup: HULL_MAXIMUM_VERTICES,
-          totalCapacity: HULL_CAPACITY,
+          vertexCapacity: HULL_CAPACITY,
           prefilterLevels: Number(options.prefilterLevels),
           output: {
             vertexIndices: importGraphBuffer(
@@ -628,11 +675,13 @@ export async function createNatureClusters(
               groupCount + 1
             ),
             counts: importGraphBuffer(shapes, 'hull-counts', hullCounts, 'uint32', groupCount),
-            overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+            }
           }
         })
       );
-      shapeGraph = resources.track(shapes.compile());
+      shapeGraph = resources.track(await shapes.compileAsync());
     }
 
     // ---- Whole-pattern distribution: GPUGeographicDistribution over the selected points ----
@@ -715,7 +764,7 @@ export async function createNatureClusters(
         });
       }
     }
-    const distributionGraph = resources.track(distribution.compile());
+    const distributionGraph = resources.track(await distribution.compileAsync());
 
     // ---- One detail read when the parameters settle: labels, core flags, hulls, centres ----
     const detailSources: {name: string; buffer: SetBuffer; size: number}[] = [
@@ -725,7 +774,8 @@ export async function createNatureClusters(
       {name: 'clusterOverflow', buffer: clusterOverflow, size: 4},
       {name: 'geometryOverflow', buffer: geometryOverflow, size: 4},
       {name: 'hullOverflow', buffer: hullOverflow, size: 4},
-      {name: 'convergence', buffer: convergence, size: 8},
+      {name: 'iterationCount', buffer: iterationCount, size: 4},
+      {name: 'converged', buffer: converged, size: 4},
       {name: 'hullOffsets', buffer: hullOffsets, size: (groupCount + 1) * 4},
       {name: 'hullCounts', buffer: hullCounts, size: groupCount * 4},
       {name: 'hullPositions', buffer: hullPositions, size: HULL_CAPACITY * 8},
@@ -786,7 +836,8 @@ export async function createNatureClusters(
       clusterCount,
       clusterStoredCount,
       clusterOverflow,
-      convergence,
+      iterationCount,
+      converged,
       sizes,
       centroids,
       geometryCounts,
@@ -841,7 +892,7 @@ export async function createNatureClusters(
    * Compiles the scratch sweep graph of a set: the same clustering contributor on its own labels
    * and parameter buffer, so eight epsilon runs never disturb what the map shows. Compiled once.
    */
-  function ensureSweep(set: ClusterSet): void {
+  async function ensureSweep(set: ClusterSet): Promise<void> {
     if (set.sweep || set.destroyed || set.config.method !== 'dbscan') return;
     const {resources} = set;
     const graph = new GPUCommandGraph<void>(device, {id: `nature-sweep-${set.serial}`});
@@ -868,16 +919,22 @@ export async function createNatureClusters(
         parameters: parameters.importToGraph(graph),
         gridSize: GRID_SIZE,
         sumOrder: set.config.sumOrder,
-        labels: importGraphBuffer(graph, 'labels', labels, 'uint32', set.pointCount),
-        clusterCount: importGraphBuffer(graph, 'count', count, 'uint32', 1),
-        clusters: {
-          ids: importGraphBuffer(graph, 'ids', ids, 'uint32', CLUSTER_CAPACITY),
-          count: importGraphBuffer(graph, 'stored', stored, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+        output: {
+          labels: importGraphBuffer(graph, 'labels', labels, 'uint32', set.pointCount),
+          clusterCount: importGraphBuffer(graph, 'count', count, 'uint32', 1),
+          clusters: {
+            ids: importGraphBuffer(graph, 'ids', ids, 'uint32', CLUSTER_CAPACITY),
+            status: {
+              count: importGraphBuffer(graph, 'stored', stored, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+            }
+          }
         }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
+    // A rebuild may have replaced the set while the sweep graph compiled.
+    if (set.destroyed || set !== active) return;
     const reader = new SummaryReader(
       resources,
       `sweep-${set.serial}`,
@@ -1030,14 +1087,14 @@ export async function createNatureClusters(
         ? `DBSCAN ${ctx.options.epsilon} m / ${ctx.options.minimumPoints} points${set.config.denseBoxShortcut ? ', dense-box' : ''}${isRecipe ? ', recipe' : ''}`
         : `K-means k = ${set.config.k}, ${set.config.initialization}${set.config.initialization === 'kmeans++' ? ` seed ${set.config.seed}` : ''}, cap ${getIterationCap(set.config)}`
     );
-    const convergence = detail.u32('convergence');
+    const iterationCount = detail.u32('iterationCount')[0];
     ctx.setReadout(
       'convergence',
       isDbscan
         ? 'n/a (DBSCAN)'
-        : convergence[1]
-          ? `converged after ${convergence[0]} of ${getIterationCap(set.config)} iterations`
-          : `not converged: stopped at the ${convergence[0]} iteration cap`
+        : detail.u32('converged')[0]
+          ? `converged after ${iterationCount} of ${getIterationCap(set.config)} iterations`
+          : `not converged: stopped at the ${iterationCount} iteration cap`
     );
     if (!isDbscan) {
       let farthest = 0;
@@ -1408,14 +1465,14 @@ export async function createNatureClusters(
     set.resources.destroy();
   };
 
-  let active: ClusterSet = buildSet(ctx.options);
+  let active: ClusterSet = await buildSet(ctx.options);
   furnitureKey = '';
 
   const scheduleSweepCompile = (set: ClusterSet) => {
-    setTimeout(() => {
+    setTimeout(async () => {
       if (destroyed || set.destroyed || set !== active) return;
       try {
-        ensureSweep(set);
+        await ensureSweep(set);
       } catch {
         // Without the sweep graph the scale chart stays empty; the map is unaffected.
       }
@@ -1440,10 +1497,15 @@ export async function createNatureClusters(
       const token = ++loadToken;
       ctx.setStatus('Rebuilding the cluster graphs…');
       // Let the status paint before the synchronous compile.
-      setTimeout(() => {
+      setTimeout(async () => {
         if (destroyed || token !== loadToken) return;
         try {
-          const next = buildSet(ctx.options);
+          const next = await buildSet(ctx.options);
+          // A newer rebuild or destroy arrived while the graphs compiled: drop this set.
+          if (destroyed || token !== loadToken) {
+            destroySet(next);
+            return;
+          }
           const previous = active;
           active = next;
           appliedEpsilon = Number.NaN;
@@ -1514,16 +1576,20 @@ export async function createNatureClusters(
             gridSize: GRID_SIZE,
             denseBoxShortcut,
             sumOrder: set.config.sumOrder,
-            labels: importGraphBuffer(graph, 'labels', labels, 'uint32', set.pointCount),
-            clusterCount: importGraphBuffer(graph, 'count', count, 'uint32', 1),
-            clusters: {
-              ids: importGraphBuffer(graph, 'ids', ids, 'uint32', CLUSTER_CAPACITY),
-              count: importGraphBuffer(graph, 'stored', stored, 'uint32', 1),
-              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+            output: {
+              labels: importGraphBuffer(graph, 'labels', labels, 'uint32', set.pointCount),
+              clusterCount: importGraphBuffer(graph, 'count', count, 'uint32', 1),
+              clusters: {
+                ids: importGraphBuffer(graph, 'ids', ids, 'uint32', CLUSTER_CAPACITY),
+                status: {
+                  count: importGraphBuffer(graph, 'stored', stored, 'uint32', 1),
+                  overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+                }
+              }
             }
           })
         );
-        const compiled = scratch.track(graph.compile());
+        const compiled = scratch.track(await graph.compileAsync());
         const timing = await measureCompiledGraph(device, compiled, {
           parameters: undefined,
           completionBuffer: count,

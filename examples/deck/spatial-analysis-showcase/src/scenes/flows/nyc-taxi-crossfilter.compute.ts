@@ -17,6 +17,7 @@ import {createNearestIndex, type NearestIndex} from '../../cartography/picking';
 import type {LngLat, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, ScenePointerEvent, TooltipRow} from '../scene';
@@ -239,7 +240,7 @@ export async function createNycTaxiCrossfilter(
   let viewChangedAt = performance.now();
   let viewStale = true;
 
-  function buildGraph(selfExclude: boolean): FilterGraph {
+  async function buildGraph(selfExclude: boolean): Promise<FilterGraph> {
     const id = ++serial;
     const graphResources = new SpatialAnalysisResources(device, `taxi-crossfilter-${id}`);
     const commandGraph = new GPUCommandGraph<void>(device, {id: `taxi-crossfilter-${id}`});
@@ -345,7 +346,7 @@ export async function createNycTaxiCrossfilter(
     filter.addToGraph(commandGraph);
     // Destroyed in reverse order: the compiled graph goes before the controller's selection buffers.
     graphResources.track({destroy: () => filter.destroy()});
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const built: FilterGraph = {
       compiled,
       filter,
@@ -453,11 +454,25 @@ export async function createNycTaxiCrossfilter(
     markChanged();
   }
 
-  function rebuild(): void {
+  /** Swaps a finished build in; the replaced graph is retired and destroyed a few frames later. */
+  function commitGraph(next: FilterGraph): void {
     if (graph) retired.push({graph, frames: 0});
-    graph = buildGraph(ctx.options.selfExclude);
+    graph = next;
     ctx.setCost({records: count, passes: graph.compiled.stats.nodeOrder.length});
     applyBrushes();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the filter graph for the current `selfExclude` option; the latest request wins. */
+  function requestGraph(): Promise<boolean> {
+    return graphSwap.request({
+      build: () => buildGraph(ctx.options.selfExclude),
+      commit: commitGraph,
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
   }
 
   const hourLabel = (hours: number) =>
@@ -833,7 +848,7 @@ export async function createNycTaxiCrossfilter(
   ctx.setReadout('equalMajor', equalMajorShare);
   ctx.setReadout('quantileMajor', quantileMajorShare);
   writeLiveMask();
-  rebuild();
+  commitGraph(await buildGraph(ctx.options.selfExclude));
 
   return {
     getCompiledGraphs: () => (graph ? [graph.compiled as CompiledGPUCommandGraph<never>] : []),
@@ -841,7 +856,7 @@ export async function createNycTaxiCrossfilter(
     setOption(id) {
       switch (id) {
         case 'selfExclude':
-          rebuild();
+          void requestGraph();
           break;
         case 'day':
           writeLiveMask();

@@ -18,6 +18,7 @@ import {
   type GPUGeometryValidityOrientation
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
   SpatialAnalysisModeDefinition,
@@ -372,7 +373,7 @@ export const validityMode: SpatialAnalysisModeDefinition = {
     const validityOverflow = resources.createBuffer('validity-overflow', 4);
     const validityIntersections = resources.createBuffer('validity-intersections', 4);
     const failingClass = resources.createBuffer('failing-class', polygonScene.featureCount * 4);
-    const buildValidityGraph = (orientation: GPUGeometryValidityOrientation) => {
+    const buildValidityGraph = async (orientation: GPUGeometryValidityOrientation) => {
       const graph = new GPUCommandGraph<void>(device, {id: `validity-polygons-${orientation}`});
       graph.add(
         new GPUGeometryValidity({
@@ -408,29 +409,40 @@ export const validityMode: SpatialAnalysisModeDefinition = {
               polygonScene.ringOffsets.length
             )
           },
-          mask: importGraphBuffer(
-            graph,
-            'validity-mask',
-            validityMask,
-            'uint32',
-            polygonScene.featureCount
-          ),
+          output: {
+            mask: importGraphBuffer(
+              graph,
+              'validity-mask',
+              validityMask,
+              'uint32',
+              polygonScene.featureCount
+            ),
+            status: {
+              overflow: importGraphBuffer(
+                graph,
+                'validity-overflow',
+                validityOverflow,
+                'uint32',
+                1
+              ),
+              intersectionCount: importGraphBuffer(
+                graph,
+                'validity-intersections',
+                validityIntersections,
+                'uint32',
+                1
+              )
+            }
+          },
           intersectionCapacity: INTERSECTION_CAPACITY,
-          overflow: importGraphBuffer(graph, 'validity-overflow', validityOverflow, 'uint32', 1),
-          intersectionCount: importGraphBuffer(
-            graph,
-            'validity-intersections',
-            validityIntersections,
-            'uint32',
-            1
-          ),
           orientation
         })
       );
-      return graph.compile();
+      return await graph.compileAsync();
     };
     let orientation: GPUGeometryValidityOrientation = 'ignore';
-    let validityGraph = resources.track(buildValidityGraph(orientation));
+    let validityGraph = resources.track(await buildValidityGraph(orientation));
+    const graphSwap = resources.track(new GraphSwap());
 
     // ------------------------------------------------------------------ state and controls
     let injectInvalid = false;
@@ -459,14 +471,21 @@ export const validityMode: SpatialAnalysisModeDefinition = {
       value: orientation,
       onChange: value => {
         orientation = value;
-        const previous = validityGraph;
-        validityGraph = resources.track(buildValidityGraph(orientation));
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) resources.release(previous);
-          })
-        );
-        polygonsDirty = true;
+        // The current graph keeps encoding until the replacement has compiled.
+        void graphSwap.request({
+          build: async () => resources.track(await buildValidityGraph(value)),
+          commit: next => {
+            const previous = validityGraph;
+            validityGraph = next;
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                if (!destroyed) resources.release(previous);
+              })
+            );
+            polygonsDirty = true;
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     context.controls.addLegend({

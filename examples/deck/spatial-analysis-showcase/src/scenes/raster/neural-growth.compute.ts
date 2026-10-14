@@ -223,7 +223,7 @@ export async function createResidualRepair(
     'float32',
     FRONTIER_RESIDUAL_PARAMETER_LENGTH
   );
-  const buildGraph = (id: string, input: typeof stateA, output: typeof stateB) => {
+  const buildGraph = async (id: string, input: typeof stateA, output: typeof stateB) => {
     const graph = new GPUCommandGraph<void>(device, {id});
     graph.add(
       new FrontierResidualDiffusion({
@@ -240,11 +240,11 @@ export async function createResidualRepair(
         boundary: 'clamp'
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
   const graphs = [
-    buildGraph('residual-repair-a', stateA, stateB),
-    buildGraph('residual-repair-b', stateB, stateA)
+    await buildGraph('residual-repair-a', stateA, stateB),
+    await buildGraph('residual-repair-b', stateB, stateA)
   ];
   let generation = 0;
 

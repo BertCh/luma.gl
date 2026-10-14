@@ -179,6 +179,10 @@ export type Geography = {
   contiguityRingOffsets: Uint32Array;
   /** Feature to ring offsets (`count + 1`). */
   featureRingOffsets: Uint32Array;
+  /** Feature to polygon part offsets (`count + 1`): a multipart feature owns several parts. */
+  featurePolygonOffsets: Uint32Array;
+  /** Polygon part to ring offsets (`partCount + 1`); the first ring of a part is its shell. */
+  polygonRingOffsets: Uint32Array;
   /** Triangle list of every polygon in metres (3 vertices per triangle). */
   triangles: Float32Array;
   /** Feature of every triangle vertex. */
@@ -384,6 +388,13 @@ export async function loadGeography(
   const {featureCount, partFeature, partRingOffsets, ringOffsets, featureRingOffsets} = layout;
   const partCount = partRingOffsets.length - 1;
   const ringCount = ringOffsets.length - 1;
+
+  // Parts of one feature are contiguous, so a feature owns a contiguous part range.
+  const featurePolygonOffsets = new Uint32Array(featureCount + 1);
+  for (let part = 0; part < partCount; part++) featurePolygonOffsets[partFeature[part] + 1]++;
+  for (let feature = 0; feature < featureCount; feature++) {
+    featurePolygonOffsets[feature + 1] += featurePolygonOffsets[feature];
+  }
 
   // Metre bounds.
   const bounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
@@ -677,6 +688,8 @@ export async function loadGeography(
     contiguityVertices,
     contiguityRingOffsets,
     featureRingOffsets,
+    featurePolygonOffsets,
+    polygonRingOffsets: partRingOffsets,
     triangles: Float32Array.from(triangleVertices),
     triangleFeatures: Uint32Array.from(triangleFeatureList),
     outlineSegments: Float32Array.from(outline),

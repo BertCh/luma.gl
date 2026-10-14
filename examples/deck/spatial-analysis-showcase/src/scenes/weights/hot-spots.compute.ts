@@ -15,6 +15,8 @@ import {
   GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH,
   GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH,
   type GPUCellFamily,
+  type GPUHotSpotAnalysisRecipeResult,
+  type GPUHotSpotAnalysisRecipeSettings,
   type GPUInferenceAlternative,
   type GPUSpatialContext
 } from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -45,6 +47,7 @@ import {getLocalProjector, projectRingsToSegments} from '../../cartography/segme
 import type {ClassTable, LngLat, MapAnnotation, MapHighlight} from '../../cartography/types';
 import {getInputPolygons} from '../../cartography/picking';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisPolygonLayer,
@@ -236,7 +239,8 @@ type HotWorld = {
   resources: SpatialAnalysisResources;
   reader: SummaryReader;
   snapshot: StatSnapshot | null;
-  prepare: () => void;
+  /** Compiles the variants the current options need (no-op when cached). */
+  prepare: () => Promise<void>;
   writeParameters: () => void;
   encode: (commandEncoder: CommandEncoder) => void;
   getLayers: () => Layer[];
@@ -263,6 +267,10 @@ export async function createHotSpots(
   let destroyed = false;
   let world: HotWorld | null = null;
   let switchToken = 0;
+  /** Serializes the compiles of the variants a `setOption` needs. */
+  const graphSwap = new GraphSwap();
+  /** Counts option changes, so a world that finishes loading can catch up with them. */
+  let optionRevision = 0;
   let dirty = true;
   let stale = true;
   /** Classes of the `values` display, or `null` while continuous / not computed yet. */
@@ -923,14 +931,12 @@ export async function createHotSpots(
     const tableCount = create('table-count', 4);
     const tableOverflow = create('table-overflow', 4);
     const centersDegrees = create('centers-degrees', rows * 8);
-    // Study area: the Chicago tracts, one polygon per feature, in longitude/latitude degrees.
+    // Study area: the Chicago tracts in longitude/latitude degrees, in the four-level polygon
+    // layout (a tract owns the polygon parts `featureOffsets` lists).
     const tractDataset = ctx.datasets.get('chicago-tracts');
     const studyVertices = tractDataset.column<Float32Array>('vertices');
     const studyPolygonOffsets = tractDataset.column<Uint32Array>('polygonRingOffsets');
-    const studyFeatureOffsets = Uint32Array.from(
-      {length: studyPolygonOffsets.length},
-      (_, index) => index
-    );
+    const studyFeatureOffsets = tracts.featurePolygonOffsets;
     const studyArea = {
       vertices: create('study-vertices', Float32Array.from(studyVertices)),
       vertexCount: studyVertices.length / 2,
@@ -985,6 +991,7 @@ export async function createHotSpots(
     };
 
     const recipes = new Map<string, CompiledGPUCommandGraph<void>>();
+    const recipeResults = new Map<string, GPUHotSpotAnalysisRecipeResult>();
     const statGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
 
     const getRecipeKey = () => {
@@ -1002,7 +1009,14 @@ export async function createHotSpots(
       ].join(':');
     };
 
-    const buildRecipe = (): CompiledGPUCommandGraph<void> => {
+    /** Inference settings of the current options; the recipe packs them into its parameter buffers. */
+    const getRecipeSettings = (): GPUHotSpotAnalysisRecipeSettings => ({
+      significanceLevel: ctx.options.significance,
+      seed: ctx.options.seed,
+      permutationCount: ctx.options.permutations
+    });
+
+    const buildRecipe = async (): Promise<CompiledGPUCommandGraph<void>> => {
       const o = ctx.options;
       const variant = getStatVariant();
       const graph = new GPUCommandGraph<void>(device, {id: `hotspots-recipe-${getRecipeKey()}`});
@@ -1015,12 +1029,14 @@ export async function createHotSpots(
       const table = {
         cells: view('table-cells', tableCells, 'uint32x2', rows),
         counts: view('table-counts', tableCounts, 'uint32', rows),
-        count: view('table-count', tableCount, 'uint32', 1),
-        overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+        status: {
+          count: view('table-count', tableCount, 'uint32', 1),
+          overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+        }
       };
       const centers = view('centers-degrees', centersDegrees, 'float32x2', rows);
       const usePermutation = o.statistic === 'gi-star' && o.inference === 'permutation';
-      addHotSpotAnalysisRecipe(graph, {
+      const recipeResult = addHotSpotAnalysisRecipe(graph, {
         id: 'hot-spot',
         source: {
           kind: 'points',
@@ -1029,7 +1045,8 @@ export async function createHotSpots(
           family: o.family,
           resolution: getResolution(),
           studyArea: {
-            polygonPositions: view(
+            kind: 'polygons',
+            positions: view(
               'study-vertices',
               studyArea.vertices,
               'float32x2',
@@ -1067,7 +1084,8 @@ export async function createHotSpots(
         },
         analyze: 'density',
         minimumNeighbors: CELL_MINIMUM_NEIGHBORS,
-        parameters: parameters.importToGraph(graph),
+        settings: getRecipeSettings(),
+        parameters,
         selfWeight: variant.selfWeight,
         multipleTesting: variant.falseDiscoveryRate ? 'benjamini-hochberg' : 'none',
         outputs: {
@@ -1081,7 +1099,7 @@ export async function createHotSpots(
             'float32',
             GPU_SPATIAL_AUTOCORRELATION_STATISTICS_LENGTH
           ),
-          weightsOverflow: view('weights-overflow', weightsOverflow, 'uint32', 1),
+          status: {weightsOverflow: view('weights-overflow', weightsOverflow, 'uint32', 1)},
           permutation: usePermutation
             ? {
                 exceedances: view('exceedances', buffers.exceedances, 'uint32', rows),
@@ -1104,12 +1122,12 @@ export async function createHotSpots(
         },
         permutation: usePermutation
           ? {
-              parameters: permutationParameters.importToGraph(graph),
+              parameters: permutationParameters,
               maximumPermutations: 999,
               statistic: variant.selfWeight === 1 ? 'localGStar' : 'localG',
               alternative: o.alternative,
               maximumNeighbors: Number(o.maximumNeighbors),
-              falseDiscoveryRate: variant.falseDiscoveryRate
+              multipleTesting: variant.falseDiscoveryRate ? 'benjamini-hochberg' : 'none'
             }
           : undefined
       });
@@ -1135,18 +1153,19 @@ export async function createHotSpots(
   meters[metersOffset + index * 2u] = scale * (longitude - (${originLng.toFixed(9)})) * ${DEGREES.toFixed(15)};
   meters[metersOffset + index * 2u + 1u] = scale * (projected - origin);`
       });
-      return resources.track(graph.compile());
+      recipeResults.set(getRecipeKey(), recipeResult);
+      return resources.track(await graph.compileAsync());
     };
 
-    const prepare = () => {
+    const prepare = async () => {
       const recipeKey = getRecipeKey();
-      if (!recipes.has(recipeKey)) recipes.set(recipeKey, buildRecipe());
+      if (!recipes.has(recipeKey)) recipes.set(recipeKey, await buildRecipe());
       const variant = getStatVariant(ctx.options.statistic === 'gi-star');
       const statKey = getStatKey(variant);
       if (!statGraphs.has(statKey)) {
         statGraphs.set(
           statKey,
-          compileStatGraph({
+          await compileStatGraph({
             device,
             resources,
             id: `hotspots-cells-${statKey}`,
@@ -1199,16 +1218,8 @@ export async function createHotSpots(
           rowStandardize: o.weightTransform === 'row'
         })
       );
-      parameters.write(
-        getGPUSpatialAutocorrelationParameterValues({significanceLevel: o.significance})
-      );
-      permutationParameters.write(
-        getGPUPermutationParameterValues({
-          seed: o.seed,
-          permutations: o.permutations,
-          significanceLevel: o.significance
-        })
-      );
+      // The recipe repacks `parameters` and `permutationParameters`; both are shared by its variants.
+      recipeResults.get(getRecipeKey())?.setSettings(getRecipeSettings());
     };
 
     const reader = makeReader(
@@ -1439,14 +1450,14 @@ export async function createHotSpots(
       };
     };
 
-    const prepare = () => {
-      core.prepare(getConfig());
+    const prepare = async () => {
+      await core.prepare(getConfig());
       const variant = getStatVariant();
       const key = getStatKey(variant);
       if (!statGraphs.has(key)) {
         statGraphs.set(
           key,
-          compileStatGraph({
+          await compileStatGraph({
             device,
             resources,
             id: `hotspots-${geography.id}-${key}`,
@@ -1479,7 +1490,7 @@ export async function createHotSpots(
       permutationParameters.write(
         getGPUPermutationParameterValues({
           seed: o.seed,
-          permutations: o.permutations,
+          permutationCount: o.permutations,
           significanceLevel: o.significance
         })
       );
@@ -1680,6 +1691,17 @@ export async function createHotSpots(
       next.resources.destroy();
       return;
     }
+    // The world becomes live only once its variants exist, because `encode` runs while it compiles.
+    let revision: number;
+    do {
+      revision = optionRevision;
+      await next.prepare();
+    } while (revision !== optionRevision && token === switchToken && !destroyed);
+    if (token !== switchToken || destroyed) {
+      next.reader.stop();
+      next.resources.destroy();
+      return;
+    }
     const previous = world;
     world = null;
     ctx.requestLayers();
@@ -1690,7 +1712,6 @@ export async function createHotSpots(
     world = next;
     publishSample(source, source === 'nature-cells' ? undefined : await getGeography(source));
     next.writeInputs();
-    next.prepare();
     next.writeParameters();
     dirty = true;
     stale = true;
@@ -1705,7 +1726,7 @@ export async function createHotSpots(
     ctx.options.source === 'nature-cells' ? undefined : await getGeography(ctx.options.source)
   );
   world.writeInputs();
-  world.prepare();
+  await world.prepare();
   world.writeParameters();
   ctx.setStatus('');
 
@@ -1713,6 +1734,7 @@ export async function createHotSpots(
     getCompiledGraphs: () => world?.getGraphs() ?? [],
 
     setOption(id, value) {
+      optionRevision++;
       // A legend filter belongs to the legend it was made in.
       if (
         [
@@ -1750,16 +1772,22 @@ export async function createHotSpots(
         return;
       }
       if (['category', 'hours', 'variable'].includes(id)) target.writeInputs();
-      target.prepare();
-      target.writeParameters();
-      dirty = true;
-      stale = true;
-      ctx.requestLayers();
+      // `encode` waits for the swap: the variants the new options need may not exist yet.
+      void graphSwap.request({
+        build: () => target.prepare(),
+        commit: () => {
+          if (world !== target) return;
+          target.writeParameters();
+          dirty = true;
+          stale = true;
+          ctx.requestLayers();
+        }
+      });
     },
 
     encode(commandEncoder, frame) {
       const target = world;
-      if (!target) return;
+      if (!target || graphSwap.pending) return;
       if (dirty || frame.frameIndex < 2) {
         target.encode(commandEncoder);
         dirty = false;
@@ -1798,6 +1826,7 @@ export async function createHotSpots(
     destroy() {
       destroyed = true;
       switchToken++;
+      graphSwap.destroy();
       const target = world;
       world = null;
       if (target) {

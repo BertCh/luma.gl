@@ -206,41 +206,47 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     kGraph.add(
       new GPUNetworkKFunction({
         id: 'k',
-        points: importGraphBuffer(kGraph, 'events', eventPositions, 'float32x2', EVENT_COUNT),
-        nodePositions: importGraphBuffer(
-          kGraph,
-          'node-positions',
-          nodePositions,
-          'float32x2',
-          nodeCount
-        ),
-        offsets: importGraphBuffer(kGraph, 'offsets', csrOffsets, 'uint32', nodeCount + 1),
-        neighbors: importGraphBuffer(kGraph, 'neighbors', csrNeighbors, 'uint32', edgeCount),
-        weights: importGraphBuffer(kGraph, 'weights', csrWeights, 'float32', edgeCount),
-        maxSnapDistance: snapParameter.importToGraph(kGraph),
-        maxDistance: maxDistanceParameter.importToGraph(kGraph),
+        positions: importGraphBuffer(kGraph, 'events', eventPositions, 'float32x2', EVENT_COUNT),
+        topology: {
+          offsets: importGraphBuffer(kGraph, 'offsets', csrOffsets, 'uint32', nodeCount + 1),
+          neighbors: importGraphBuffer(kGraph, 'neighbors', csrNeighbors, 'uint32', edgeCount),
+          weights: importGraphBuffer(kGraph, 'weights', csrWeights, 'float32', edgeCount),
+          nodePositions: importGraphBuffer(
+            kGraph,
+            'node-positions',
+            nodePositions,
+            'float32x2',
+            nodeCount
+          )
+        },
+        maximumSnapDistance: snapParameter.importToGraph(kGraph),
+        maximumDistance: maxDistanceParameter.importToGraph(kGraph),
         networkLength: lengthParameter.importToGraph(kGraph),
         parameters: kParameters.importToGraph(kGraph),
         bandCount: BAND_COUNT,
         simulationCount: SIMULATION_COUNT,
         rowsPerBlock: ROWS_PER_BLOCK,
-        maxIterations: K_MAXIMUM_ITERATIONS,
+        maximumIterations: K_MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        kValues: importGraphBuffer(
-          kGraph,
-          'k-values',
-          kValues,
-          'float32',
-          patternCount * BAND_COUNT
-        ),
-        envelope: importGraphBuffer(kGraph, 'envelope', envelope, 'float32', 3 * BAND_COUNT),
-        snappedEventCount: importGraphBuffer(kGraph, 'snapped-count', snappedCount, 'uint32', 1),
         candidateCapacity: SNAP_CANDIDATE_CAPACITY,
-        overflow: importGraphBuffer(kGraph, 'snap-overflow', snapOverflow, 'uint32', 1),
-        converged: importGraphBuffer(kGraph, 'k-converged', kConverged, 'uint32', 1)
+        output: {
+          kValues: importGraphBuffer(
+            kGraph,
+            'k-values',
+            kValues,
+            'float32',
+            patternCount * BAND_COUNT
+          ),
+          envelope: importGraphBuffer(kGraph, 'envelope', envelope, 'float32', 3 * BAND_COUNT),
+          snappedEventCount: importGraphBuffer(kGraph, 'snapped-count', snappedCount, 'uint32', 1),
+          status: {
+            overflow: importGraphBuffer(kGraph, 'snap-overflow', snapOverflow, 'uint32', 1),
+            converged: importGraphBuffer(kGraph, 'k-converged', kConverged, 'uint32', 1)
+          }
+        }
       })
     );
-    const kCompiled: CompiledGPUCommandGraph<void> = resources.track(kGraph.compile());
+    const kCompiled: CompiledGPUCommandGraph<void> = resources.track(await kGraph.compileAsync());
 
     // ---- Graph 2: reachability over the node graph and over the turn line graph ----
     let routeEnabled = false;
@@ -296,45 +302,55 @@ export const networkKFunctionMode: SpatialAnalysisModeDefinition = {
     routeGraph.add(
       new GPUNetworkLineGraph({
         id: 'turns',
-        offsets: routeOffsets,
-        neighbors: routeNeighbors,
-        weights: routeWeights,
-        nodePositions: routeView('node-positions', nodePositions, 'float32x2', nodeCount),
+        topology: {
+          offsets: routeOffsets,
+          neighbors: routeNeighbors,
+          weights: routeWeights,
+          nodePositions: routeView('node-positions', nodePositions, 'float32x2', nodeCount)
+        },
         parameters: turnParameters.importToGraph(routeGraph),
-        lineOffsets: routeLineOffsets,
-        lineNeighbors: routeLineNeighbors,
-        lineWeights: routeLineWeights,
-        arcCount: routeView('arc-count', arcCount, 'uint32', 1),
-        overflow: routeView('line-overflow', lineOverflow, 'uint32', 1)
+        output: {
+          topology: {
+            offsets: routeLineOffsets,
+            neighbors: routeLineNeighbors,
+            weights: routeLineWeights
+          },
+          arcCount: routeView('arc-count', arcCount, 'uint32', 1),
+          status: {overflow: routeView('line-overflow', lineOverflow, 'uint32', 1)}
+        }
       })
     );
     routeGraph.add(
       new GPUNetworkReachability({
         id: 'plain-route',
-        offsets: routeOffsets,
-        neighbors: routeNeighbors,
-        weights: routeWeights,
-        sources: routeOrigin,
+        topology: {offsets: routeOffsets, neighbors: routeNeighbors, weights: routeWeights},
+        startNodes: routeOrigin,
         costLimit: routeBudgetView,
-        maxIterations: ROUTE_MAXIMUM_ITERATIONS,
+        maximumIterations: ROUTE_MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        costs: routePlainCosts,
-        converged: routeView('plain-converged', plainConverged, 'uint32', 1)
+        output: {
+          costs: routePlainCosts,
+          status: {converged: routeView('plain-converged', plainConverged, 'uint32', 1)}
+        }
       })
     );
     routeGraph.add(
       new GPUNetworkReachability({
         id: 'line-route',
-        offsets: routeLineOffsets,
-        neighbors: routeLineNeighbors,
-        weights: routeLineWeights,
-        sources: lineSources.importToGraph(routeGraph),
-        sourceCosts: lineSourceCosts.importToGraph(routeGraph),
+        topology: {
+          offsets: routeLineOffsets,
+          neighbors: routeLineNeighbors,
+          weights: routeLineWeights
+        },
+        startNodes: lineSources.importToGraph(routeGraph),
+        startCosts: lineSourceCosts.importToGraph(routeGraph),
         costLimit: routeBudgetView,
-        maxIterations: ROUTE_MAXIMUM_ITERATIONS,
+        maximumIterations: ROUTE_MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        costs: routeLineCosts,
-        converged: routeView('line-converged', lineConverged, 'uint32', 1)
+        output: {
+          costs: routeLineCosts,
+          status: {converged: routeView('line-converged', lineConverged, 'uint32', 1)}
+        }
       })
     );
     // Arrival cost of a node over the line graph: the cheapest line node of an edge entering it,
@@ -390,7 +406,9 @@ const NO_EDGE: u32 = ${NO_EDGE}u;`,
   }
   extraCosts[extraCostsOffset + index] = bitcast<f32>(resultBits);`
     });
-    const routeCompiled: CompiledGPUCommandGraph<void> = resources.track(routeGraph.compile());
+    const routeCompiled: CompiledGPUCommandGraph<void> = resources.track(
+      await routeGraph.compileAsync()
+    );
 
     // ---- Parameter writers ----
     let kDirty = true;

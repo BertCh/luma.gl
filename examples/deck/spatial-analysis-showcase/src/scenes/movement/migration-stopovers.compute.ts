@@ -145,25 +145,27 @@ export async function createMigrationStopovers(
       timestamps: view(metricsGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
       trackOffsets: view(metricsGraph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: metricsParameters.importToGraph(metricsGraph),
-      trackLengths: view(metricsGraph, 'track-lengths', trackLengths, 'float32', trackCount),
-      maximumSpeeds: view(metricsGraph, 'maximum-speeds', maximumSpeeds, 'float32', trackCount),
-      trackStopCounts: view(
-        metricsGraph,
-        'track-stop-counts',
-        trackStopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
+      output: {
+        trackLengths: view(metricsGraph, 'track-lengths', trackLengths, 'float32', trackCount),
+        maximumSpeeds: view(metricsGraph, 'maximum-speeds', maximumSpeeds, 'float32', trackCount),
+        trackStopCounts: view(
+          metricsGraph,
+          'track-stop-counts',
+          trackStopCounts,
+          'uint32',
+          trackCount
+        ),
+        stops: {
           ids: view(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: stopCountView,
-          overflow: view(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          requiredCount: view(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
-        },
-        startRows: startRowsView,
-        endRows: endRowsView,
-        durations: view(metricsGraph, 'stop-durations', stopDurations, 'float32', STOP_CAPACITY)
+          startRows: startRowsView,
+          endRows: endRowsView,
+          durations: view(metricsGraph, 'stop-durations', stopDurations, 'float32', STOP_CAPACITY),
+          status: {
+            count: stopCountView,
+            overflow: view(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
+            requiredCount: view(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          }
+        }
       }
     })
   );
@@ -215,7 +217,7 @@ export async function createMigrationStopovers(
   output[outputOffset + index * 2u] = lng;
   output[outputOffset + index * 2u + 1u] = lat;`
   });
-  const metricsCompiled = resources.track(metricsGraph.compile());
+  const metricsCompiled = resources.track(await metricsGraph.compileAsync());
 
   // ---- Selection graph: which stops are stopovers of the chosen species and season --------------
   const selectedLngLat = resources.createBuffer('selected-lng-lat', STOP_CAPACITY * 8);
@@ -311,7 +313,7 @@ export async function createMigrationStopovers(
   selected[selectedOffset + index * 2u] = shown.x;
   selected[selectedOffset + index * 2u + 1u] = shown.y;`
   });
-  const selectionCompiled = resources.track(selectionGraph.compile());
+  const selectionCompiled = resources.track(await selectionGraph.compileAsync());
 
   // ---- Clustering graph --------------------------------------------------------------------------
   const labels = resources.createBuffer('labels', STOP_CAPACITY * 4);
@@ -338,24 +340,28 @@ export async function createMigrationStopovers(
       },
       parameters: clusterParameters.importToGraph(clusterGraph),
       gridSize: [192, 192],
-      labels: view(clusterGraph, 'labels', labels, 'uint32', STOP_CAPACITY),
-      clusterCount: view(clusterGraph, 'cluster-count', clusterCountBuffer, 'uint32', 1),
-      clusters: {
-        ids: view(clusterGraph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
-        count: view(clusterGraph, 'cluster-list-count', clusterListCount, 'uint32', 1),
-        overflow: view(clusterGraph, 'cluster-overflow', clusterOverflow, 'uint32', 1)
-      },
-      clusterSizes: view(clusterGraph, 'cluster-sizes', clusterSizes, 'uint32', CLUSTER_CAPACITY),
-      clusterCentroids: view(
-        clusterGraph,
-        'cluster-centroids',
-        clusterCentroids,
-        'float32x2',
-        CLUSTER_CAPACITY
-      )
+      output: {
+        labels: view(clusterGraph, 'labels', labels, 'uint32', STOP_CAPACITY),
+        clusterCount: view(clusterGraph, 'cluster-count', clusterCountBuffer, 'uint32', 1),
+        clusters: {
+          ids: view(clusterGraph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
+          status: {
+            count: view(clusterGraph, 'cluster-list-count', clusterListCount, 'uint32', 1),
+            overflow: view(clusterGraph, 'cluster-overflow', clusterOverflow, 'uint32', 1)
+          }
+        },
+        clusterSizes: view(clusterGraph, 'cluster-sizes', clusterSizes, 'uint32', CLUSTER_CAPACITY),
+        clusterCentroids: view(
+          clusterGraph,
+          'cluster-centroids',
+          clusterCentroids,
+          'float32x2',
+          CLUSTER_CAPACITY
+        )
+      }
     })
   );
-  const clusterCompiled = resources.track(clusterGraph.compile());
+  const clusterCompiled = resources.track(await clusterGraph.compileAsync());
 
   // Longitude/latitude extent of the data (degrees), padded by a degree: stops outside the bounds
   // would be noise. The data does not cross the antimeridian, which the clustering requires.

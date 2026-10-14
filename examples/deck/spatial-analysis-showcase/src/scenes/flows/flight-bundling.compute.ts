@@ -5,15 +5,16 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   GPU_EDGE_BUNDLING_WORK_BOX_PADDING,
   GPUEdgeBundling,
-  type GPUEdgeBundlingParameterValues
+  type GPUEdgeBundlingSettings
 } from '@luma.gl/experimental/gpu-network';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {formatCount, liveText} from '../../cartography/live-text';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {MapAnnotation, SceneContext, SceneInstance, TooltipContent} from '../scene';
@@ -261,7 +262,7 @@ export async function createFlightBundling(
     return prepared;
   }
 
-  function getParameters(): GPUEdgeBundlingParameterValues {
+  function getParameters(): GPUEdgeBundlingSettings {
     const {iterations, kernelRadius, decay, stiffness, stepScale} = ctx.options;
     return {
       activeIterations: iterations,
@@ -273,7 +274,7 @@ export async function createFlightBundling(
   }
 
   function writeParameters(redrawChart = true): void {
-    parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    parameterBuffer.write(getGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
     updateRadiusReadouts(redrawChart);
     markChanged();
   }
@@ -499,7 +500,7 @@ export async function createFlightBundling(
     );
   }
 
-  function buildGraph(): BundlingGraph {
+  async function buildGraph(): Promise<BundlingGraph> {
     const buffers = prepare(ctx.options.network);
     const pointsPerEdge = Number(ctx.options.pointsPerEdge);
     const densityResolution = Number(ctx.options.densityResolution);
@@ -510,21 +511,21 @@ export async function createFlightBundling(
     commandGraph.add(
       new GPUEdgeBundling({
         id: 'bundling',
-        positions: importGraphBuffer(
+        nodePositions: importGraphBuffer(
           commandGraph,
           'positions',
           buffers.positions,
           'float32x2',
           buffers.vertexCount
         ),
-        sourceVertices: importGraphBuffer(
+        sourceNodes: importGraphBuffer(
           commandGraph,
           'sources',
           buffers.sources,
           'uint32',
           buffers.edgeCount
         ),
-        targetVertices: importGraphBuffer(
+        targetNodes: importGraphBuffer(
           commandGraph,
           'targets',
           buffers.targets,
@@ -540,19 +541,21 @@ export async function createFlightBundling(
         ),
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge,
-        iterations: MAXIMUM_ITERATIONS,
+        maximumIterations: MAXIMUM_ITERATIONS,
         densityResolution,
         parameters: parameterBuffer.importToGraph(commandGraph),
-        paths: importGraphBuffer(
-          commandGraph,
-          'paths',
-          paths,
-          'float32x2',
-          buffers.edgeCount * pointsPerEdge
-        )
+        output: {
+          paths: importGraphBuffer(
+            commandGraph,
+            'paths',
+            paths,
+            'float32x2',
+            buffers.edgeCount * pointsPerEdge
+          )
+        }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const built: BundlingGraph = {
       resources: graphResources,
       compiled,
@@ -572,15 +575,32 @@ export async function createFlightBundling(
     return built;
   }
 
-  function rebuild(): void {
+  /** Swaps a finished build in; the replaced graph is retired and destroyed a few frames later. */
+  function commitGraph(next: BundlingGraph): void {
     if (graph) retired.push({resources: graph.resources, frames: 0});
-    graph = buildGraph();
+    graph = next;
     corridorPoints = [];
-    parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    parameterBuffer.write(getGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
     writeMask();
     ctx.setReadout('airports', graph.buffers.network.nodeCount);
     ctx.setReadout('pointsPerEdge', graph.pointsPerEdge);
     markChanged();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the bundling graph for the current options; the latest request wins. */
+  function requestGraph(): Promise<boolean> {
+    return graphSwap.request({
+      build: buildGraph,
+      commit: next => {
+        commitGraph(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
   }
 
   /** Path stretch of the bundled polylines against the straight edges, and the corridor label points. */
@@ -691,7 +711,7 @@ export async function createFlightBundling(
     };
   }
 
-  rebuild();
+  commitGraph(await buildGraph());
 
   return {
     getCompiledGraphs: () => (graph ? [graph.compiled as CompiledGPUCommandGraph<never>] : []),
@@ -701,8 +721,7 @@ export async function createFlightBundling(
         case 'network':
         case 'pointsPerEdge':
         case 'densityResolution':
-          rebuild();
-          ctx.requestLayers();
+          void requestGraph();
           break;
         case 'region':
         case 'distanceRange':

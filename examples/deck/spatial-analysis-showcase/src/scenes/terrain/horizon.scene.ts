@@ -590,46 +590,48 @@ import {
   GPUPointHorizonVisibility,
   GPUProfilePeaks,
   GPUTerrainHorizon,
-  getGPUPointHorizonParameterValues,
+  getGPUPointHorizonProfileParameterValues,
   getGPUPointHorizonVisibilityParameterValues,
   getGPUProfilePeaksParameterValues
 } from '@luma.gl/experimental/gpu-terrain';
 
 const graph = new GPUCommandGraph(device, {id: 'skyline'});
+// ${state.projection === 'web-mercator' ? 'grid: EPSG:3857 meters, origin [minX, maxY], cellSize the Mercator pixel size' : 'grid: planar, cellSize the ground size of one pixel'}
 graph.add(new GPUPointHorizonProfile({
-  width, height, elevation,
+  grid, elevation,
   projection: '${state.projection}',       // ${state.projection === 'web-mercator' ? 'Web Mercator window of a z12 tile' : 'local metric raster'}
   traversal: '${state.traversal}',${state.traversal === 'pyramid' ? '\n  pyramid: extrema.output,               // one shared min-max pyramid' : ''}
   azimuthCount: ${state.azimuthCount}, maximumDistance: 20000, cellSize: groundCellSize,
   observers,                                 // float32x4 [column, row, eyeHeight, 0]
-  settings: horizonSettings.importToGraph(graph),
-  skylineAngle, distance, samples
+  parameters: horizonSettings.importToGraph(graph),
+  output: {skylineAngle, distance, samples}
 }));
 graph.add(new GPUProfilePeaks({               // maxima of the circular skyline
-  values: skylineAngle, offsets, settings: peakSettings.importToGraph(graph),
-  window: ${state.peakWindow}, wrap: true, prominence, refinedIndex, refinedValue, peakMask, converged
+  values: skylineAngle, offsets, parameters: peakSettings.importToGraph(graph),
+  window: ${state.peakWindow}, wrap: true,
+  output: {prominence, refinedIndex, refinedValue, peakMask, status: {converged}}
 }));
 graph.add(new GPUPointHorizonVisibility({
-  width, height, elevation, projection: '${state.projection}', traversal: '${state.traversal}', maximumDistance: 20000, cellSize: groundCellSize,
+  grid, elevation, projection: '${state.projection}', traversal: '${state.traversal}', maximumDistance: 20000, cellSize: groundCellSize,
   observers, targets,                        // float32x4 [column, row, height, observerIndex]
-  settings: visibilitySettings.importToGraph(graph),
-  visibility, details                        // hidden / visible / marginal; details: angles + onSkyline
+  parameters: visibilitySettings.importToGraph(graph),
+  output: {visibility, details}              // hidden / visible / marginal; details: angles + onSkyline
 }));
 graph.add(new GPUTerrainHorizon({             // the same horizon for every cell of a coarser grid
-  width: gridWidth, height: gridHeight, elevation: gridElevation, settings: gridSettings.importToGraph(graph),
+  grid: gridMetadata, elevation: gridElevation, parameters: gridSettings.importToGraph(graph),
   directionCount: ${state.gridDirections}, maximumRadius: ${state.gridRadius}, algorithm: '${state.gridAlgorithm}',
-  cellSizeMode: 'web-mercator', horizon, skyViewFactor
+  cellSizeMode: 'web-mercator', output: {horizon, skyViewFactor}
 }));
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 
-horizonSettings.write(getGPUPointHorizonParameterValues({
-  ${state.projection === 'web-mercator' ? 'worldPixelSize: 512 * 2 ** 12, originY,    // Web Mercator window' : 'cellSize: [groundCellSize, groundCellSize], // planar: one ground cell size'}
-  curvatureCoefficient, maximumDistance: ${state.maxDistance * 1000}
-}));
-peakSettings.write(getGPUProfilePeaksParameterValues({minProminence: ${state.minProminence}}));
+// the packers read the cell size and the Mercator top edge from the grid
+horizonSettings.write(getGPUPointHorizonProfileParameterValues({
+  projection: '${state.projection}', curvatureCoefficient, maximumDistance: ${state.maxDistance * 1000}
+}, grid));
+peakSettings.write(getGPUProfilePeaksParameterValues({minimumProminence: ${state.minProminence}}));
 visibilitySettings.write(getGPUPointHorizonVisibilityParameterValues({
-  ${state.projection === 'web-mercator' ? 'worldPixelSize: 512 * 2 ** 12, originY,' : 'cellSize: [groundCellSize, groundCellSize],'} curvatureCoefficient,
+  projection: '${state.projection}', curvatureCoefficient,
   toleranceDegrees: ${state.toleranceDegrees}, sigmaZ: ${state.sigmaZ}, targetIgnoreDistance: ${state.targetIgnoreDistance}
-}));
+}, grid));
 compiled.encode(commandEncoder, {parameters: undefined}); // when the eye moves`
 });

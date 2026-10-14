@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {GraphSwap} from '../../engine/graph-swap';
 import type {SceneContext, SceneInstance} from '../scene';
 import {loadRailPaths, loadStreetPaths, type PathSet} from './b3-city-data';
 import type {GeometryView} from './b3-common';
@@ -45,31 +46,56 @@ export async function createLineOperations(
     }
   };
 
-  const factories: Record<Options['view'], () => GeometryView<Options>> = {
+  const factories: Record<Options['view'], () => Promise<GeometryView<Options>>> = {
     reshape: () => createReshapeView(cityEnvironment),
     snap: () => createSnapView(cityEnvironment),
     tracks: () => createTracksView({ctx, vessels})
   };
   const views = new Map<Options['view'], GeometryView<Options>>();
   let destroyed = false;
-  const getView = () => {
-    const name = ctx.options.view;
-    let view = views.get(name);
-    if (!view) {
-      view = factories[name]();
-      views.set(name, view);
-    }
-    return view;
+  const graphSwap = new GraphSwap();
+  let active = await factories[ctx.options.view]();
+  views.set(ctx.options.view, active);
+  let activeName = ctx.options.view;
+  // Option changes that a view missed while it was inactive or still being built; replayed on commit.
+  const missed = new Map<Options['view'], Set<keyof Options>>();
+
+  const getView = () => active;
+  const showView = (name: Options['view']) => {
+    // The previous view keeps encoding until the new one has been created.
+    void graphSwap.request({
+      build: async () => views.get(name) ?? (await factories[name]()),
+      commit: view => {
+        views.set(name, view);
+        active = view;
+        activeName = name;
+        for (const id of missed.get(name) ?? []) view.setOption(id, ctx.options);
+        missed.delete(name);
+        ctx.requestLayers();
+      },
+      discard: view => {
+        if (views.get(name) !== view) view.destroy();
+      }
+    });
   };
-  getView();
+
+  const setActiveOption = (id: keyof Options, options: Options) => {
+    getView().setOption(id, options);
+    for (const name of Object.keys(factories) as Options['view'][]) {
+      if (name === activeName) continue;
+      const set = missed.get(name) ?? new Set<keyof Options>();
+      set.add(id);
+      missed.set(name, set);
+    }
+  };
 
   return {
     getCompiledGraphs: () => getView().getCompiledGraphs(),
     setOption(id, _value, options) {
       if (id === 'view') {
-        getView();
+        showView(options.view);
       } else {
-        getView().setOption(id, options);
+        setActiveOption(id, options);
       }
       ctx.requestLayers();
     },
@@ -80,6 +106,7 @@ export async function createLineOperations(
     getLayers: () => getView().getLayers(),
     destroy() {
       destroyed = true;
+      graphSwap.destroy();
       for (const view of views.values()) view.destroy();
       views.clear();
     }

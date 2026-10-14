@@ -5,9 +5,11 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
   GPUPolygonRasterization,
-  GPURasterJoin
+  GPURasterJoin,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUPointInPolygonJoin} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -20,6 +22,7 @@ import {
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -107,7 +110,11 @@ export async function createRasterJoin(
   const polygons = uploadPolygons(resources, 'areas', areaSet);
   const positionsBuffer = resources.createBuffer('positions', positions);
   const valuesBuffer = resources.createBuffer('values', values);
-  const extentParameters = resources.createParameterBuffer('extent', 'float32', 4);
+  const extentParameters = resources.createParameterBuffer(
+    'extent',
+    'float32',
+    GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH
+  );
   const boundsBuffer = resources.createBuffer('bounds', 16);
   const exactIds = resources.createBuffer('exact-ids', pointCount * 4);
   const exactOverflow = resources.createBuffer('exact-overflow', 4);
@@ -129,14 +136,39 @@ export async function createRasterJoin(
 
   const [cityMinX, cityMinY, cityMaxX, cityMaxY] = areaSet.bounds;
 
+  /**
+   * Returns the grid of a `width x height` raster covering `bounds` (planar meters). Row 0 is the
+   * southern row, so rows advance north from the bottom-left corner. The size is compile-time; the
+   * origin and cell size are per-frame values packed into `extentParameters`.
+   */
+  function getRasterGrid(
+    width: number,
+    height: number,
+    bounds: readonly [number, number, number, number]
+  ) {
+    return makeGPURasterMetadata({
+      width,
+      height,
+      cellSize: [(bounds[2] - bounds[0]) / width, (bounds[3] - bounds[1]) / height],
+      origin: [bounds[0], bounds[1]],
+      rowDirection: 'north'
+    });
+  }
+
   /** Builds the graph of one raster resolution (cells along the longer side of the city). */
-  function buildVariant(resolution: number, forTiming = false): Variant {
+  async function buildVariant(resolution: number, forTiming = false): Promise<Variant> {
     const cityWidth = cityMaxX - cityMinX;
     const cityHeight = cityMaxY - cityMinY;
     const cell = Math.max(cityWidth, cityHeight) / resolution;
     const width = Math.ceil(cityWidth / cell) + 1;
     const height = Math.ceil(cityHeight / cell) + 1;
     const cellCount = width * height;
+    const grid = getRasterGrid(width, height, [
+      cityMinX - cell / 2,
+      cityMinY - cell / 2,
+      cityMinX - cell / 2 + width * cell,
+      cityMinY - cell / 2 + height * cell
+    ]);
     const own = new SpatialAnalysisResources(device, `rj-${resolution}`);
     const graph = new GPUCommandGraph<void>(device, {id: `rj-${resolution}`});
     const views = importPolygons(graph, 'areas', polygons);
@@ -161,7 +193,14 @@ export async function createRasterJoin(
     const extentView = extentParameters.importToGraph(graph);
     const zonesView = importGraphBuffer(graph, 'zones', zones, 'uint32', cellCount);
     const boundaryView = importGraphBuffer(graph, 'boundary', boundary, 'uint32', cellCount);
-    const pointsView = importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount);
+    const pointPositionsView = importGraphBuffer(
+      graph,
+      'points',
+      positionsBuffer,
+      'float32x2',
+      pointCount
+    );
+    const pointsView = {kind: 'points' as const, positions: pointPositionsView};
     const pointZonesView = importGraphBuffer(
       graph,
       'point-zones',
@@ -174,27 +213,29 @@ export async function createRasterJoin(
     graph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
-        width,
-        height,
-        extent: extentView,
-        polygonPositions: views.positions,
+        grid,
+        parameters: extentView,
+        positions: views.positions,
         featureOffsets: views.featureOffsets,
         polygonOffsets: views.polygonOffsets,
         ringOffsets: views.ringOffsets,
         crossingCapacity,
-        zones: zonesView,
-        boundary: boundaryView,
-        overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1),
-        crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCount, 'uint32', 1)
+        output: {
+          zones: zonesView,
+          boundary: boundaryView,
+          status: {
+            overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1),
+            crossingCount: importGraphBuffer(graph, 'crossing-count', crossingCount, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
       new GPURasterJoin({
         id: 'raster-join',
-        width,
-        height,
-        extent: extentView,
-        points: pointsView,
+        grid,
+        parameters: extentView,
+        points: pointPositionsView,
         values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', pointCount),
         zones: zonesView,
         boundary: boundaryView,
@@ -226,21 +267,28 @@ export async function createRasterJoin(
       new GPUPointInPolygonJoin({
         id: 'exact-join',
         points: pointsView,
-        polygonPositions: views.positions,
-        featureOffsets: views.featureOffsets,
-        polygonOffsets: views.polygonOffsets,
-        ringOffsets: views.ringOffsets,
+        polygons: views,
         candidateCapacity: pointCount * 6,
-        pointFeatureIds: exactIdsView,
-        featureCounts: importGraphBuffer(
-          graph,
-          'exact-counts',
-          exactCountsBuffer,
-          'uint32',
-          zoneCount
-        ),
-        overflow: importGraphBuffer(graph, 'exact-overflow', exactOverflow, 'uint32', 1),
-        candidateCount: importGraphBuffer(graph, 'exact-candidates', exactCandidates, 'uint32', 1)
+        output: {
+          pointFeatureIds: exactIdsView,
+          featureCounts: importGraphBuffer(
+            graph,
+            'exact-counts',
+            exactCountsBuffer,
+            'uint32',
+            zoneCount
+          ),
+          status: {
+            overflow: importGraphBuffer(graph, 'exact-overflow', exactOverflow, 'uint32', 1),
+            candidateCount: importGraphBuffer(
+              graph,
+              'exact-candidates',
+              exactCandidates,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
     // Points whose raster zone differs from the exact zone: the error the boundary flags must explain.
@@ -281,7 +329,7 @@ export async function createRasterJoin(
         handleSummary(bytes, width, height, crossingCapacity);
       }
     );
-    const compiled = own.track(graph.compile());
+    const compiled = own.track(await graph.compileAsync());
     void forTiming;
     return {
       resolution,
@@ -419,17 +467,35 @@ export async function createRasterJoin(
     ctx.requestLayers();
   }
 
-  function replaceVariant(resolution: number): void {
+  /** Makes a built variant the live one and retires the previous one. */
+  function commitVariant(next: Variant): void {
     const previous = variant;
-    variant = buildVariant(resolution);
+    variant = next;
     dirty = true;
+    lastBounds = null;
     if (previous) {
       previous.reader.stop();
       requestAnimationFrame(() => requestAnimationFrame(() => previous.resources.destroy()));
     }
   }
 
-  variant = buildVariant(getResolution(ctx.options.resolutionLevel));
+  const variantSwap = resources.track(new GraphSwap());
+  /** Builds the variant for `resolution` and swaps it in; the latest request wins. */
+  function requestVariant(resolution: number): Promise<boolean> {
+    return variantSwap.request({
+      build: () => buildVariant(resolution),
+      commit: next => {
+        commitVariant(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
+  }
+
+  variant = await buildVariant(getResolution(ctx.options.resolutionLevel));
 
   /** Times rasterization, the raster join alone, and the exact join, outside the frame. */
   async function measureAll(): Promise<void> {
@@ -439,7 +505,7 @@ export async function createRasterJoin(
     const resolution = getResolution(ctx.options.resolutionLevel);
     const results: string[] = [];
     try {
-      const built = buildVariant(resolution, true);
+      const built = await buildVariant(resolution, true);
       try {
         const options = {
           parameters: undefined,
@@ -455,7 +521,7 @@ export async function createRasterJoin(
         built.reader.stop();
         built.resources.destroy();
       }
-      const exactOnly = buildExactGraph();
+      const exactOnly = await buildExactGraph();
       try {
         const timing = await measureCompiledGraph(device, exactOnly.compiled, {
           parameters: undefined,
@@ -467,7 +533,7 @@ export async function createRasterJoin(
         exactOnly.compiled.destroy();
         exactOnly.resources.destroy();
       }
-      const rasterOnly = buildRasterOnlyGraph(resolution);
+      const rasterOnly = await buildRasterOnlyGraph(resolution);
       try {
         const timing = await measureCompiledGraph(device, rasterOnly.compiled, {
           parameters: undefined,
@@ -490,7 +556,7 @@ export async function createRasterJoin(
     }
   }
 
-  function buildExactGraph() {
+  async function buildExactGraph() {
     const own = new SpatialAnalysisResources(device, 'rj-exact-time');
     const graph = new GPUCommandGraph<void>(device, {id: 'rj-exact-time'});
     const views = importPolygons(graph, 'areas', polygons);
@@ -500,27 +566,35 @@ export async function createRasterJoin(
     graph.add(
       new GPUPointInPolygonJoin({
         id: 'exact-join',
-        points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
-        polygonPositions: views.positions,
-        featureOffsets: views.featureOffsets,
-        polygonOffsets: views.polygonOffsets,
-        ringOffsets: views.ringOffsets,
+        points: {
+          kind: 'points',
+          positions: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount)
+        },
+        polygons: views,
         candidateCapacity: pointCount * 6,
-        pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
-        featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
-        overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+        output: {
+          pointFeatureIds: importGraphBuffer(graph, 'ids', ids, 'uint32', pointCount),
+          featureCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount),
+          status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+        }
       })
     );
-    return {resources: own, compiled: own.track(graph.compile()), overflow};
+    return {resources: own, compiled: own.track(await graph.compileAsync()), overflow};
   }
 
-  function buildRasterOnlyGraph(resolution: number) {
+  async function buildRasterOnlyGraph(resolution: number) {
     const cityWidth = cityMaxX - cityMinX;
     const cityHeight = cityMaxY - cityMinY;
     const cell = Math.max(cityWidth, cityHeight) / resolution;
     const width = Math.ceil(cityWidth / cell) + 1;
     const height = Math.ceil(cityHeight / cell) + 1;
     const cellCount = width * height;
+    const grid = getRasterGrid(width, height, [
+      cityMinX - cell / 2,
+      cityMinY - cell / 2,
+      cityMinX - cell / 2 + width * cell,
+      cityMinY - cell / 2 + height * cell
+    ]);
     const own = new SpatialAnalysisResources(device, 'rj-raster-time');
     const graph = new GPUCommandGraph<void>(device, {id: 'rj-raster-time'});
     const views = importPolygons(graph, 'areas', polygons);
@@ -532,10 +606,9 @@ export async function createRasterJoin(
     graph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
-        width,
-        height,
-        extent: extentView,
-        polygonPositions: views.positions,
+        grid,
+        parameters: extentView,
+        positions: views.positions,
         featureOffsets: views.featureOffsets,
         polygonOffsets: views.polygonOffsets,
         ringOffsets: views.ringOffsets,
@@ -543,23 +616,30 @@ export async function createRasterJoin(
           8192,
           Math.ceil(estimateCrossings(areaSet, cityMinY - cell / 2, cell, height) * 2.5)
         ),
-        zones: zonesView,
-        overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1)
+        output: {
+          zones: zonesView,
+          status: {
+            overflow: importGraphBuffer(graph, 'raster-overflow', rasterOverflow, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
       new GPURasterJoin({
         id: 'raster-join',
-        width,
-        height,
-        extent: extentView,
+        grid,
+        parameters: extentView,
         points: importGraphBuffer(graph, 'points', positionsBuffer, 'float32x2', pointCount),
         zones: zonesView,
         zoneCount,
         output: {counts: importGraphBuffer(graph, 'counts', counts, 'uint32', zoneCount)}
       })
     );
-    return {resources: own, compiled: own.track(graph.compile()), overflow: rasterOverflow};
+    return {
+      resources: own,
+      compiled: own.track(await graph.compileAsync()),
+      overflow: rasterOverflow
+    };
   }
 
   /** Writes the raster placement and the matching layer bounds for the chosen extent. */
@@ -579,12 +659,7 @@ export async function createRasterJoin(
     if (lastBounds && bounds.every((value, index) => value === lastBounds![index])) return;
     lastBounds = bounds;
     extentParameters.write(
-      getGPUPolygonRasterizationExtentValues(
-        bounds[0],
-        bounds[1],
-        (bounds[2] - bounds[0]) / width,
-        (bounds[3] - bounds[1]) / height
-      )
+      getGPUPolygonRasterizationParameterValues(getRasterGrid(width, height, bounds))
     );
     boundsBuffer.write(Float32Array.from(bounds));
     const cellWidth = (bounds[2] - bounds[0]) / width;
@@ -600,9 +675,11 @@ export async function createRasterJoin(
     getCompiledGraphs: () => [variant.compiled as CompiledGPUCommandGraph<never>],
 
     setOption(id, _value, state) {
-      if (id === 'resolutionLevel' && getResolution(state.resolutionLevel) !== variant.resolution) {
-        replaceVariant(getResolution(state.resolutionLevel));
-        lastBounds = null;
+      if (
+        id === 'resolutionLevel' &&
+        (variantSwap.pending || getResolution(state.resolutionLevel) !== variant.resolution)
+      ) {
+        void requestVariant(getResolution(state.resolutionLevel));
       } else if (id === 'extent') {
         lastBounds = null;
       } else if (id === 'metric') {

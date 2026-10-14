@@ -23,6 +23,7 @@ import {
 import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
 import {GPUZoneEvents} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -52,9 +53,14 @@ const METRIC_INDEX: Record<Metric, number> = {dwell: 0, mean: 1, visitors: 2};
 
 /** Zones as boundary edges, fan triangles and CPU rings (for picking). */
 type ZoneGrid = {
-  edgeStarts: Float32Array;
-  edgeEnds: Float32Array;
-  edgeZones: Uint32Array;
+  /** Ring vertices of every zone in order, eight per zone; rings close implicitly. */
+  ringPositions: Float32Array;
+  /** Identity offsets: one polygon per zone feature. */
+  zoneOffsets: Uint32Array;
+  /** Vertex offsets of the one ring of every zone. */
+  ringOffsets: Uint32Array;
+  /** Number of boundary edges (one per ring vertex). */
+  edgeCount: number;
   /** Interleaved `x0, y0, x1, y1` per edge for drawing. */
   outlineSegments: Float32Array;
   triangles: Float32Array;
@@ -147,10 +153,12 @@ function createZoneGrid(bounds: readonly [number, number, number, number]): Zone
     outlineSegments.set(starts.slice(edge * 2, edge * 2 + 2), edge * 4);
     outlineSegments.set(ends.slice(edge * 2, edge * 2 + 2), edge * 4 + 2);
   }
+  const ringVertexCount = rings[0].length / 2;
   return {
-    edgeStarts: Float32Array.from(starts),
-    edgeEnds: Float32Array.from(ends),
-    edgeZones: Uint32Array.from(zones),
+    ringPositions: Float32Array.from(starts),
+    zoneOffsets: Uint32Array.from({length: rings.length + 1}, (_, zone) => zone),
+    ringOffsets: Uint32Array.from({length: rings.length + 1}, (_, zone) => zone * ringVertexCount),
+    edgeCount: zones.length,
     outlineSegments,
     triangles: Float32Array.from(triangles),
     triangleZones: Uint32Array.from(triangleZones),
@@ -224,7 +232,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const [minX, maxX] = getCentralRange(trips.vertexPositions, 0);
     const [minY, maxY] = getCentralRange(trips.vertexPositions, 1);
     const grid = createZoneGrid([minX, minY, maxX, maxY]);
-    const edgeCount = grid.edgeZones.length;
+    const {edgeCount} = grid;
     const cellCount = trackCount * ZONE_COUNT;
     const maximumCapacity = trackCount * MAXIMUM_EVENTS_PER_TRACK;
     // A trip rarely visits more zones than it has events; overflow is reported in the panel.
@@ -252,9 +260,10 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
     const positionsBuffer = resources.createBuffer('positions', trips.vertexPositions);
     const timestampsBuffer = resources.createBuffer('timestamps', rebasedTimestamps);
     const offsetsBuffer = resources.createBuffer('track-offsets', trips.tripOffsets);
-    const edgeStartsBuffer = resources.createBuffer('edge-starts', grid.edgeStarts);
-    const edgeEndsBuffer = resources.createBuffer('edge-ends', grid.edgeEnds);
-    const edgeZonesBuffer = resources.createBuffer('edge-zones', grid.edgeZones);
+    const ringPositionsBuffer = resources.createBuffer('ring-positions', grid.ringPositions);
+    const featureOffsetsBuffer = resources.createBuffer('zone-feature-offsets', grid.zoneOffsets);
+    const polygonOffsetsBuffer = resources.createBuffer('zone-polygon-offsets', grid.zoneOffsets);
+    const ringOffsetsBuffer = resources.createBuffer('zone-ring-offsets', grid.ringOffsets);
     const outlineBuffer = resources.createBuffer('outline', grid.outlineSegments);
     const triangleBuffer = resources.createBuffer('zone-triangles', grid.triangles);
     const selectedBuffer = resources.createBuffer('selected-outline', 8 * 16);
@@ -291,10 +300,10 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       })
     );
 
-    function buildGraph(): void {
-      if (compiled) resources.release(compiled);
-      const eventCapacity = trackCount * maxEventsPerTrack;
-      const graph = new GPUCommandGraph<void>(device, {id: `zone-events-${maxEventsPerTrack}`});
+    /** Builds and compiles the graph for `eventsPerTrack` without touching the running graph. */
+    async function compileGraph(eventsPerTrack: number): Promise<CompiledGPUCommandGraph<void>> {
+      const eventCapacity = trackCount * eventsPerTrack;
+      const graph = new GPUCommandGraph<void>(device, {id: `zone-events-${eventsPerTrack}`});
       const view = <Format extends 'uint32' | 'float32'>(
         name: string,
         buffer: typeof eventCount,
@@ -307,46 +316,70 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUZoneEvents({
           id: 'zone-events',
-          positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
-          timestamps: view('timestamps', timestampsBuffer, 'float32', rowCount),
-          trackOffsets: view('track-offsets', offsetsBuffer, 'uint32', trackCount + 1),
-          edgeStarts: importGraphBuffer(
-            graph,
-            'edge-starts',
-            edgeStartsBuffer,
-            'float32x2',
-            edgeCount
-          ),
-          edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
-          edgeZones: view('edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
-          zoneCount: ZONE_COUNT,
-          candidateCapacity: CANDIDATE_CAPACITY,
-          maxEventsPerTrack,
-          events: {
-            output: {
-              ids: view('event-tracks', eventTracks, 'uint32', eventCapacity),
-              count: view('event-count', eventCount, 'uint32', 1),
-              overflow: view('event-overflow', eventOverflow, 'uint32', 1)
-            },
-            eventZones: view('event-zones', eventZones, 'uint32', eventCapacity),
-            eventTypes: view('event-types', eventTypes, 'uint32', eventCapacity),
-            eventTimes: view('event-times', eventTimes, 'float32', eventCapacity),
-            eventPositions: importGraphBuffer(
+          tracks: {
+            kind: 'trajectories',
+            positions: importGraphBuffer(
               graph,
-              'event-positions',
-              eventPositions,
+              'positions',
+              positionsBuffer,
               'float32x2',
-              eventCapacity
-            )
+              rowCount
+            ),
+            timestamps: view('timestamps', timestampsBuffer, 'float32', rowCount),
+            trackOffsets: view('track-offsets', offsetsBuffer, 'uint32', trackCount + 1)
           },
-          visitTable: {
-            output: {
-              ids: view('visit-tracks', visitTracks, 'uint32', tableCapacity),
-              count: visitCountView,
-              overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
+          zones: {
+            kind: 'polygons',
+            positions: importGraphBuffer(
+              graph,
+              'ring-positions',
+              ringPositionsBuffer,
+              'float32x2',
+              edgeCount
+            ),
+            featureOffsets: view(
+              'zone-feature-offsets',
+              featureOffsetsBuffer,
+              'uint32',
+              ZONE_COUNT + 1
+            ),
+            polygonOffsets: view(
+              'zone-polygon-offsets',
+              polygonOffsetsBuffer,
+              'uint32',
+              ZONE_COUNT + 1
+            ),
+            ringOffsets: view('zone-ring-offsets', ringOffsetsBuffer, 'uint32', ZONE_COUNT + 1)
+          },
+          candidateCapacity: CANDIDATE_CAPACITY,
+          trackEventCapacity: eventsPerTrack,
+          output: {
+            events: {
+              ids: view('event-tracks', eventTracks, 'uint32', eventCapacity),
+              eventZones: view('event-zones', eventZones, 'uint32', eventCapacity),
+              eventTypes: view('event-types', eventTypes, 'uint32', eventCapacity),
+              eventTimes: view('event-times', eventTimes, 'float32', eventCapacity),
+              eventPositions: importGraphBuffer(
+                graph,
+                'event-positions',
+                eventPositions,
+                'float32x2',
+                eventCapacity
+              ),
+              status: {
+                count: view('event-count', eventCount, 'uint32', 1),
+                overflow: view('event-overflow', eventOverflow, 'uint32', 1)
+              }
             },
-            zones: visitZonesView,
-            dwellTimes: visitDwellView
+            visitTable: {
+              ids: view('visit-tracks', visitTracks, 'uint32', tableCapacity),
+              zones: visitZonesView,
+              dwellTimes: visitDwellView,
+              status: {
+                count: visitCountView,
+                overflow: view('visit-overflow', visitOverflow, 'uint32', 1)
+              }
+            }
           }
         })
       );
@@ -387,14 +420,25 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
           output: {
             keys: view('table-keys', tableKeys, 'uint32', ZONE_COUNT),
             counts: view('table-counts', tableCounts, 'uint32', ZONE_COUNT),
-            count: view('table-count', tableCount, 'uint32', 1),
-            overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+            status: {
+              count: view('table-count', tableCount, 'uint32', 1),
+              overflow: view('table-overflow', tableOverflow, 'uint32', 1)
+            }
           }
         })
       );
-      compiled = resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
+    }
+
+    /** Swaps a compiled graph in, then releases the one it replaces. */
+    function commitGraph(next: CompiledGPUCommandGraph<void>, eventsPerTrack: number): void {
+      const previous = compiled;
+      compiled = next;
+      maxEventsPerTrack = eventsPerTrack;
+      if (previous) resources.release(previous);
       dirty = true;
     }
+    const graphSwap = resources.track(new GraphSwap());
 
     const writeChoropleth = () => {
       choroplethParameters.write(
@@ -496,9 +540,15 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
       options: [2, 4, 8].map(value => ({value: String(value), label: `${value} events`})),
       value: String(maxEventsPerTrack),
       onChange: value => {
-        maxEventsPerTrack = Number(value);
-        buildGraph();
-        context.updateLayers();
+        const eventsPerTrack = Number(value);
+        void graphSwap.request({
+          build: () => compileGraph(eventsPerTrack),
+          commit: next => {
+            commitGraph(next, eventsPerTrack);
+            context.updateLayers();
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     context.controls.addLegend({
@@ -636,7 +686,7 @@ export const zoneEventsMode: SpatialAnalysisModeDefinition = {
 
     writeChoropleth();
     writeSelection();
-    buildGraph();
+    commitGraph(await compileGraph(maxEventsPerTrack), maxEventsPerTrack);
 
     const instance: SpatialAnalysisModeInstance = {
       getCompiledGraphs: () => (compiled ? [compiled] : []),

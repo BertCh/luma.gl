@@ -319,7 +319,7 @@ import {
 metricsGraph.add(new GPUTrajectoryMetrics({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
   positions, timestamps, trackOffsets, parameters: metricsParameters.importToGraph(metricsGraph),
-  stops: {output: {ids, count, overflow, requiredCount}, startRows, endRows, durations}  // capacity 16,384
+  output: {stops: {ids, status: {count, overflow, requiredCount}, startRows, endRows, durations}}  // capacity 16,384
 }));
 metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
   stopSpeedThreshold: ${state.stopSpeed}, stopMinimumDuration: ${state.minStayHours * 3600}     // m/s, s
@@ -330,8 +330,8 @@ metricsParameters.write(getGPUTrajectoryMetricsParameterValues({
 clusterGraph.add(new GPUSpatialClustering({
   positions: keptCentroids, parameters: clusterParameters.importToGraph(clusterGraph),
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  gridSize: [192, 192], labels,
-  clusters: {ids, count, overflow}, clusterSizes, clusterCentroids   // capacity 512
+  gridSize: [192, 192],
+  output: {labels, clusters: {ids, status: {count, overflow}}, clusterSizes, clusterCentroids}   // capacity 512
 }));
 clusterParameters.write(getGPUSpatialClusteringParameterValues({
   bounds: dataBounds,   // degrees [minLon, minLat, maxLon, maxLat]

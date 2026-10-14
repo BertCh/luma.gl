@@ -4,8 +4,8 @@
 
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -87,12 +87,12 @@ export type SatellitePlaybackCore = {
  * every track (with the altitude column as its elevations) at the clock, and `GPUTimeWindowFilter`
  * selects the trail segments inside a sliding window. Both only read parameter buffers per frame.
  */
-export function createSatellitePlaybackCore(
+export async function createSatellitePlaybackCore(
   resources: SpatialAnalysisResources,
   tracks: SatelliteTrackSet,
   colorRows: Uint32Array,
   onSnapshot: (snapshot: SatellitePlaybackSnapshot) => void
-): SatellitePlaybackCore {
+): Promise<SatellitePlaybackCore> {
   const {device} = resources;
   const {trackCount, vertexCount, segmentCount} = tracks;
   const positionsBuffer = resources.createBuffer('positions', tracks.positions);
@@ -168,35 +168,45 @@ export function createSatellitePlaybackCore(
         vertexCount
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      currentElevations: importGraphBuffer(
-        playheadGraph,
-        'current-elevations',
-        currentElevations,
-        'float32',
-        trackCount
-      ),
-      headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
-      speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
-      status: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        currentElevations: importGraphBuffer(
+          playheadGraph,
+          'current-elevations',
+          currentElevations,
+          'float32',
+          trackCount
+        ),
+        headings: importGraphBuffer(playheadGraph, 'headings', headings, 'float32', trackCount),
+        speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
+        trackStatus: importGraphBuffer(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -208,7 +218,7 @@ export function createSatellitePlaybackCore(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -250,44 +260,46 @@ export function createSatellitePlaybackCore(
       ],
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        trackVisibleCounts: importGraphBuffer(
+          trailGraph,
+          'track-visible-counts',
+          trackVisibleCounts,
+          'uint32',
+          trackCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
       },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
       trackIds: importGraphBuffer(
         trailGraph,
         'segment-tracks',
         segmentTracksBuffer,
         'uint32',
         segmentCount
-      ),
-      trackVisibleCounts: importGraphBuffer(
-        trailGraph,
-        'track-visible-counts',
-        trackVisibleCounts,
-        'uint32',
-        trackCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
       )
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Readback ---------------------------------------------------------------------------------
   let snapshot: SatellitePlaybackSnapshot | null = null;
@@ -322,7 +334,7 @@ export function createSatellitePlaybackCore(
     }
   );
 
-  return {
+  const core: SatellitePlaybackCore = {
     tracks,
     positionsBuffer,
     altitudesBuffer,
@@ -349,13 +361,13 @@ export function createSatellitePlaybackCore(
     },
     encodePlayhead(commandEncoder, playhead, maxGapSeconds = 0) {
       playheadParameters.write(
-        getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: maxGapSeconds})
+        getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: maxGapSeconds})
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
     },
     encodeTrails(commandEncoder, end, lengthSeconds, fadeSeconds) {
       windowParameters.write(
-        getGPUTimeWindowParameterValues({
+        getGPUTimeWindowFilterParameterValues({
           start: end - lengthSeconds,
           end,
           startFadeDuration: fadeSeconds
@@ -364,7 +376,7 @@ export function createSatellitePlaybackCore(
       trailCompiled.encode(commandEncoder, {parameters: undefined});
     },
     setGroupFilter(group) {
-      this.setTrackFilter(track => group === null || tracks.group[track] === group);
+      core.setTrackFilter(track => group === null || tracks.group[track] === group);
     },
     setTrackFilter(allowed) {
       const trackAllowed = new Uint8Array(trackCount);
@@ -376,6 +388,7 @@ export function createSatellitePlaybackCore(
       segmentMaskBuffer.write(mask);
     }
   };
+  return core;
 }
 
 export {GPU_TRAJECTORY_PLAYHEAD_STATUS};

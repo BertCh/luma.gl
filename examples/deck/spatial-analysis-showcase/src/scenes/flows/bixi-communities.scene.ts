@@ -53,7 +53,7 @@ new GPUGraphModularityOptimization({
 new GPUGraphModularity({graph, communities: boroughs, output: boroughScore,
   resolution: ${state.resolution}}).addToGraph(commandGraph);   // same gamma for the borough partition
 
-const compiled = commandGraph.compile();            // once
+const compiled = await commandGraph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});
 
 // on the CPU, from the readback (a few KB): hues, hulls, seams

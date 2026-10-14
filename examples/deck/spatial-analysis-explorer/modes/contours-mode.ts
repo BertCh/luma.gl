@@ -34,6 +34,7 @@
  * holes, open segments and overflow.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -46,7 +47,7 @@ import {
   getGPUDistanceFieldParameterValues,
   getGPUIsobandsParameterValues,
   getGPUIsolinesParameterValues,
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
   getGPURasterStretchParameterValues,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   GPU_ISOBANDS_PARAMETER_LENGTH,
@@ -57,6 +58,7 @@ import {
   GPUIsolines,
   GPUPolygonRasterization,
   GPURasterStretch,
+  makeGPURasterMetadata,
   type GPURasterStretchMode
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUIsobandRings} from '@luma.gl/experimental/gpu-raster';
@@ -224,6 +226,16 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       bounds[2],
       -bounds[1]
     ];
+    // Terrain grid (row 0 at the north edge, rows stepping south) for the terrain derivatives.
+    const grid = makeGPURasterMetadata({width, height, cellSize});
+    // Grid of the y-negated analysis frame: row 0 at the minimum y, rows stepping toward +y.
+    const flippedGrid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [flippedExtent[0], flippedExtent[1]],
+      rowDirection: 'north'
+    });
 
     // --- Buffers -------------------------------------------------------------------------------
     const validityValues = new Uint32Array(cellCount);
@@ -360,8 +372,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     prepareGraph.add(
       new GPUTerrainDerivatives({
         id: 'slope',
-        width,
-        height,
+        grid,
         elevation: {
           id: 'elevation',
           format: 'float32',
@@ -377,8 +388,10 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
           },
           validity: importGraphBuffer(prepareGraph, 'validity', validityBuffer, 'uint32', cellCount)
         },
-        settings: derivativesSettings.importToGraph(prepareGraph),
-        slope: importGraphBuffer(prepareGraph, 'slope', slopeBuffer, 'float32', cellCount),
+        parameters: derivativesSettings.importToGraph(prepareGraph),
+        output: {
+          slope: importGraphBuffer(prepareGraph, 'slope', slopeBuffer, 'float32', cellCount)
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -386,10 +399,9 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     prepareGraph.add(
       new GPUDistanceField({
         id: 'distance',
-        width,
-        height,
+        grid: flippedGrid,
         mode: 'exact',
-        settings: distanceSettings.importToGraph(prepareGraph),
+        parameters: distanceSettings.importToGraph(prepareGraph),
         seedPositions: importGraphBuffer(
           prepareGraph,
           'seed-positions',
@@ -410,9 +422,13 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const prepared: CompiledGPUCommandGraph<void> = resources.track(prepareGraph.compile());
+    const prepared: CompiledGPUCommandGraph<void> = resources.track(
+      await prepareGraph.compileAsync()
+    );
 
-    const compileAnalysis = (withPolylines: boolean): CompiledGPUCommandGraph<void> => {
+    const compileAnalysis = async (
+      withPolylines: boolean
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const name = withPolylines ? 'contours-stitched' : 'contours-plain';
       const graph = new GPUCommandGraph<void>(device, {id: name});
       const values = importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount);
@@ -421,8 +437,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPURasterStretch({
           id: 'stretch',
-          width,
-          height,
+          grid: flippedGrid,
           values,
           validity,
           parameters: stretchParameters.importToGraph(graph),
@@ -446,8 +461,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUIsobands({
           id: 'bands',
-          width,
-          height,
+          grid: flippedGrid,
           values,
           validity,
           breaks: levels,
@@ -467,29 +481,30 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
               'uint32',
               TRIANGLE_CAPACITY
             ),
-            count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(
-              graph,
-              'triangle-overflow',
-              triangleOverflowBuffer,
-              'uint32',
-              1
-            ),
-            vertexCount: importGraphBuffer(
-              graph,
-              'band-vertex-count',
-              bandVertexCountBuffer,
-              'uint32',
-              1
-            )
+            status: {
+              count: importGraphBuffer(graph, 'triangle-count', triangleCountBuffer, 'uint32', 1),
+              vertexCount: importGraphBuffer(
+                graph,
+                'band-vertex-count',
+                bandVertexCountBuffer,
+                'uint32',
+                1
+              ),
+              overflow: importGraphBuffer(
+                graph,
+                'triangle-overflow',
+                triangleOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
       graph.add(
         new GPUIsolines({
           id: 'lines',
-          width,
-          height,
+          grid: flippedGrid,
           values,
           validity,
           levels,
@@ -509,75 +524,81 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
               'uint32',
               SEGMENT_CAPACITY
             ),
-            count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(
-              graph,
-              'segment-overflow',
-              segmentOverflowBuffer,
-              'uint32',
-              1
-            )
-          },
-          polylines: withPolylines
-            ? {
-                vertices: importGraphBuffer(
-                  graph,
-                  'polyline-vertices',
-                  polylineVerticesBuffer,
-                  'float32x2',
-                  SEGMENT_CAPACITY * 2
-                ),
-                polylineOffsets: importGraphBuffer(
-                  graph,
-                  'polyline-offsets',
-                  polylineOffsetsBuffer,
-                  'uint32',
-                  SEGMENT_CAPACITY + 1
-                ),
-                polylineLevels: importGraphBuffer(
-                  graph,
-                  'polyline-levels',
-                  polylineLevelsBuffer,
-                  'uint32',
-                  SEGMENT_CAPACITY
-                ),
-                polylineClosed: importGraphBuffer(
-                  graph,
-                  'polyline-closed',
-                  polylineClosedBuffer,
-                  'uint32',
-                  SEGMENT_CAPACITY
-                ),
-                polylineCount: importGraphBuffer(
-                  graph,
-                  'polyline-count',
-                  polylineCountBuffer,
-                  'uint32',
-                  1
-                ),
-                vertexCount: importGraphBuffer(
-                  graph,
-                  'polyline-vertex-count',
-                  polylineVertexCountBuffer,
-                  'uint32',
-                  1
-                ),
-                overflow: importGraphBuffer(
-                  graph,
-                  'polyline-overflow',
-                  polylineOverflowBuffer,
-                  'uint32',
-                  1
-                )
-              }
-            : undefined
+            status: {
+              count: importGraphBuffer(graph, 'segment-count', segmentCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(
+                graph,
+                'segment-overflow',
+                segmentOverflowBuffer,
+                'uint32',
+                1
+              ),
+              ...(withPolylines
+                ? {
+                    polylineOverflow: importGraphBuffer(
+                      graph,
+                      'polyline-overflow',
+                      polylineOverflowBuffer,
+                      'uint32',
+                      1
+                    )
+                  }
+                : {})
+            },
+            polylines: withPolylines
+              ? {
+                  vertices: importGraphBuffer(
+                    graph,
+                    'polyline-vertices',
+                    polylineVerticesBuffer,
+                    'float32x2',
+                    SEGMENT_CAPACITY * 2
+                  ),
+                  polylineOffsets: importGraphBuffer(
+                    graph,
+                    'polyline-offsets',
+                    polylineOffsetsBuffer,
+                    'uint32',
+                    SEGMENT_CAPACITY + 1
+                  ),
+                  polylineLevels: importGraphBuffer(
+                    graph,
+                    'polyline-levels',
+                    polylineLevelsBuffer,
+                    'uint32',
+                    SEGMENT_CAPACITY
+                  ),
+                  polylineClosed: importGraphBuffer(
+                    graph,
+                    'polyline-closed',
+                    polylineClosedBuffer,
+                    'uint32',
+                    SEGMENT_CAPACITY
+                  ),
+                  polylineCount: importGraphBuffer(
+                    graph,
+                    'polyline-count',
+                    polylineCountBuffer,
+                    'uint32',
+                    1
+                  ),
+                  vertexCount: importGraphBuffer(
+                    graph,
+                    'polyline-vertex-count',
+                    polylineVertexCountBuffer,
+                    'uint32',
+                    1
+                  )
+                }
+              : undefined
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
-    const plainGraph = compileAnalysis(false);
-    const stitchedGraph = compileAnalysis(true);
-    const ringsGraph = (() => {
+    const plainGraph = await compileAnalysis(false);
+    const stitchedGraph = await compileAnalysis(true);
+    const ringsGraph = await (async () => {
       const graph = new GPUCommandGraph<void>(device, {id: 'contours-rings'});
       const polygonPositionsView = importGraphBuffer(
         graph,
@@ -603,8 +624,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUIsobandRings({
           id: 'band-rings',
-          width,
-          height,
+          grid: flippedGrid,
           values: importGraphBuffer(graph, 'values', valuesBuffer, 'float32', cellCount),
           validity: importGraphBuffer(graph, 'validity', validityBuffer, 'uint32', cellCount),
           breaks: importGraphBuffer(graph, 'levels', levelsBuffer, 'float32', LEVEL_SLOT_COUNT),
@@ -660,27 +680,28 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
                 RING_CAPACITY
               )
             },
-            count: importGraphBuffer(graph, 'ring-count', ringCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflowBuffer, 'uint32', 1),
-            openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpenBuffer, 'uint32', 1),
-            edgeCount: importGraphBuffer(graph, 'edge-count', ringEdgeCountBuffer, 'uint32', 1),
-            edgeOverflow: importGraphBuffer(
-              graph,
-              'edge-overflow',
-              ringEdgeOverflowBuffer,
-              'uint32',
-              1
-            )
+            status: {
+              count: importGraphBuffer(graph, 'ring-count', ringCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'ring-overflow', ringOverflowBuffer, 'uint32', 1),
+              openSegmentCount: importGraphBuffer(graph, 'ring-open', ringOpenBuffer, 'uint32', 1),
+              edgeCount: importGraphBuffer(graph, 'edge-count', ringEdgeCountBuffer, 'uint32', 1),
+              edgeOverflow: importGraphBuffer(
+                graph,
+                'edge-overflow',
+                ringEdgeOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
       graph.add(
         new GPUPolygonRasterization({
           id: 'band-zones',
-          width,
-          height,
-          extent: zoneExtent.importToGraph(graph),
-          polygonPositions: polygonPositionsView,
+          grid: flippedGrid,
+          parameters: zoneExtent.importToGraph(graph),
+          positions: polygonPositionsView,
           featureOffsets: importGraphBuffer(
             graph,
             'polygon-feature-offsets-raster',
@@ -691,18 +712,22 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
           polygonOffsets: polygonOffsetsView,
           ringOffsets: polygonRingOffsetsView,
           crossingCapacity: CROSSING_CAPACITY,
-          zones: importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount),
-          overflow: importGraphBuffer(graph, 'zone-overflow', zoneOverflowBuffer, 'uint32', 1),
-          crossingCount: importGraphBuffer(
-            graph,
-            'crossing-count',
-            crossingCountBuffer,
-            'uint32',
-            1
-          )
+          output: {
+            zones: importGraphBuffer(graph, 'zones', zonesBuffer, 'uint32', cellCount),
+            status: {
+              overflow: importGraphBuffer(graph, 'zone-overflow', zoneOverflowBuffer, 'uint32', 1),
+              crossingCount: importGraphBuffer(
+                graph,
+                'crossing-count',
+                crossingCountBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     })();
 
     // --- State ---------------------------------------------------------------------------------
@@ -865,15 +890,10 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       levelsBuffer.write(next);
       levelStyleBuffer.write(styles);
       isolineParameters.write(
-        getGPUIsolinesParameterValues({width, height, levelCount: count, extent: flippedExtent})
+        getGPUIsolinesParameterValues({levelCount: count, extent: flippedExtent}, flippedGrid)
       );
       isobandParameters.write(
-        getGPUIsobandsParameterValues({
-          width,
-          height,
-          breakCount: count,
-          extent: flippedExtent
-        })
+        getGPUIsobandsParameterValues({breakCount: count, extent: flippedExtent}, flippedGrid)
       );
       dirty = true;
     }
@@ -892,18 +912,9 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
     }
 
     function writeDerivedSettings(): void {
-      derivativesSettings.write(getGPUTerrainDerivativesParameterValues({cellSize}));
-      distanceSettings.write(
-        getGPUDistanceFieldParameterValues({bounds: flippedExtent, gridSize: [width, height]})
-      );
-      zoneExtent.write(
-        getGPUPolygonRasterizationExtentValues(
-          flippedExtent[0],
-          flippedExtent[1],
-          (flippedExtent[2] - flippedExtent[0]) / width,
-          (flippedExtent[3] - flippedExtent[1]) / height
-        )
-      );
+      derivativesSettings.write(getGPUTerrainDerivativesParameterValues({}, grid));
+      distanceSettings.write(getGPUDistanceFieldParameterValues({}, flippedGrid));
+      zoneExtent.write(getGPUPolygonRasterizationParameterValues(flippedGrid));
     }
 
     // --- Controls ------------------------------------------------------------------------------
@@ -1300,7 +1311,7 @@ export const contoursMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: READ_BYTE_LENGTH});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copyBytes = bytes.slice(0, READ_BYTE_LENGTH);
         const readback: Readback = {

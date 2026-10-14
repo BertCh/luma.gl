@@ -36,7 +36,7 @@ const POLYGON_VALIDITY_CLASSES = makeClassTable({
     [230, 159, 0, 255],
     [213, 94, 0, 255]
   ],
-  labels: ['No bits set', 'Orientation convention only', 'Structural defect']
+  labels: ['Valid', 'Orientation convention only', 'Structural defect']
 });
 
 const METRIC_TITLES: Record<PolygonMetric, string> = {
@@ -140,22 +140,22 @@ export default defineScene<PolygonMeasuresOptions>({
     },
     {
       kind: 'select',
-      id: 'holeRule',
-      label: 'Hole rule',
+      id: 'ringGrouping',
+      label: 'Ring grouping',
       group: 'Measures',
       apply: 'compile',
-      default: 'winding',
-      help: 'How rings of one feature combine. Compile-time: rebuilds the measures and shape graphs.',
+      default: 'parts',
+      help: 'Ring roles are positional: the first ring of each polygon is its shell and every later ring is a hole, whatever its winding. So the grouping of rings into polygons decides what is a hole. Compile-time: rebuilds the measures and shape graphs.',
       options: [
         {
-          value: 'winding',
-          label: 'Winding',
-          help: 'Signed ring areas add up, so holes subtract and extra parts add (RFC 7946).'
+          value: 'parts',
+          label: 'Polygon parts',
+          help: 'The real structure: every part of a multi-part feature is its own polygon with its own shell, so islands add area.'
         },
         {
-          value: 'first-ring-exterior',
-          label: 'First ring is the shell',
-          help: 'Every later ring of a feature is a hole, whatever its winding: a second island is subtracted by mistake.'
+          value: 'merged',
+          label: 'One polygon per feature',
+          help: 'All rings of a feature in one polygon: the first ring is the shell and every later ring is a hole, so a second island is subtracted by mistake.'
         }
       ]
     },
@@ -287,7 +287,7 @@ export default defineScene<PolygonMeasuresOptions>({
       group: 'Validity',
       apply: 'param',
       default: false,
-      help: 'Writes a bow-tie, a NaN, a repeated vertex, an unclosed ring, a spike and a reversed ring into six features of a copy of the data, then re-runs the check. The clean data stays untouched.'
+      help: 'Writes a bow-tie, a NaN, a repeated vertex (own bit, not a structural defect), an unclosed ring, a spike and a reversed ring into six features of a copy of the data, then re-runs the check. The clean data stays untouched.'
     },
     {
       kind: 'select',
@@ -307,12 +307,12 @@ export default defineScene<PolygonMeasuresOptions>({
       id: 'colorSeed',
       label: 'Priority seed',
       group: 'Map colouring',
-      apply: 'compile',
+      apply: 'param',
       min: 0,
       max: 99,
       step: 1,
       default: 0,
-      help: 'Different seeds give different valid colourings (and sometimes a different colour count). Compile-time.'
+      help: 'Different seeds give different valid colourings (and sometimes a different colour count). A parameter write; the graph is not recompiled.'
     },
     {
       kind: 'slider',
@@ -546,7 +546,7 @@ export default defineScene<PolygonMeasuresOptions>({
       headline: 'Convention differs from structural failure',
       textAlternative:
         'Neutral, amber and vermilion map classes distinguish valid geometry, convention-only orientation and structural bits.',
-      body: `\`GPUGeometryValidity\` writes a per-polygon bitmask. Orientation is a convention; self-intersection, repeated coordinates and other structural bits are not. Colour plus redundant defect outlines separate those meanings. The bar chart is resolved from per-bit counts; overflow is reported separately.`,
+      body: `\`GPUGeometryValidity\` writes a per-polygon bitmask. Orientation is a convention; self-intersection and other structural bits are not. A repeated vertex has its own bit in the chart but GEOS treats it as valid, so it stays in the valid class. Colour plus redundant defect outlines separate those meanings. The bar chart is resolved from per-bit counts; overflow is reported separately.`,
       camera: {longitude: -87.68, latitude: 41.83, zoom: 9.9, transitionMs: 1400},
       options: {
         dataset: 'chicago-tracts',
@@ -586,7 +586,7 @@ export default defineScene<PolygonMeasuresOptions>({
 
   about: {
     what: 'Per-polygon measurement on the GPU: area, perimeter, centroid, bounds and vertex count in planar, spherical and WGS84 modes, with group totals; compactness, elongation, convexity and orientation; label points; a validity bitmask; and a parallel greedy map colouring.',
-    why: 'These are the numbers behind every area-based rate, compactness test and cartographic label, and the checks you want before an overlay or join. Doing them on the GPU keeps a 3,000-polygon layer interactive while you change coordinate system, hole rule or thresholds.',
+    why: 'These are the numbers behind every area-based rate, compactness test and cartographic label, and the checks you want before an overlay or join. Doing them on the GPU keeps a 3,000-polygon layer interactive while you change coordinate system, ring grouping or thresholds.',
     howToRead:
       'The fill is a GPU output column read directly by the shader. The legend shows the colour range (2nd to 98th percentile for continuous metrics). Click a polygon to outline it and read its numbers in the panel. Orange marks are label points, pink dots are centroids, the blue boxes are bounds.'
   },
@@ -728,36 +728,43 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
 const graph = new GPUCommandGraph(device, {id: 'polygons'});
-// positions: lng/lat float32x2; ringOffsets/featureRingOffsets: GeoArrow offsets (uint32).
+// positions: lng/lat float32x2; featureOffsets, polygonOffsets, ringOffsets: the four-level polygon
+// layout (uint32). Rows are features; the first ring of each polygon is its shell, later rings are holes.
+// Ring grouping here: ${state.ringGrouping === 'parts' ? 'real polygon parts' : 'one polygon per feature (polygonOffsets = feature ring offsets)'}.
 graph.add(new GPUGeometryMeasures({spatialContext: {coordinateSpace: ('${state.areaSystem}') === 'planar' ? 'planar' : 'longitude-latitude', metric: ('${state.areaSystem}') === 'planar' ? 'native' : ('${state.areaSystem}') === 'spherical' ? 'great-circle' : 'ellipsoidal', units: ('${state.areaSystem}') === 'planar' ? 'native' : 'meters'},ellipsoidalEdgeModel: ('${state.areaSystem}') === 'wgs84' ? 'coordinate-linear' : undefined,
-  positions, ringOffsets, featureRingOffsets,
-  geometryType: 'polygons',
+  geometryType: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets,
      // planar | spherical | wgs84
-  holeRule: '${state.holeRule}',
   output: {areas, lengths, centroids, bounds, vertexCounts}
 }));
 `;
     const shape = `graph.add(new GPUShapeDescriptors({
-  positions: planarPositions, ringOffsets, featureRingOffsets,
-  holeRule: '${state.holeRule}',
+  positions: planarPositions, featureOffsets, polygonOffsets, ringOffsets,
   parameters: sliverParameters.importToGraph(graph),   // sliverThreshold = ${state.sliverThreshold}
   output: {polsbyPopper, schwartzberg, elongation, orientation, convexity, clockwise, sliver}
 }));
 graph.add(new GPULabelPoint({
-  positions: planarPositions, ringOffsets, featureRingOffsets,
+  positions: planarPositions, featureOffsets, polygonOffsets, ringOffsets,
   initialGridSize: ${state.initialGridSize}, refinementCandidates: ${state.refinementCandidates},
   output: {points, distances, degenerate}
 }));
 `;
     const validity = `graph.add(new GPUGeometryValidity({
   polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
-  mask, overflow, intersectionCapacity: 4096,
+  output: {mask, status: {overflow}}, intersectionCapacity: 4096,
   orientation: '${state.orientation}', ringClosure: '${state.ringClosure}'
 }));
-graph.add(new GPUContiguityWeights({criterion: '${state.contiguity}', positions, ringOffsets, polygonOffsets, weights, overflow: weightOverflow}));
-graph.add(new GPUMapColoring({weights, colors, colorCount, seed: ${state.colorSeed}, maximumRounds: ${state.maxRounds}}));
+// Weights rows are features, so a multi-part feature is one row of the colouring.
+graph.add(new GPUContiguityWeights({
+  criterion: '${state.contiguity}',
+  polygons: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
+  output: {offsets, neighbors, weights, status: {overflow: weightOverflow}}
+}));
+graph.add(new GPUMapColoring({
+  weights, parameters: coloringParameters,   // getGPUMapColoringParameterValues({seed: ${state.colorSeed}})
+  maximumIterations: ${state.maxRounds}, output: {colors, colorCount, converged}
+}));
 
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 compiled.encode(commandEncoder, {parameters: undefined});   // outputs stay on the GPU`;
     return measures + '\n' + shape + '\n' + validity;
   },

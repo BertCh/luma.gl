@@ -34,6 +34,7 @@ import {
   type GPUSpatialWeights
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {createSeededRandom} from '../spatial-analysis-data';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
@@ -226,7 +227,9 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
     });
 
     // --- Graphs ------------------------------------------------------------------------------------------
-    const buildAnalysisGraph = (variant: WeightsVariant): CompiledGPUCommandGraph<void> => {
+    const buildAnalysisGraph = async (
+      variant: WeightsVariant
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id: `segregation-${variant}`});
       const scaleWeights: (GPUSpatialWeights | null)[] = [null];
       const positionsView = importGraphBuffer(
@@ -275,8 +278,18 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
             gridSize: [32, 32],
             positions: positionsView,
             parameters: buffers.searchParameter.importToGraph(graph),
-            weights,
-            overflow: importGraphBuffer(graph, `overflow-${scale}`, buffers.overflow, 'uint32', 1)
+            output: {
+              ...weights,
+              status: {
+                overflow: importGraphBuffer(
+                  graph,
+                  `overflow-${scale}`,
+                  buffers.overflow,
+                  'uint32',
+                  1
+                )
+              }
+            }
           })
         );
         // The 'kernel' variant weights inside the search (Epanechnikov with bandwidth = the band
@@ -297,7 +310,6 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUSegregation({
           id: 'segregation',
-          unitCount,
           groupCount: GROUP_COUNT,
           groupCounts: importGraphBuffer(
             graph,
@@ -307,24 +319,24 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
             unitCount * GROUP_COUNT
           ),
           scales: scaleWeights,
-          indices: importLocal('indices', indices, SCALE_COUNT * layout.stride),
-          local: {
-            environment: importLocal(
+          output: {
+            indices: importLocal('indices', indices, SCALE_COUNT * layout.stride),
+            localEnvironment: importLocal(
               'local-environment',
               localEnvironment,
               SCALE_COUNT * unitCount * GROUP_COUNT
             ),
-            entropy: importLocal('local-entropy', localEntropy, SCALE_COUNT * unitCount),
-            dissimilarity: importLocal(
+            localEntropy: importLocal('local-entropy', localEntropy, SCALE_COUNT * unitCount),
+            localDissimilarity: importLocal(
               'local-dissimilarity',
               localDissimilarity,
               SCALE_COUNT * unitCount * GROUP_COUNT
             ),
-            theil: importLocal('local-theil', localTheil, SCALE_COUNT * unitCount)
+            localTheil: importLocal('local-theil', localTheil, SCALE_COUNT * unitCount)
           }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // Display: the selected local index of the selected scale and group, one value per unit.
@@ -432,11 +444,12 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
   display[displayOffset + index] = value;
   dominant[dominantOffset + index] = winner;`
     });
-    const displayCompiled = resources.track(displayGraph.compile());
+    const displayCompiled = resources.track(await displayGraph.compileAsync());
 
     // --- State -----------------------------------------------------------------------------------------------
     let variant: WeightsVariant = 'band';
-    let analysis = buildAnalysisGraph(variant);
+    let analysis = await buildAnalysisGraph(variant);
+    const graphSwap = resources.track(new GraphSwap());
     let strength = 0.6;
     let bandwidthUnit = 1;
     let localIndex: LocalIndex = 'dissimilarity';
@@ -644,18 +657,25 @@ export const segregationMode: SpatialAnalysisModeDefinition = {
       ],
       value: variant,
       onChange: value => {
-        variant = value;
-        const previous = analysis;
-        analysis = buildAnalysisGraph(variant);
-        writeSearchParameters();
-        // Deck may still be encoding the old graph for one more frame; free it afterwards.
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            if (!destroyed) resources.release(previous);
-          })
-        );
-        analysisDirty = true;
-        displayDirty = true;
+        // The current graph and its search parameters stay until the replacement has compiled.
+        void graphSwap.request({
+          build: () => buildAnalysisGraph(value),
+          commit: next => {
+            variant = value;
+            const previous = analysis;
+            analysis = next;
+            writeSearchParameters();
+            // Deck may still be encoding the old graph for one more frame; free it afterwards.
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                if (!destroyed) resources.release(previous);
+              })
+            );
+            analysisDirty = true;
+            displayDirty = true;
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     context.controls.addLegend({

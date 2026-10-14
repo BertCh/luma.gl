@@ -6,13 +6,13 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {getClassTableLayerProps, makeClassTable} from '../../cartography/class-table';
 import {
-  encodeGPUNetworkAccessibilityParameters,
+  getGPUNetworkAccessibilityParameterValues,
   GPU_NETWORK_SNAPPING_NONE,
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
   GPUNetworkSnapping,
   recommendLaneCount,
-  type GPUNetworkAccessibilityParameters
+  type GPUNetworkAccessibilitySettings
 } from '@luma.gl/experimental/gpu-network';
 import {
   GPUCommandGraph,
@@ -21,6 +21,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {
@@ -115,6 +116,33 @@ type Built = {
   comparisonMatrix: CompiledGPUCommandGraph<void>;
   comparisonScore: CompiledGPUCommandGraph<void>;
   rowCount: number;
+  laneCount: number;
+  matrixLength: number;
+  generation: number;
+  companionMode: boolean;
+  rowsJobs: number;
+  retainedOpportunityTracts: number[];
+  /** Buffers created for this build, released with it. */
+  perBuild: {destroy: () => void}[];
+  buffers: {
+    opportunityPositions: Buffer;
+    opportunityWeights: Buffer;
+    opportunityOutlines: Buffer;
+    opportunityOutlineCount: number;
+    snapSegments: Buffer;
+    snappedPositions: Buffer;
+    snappedEdges: Buffer;
+    snapDistances: Buffer;
+    snapOverflow: Buffer;
+    matrixBuffer: Buffer;
+    matrixConverged: Buffer;
+    ratiosBuffer: Buffer;
+    comparisonWeightsBuffer: Buffer;
+    comparisonMatrixBuffer: Buffer;
+    comparisonCumulativeBuffer: Buffer;
+    comparisonGravityBuffer: Buffer;
+    comparisonConverged: Buffer;
+  };
 };
 
 /**
@@ -168,7 +196,7 @@ export async function createJobAccessibility(
   const neighborsBuffer = resources.createBuffer('neighbors', access.neighbors);
   const weightsBuffer = resources.createBuffer('weights', edgeCount * 4);
   const roadNodePositions = resources.createBuffer('road-node-positions', network.nodePositions);
-  const roadSourcesBuffer = resources.createBuffer('road-sources', access.roadSources);
+  const roadOffsetsBuffer = resources.createBuffer('road-offsets', access.roadOffsets);
   const roadTargetsBuffer = resources.createBuffer('road-targets', access.roadTargets);
   const roadCostsBuffer = resources.createBuffer('road-costs', access.roadMeters.length * 4);
   const demandBuffer = resources.createBuffer('node-demand', nodeDemand);
@@ -221,7 +249,6 @@ export async function createJobAccessibility(
   const busBuffer = resources.createBuffer('bus-segments', Float32Array.from(busSegments));
 
   // ---- Per-build resources ----------------------------------------------------------------
-  let perBuild: {destroy: () => void}[] = [];
   let built: Built | null = null;
   let opportunityPositions!: Buffer;
   let opportunityWeights!: Buffer;
@@ -234,12 +261,8 @@ export async function createJobAccessibility(
   let matrixBuffer!: Buffer;
   let matrixConverged!: Buffer;
   let snapOverflow!: Buffer;
-  let ratiosBuffer!: Buffer;
   let comparisonWeightsBuffer: Buffer | null = null;
-  let comparisonMatrixBuffer!: Buffer;
   let comparisonCumulativeBuffer!: Buffer;
-  let comparisonGravityBuffer!: Buffer;
-  let comparisonConverged!: Buffer;
   const cumulativeBuffer = resources.createBuffer('cumulative', nodeCount * 4);
   const gravityBuffer = resources.createBuffer('gravity', nodeCount * 4);
   const twoStepBuffer = resources.createBuffer('two-step', nodeCount * 4);
@@ -441,7 +464,7 @@ export async function createJobAccessibility(
     const options = ctx.options;
     comparisonGeneration++;
     comparisonSnapshots.clear();
-    const parameters: GPUNetworkAccessibilityParameters = {
+    const parameters: GPUNetworkAccessibilitySettings = {
       threshold: Math.min(options.thresholdMinutes, options.matrixLimitMinutes) * 60,
       decay: 'none'
     };
@@ -455,7 +478,7 @@ export async function createJobAccessibility(
         minimumCost: options.minimumCostSeconds
       });
     }
-    scoring.write(encodeGPUNetworkAccessibilityParameters(parameters));
+    scoring.write(getGPUNetworkAccessibilityParameterValues(parameters));
     const threshold = Math.min(options.thresholdMinutes, options.matrixLimitMinutes);
     const minutes = Array.from({length: 13}, (_, index) => index * Math.max(1, threshold / 12));
     ctx.setChart('decayChart', {
@@ -504,22 +527,36 @@ export async function createJobAccessibility(
         ? twoStepBuffer
         : gravityBuffer;
 
+  const graphSwap = resources.track(new GraphSwap());
+
   // ---- Graph construction -----------------------------------------------------------------
-  function buildGraphs(): void {
-    if (built) {
-      snapReader?.stop();
-      companionReader?.stop();
-      resources.release(built.matrix);
-      resources.release(built.score);
-      resources.release(built.comparisonMatrix);
-      resources.release(built.comparisonScore);
-      for (const resource of perBuild) resources.release(resource);
-      perBuild = [];
-    }
+  /**
+   * Builds and compiles all four graphs and their buffers. The running graphs keep encoding
+   * meanwhile, so the locals below shadow the live per-build state until `commitGraphs`.
+   */
+  async function buildGraphs(): Promise<Built> {
+    let opportunityPositions!: Buffer;
+    let opportunityWeights!: Buffer;
+    let opportunityOutlines!: Buffer;
+    let opportunityOutlineCount = 0;
+    let snapSegments!: Buffer;
+    let snappedPositions!: Buffer;
+    let snappedEdges!: Buffer;
+    let snapDistances!: Buffer;
+    let matrixBuffer!: Buffer;
+    let matrixConverged!: Buffer;
+    let snapOverflow!: Buffer;
+    let ratiosBuffer!: Buffer;
+    let comparisonWeightsBuffer!: Buffer;
+    let comparisonMatrixBuffer!: Buffer;
+    let comparisonCumulativeBuffer!: Buffer;
+    let comparisonGravityBuffer!: Buffer;
+    let comparisonConverged!: Buffer;
+    const perBuild: {destroy: () => void}[] = [];
     const options = ctx.options;
-    const generation = ++comparisonGeneration;
-    companionMode = !options.transit;
-    rowCount = Math.min(Number(options.opportunityRows), maximumRows);
+    const generation = comparisonGeneration + 1;
+    const nextCompanionMode = !options.transit;
+    const rowCount = Math.min(Number(options.opportunityRows), maximumRows);
     const laneCount = Math.min(
       Number(options.laneCount) || recommendLaneCount({rowCount, nodeCount, edgeCount}),
       rowCount
@@ -530,11 +567,10 @@ export async function createJobAccessibility(
       return resource;
     };
     const rows = order.slice(0, rowCount);
-    retainedOpportunityTracts = rows;
     const positions = new Float32Array(rowCount * 2);
     const weights = new Float32Array(rowCount);
     const outlineSegments: number[] = [];
-    rowsJobs = 0;
+    let rowsJobs = 0;
     rows.forEach((tract, row) => {
       positions[row * 2] = demand.centroids[tract * 2];
       positions[row * 2 + 1] = demand.centroids[tract * 2 + 1];
@@ -545,29 +581,6 @@ export async function createJobAccessibility(
         }
       }
       rowsJobs += demand.jobs[tract];
-    });
-    selectedOpportunityRow = 0;
-    const topTract = rows[0];
-    ctx.setReadout(
-      'topOpportunity',
-      `largest loaded tract: ${formatInteger(demand.jobs[topTract])} jobs`
-    );
-    ctx.setReadout(
-      'selectedRow',
-      `retained row ${selectedOpportunityRow + 1}: ${formatInteger(demand.jobs[topTract])} jobs; 0–10–20–30+ minute street bands`
-    );
-    ctx.setChart('opportunityShare', {
-      kind: 'stacked',
-      format: 'percent',
-      segments: [
-        {label: 'retained opportunity rows', value: rowsJobs, color: [20, 110, 160, 255]},
-        {
-          label: 'other loaded tract jobs',
-          value: Math.max(0, totalJobs - rowsJobs),
-          color: [175, 180, 190, 255]
-        }
-      ],
-      description: `Retained rows contain ${((100 * rowsJobs) / totalJobs).toFixed(1)}% of loaded tract jobs; the top loaded opportunity has ${formatInteger(demand.jobs[topTract])} jobs.`
     });
     opportunityPositions = track(resources.createBuffer('opportunity-positions', positions));
     opportunityWeights = track(resources.createBuffer('opportunity-weights', weights));
@@ -644,40 +657,50 @@ export async function createJobAccessibility(
       matrixGraph.add(
         new GPUNetworkSnapping({
           id: 'snapping',
-          points: view(opportunityPositions, 'float32x2', rowCount),
-          nodePositions: view(roadNodePositions, 'float32x2', roadNodeCount),
-          edgeSources: view(roadSourcesBuffer, 'uint32', access.roadSources.length),
-          edgeTargets: view(roadTargetsBuffer, 'uint32', access.roadTargets.length),
-          edgeCosts: view(roadCostsBuffer, 'float32', access.roadMeters.length),
-          maxSnapDistance: maxSnapParameter.importToGraph(matrixGraph),
+          positions: view(opportunityPositions, 'float32x2', rowCount),
+          topology: {
+            offsets: view(roadOffsetsBuffer, 'uint32', roadNodeCount + 1),
+            neighbors: view(roadTargetsBuffer, 'uint32', access.roadTargets.length),
+            weights: view(roadCostsBuffer, 'float32', access.roadMeters.length),
+            nodePositions: view(roadNodePositions, 'float32x2', roadNodeCount)
+          },
+          maximumSnapDistance: maxSnapParameter.importToGraph(matrixGraph),
           ...(options.snapSearch === 'bvh'
             ? {candidateCapacity: BVH_CANDIDATE_CAPACITY, spatialSort: true}
             : {}),
-          seedDirection: options.seedDirection,
-          snappedEdges: view(snappedEdges, 'uint32', rowCount),
-          snapFractions: view(snapFractions, 'float32', rowCount),
-          snapDistances: view(snapDistances, 'float32', rowCount),
-          snappedPositions: view(snappedPositions, 'float32x2', rowCount),
-          seedNodes: seedNodesView,
-          seedCosts: seedCostsView,
-          ...(options.snapSearch === 'bvh' ? {overflow: view(snapOverflow, 'uint32', 1)} : {})
+          startDirection: options.seedDirection,
+          output: {
+            snappedEdges: view(snappedEdges, 'uint32', rowCount),
+            snapFractions: view(snapFractions, 'float32', rowCount),
+            snapDistances: view(snapDistances, 'float32', rowCount),
+            snappedPositions: view(snappedPositions, 'float32x2', rowCount),
+            startNodes: seedNodesView,
+            startCosts: seedCostsView,
+            ...(options.snapSearch === 'bvh'
+              ? {status: {overflow: view(snapOverflow, 'uint32', 1)}}
+              : {})
+          }
         })
       );
       matrixGraph.add(
         new GPUNetworkCostMatrix({
           id: 'cost-matrix',
-          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-          weights: view(weightsBuffer, 'float32', edgeCount),
-          seedNodes: seedNodesView,
-          seedCosts: seedCostsView,
-          seedsPerRow: 2,
+          topology: {
+            offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+            neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+            weights: view(weightsBuffer, 'float32', edgeCount)
+          },
+          startNodes: seedNodesView,
+          startCosts: seedCostsView,
+          startsPerRow: 2,
           costLimit: costLimitParameter.importToGraph(matrixGraph),
           laneCount,
-          maxIterations: MAXIMUM_ITERATIONS,
+          maximumIterations: MAXIMUM_ITERATIONS,
           localIterations: LOCAL_ITERATIONS,
-          costs: view(matrixBuffer, 'float32', matrixLength),
-          converged: view(matrixConverged, 'uint32', 1)
+          output: {
+            costs: view(matrixBuffer, 'float32', matrixLength),
+            status: {converged: view(matrixConverged, 'uint32', 1)}
+          }
         })
       );
     }
@@ -710,42 +733,50 @@ export async function createJobAccessibility(
       comparisonMatrixGraph.add(
         new GPUNetworkSnapping({
           id: 'comparison-snapping',
-          points: view(opportunityPositions, 'float32x2', rowCount),
-          nodePositions: view(roadNodePositions, 'float32x2', roadNodeCount),
-          edgeSources: view(roadSourcesBuffer, 'uint32', access.roadSources.length),
-          edgeTargets: view(roadTargetsBuffer, 'uint32', access.roadTargets.length),
-          edgeCosts: view(roadCostsBuffer, 'float32', access.roadMeters.length),
-          maxSnapDistance: maxSnapParameter.importToGraph(comparisonMatrixGraph),
+          positions: view(opportunityPositions, 'float32x2', rowCount),
+          topology: {
+            offsets: view(roadOffsetsBuffer, 'uint32', roadNodeCount + 1),
+            neighbors: view(roadTargetsBuffer, 'uint32', access.roadTargets.length),
+            weights: view(roadCostsBuffer, 'float32', access.roadMeters.length),
+            nodePositions: view(roadNodePositions, 'float32x2', roadNodeCount)
+          },
+          maximumSnapDistance: maxSnapParameter.importToGraph(comparisonMatrixGraph),
           ...(options.snapSearch === 'bvh'
             ? {candidateCapacity: BVH_CANDIDATE_CAPACITY, spatialSort: true}
             : {}),
-          seedDirection: options.seedDirection,
-          snappedEdges: view(comparisonSnappedEdges, 'uint32', rowCount),
-          snapFractions: view(comparisonSnapFractions, 'float32', rowCount),
-          snapDistances: view(comparisonSnapDistances, 'float32', rowCount),
-          snappedPositions: view(comparisonSnappedPositions, 'float32x2', rowCount),
-          seedNodes: seedNodesView,
-          seedCosts: seedCostsView,
-          ...(options.snapSearch === 'bvh'
-            ? {overflow: view(comparisonSnapOverflow, 'uint32', 1)}
-            : {})
+          startDirection: options.seedDirection,
+          output: {
+            snappedEdges: view(comparisonSnappedEdges, 'uint32', rowCount),
+            snapFractions: view(comparisonSnapFractions, 'float32', rowCount),
+            snapDistances: view(comparisonSnapDistances, 'float32', rowCount),
+            snappedPositions: view(comparisonSnappedPositions, 'float32x2', rowCount),
+            startNodes: seedNodesView,
+            startCosts: seedCostsView,
+            ...(options.snapSearch === 'bvh'
+              ? {status: {overflow: view(comparisonSnapOverflow, 'uint32', 1)}}
+              : {})
+          }
         })
       );
       comparisonMatrixGraph.add(
         new GPUNetworkCostMatrix({
           id: 'comparison-cost-matrix',
-          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-          weights: view(comparisonWeightsBuffer, 'float32', edgeCount),
-          seedNodes: seedNodesView,
-          seedCosts: seedCostsView,
-          seedsPerRow: 2,
+          topology: {
+            offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+            neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+            weights: view(comparisonWeightsBuffer, 'float32', edgeCount)
+          },
+          startNodes: seedNodesView,
+          startCosts: seedCostsView,
+          startsPerRow: 2,
           costLimit: costLimitParameter.importToGraph(comparisonMatrixGraph),
           laneCount,
-          maxIterations: MAXIMUM_ITERATIONS,
+          maximumIterations: MAXIMUM_ITERATIONS,
           localIterations: LOCAL_ITERATIONS,
-          costs: view(comparisonMatrixBuffer, 'float32', matrixLength),
-          converged: view(comparisonConverged, 'uint32', 1)
+          output: {
+            costs: view(comparisonMatrixBuffer, 'float32', matrixLength),
+            status: {converged: view(comparisonConverged, 'uint32', 1)}
+          }
         })
       );
     }
@@ -763,13 +794,110 @@ export async function createJobAccessibility(
         })
       );
     }
-    built = {
-      matrix: resources.track(matrixGraph.compile()),
-      score: resources.track(scoreGraph.compile()),
-      comparisonMatrix: resources.track(comparisonMatrixGraph.compile()),
-      comparisonScore: resources.track(comparisonScoreGraph.compile()),
-      rowCount
+    const compiled: CompiledGPUCommandGraph<void>[] = [];
+    try {
+      for (const graph of [matrixGraph, scoreGraph, comparisonMatrixGraph, comparisonScoreGraph]) {
+        compiled.push(resources.track(await graph.compileAsync()));
+      }
+    } catch (error) {
+      for (const graph of compiled) resources.release(graph);
+      for (const resource of perBuild) resources.release(resource);
+      throw error;
+    }
+    return {
+      matrix: compiled[0],
+      score: compiled[1],
+      comparisonMatrix: compiled[2],
+      comparisonScore: compiled[3],
+      rowCount,
+      laneCount,
+      matrixLength,
+      generation,
+      companionMode: nextCompanionMode,
+      rowsJobs,
+      retainedOpportunityTracts: rows,
+      perBuild,
+      buffers: {
+        opportunityPositions,
+        opportunityWeights,
+        opportunityOutlines,
+        opportunityOutlineCount,
+        snapSegments,
+        snappedPositions,
+        snappedEdges,
+        snapDistances,
+        snapOverflow,
+        matrixBuffer,
+        matrixConverged,
+        ratiosBuffer,
+        comparisonWeightsBuffer,
+        comparisonMatrixBuffer,
+        comparisonCumulativeBuffer,
+        comparisonGravityBuffer,
+        comparisonConverged
+      }
     };
+  }
+
+  /** Releases the graphs and buffers of one build. */
+  function releaseBuild(target: Built): void {
+    resources.release(target.matrix);
+    resources.release(target.score);
+    resources.release(target.comparisonMatrix);
+    resources.release(target.comparisonScore);
+    for (const resource of target.perBuild) resources.release(resource);
+  }
+
+  /** Swaps a build in, then releases the build it replaces. */
+  function commitGraphs(next: Built): void {
+    const previous = built;
+    snapReader?.stop();
+    companionReader?.stop();
+    built = next;
+    ({
+      opportunityPositions,
+      opportunityWeights,
+      opportunityOutlines,
+      opportunityOutlineCount,
+      snapSegments,
+      snappedPositions,
+      snappedEdges,
+      snapDistances,
+      snapOverflow,
+      matrixBuffer,
+      matrixConverged,
+      comparisonWeightsBuffer,
+      comparisonCumulativeBuffer
+    } = next.buffers);
+    const {rowCount: nextRowCount, laneCount, matrixLength, generation} = next;
+    rowCount = nextRowCount;
+    rowsJobs = next.rowsJobs;
+    retainedOpportunityTracts = next.retainedOpportunityTracts;
+    comparisonGeneration = generation;
+    companionMode = next.companionMode;
+    selectedOpportunityRow = 0;
+    const topTract = retainedOpportunityTracts[0];
+    ctx.setReadout(
+      'topOpportunity',
+      `largest loaded tract: ${formatInteger(demand.jobs[topTract])} jobs`
+    );
+    ctx.setReadout(
+      'selectedRow',
+      `retained row ${selectedOpportunityRow + 1}: ${formatInteger(demand.jobs[topTract])} jobs; 0–10–20–30+ minute street bands`
+    );
+    ctx.setChart('opportunityShare', {
+      kind: 'stacked',
+      format: 'percent',
+      segments: [
+        {label: 'retained opportunity rows', value: rowsJobs, color: [20, 110, 160, 255]},
+        {
+          label: 'other loaded tract jobs',
+          value: Math.max(0, totalJobs - rowsJobs),
+          color: [175, 180, 190, 255]
+        }
+      ],
+      description: `Retained rows contain ${((100 * rowsJobs) / totalJobs).toFixed(1)}% of loaded tract jobs; the top loaded opportunity has ${formatInteger(demand.jobs[topTract])} jobs.`
+    });
     writeWeights();
     companionReader = new SummaryReader(
       resources,
@@ -784,8 +912,6 @@ export async function createJobAccessibility(
         publishComparisons();
       }
     );
-    builtKey = getBuildKey();
-
     snapReader = new SummaryReader(
       resources,
       `access-snap-${rowCount}-${laneCount}`,
@@ -843,6 +969,7 @@ export async function createJobAccessibility(
     matrixEncodeCount = 0;
     scoreEncodeCount = 0;
     scheduleTiming();
+    if (previous) releaseBuild(previous);
   }
 
   function getBuildKey(): string {
@@ -988,7 +1115,8 @@ export async function createJobAccessibility(
   writeWeights();
   writeScalars();
   writeScoring();
-  buildGraphs();
+  builtKey = getBuildKey();
+  commitGraphs(await buildGraphs());
   publishFurniture();
 
   const railPalette = lineNames.map(name => LINE_COLORS[name]);
@@ -1004,8 +1132,16 @@ export async function createJobAccessibility(
         case 'snapSearch':
         case 'seedDirection':
           if (builtKey !== getBuildKey()) {
-            buildGraphs();
-            ctx.requestLayers();
+            // Records the requested key, so changing back while a build runs requests again.
+            builtKey = getBuildKey();
+            void graphSwap.request({
+              build: buildGraphs,
+              commit: next => {
+                commitGraphs(next);
+                ctx.requestLayers();
+              },
+              discard: releaseBuild
+            });
           }
           break;
         case 'transit':

@@ -254,28 +254,32 @@ export default defineScene<HurricaneSeasonOptions>({
 import {
   GPUTrajectoryPlayhead, getGPUTrajectoryPlayheadParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
-import {GPUTimeWindowFilter, getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {GPUTimeWindowFilter, getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 // timestamps: float32 DAYS since 1 January 00:00 UTC of each storm's own year, so every season
 // lies on one calendar. positions: float32x2 longitude/latitude, trackOffsets: uint32.
 playheadGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets,
   parameters: playheadParameters.importToGraph(playheadGraph),
-  currentPositions, segmentRows, segmentFractions, status,   // rows + fractions give the wind at the head
-  activeTracks: {ids: activeIds, count: activeCount, overflow},
-  drawInstanceCount
+  output: {
+    currentPositions, segmentRows, segmentFractions, trackStatus: status,   // rows + fractions give the wind at the head
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow}},
+    drawInstanceCount
+  }
 }));
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStartDays, endTimestamps: segmentEndDays,   // interval mode
   window: windowParameters.importToGraph(trailGraph),
   additionalPredicates: [{kind: 'selection', mask: segmentMask}],   // the chosen seasons
-  output: {ids: trailIds, count: trailCount, overflow},
-  fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow},
+    fadeWeights, clipFractions, drawInstanceCount: trailDrawCount
+  }
 }));
 
 // every frame: plain parameter writes, no recompile
-playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: ${state.maxGapHours / 24}}));
-windowParameters.write(getGPUTimeWindowParameterValues({
+playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: ${state.maxGapHours / 24}}));
+windowParameters.write(getGPUTimeWindowFilterParameterValues({
   start: playhead - ${state.trailDays}, end: playhead, startFadeDuration: ${(state.trailDays * state.tailFade).toFixed(1)}
 }));`,
 

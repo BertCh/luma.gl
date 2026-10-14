@@ -5,7 +5,7 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {Buffer} from '@luma.gl/core';
 import {
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   GPUEdgeBundling
 } from '@luma.gl/experimental/gpu-network';
 import {
@@ -22,6 +22,7 @@ import {getProportionalRadius} from '../../cartography/proportional';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {
@@ -317,13 +318,13 @@ export async function createAirlineNetwork(
           'float32x2',
           edgeCount
         ),
-        maximumSegments: ARC_MAXIMUM_SEGMENTS,
+        maximumSegmentCount: ARC_MAXIMUM_SEGMENTS,
         parameters: arcParameters.importToGraph(arcGraph),
         output: importPathOutput(arcGraph, arcs)
       })
     );
   }
-  const compiledArcs = arcGraph.compile();
+  const compiledArcs = await arcGraph.compileAsync();
   const arcReader = new SummaryReader(
     resources,
     'arcs',
@@ -439,7 +440,7 @@ export async function createAirlineNetwork(
   weights[weightsOffset + index] = weight;`
     });
   }
-  const compiledMorph = morphGraph.compile();
+  const compiledMorph = await morphGraph.compileAsync();
 
   // Edge bundling (built the first time the bundles view is needed) ---------------------------
   const expanded: ExpandedEdges = expandAntimeridianEdges(network);
@@ -550,45 +551,111 @@ export async function createAirlineNetwork(
   // Compile-time rebuilds
   // ------------------------------------------------------------------------------------------
 
-  function buildAnalysis(): void {
+  /** Compiles the analysis graph for the current options; the running graph is untouched. */
+  function compileAnalysis(): Promise<CompiledGPUCommandGraph<void>> {
     const {pageRankDamping, pageRankIterations, propagationRounds} = ctx.options;
-    if (analysisGraph) retire(analysisGraph);
-    analysisGraph = buildAnalysisGraph(
+    return buildAnalysisGraph(
       device,
       stack,
       {pageRankDamping, pageRankIterations, propagationRounds},
       `airline-analysis-${++analysisSerial}`
     );
+  }
+
+  /** Swaps a compiled analysis graph in and schedules one run of it. */
+  function commitAnalysis(next: CompiledGPUCommandGraph<void>): void {
+    if (analysisGraph) retire(analysisGraph);
+    analysisGraph = next;
     analysisReader.markStale();
     pendingAnalysisEncode = true;
   }
   let pendingAnalysisEncode = false;
+  // A superseded request must not lose the optimization reset a propagation change asks for.
+  let resetOptimizationOnCommit = false;
+  const analysisSwap = resources.track(new GraphSwap());
+  /** Rebuilds the analysis graph; the latest request wins. */
+  function requestAnalysis(): Promise<boolean> {
+    return analysisSwap.request({
+      build: compileAnalysis,
+      commit: next => {
+        commitAnalysis(next);
+        if (resetOptimizationOnCommit) {
+          resetOptimizationOnCommit = false;
+          if (activeRun) retireOptimizationRun(activeRun);
+          activeRun = null;
+          activeResult = null;
+          cancelSweep();
+        }
+        ctx.requestLayers();
+      },
+      discard: next => next.destroy()
+    });
+  }
 
   function getOptimizationKey(): string {
     const {resolution, rounds, minimumGain} = ctx.options;
     return `${resolution}|${rounds}|${minimumGain}`;
   }
 
-  /** Builds the optimization run for the current resolution and publishes its labels. */
-  function buildActiveOptimization(): void {
-    if (!analysis) return;
-    // The previous result stays on the map until the new graph reports, so a slider drag does not
-    // flash the label-propagation colours.
-    if (activeRun) retireOptimizationRun(activeRun);
-    activeSettingsKey = getOptimizationKey();
+  type OptimizationBuild = {run: OptimizationRun; key: string};
+
+  /**
+   * Builds the optimization run for the current resolution. The previous run keeps reporting
+   * until `commitOptimization`, so a slider drag does not flash the label-propagation colours.
+   */
+  async function compileOptimization(): Promise<OptimizationBuild> {
+    const key = getOptimizationKey();
     const settings = {
       resolution: ctx.options.resolution,
       rounds: Number(ctx.options.rounds),
       minimumGain: ctx.options.minimumGain
     };
-    const key = activeSettingsKey;
-    const run = buildOptimizationRun(device, stack, settings, `airline-opt-${key}`, result => {
-      if (destroyed || activeRun !== run) return;
-      activeResult = result;
-      processOptimization(result);
-    });
-    activeRun = run;
+    const run: OptimizationRun = await buildOptimizationRun(
+      device,
+      stack,
+      settings,
+      `airline-opt-${key}`,
+      result => {
+        if (destroyed || activeRun !== run) return;
+        activeResult = result;
+        processOptimization(result);
+      }
+    );
+    return {run, key};
+  }
+
+  /** Swaps a built run in, retires the previous one and publishes the status. */
+  function commitOptimization(next: OptimizationBuild): void {
+    if (activeRun) retireOptimizationRun(activeRun);
+    activeRun = next.run;
+    activeSettingsKey = next.key;
     ctx.setReadout('optimizerStatus', 'running 0%');
+  }
+
+  function discardOptimization(next: OptimizationBuild): void {
+    next.run.reader.stop();
+    next.run.resources.destroy();
+  }
+
+  // As with the analysis reset, a superseded request must not lose its sweep clearing.
+  let clearSweepOnCommit = false;
+  const optimizationSwap = resources.track(new GraphSwap());
+  /** Rebuilds the optimization run once the analysis exists; the latest request wins. */
+  function requestOptimization(): Promise<boolean> {
+    if (!analysis) return Promise.resolve(false);
+    return optimizationSwap.request({
+      build: compileOptimization,
+      commit: next => {
+        commitOptimization(next);
+        if (clearSweepOnCommit) {
+          clearSweepOnCommit = false;
+          cancelSweep();
+          renderModularityChart();
+        }
+        ctx.requestLayers();
+      },
+      discard: discardOptimization
+    });
   }
 
   /** Drops the sweep in progress and its chart. */
@@ -607,41 +674,49 @@ export async function createAirlineNetwork(
   }
 
   function scheduleSweepStep(serial: number): void {
-    setTimeout(() => {
-      if (destroyed || serial !== sweepSerial || !analysis) return;
-      const index = sweepResults.length;
-      if (index >= SWEEP_RESOLUTIONS.length) return;
-      const resolution = SWEEP_RESOLUTIONS[index];
-      const run: OptimizationRun = buildOptimizationRun(
-        device,
-        stack,
-        {
-          resolution,
-          rounds: Number(ctx.options.rounds),
-          minimumGain: ctx.options.minimumGain
-        },
-        `airline-sweep-${serial}-${index}`,
-        result => {
-          if (destroyed || serial !== sweepSerial) return;
-          sweepResults.push({
-            resolution,
-            optimized: result.modularity,
-            propagation: result.propagationModularity,
-            continents: result.continentModularity
-          });
-          retireOptimizationRun(run);
-          if (sweepRun === run) sweepRun = null;
-          renderModularityChart();
-          scheduleSweepStep(serial);
-        }
-      );
-      sweepRun = run;
-    }, 60);
+    setTimeout(() => void runSweepStep(serial), 60);
   }
 
-  function buildLayout(): void {
+  async function runSweepStep(serial: number): Promise<void> {
+    if (destroyed || serial !== sweepSerial || !analysis) return;
+    const index = sweepResults.length;
+    if (index >= SWEEP_RESOLUTIONS.length) return;
+    const resolution = SWEEP_RESOLUTIONS[index];
+    const run: OptimizationRun = await buildOptimizationRun(
+      device,
+      stack,
+      {
+        resolution,
+        rounds: Number(ctx.options.rounds),
+        minimumGain: ctx.options.minimumGain
+      },
+      `airline-sweep-${serial}-${index}`,
+      result => {
+        if (destroyed || serial !== sweepSerial) return;
+        sweepResults.push({
+          resolution,
+          optimized: result.modularity,
+          propagation: result.propagationModularity,
+          continents: result.continentModularity
+        });
+        retireOptimizationRun(run);
+        if (sweepRun === run) sweepRun = null;
+        renderModularityChart();
+        scheduleSweepStep(serial);
+      }
+    );
+    // The sweep restarted or the scene closed while the graph compiled.
+    if (destroyed || serial !== sweepSerial) {
+      run.reader.stop();
+      run.resources.destroy();
+      return;
+    }
+    sweepRun = run;
+  }
+
+  /** Compiles the force layout for the current options; the running layout is untouched. */
+  function compileLayout(): Promise<CompiledGPUCommandGraph<void>> {
     const options = ctx.options;
-    if (layoutGraph) retire(layoutGraph);
     const graph = new GPUCommandGraph<void>(device, {id: `airline-layout-${++layoutFrames}`});
     const layout = new GPUGraphForceLayout({
       id: 'airline-layout',
@@ -675,13 +750,27 @@ export async function createAirlineNetwork(
     } else {
       layout.addToGraph(graph);
     }
-    layoutGraph = graph.compile();
+    return graph.compileAsync();
   }
 
-  function buildBundling(): void {
+  const layoutSwap = resources.track(new GraphSwap());
+  /** Rebuilds the layout graph; the latest request wins and the old one retires at the swap. */
+  function requestLayout(): Promise<boolean> {
+    return layoutSwap.request({
+      build: compileLayout,
+      commit: next => {
+        if (layoutGraph) retire(layoutGraph);
+        layoutGraph = next;
+        ctx.requestLayers();
+      },
+      discard: next => next.destroy()
+    });
+  }
+
+  /** Compiles a bundling graph with its own buffers; the running one is untouched. */
+  async function buildBundling(): Promise<BundlingGraph> {
     const pointsPerEdge = Number(ctx.options.pointsPerEdge);
     const densityResolution = Number(ctx.options.densityResolution);
-    if (bundling) retire(bundling.resources);
     const graphResources = new SpatialAnalysisResources(
       device,
       `airline-bundling-${++bundlingSerial}`
@@ -691,49 +780,61 @@ export async function createAirlineNetwork(
     graph.add(
       new GPUEdgeBundling({
         id: 'bundling',
-        positions: importGraphBuffer(
+        nodePositions: importGraphBuffer(
           graph,
           'positions',
           bundlePositions,
           'float32x2',
           expanded.positions.length / 2
         ),
-        sourceVertices: importGraphBuffer(
-          graph,
-          'sources',
-          bundleSources,
-          'uint32',
-          bundleEdgeCount
-        ),
-        targetVertices: importGraphBuffer(
-          graph,
-          'targets',
-          bundleTargets,
-          'uint32',
-          bundleEdgeCount
-        ),
+        sourceNodes: importGraphBuffer(graph, 'sources', bundleSources, 'uint32', bundleEdgeCount),
+        targetNodes: importGraphBuffer(graph, 'targets', bundleTargets, 'uint32', bundleEdgeCount),
         edgeMask: importGraphBuffer(graph, 'mask', bundleMask, 'uint32', bundleEdgeCount),
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge,
-        iterations: MAXIMUM_BUNDLE_ITERATIONS,
+        maximumIterations: MAXIMUM_BUNDLE_ITERATIONS,
         densityResolution,
         parameters: bundleParameters.importToGraph(graph),
-        paths: importGraphBuffer(
-          graph,
-          'paths',
-          paths,
-          'float32x2',
-          bundleEdgeCount * pointsPerEdge
-        )
+        output: {
+          paths: importGraphBuffer(
+            graph,
+            'paths',
+            paths,
+            'float32x2',
+            bundleEdgeCount * pointsPerEdge
+          )
+        }
       })
     );
-    const compiled = graphResources.track(graph.compile());
-    bundling = {resources: graphResources, compiled, paths, pointsPerEdge};
-    writeBundleParameters();
+    let compiled: CompiledGPUCommandGraph<void>;
+    try {
+      compiled = graphResources.track(await graph.compileAsync());
+    } catch (error) {
+      graphResources.destroy();
+      throw error;
+    }
+    return {resources: graphResources, compiled, paths, pointsPerEdge};
   }
 
-  function ensureBundling(): void {
-    if (!bundling) buildBundling();
+  /** Swaps a built bundling graph in and retires the previous one. */
+  function commitBundling(next: BundlingGraph): void {
+    if (bundling) retire(bundling.resources);
+    bundling = next;
+    writeBundleParameters();
+    bundlingFrames = 3;
+  }
+
+  const bundlingSwap = resources.track(new GraphSwap());
+  /** Rebuilds the bundling graph; the latest request wins. */
+  function requestBundling(): Promise<boolean> {
+    return bundlingSwap.request({
+      build: buildBundling,
+      commit: next => {
+        commitBundling(next);
+        ctx.requestLayers();
+      },
+      discard: next => next.resources.destroy()
+    });
   }
 
   // ------------------------------------------------------------------------------------------
@@ -743,7 +844,7 @@ export async function createAirlineNetwork(
   function writeBundleParameters(): void {
     const {bundleIterations, kernelRadius, decay, stiffness, stepScale} = ctx.options;
     bundleParameters.write(
-      createGPUEdgeBundlingParameterValues(
+      getGPUEdgeBundlingParameterValues(
         {
           activeIterations: bundleIterations,
           kernelRadius,
@@ -873,7 +974,7 @@ export async function createAirlineNetwork(
     renderPageRankChart(result);
     renderDegreeChart(result);
     recomputeColorings();
-    if (!activeRun || activeSettingsKey !== getOptimizationKey()) buildActiveOptimization();
+    if (!activeRun || activeSettingsKey !== getOptimizationKey()) void requestOptimization();
   }
 
   function processOptimization(result: OptimizationResult): void {
@@ -1524,9 +1625,9 @@ export async function createAirlineNetwork(
 
   writeArcParameters();
   writeBundleParameters();
-  buildAnalysis();
-  buildLayout();
-  if (ctx.options.view === 'bundles') ensureBundling();
+  commitAnalysis(await compileAnalysis());
+  layoutGraph = await compileLayout();
+  if (ctx.options.view === 'bundles') commitBundling(await buildBundling());
   ctx.setReadout('airports', vertexCount);
   ctx.setReadout('routes', edgeCount);
   ctx.setReadout('resolutionNow', ctx.options.resolution.toFixed(1));
@@ -1540,30 +1641,20 @@ export async function createAirlineNetwork(
   /** Debounced rebuild of the analysis graph: a slider drag compiles once, when the reader pauses. */
   function scheduleAnalysisRebuild(resetOptimization: boolean): void {
     clearTimeout(analysisTimer);
+    if (resetOptimization) resetOptimizationOnCommit = true;
     analysisTimer = setTimeout(() => {
       if (destroyed) return;
-      buildAnalysis();
-      if (resetOptimization) {
-        if (activeRun) retireOptimizationRun(activeRun);
-        activeRun = null;
-        activeResult = null;
-        cancelSweep();
-      }
-      ctx.requestLayers();
+      void requestAnalysis();
     }, REBUILD_DEBOUNCE_MS);
   }
 
   /** Debounced rebuild of the optimization run (resolution, rounds, minimum gain). */
   function scheduleOptimizationRebuild(clearSweep: boolean): void {
     clearTimeout(optimizationTimer);
+    if (clearSweep) clearSweepOnCommit = true;
     optimizationTimer = setTimeout(() => {
       if (destroyed) return;
-      buildActiveOptimization();
-      if (clearSweep) {
-        cancelSweep();
-        renderModularityChart();
-      }
-      ctx.requestLayers();
+      void requestOptimization();
     }, REBUILD_DEBOUNCE_MS);
   }
 
@@ -1622,7 +1713,9 @@ export async function createAirlineNetwork(
           writeArcParameters();
           break;
         case 'view':
-          if (ctx.options.view === 'bundles') ensureBundling();
+          if (ctx.options.view === 'bundles' && !bundling && !bundlingSwap.pending) {
+            void requestBundling();
+          }
           if (ctx.options.view === 'arcs') pendingArcs = true;
           if (ctx.options.view !== 'arcs' && egoAirport >= 0) setEgo(-1);
           refreshAnnotations();
@@ -1635,7 +1728,7 @@ export async function createAirlineNetwork(
         case 'iterationsPerFrame':
         case 'layoutMode':
         case 'theta':
-          buildLayout();
+          void requestLayout();
           break;
         case 'bundleIterations':
         case 'kernelRadius':
@@ -1646,8 +1739,7 @@ export async function createAirlineNetwork(
           break;
         case 'pointsPerEdge':
         case 'densityResolution':
-          buildBundling();
-          bundlingFrames = 3;
+          void requestBundling();
           break;
         default:
       }

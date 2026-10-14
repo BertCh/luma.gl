@@ -8,6 +8,7 @@ import {getClassIndexOf} from '../../cartography/class-table';
 import {ALPS} from '../../cartography/gazetteer';
 import {formatCount, formatDistance, formatSigned, liveText} from '../../cartography/live-text';
 import type {ClassTable, MapAnnotation} from '../../cartography/types';
+import {GraphSwap} from '../../engine/graph-swap';
 import {measureCompiledGraph} from '../../engine/vector-timing';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -249,6 +250,10 @@ export async function createLandforms(
   let weissEntry: {key: string; build: LandformBuild} | null = null;
   let agreementEntry: {key: string; geomorphonKey: string; build: LandformBuild} | null = null;
   let sweep: SweepState | null = null;
+  /** Geomorphon builds that the live display uses. Eviction skips them. */
+  let liveGeomorphons: LandformBuild[] = [];
+  /** Geomorphon builds that display plans in flight use. Eviction skips them until commit. */
+  const pendingGeomorphons = new Set<LandformBuild[]>();
   const latest = new Map<string, Uint32Array | Float32Array>();
 
   const forEachBuild = (visit: (build: LandformBuild) => void) => {
@@ -263,6 +268,12 @@ export async function createLandforms(
     build.release();
   };
 
+  function isGeomorphonReferenced(build: LandformBuild): boolean {
+    if (liveGeomorphons.includes(build) || sweep?.builds.includes(build)) return true;
+    for (const pins of pendingGeomorphons) if (pins.includes(build)) return true;
+    return false;
+  }
+
   function getProtectedGeomorphonKeys(): Set<string> {
     const state = getOptions();
     const keys = new Set<string>([getGeomorphonKey(state.geomorphonRadius, state)]);
@@ -272,32 +283,51 @@ export async function createLandforms(
     return keys;
   }
 
-  function getGeomorphonBuild(radius: number): LandformBuild {
+  /**
+   * The geomorphon build at a radius, compiled the first time. The cache is owned by this scene, so
+   * a build that lost a race with an identical one is released instead of replacing it. A plan
+   * passes `pins` so that eviction keeps the build until the plan commits or is discarded.
+   */
+  async function ensureGeomorphonBuild(
+    radius: number,
+    pins?: LandformBuild[]
+  ): Promise<LandformBuild> {
     const key = getGeomorphonKey(radius, getOptions());
     const existing = geomorphonBuilds.get(key);
     if (existing) {
       // Most recently used goes last.
       geomorphonBuilds.delete(key);
       geomorphonBuilds.set(key, existing);
+      pins?.push(existing);
       return existing;
     }
-    const build = buildGeomorphons(session, radius, getOptions);
-    geomorphonBuilds.set(key, build);
+    const built = await buildGeomorphons(session, radius, getOptions);
+    const raced = geomorphonBuilds.get(key);
+    if (raced || destroyed) {
+      releaseBuild(built);
+      if (raced) {
+        pins?.push(raced);
+        return raced;
+      }
+      throw new Error('Scene destroyed');
+    }
+    geomorphonBuilds.set(key, built);
+    pins?.push(built);
     const keep = getProtectedGeomorphonKeys();
     for (const [candidate, old] of geomorphonBuilds) {
       if (geomorphonBuilds.size <= MAXIMUM_GEOMORPHON_BUILDS) break;
-      if (keep.has(candidate)) continue;
+      if (keep.has(candidate) || isGeomorphonReferenced(old)) continue;
       releaseBuild(old);
       geomorphonBuilds.delete(candidate);
     }
-    return build;
+    return built;
   }
 
-  function ensurePaint(value: ValueRef, target: 'main' | 'compare'): void {
+  async function ensurePaint(value: ValueRef, target: 'main' | 'compare'): Promise<void> {
     if (value.paints.has(target)) return;
     value.paints.set(
       target,
-      createTablePaintGraph(
+      await createTablePaintGraph(
         resources,
         device,
         `${value.id}-${target}`,
@@ -308,8 +338,48 @@ export async function createLandforms(
     );
   }
 
-  /** Builds (or reuses) what the options show. Compiles: call it from an option handler, never a frame. */
-  function getDisplayFor(state: LandformOptions): Display {
+  /** What a display rebuild created. Nothing is installed until `commitDisplay`. */
+  type DisplayPlan = {
+    display: Display;
+    curvature?: {key: string; build: LandformBuild};
+    position?: {key: string; build: LandformBuild};
+    weiss?: {key: string; build: LandformBuild};
+    agreement?: {key: string; geomorphonKey: string; build: LandformBuild};
+    /** True when `agreementEntry` becomes `agreement` (possibly none). */
+    agreementReplaced: boolean;
+    /** Live builds that the commit releases after the swap. */
+    retired: LandformBuild[];
+    /** Geomorphon builds the plan uses; they stay resident while the plan is pending or live. */
+    geomorphons: LandformBuild[];
+  };
+
+  /**
+   * Builds (or reuses) what the options show, without touching the live builds: they keep
+   * encoding until `commitDisplay`. Compiles: call it from an option handler, never a frame.
+   */
+  async function planDisplay(state: LandformOptions): Promise<DisplayPlan> {
+    const plan: Omit<DisplayPlan, 'display'> = {
+      agreementReplaced: false,
+      retired: [],
+      geomorphons: []
+    };
+    pendingGeomorphons.add(plan.geomorphons);
+    try {
+      const display = await planDisplayInto(state, plan);
+      const complete: DisplayPlan = {...plan, display};
+      await ensurePaint(display.value, 'main');
+      if (display.compare) await ensurePaint(display.compare.value, 'compare');
+      return complete;
+    } catch (error) {
+      discardPlan(plan);
+      throw error;
+    }
+  }
+
+  async function planDisplayInto(
+    state: LandformOptions,
+    plan: Omit<DisplayPlan, 'display'>
+  ): Promise<Display> {
     const none = {
       forms: null,
       agreement: null,
@@ -320,8 +390,10 @@ export async function createLandforms(
     };
     switch (state.product) {
       case 'geomorphons': {
-        const build = getGeomorphonBuild(state.geomorphonRadius);
-        const shortBuild = state.compareRadius ? getGeomorphonBuild(COMPARE_RADIUS) : null;
+        const build = await ensureGeomorphonBuild(state.geomorphonRadius, plan.geomorphons);
+        const shortBuild = state.compareRadius
+          ? await ensureGeomorphonBuild(COMPARE_RADIUS, plan.geomorphons)
+          : null;
         const tableId = state.palette === 'grass' ? 'grass' : 'quiet';
         return {
           ...none,
@@ -338,17 +410,18 @@ export async function createLandforms(
       }
       case 'curvature': {
         const configKey = getCurvatureConfigKey(state);
-        if (curvatureEntry?.key !== configKey) {
-          if (curvatureEntry) releaseBuild(curvatureEntry.build);
-          curvatureEntry = null;
-          curvatureEntry = {key: configKey, build: buildCurvature(session, getOptions)};
+        let entry = curvatureEntry;
+        if (entry?.key !== configKey) {
+          if (entry) plan.retired.push(entry.build);
+          entry = {key: configKey, build: await buildCurvature(session, getOptions)};
+          plan.curvature = entry;
         }
         const kind = getCurvatureKind(state);
-        const value = curvatureEntry.build.values[getCurvatureValueId(kind)];
+        const value = entry.build.values[getCurvatureValueId(kind)];
         return {
           ...none,
           key: `${value.id}|curvature`,
-          stage: curvatureEntry.build.stage,
+          stage: entry.build.stage,
           value,
           mode: 'breaks',
           tableId: 'curvature',
@@ -359,15 +432,16 @@ export async function createLandforms(
       }
       case 'position': {
         const configKey = getPositionConfigKey(state);
-        if (positionEntry?.key !== configKey) {
-          if (positionEntry) releaseBuild(positionEntry.build);
-          positionEntry = null;
-          positionEntry = {
+        let entry = positionEntry;
+        if (entry?.key !== configKey) {
+          if (entry) plan.retired.push(entry.build);
+          entry = {
             key: configKey,
-            build: buildPosition(session, state.positionProduct, getOptions)
+            build: await buildPosition(session, state.positionProduct, getOptions)
           };
+          plan.position = entry;
         }
-        const build = positionEntry.build;
+        const build = entry.build;
         if (state.positionProduct === 'scale') {
           return {
             ...none,
@@ -396,27 +470,38 @@ export async function createLandforms(
       }
       case 'weiss': {
         const weissKey = getWeissConfigKey(state);
-        if (weissEntry?.key !== weissKey) {
-          if (agreementEntry) releaseBuild(agreementEntry.build);
-          agreementEntry = null;
-          if (weissEntry) releaseBuild(weissEntry.build);
-          weissEntry = null;
-          weissEntry = {key: weissKey, build: buildWeiss(session, getOptions)};
+        let weiss = weissEntry;
+        let agreement = agreementEntry;
+        if (weiss?.key !== weissKey) {
+          if (agreement) plan.retired.push(agreement.build);
+          agreement = null;
+          plan.agreementReplaced = true;
+          if (weiss) plan.retired.push(weiss.build);
+          weiss = {key: weissKey, build: await buildWeiss(session, getOptions)};
+          plan.weiss = weiss;
         }
-        const geomorphonBuild = getGeomorphonBuild(state.geomorphonRadius);
+        const geomorphonBuild = await ensureGeomorphonBuild(
+          state.geomorphonRadius,
+          plan.geomorphons
+        );
         const geomorphonKey = getGeomorphonKey(state.geomorphonRadius, state);
-        if (agreementEntry && agreementEntry.geomorphonKey !== geomorphonKey) {
-          releaseBuild(agreementEntry.build);
-          agreementEntry = null;
+        if (agreement && agreement.geomorphonKey !== geomorphonKey) {
+          plan.retired.push(agreement.build);
+          agreement = null;
+          plan.agreementReplaced = true;
         }
-        agreementEntry ??= {
-          key: weissKey,
-          geomorphonKey,
-          build: buildAgreement(session, weissEntry.build, geomorphonBuild)
-        };
-        const weissValue = weissEntry.build.values.codes;
+        if (!agreement) {
+          agreement = {
+            key: weissKey,
+            geomorphonKey,
+            build: await buildAgreement(session, weiss.build, geomorphonBuild)
+          };
+          plan.agreement = agreement;
+          plan.agreementReplaced = true;
+        }
+        const weissValue = weiss.build.values.codes;
         const formsValue = geomorphonBuild.values.forms;
-        const agreementValue = agreementEntry.build.values.codes;
+        const agreementValue = agreement.build.values.codes;
         const shown =
           state.view === 'agreement'
             ? agreementValue
@@ -435,7 +520,7 @@ export async function createLandforms(
           ...none,
           key: `${shown.id}|${tableId}`,
           // The agreement stage runs both classifiers, so every share is always known.
-          stage: agreementEntry.build.stage,
+          stage: agreement.build.stage,
           value: shown,
           mode: 'codes',
           tableId,
@@ -447,6 +532,30 @@ export async function createLandforms(
         };
       }
     }
+  }
+
+  /** Releases the builds a plan created (its retired builds are still live). */
+  function discardPlan(plan: Omit<DisplayPlan, 'display'>): void {
+    pendingGeomorphons.delete(plan.geomorphons);
+    for (const entry of [plan.curvature, plan.position, plan.weiss, plan.agreement]) {
+      if (entry) releaseBuild(entry.build);
+    }
+  }
+
+  /** Installs a plan's builds, then releases the builds it replaces. Synchronous. */
+  function commitDisplay(plan: DisplayPlan): void {
+    pendingGeomorphons.delete(plan.geomorphons);
+    liveGeomorphons = plan.geomorphons;
+    if (plan.curvature) curvatureEntry = plan.curvature;
+    if (plan.position) positionEntry = plan.position;
+    if (plan.weiss) weissEntry = plan.weiss;
+    if (plan.agreementReplaced) agreementEntry = plan.agreement ?? null;
+    for (const build of plan.retired) releaseBuild(build);
+    ctx.setStatus('');
+    setDisplay(plan.display);
+    updateRays();
+    publishFurniture();
+    updateGlacierNote();
   }
 
   // --- Display state -----------------------------------------------------------------------------
@@ -507,21 +616,24 @@ export async function createLandforms(
     ctx.requestLayers();
   }
 
-  function syncDisplay(): void {
-    if (destroyed) return;
-    const state = getOptions();
-    try {
-      const next = getDisplayFor(state);
-      ensurePaint(next.value, 'main');
-      if (next.compare) ensurePaint(next.compare.value, 'compare');
-      ctx.setStatus('');
-      setDisplay(next);
-    } catch (error) {
-      ctx.setStatus(`Cannot build ${state.product}: ${(error as Error).message}`);
-    }
-    updateRays();
-    publishFurniture();
-    updateGlacierNote();
+  const displaySwap = resources.track(new GraphSwap());
+
+  /** Rebuilds the display for the current options; the shown one keeps running until the swap. */
+  function syncDisplay(): Promise<unknown> {
+    if (destroyed) return Promise.resolve();
+    return displaySwap
+      .request({
+        build: () => planDisplay(getOptions()),
+        commit: commitDisplay,
+        discard: discardPlan
+      })
+      .catch((error: Error) => {
+        if (destroyed) return;
+        ctx.setStatus(`Cannot build ${getOptions().product}: ${error.message}`);
+        updateRays();
+        publishFurniture();
+        updateGlacierNote();
+      });
   }
 
   let syncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -531,7 +643,7 @@ export async function createLandforms(
     if (syncTimer) clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
       syncTimer = null;
-      syncDisplay();
+      void syncDisplay();
     }, delay);
   }
 
@@ -922,14 +1034,18 @@ export async function createLandforms(
     const state = sweep;
     if (!state || destroyed) return;
     if (state.builds.length < SWEEP_RADII.length) {
-      try {
-        state.builds.push(getGeomorphonBuild(SWEEP_RADII[state.builds.length]));
-      } catch (error) {
-        ctx.setStatus(`Sweep failed: ${(error as Error).message}`);
-        sweep = null;
-        return;
-      }
-      timers.push(setTimeout(compileNextSweepBuild, 16));
+      ensureGeomorphonBuild(SWEEP_RADII[state.builds.length]).then(
+        build => {
+          if (sweep !== state || destroyed) return;
+          state.builds.push(build);
+          timers.push(setTimeout(compileNextSweepBuild, 16));
+        },
+        error => {
+          if (destroyed) return;
+          ctx.setStatus(`Sweep failed: ${(error as Error).message}`);
+          sweep = null;
+        }
+      );
       return;
     }
     state.phase = 'running';
@@ -1295,7 +1411,7 @@ export async function createLandforms(
       build.stage.markDirty();
     });
 
-  syncDisplay();
+  await syncDisplay();
   publishTables();
 
   return {

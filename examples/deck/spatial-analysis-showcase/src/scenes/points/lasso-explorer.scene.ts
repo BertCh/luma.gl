@@ -602,34 +602,35 @@ export default defineScene<LassoOptions>({
     const histogram = `{binCount: ${bins}, domain: ${state.domain === 'selection' ? "'selection'" : domain}}`;
     const selection =
       state.path === 'direct'
-        ? `selection: ${shapeCode},`
+        ? `region: ${shapeCode},`
         : state.path === 'mask'
-          ? `selection: {kind: 'mask', mask: regionMask},        // written by GPURegionMask`
-          : `selection: {kind: 'mask', mask: pickMask},          // written by GPUPickRegionMask`;
+          ? `region: {kind: 'mask', mask: regionMask},           // written by GPURegionMask`
+          : `region: {kind: 'mask', mask: pickMask},             // written by GPUPickRegionMask`;
     const pre =
       state.path === 'mask'
         ? `graph.add(new GPURegionMask({
-  positions, outputMask: regionMask, overflow,
+  positions, output: {mask: regionMask, status: {overflow}},
   region: ${state.shape === 'rectangle' ? "{kind: 'rectangle', bounds}" : "{kind: 'polygon', vertices, vertexCount}"}${state.space === 'screen' ? ',  // plus screenTransform' : ''}
 }));
 `
         : state.path === 'pick'
           ? `// index-picking pass draws every point's row into a target texture,
 // then target.addRegionPass({region, result}) reduces the window around the cursor
-graph.add(new GPUPickRegionMask({result, outputMask: pickMask, overflow}));
+graph.add(new GPUPickRegionMask({picks: result, output: {mask: pickMask, status: {overflow}}}));
 `
           : '';
     return `${pre}graph.add(new GPURegionStatistics({
   ${selection}${state.path === 'direct' ? '\n  positions,' : ''}
   values: ${state.value},                             // float32 per observation
-  histogram: ${histogram},${state.withMask && state.path === 'direct' ? '\n  outputMask: mask,' : ''}${state.selectedIds === 'ids' && state.path === 'direct' ? '\n  output: {ids, count, overflow, requiredCount},\n  drawInstanceCount: drawCommands.getInstanceCountData(0),' : ''}${state.gridIndex && state.path === 'direct' ? `\n  spatialIndex: {kind: 'grid', index: gridIndex, candidateCapacity: ${Math.ceil(43557 * Number(state.candidateCapacity))}},` : ''}
-  summary
+  histogram: ${histogram},${state.gridIndex && state.path === 'direct' ? `\n  spatialIndex: {kind: 'grid', index: gridIndex, candidateCapacity: ${Math.ceil(43557 * Number(state.candidateCapacity))}},` : ''}
+  output: {summary${state.withMask && state.path === 'direct' ? ', mask' : ''}${state.selectedIds === 'ids' && state.path === 'direct' ? `,\n    selectedRows: {ids, status: {count, overflow, requiredCount}},\n    drawInstanceCount: drawCommands.getInstanceCountData(0)` : ''}}
 }));
-const compiled = graph.compile();            // once per combination of options
+const compiled = await graph.compileAsync();  // once per combination of options
 // every frame: rewrite the shape, encode, then read the summary through a ring
 compiled.encode(commandEncoder, {parameters: undefined});
 const ticket = readback.encodeRead(commandEncoder, summary);
-readback.read(ticket).then(result => {
+device.submit(commandEncoder.finish());  // submit the copy before mapping the ring slot
+if (ticket) readback.read(ticket).then(result => {
   // result.histogram is the selection; divide by its total and by the citywide
   // shape (counted once on the CPU) to compare shares instead of counts
   console.log(result.selectedCount, result.histogram);

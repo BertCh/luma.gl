@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -189,21 +189,25 @@ export async function createOceanDriftersPlayback(
         timestamps: view('timestamps', timestampsBuffer, 'float32', vertexCount),
         trackOffsets: view('offsets', offsetsBuffer, 'uint32', pieceCount + 1),
         parameters: playheadParameters.importToGraph(playheadGraph),
-        currentPositions: view('current-positions', currentPositions, 'float32x2', pieceCount),
-        headings: view('headings', headings, 'float32', pieceCount),
-        speeds: view('speeds', speeds, 'float32', pieceCount),
-        status: view('status', status, 'uint32', pieceCount),
-        segmentRows: rows,
-        segmentFractions: fractions,
-        activeTracks: {
-          ids: view('active-ids', activeIds, 'uint32', pieceCount),
-          count: view('active-count', activeCount, 'uint32', 1),
-          overflow: view('active-overflow', activeOverflow, 'uint32', 1)
-        },
-        drawInstanceCount: playheadGraph.importGPUData(
-          'marker-draw-count',
-          markerDraw.getInstanceCountData(0)
-        )
+        output: {
+          currentPositions: view('current-positions', currentPositions, 'float32x2', pieceCount),
+          headings: view('headings', headings, 'float32', pieceCount),
+          speeds: view('speeds', speeds, 'float32', pieceCount),
+          trackStatus: view('status', status, 'uint32', pieceCount),
+          segmentRows: rows,
+          segmentFractions: fractions,
+          activeTracks: {
+            ids: view('active-ids', activeIds, 'uint32', pieceCount),
+            status: {
+              count: view('active-count', activeCount, 'uint32', 1),
+              overflow: view('active-overflow', activeOverflow, 'uint32', 1)
+            }
+          },
+          drawInstanceCount: playheadGraph.importGPUData(
+            'marker-draw-count',
+            markerDraw.getInstanceCountData(0)
+          )
+        }
       })
     );
     // Temperature at the playhead: interpolate the two fixes of the bracketing segment.
@@ -236,7 +240,7 @@ export async function createOceanDriftersPlayback(
   headSst[headSstOffset + index] = value;`
     });
   }
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -247,7 +251,7 @@ export async function createOceanDriftersPlayback(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -267,19 +271,21 @@ export async function createOceanDriftersPlayback(
         window: windowParameters.importToGraph(trailGraph),
         output: {
           ids: view('trail-ids', trailIds, 'uint32', segmentCount),
-          count: view('trail-count', trailCount, 'uint32', 1),
-          overflow: view('trail-overflow', trailOverflow, 'uint32', 1)
-        },
-        fadeWeights: view('fade-weights', fadeWeights, 'float32', segmentCount),
-        clipFractions: view('clip-fractions', clipFractions, 'float32x2', segmentCount),
-        drawInstanceCount: trailGraph.importGPUData(
-          'trail-draw-count',
-          trailDraw.getInstanceCountData(0)
-        )
+          fadeWeights: view('fade-weights', fadeWeights, 'float32', segmentCount),
+          clipFractions: view('clip-fractions', clipFractions, 'float32x2', segmentCount),
+          drawInstanceCount: trailGraph.importGPUData(
+            'trail-draw-count',
+            trailDraw.getInstanceCountData(0)
+          ),
+          status: {
+            count: view('trail-count', trailCount, 'uint32', 1),
+            overflow: view('trail-overflow', trailOverflow, 'uint32', 1)
+          }
+        }
       })
     );
   }
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Density grids (one compiled graph per cell size) ------------------------------------------------
   const densityGrids = new Map<string, DensityGrid>();
@@ -307,7 +313,7 @@ export async function createOceanDriftersPlayback(
       new GPULineDensity({
         id: `density-${cell}`,
         positions: view('positions', positionsBuffer, 'float32x2', vertexCount),
-        pathOffsets: view('offsets', offsetsBuffer, 'uint32', pieceCount + 1),
+        lineOffsets: view('offsets', offsetsBuffer, 'uint32', pieceCount + 1),
         columns,
         rows,
         spatialContext: {
@@ -319,7 +325,7 @@ export async function createOceanDriftersPlayback(
         output: {
           lengths: view('lengths', lengths, 'float32', cells),
           densities: view('densities', densities, 'float32', cells),
-          overflow: view('overflow', overflow, 'uint32', 1)
+          status: {overflow: view('overflow', overflow, 'uint32', 1)}
         }
       })
     );
@@ -327,7 +333,7 @@ export async function createOceanDriftersPlayback(
       cell,
       columns,
       rows,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       densities
     });
   }
@@ -484,12 +490,12 @@ export async function createOceanDriftersPlayback(
       const playhead = clock.advance(frame);
       encodeDensity(commandEncoder);
       playheadParameters.write(
-        getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: options.maxGapDays})
+        getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: options.maxGapDays})
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
       if (options.showTrails) {
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - options.trailDays,
             end: playhead,
             startFadeDuration: options.trailDays * options.tailFade

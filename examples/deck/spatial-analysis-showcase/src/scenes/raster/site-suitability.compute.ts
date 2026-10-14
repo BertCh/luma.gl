@@ -20,6 +20,7 @@ import {
   GPURasterSampling,
   GPURasterZonalStatistics,
   GPUWeightedOverlay,
+  makeGPURasterMetadata,
   GPU_RASTER_SAMPLING_PARAMETER_LENGTH,
   type GPURasterBufferBand,
   type GPURasterZonalStatisticsSumOrder
@@ -112,6 +113,13 @@ export async function createSiteSuitability(
   const reference = readDixieReference(dataset);
   const {width, height, cellCount, frame} = rasters;
   const resources = new SpatialAnalysisResources(device, 'suit');
+  // Local UTM meters around the window centre; row 0 is the north edge.
+  const rasterGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: frame.cellSize,
+    origin: [-frame.halfWidth, frame.halfHeight]
+  });
 
   // --- Static inputs prepared on the CPU ---------------------------------------------------------
   // Distance from Greenville in meters, and the land cover class index (0 = tree cover).
@@ -131,7 +139,6 @@ export async function createSiteSuitability(
   const sitesPerSide = Math.floor((2 * frame.halfWidth) / SITE_SPACING) - 1;
   const maximumSites = sitesPerSide * sitesPerSide;
   const sitePositions = new Float32Array(maximumSites * 2);
-  const siteSamplingPositions = new Float32Array(maximumSites * 2);
   const siteDisplayPositions = new Float32Array(maximumSites * 2);
   for (let row = 0; row < sitesPerSide; row++) {
     for (let column = 0; column < sitesPerSide; column++) {
@@ -142,9 +149,6 @@ export async function createSiteSuitability(
         -frame.halfHeight + SITE_SPACING * (row + 1) + (random() - 0.5) * SITE_SPACING * 0.8;
       sitePositions[index * 2] = x;
       sitePositions[index * 2 + 1] = y;
-      // The sampling contributor puts row 0 at the smallest y, our rasters put row 0 north.
-      siteSamplingPositions[index * 2] = x;
-      siteSamplingPositions[index * 2 + 1] = -y;
       const [meterX, meterY] = frame.localToMeters(x, y);
       siteDisplayPositions[index * 2] = meterX;
       siteDisplayPositions[index * 2 + 1] = meterY;
@@ -187,10 +191,8 @@ export async function createSiteSuitability(
   const score = floats('score');
   const scoreRange = resources.createBuffer('score-range', 8);
   const siteCountBuffer = resources.createParameterBuffer('site-count', 'uint32', 1);
-  const sitePositionBuffer = resources.createBuffer(
-    'site-sampling-positions',
-    siteSamplingPositions
-  );
+  // The sampling grid is north-up like the rasters, so sites sample at their own local meters.
+  const sitePositionBuffer = resources.createBuffer('site-sampling-positions', sitePositions);
   const siteDisplayBuffer = resources.createBuffer('site-display-positions', siteDisplayPositions);
   const siteValues = floats('site-values', maximumSites);
   const zones = resources.createBuffer('zones', coverIndex);
@@ -312,23 +314,20 @@ export async function createSiteSuitability(
         output: {values: f('burned-out', criteria.burnedFlag)}
       })
     );
-    terrainSettings.write(
-      getGPUTerrainDerivativesParameterValues({cellSize: [frame.cellSize, frame.cellSize]})
-    );
+    terrainSettings.write(getGPUTerrainDerivativesParameterValues({}, rasterGrid));
     criteriaGraph.add(
       new GPUTerrainDerivatives({
         id: 'slope',
-        width,
-        height,
+        grid: rasterGrid,
         elevation: band('elevation', f('elevation', input.elevation)),
-        settings: terrainSettings.importToGraph(criteriaGraph),
-        slope: f('slope-out', criteria.slope),
+        parameters: terrainSettings.importToGraph(criteriaGraph),
+        output: {slope: f('slope-out', criteria.slope)},
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
     );
   }
-  const compiledCriteria = resources.track(criteriaGraph.compile());
+  const compiledCriteria = resources.track(await criteriaGraph.compileAsync());
 
   // 2. Scoring inputs: rescale each criterion to 0..1, then summarise across the stack.
   const normalizeGraph = new GPUCommandGraph<void>(device, {id: 'suit-normalize'});
@@ -362,7 +361,7 @@ export async function createSiteSuitability(
       })
     );
   }
-  const compiledNormalize = resources.track(normalizeGraph.compile());
+  const compiledNormalize = resources.track(await normalizeGraph.compileAsync());
   const statisticsGraph = new GPUCommandGraph<void>(device, {id: 'suit-statistics'});
   {
     const view = createGraphViewer(statisticsGraph);
@@ -380,12 +379,12 @@ export async function createSiteSuitability(
           minimum: f('minimum', statistics.minimum),
           maximum: f('maximum', statistics.maximum),
           range: f('range', statistics.range),
-          count: view('count', statistics.count, 'uint32', cellCount)
+          counts: view('count', statistics.count, 'uint32', cellCount)
         }
       })
     );
   }
-  const compiledStatistics = resources.track(statisticsGraph.compile());
+  const compiledStatistics = resources.track(await statisticsGraph.compileAsync());
 
   // 3. Weighted overlay and sampling at the candidate sites.
   const overlayGraph = new GPUCommandGraph<void>(device, {id: 'suit-overlay'});
@@ -409,8 +408,7 @@ export async function createSiteSuitability(
     overlayGraph.add(
       new GPURasterSampling({
         id: 'sites',
-        width,
-        height,
+        grid: rasterGrid,
         values: f('sampled-score', score),
         positions: view('site-positions', sitePositionBuffer, 'float32x2', maximumSites),
         pointCount: siteCountBuffer.importToGraph(overlayGraph),
@@ -419,11 +417,11 @@ export async function createSiteSuitability(
       })
     );
   }
-  const compiledOverlay = resources.track(overlayGraph.compile());
+  const compiledOverlay = resources.track(await overlayGraph.compileAsync());
 
   // 4. Zonal statistics over the land cover zones: sorted sums (and a burned-share instance) and an
   // atomic-sum variant to compare timings.
-  const buildZonalGraph = (
+  const buildZonalGraph = async (
     id: string,
     sumOrder: GPURasterZonalStatisticsSumOrder,
     targets: readonly {name: string; values: Buffer; outputs: ZonalOutputs}[]
@@ -436,8 +434,7 @@ export async function createSiteSuitability(
       graph.add(
         new GPURasterZonalStatistics({
           id: `zonal-${sumOrder}-${target.name}`,
-          width,
-          height,
+          grid: rasterGrid,
           zones: view('zones', zones, 'uint32', cellCount),
           values: band(
             target.name,
@@ -451,20 +448,22 @@ export async function createSiteSuitability(
             sums: column('sums', target.outputs.sums, 'float32'),
             means: column('means', target.outputs.means, 'float32'),
             minimums: column('minimums', target.outputs.minimums, 'float32'),
-            maximums: column('maximums', target.outputs.maximums, 'float32')
-          },
-          overflow: view(`${target.name}-overflow`, target.outputs.overflow, 'uint32', 1)
+            maximums: column('maximums', target.outputs.maximums, 'float32'),
+            status: {
+              overflow: view(`${target.name}-overflow`, target.outputs.overflow, 'uint32', 1)
+            }
+          }
         })
       );
     }
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
   const compiledZonal = {
-    sorted: buildZonalGraph('suit-zonal-sorted', 'sorted', [
+    sorted: await buildZonalGraph('suit-zonal-sorted', 'sorted', [
       {name: 'score', values: score, outputs: zonal.sorted.score},
       {name: 'burned', values: criteria.burnedFlag, outputs: zonal.sorted.burned}
     ]),
-    atomic: buildZonalGraph('suit-zonal-atomic', 'atomic', [
+    atomic: await buildZonalGraph('suit-zonal-atomic', 'atomic', [
       {name: 'score', values: score, outputs: zonal.atomic.score}
     ])
   };
@@ -555,8 +554,8 @@ export async function createSiteSuitability(
           operation: 'add',
           ...rescale,
           constantB: 0,
-          clampMin: 0,
-          clampMax: 1
+          clampMinimum: 0,
+          clampMaximum: 1
         })
       );
     });
@@ -582,19 +581,19 @@ export async function createSiteSuitability(
         normalizeWeights: state.normalizeWeights,
         noDataPolicy: state.noDataPolicy,
         layers: [
-          {weight: weights[0], inputMin: ranges.severity[0], inputMax: ranges.severity[1]},
-          {weight: weights[1], inputMin: ranges.slope[0], inputMax: ranges.slope[1]},
+          {weight: weights[0], inputMinimum: ranges.severity[0], inputMaximum: ranges.severity[1]},
+          {weight: weights[1], inputMinimum: ranges.slope[0], inputMaximum: ranges.slope[1]},
           {weight: weights[2], mode: 'table', breakCount: MAXIMUM_BREAKS, closed: 'left'},
           {
             weight: weights[3],
-            inputMin: ranges.proximity[0],
-            inputMax: ranges.proximity[1],
+            inputMinimum: ranges.proximity[0],
+            inputMaximum: ranges.proximity[1],
             invert: true
           },
           {
             weight: weights[4],
-            inputMin: ranges.greenness[0],
-            inputMax: ranges.greenness[1],
+            inputMinimum: ranges.greenness[0],
+            inputMaximum: ranges.greenness[1],
             invert: true
           }
         ]
@@ -608,13 +607,10 @@ export async function createSiteSuitability(
     overlayBreaks.write(breakTable);
     overlayValues.write(valueTable);
     samplingParameters.write(
-      getGPURasterSamplingParameterValues({
-        width,
-        height,
-        extent: [-frame.halfWidth, -frame.halfHeight, frame.halfWidth, frame.halfHeight],
-        method: state.sampleMethod,
-        noDataPolicy: state.sampleNoData
-      })
+      getGPURasterSamplingParameterValues(
+        {method: state.sampleMethod, noDataPolicy: state.sampleNoData},
+        rasterGrid
+      )
     );
     siteCountBuffer.write(Uint32Array.of(Math.min(state.siteCount, maximumSites)));
   };

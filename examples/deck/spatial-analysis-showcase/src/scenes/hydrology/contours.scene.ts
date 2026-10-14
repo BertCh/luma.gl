@@ -442,35 +442,35 @@ import {
 
 const graph = new GPUCommandGraph(device, {id: 'contours'});
 graph.add(new GPUIsobands({
-  width, height, values, breaks: levels, parameters: isobandParameters.importToGraph(graph),
-  output: {triangles, triangleBands, count, overflow, vertexCount}
+  grid, values, breaks: levels, parameters: isobandParameters.importToGraph(graph),
+  output: {triangles, triangleBands, status: {count, vertexCount, overflow}}
 }));
 graph.add(new GPUIsolines({
-  width, height, values, levels, parameters: isolineParameters.importToGraph(graph),
-  output: {segments, segmentLevels, count, overflow}${
+  grid, values, levels, parameters: isolineParameters.importToGraph(graph),
+  output: {segments, segmentLevels, status: {count, overflow${state.stitchLines ? ', polylineOverflow' : ''}}${
     state.stitchLines
       ? `,
-  polylines: {vertices, polylineOffsets, polylineLevels, polylineClosed, polylineCount, vertexCount, overflow}`
+  polylines: {vertices, polylineOffsets, polylineLevels, polylineClosed, polylineCount, vertexCount}`
       : ''
-  }
+  }}
 }));${
     state.showRings
       ? `
 ringGraph.add(new GPUIsobandRings({
-  width, height, values, breaks: levels, parameters: isobandParameters.importToGraph(ringGraph),
+  grid, values, breaks: levels, parameters: isobandParameters.importToGraph(ringGraph),
   edgeCapacity: 1_200_000, vertexTolerance: ${state.ringTolerance === 'fine' ? '1e-4' : state.ringTolerance === 'cell' ? '31' : '15'}, splitTouchingRings: ${state.splitTouchingRings},
-  output: {ringOffsets, positions, ringGroups, ringIsHole, count, overflow}
+  output: {ringOffsets, positions, ringGroups, ringIsHole, status: {count, overflow, edgeOverflow}}
 }));`
       : ''
   }
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 
 // Per change (no recompile): levels, band window and extent are buffer writes.
 levelsBuffer.write(Float32Array.from(levels));   // multiples of ${state.source === 'elevation' ? state.elevationInterval : state.slopeInterval}
-isolineParameters.write(getGPUIsolinesParameterValues({width, height, levelCount, extent}));
+isolineParameters.write(getGPUIsolinesParameterValues({levelCount, extent}, grid));
 isobandParameters.write(getGPUIsobandsParameterValues({
-  width, height, breakCount: levelCount, extent, firstBand, lastBand
-}));
+  breakCount: levelCount, extent, firstBand, lastBand
+}, grid));
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   create: async ctx => (await import('./contours.compute')).createContours(ctx)

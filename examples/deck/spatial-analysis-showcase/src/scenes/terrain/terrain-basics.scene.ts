@@ -578,29 +578,31 @@ import {
   GPUTerrainRGBDecode, GPUTerrainDerivatives, GPUTerrainRuggedness,
   getGPUTerrainDerivativesParameterValues, GPU_TERRAIN_DERIVATIVES_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+
+// the tile is Web Mercator: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
+const grid = makeGPURasterMetadata({width: 2048, height: 2048, cellSize: 9.5546, origin: [minX, maxY]});
 
 // \`encoded\` holds the PNG pixels as packed RGBA8 words (getImageData().data viewed as Uint32Array)
 const graph = new GPUCommandGraph(device, {id: 'terrain'});
 graph.add(new GPUTerrainRGBDecode({
-  width: 2048, height: 2048, encoding: '${state.encoding}',
+  grid, encoding: '${state.encoding}',
   validRange: [${state.validRange === 'tight' ? '1800, 4200' : '-11000, 9000'}],${state.clampBathymetry ? '\n  clampBathymetry: true,' : ''}
-  input: {buffer: encodedView}, values: heightsView, validity: validityView
+  input: {buffer: encodedView}, output: {values: heightsView, outputValidity: validityView}
 }));
 const elevation = {id: 'dem', format: 'float32', storage: {kind: 'buffer', values: heightsView}, validity: validityView};
 
 graph.add(new GPUTerrainDerivatives({
-  width: 2048, height: 2048, elevation, settings: derivativeSettings.importToGraph(graph), slope, aspect,
+  grid, elevation, parameters: derivativeSettings.importToGraph(graph), output: {slope, aspect},
   cellSizeMode: '${state.cellModel === 'ground' ? 'web-mercator' : 'uniform'}', borderMode: '${state.borderMode}'
 }));
 graph.add(new GPUTerrainRuggedness({
-  width: 2048, height: 2048, elevation, terrainRuggednessIndex: tri,
+  grid, elevation, output: {terrainRuggednessIndex: tri},
   terrainRuggednessAlgorithm: '${state.triAlgorithm}', edgeMode: '${state.edgeMode}'
 }));
-const compiled = graph.compile(); // once
+const compiled = await graph.compileAsync(); // once
 
-// per frame: parameter writes only (web-mercator: edges are normalized Mercator y of the tile)
-derivativeSettings.write(getGPUTerrainDerivativesParameterValues({
-  cellSize: [9.5546, 9.5546], northEdge: 0.3556, southEdge: 0.3112, zFactor: ${state.zFactor}
-}));
+// per frame: parameter writes only (web-mercator: the packer reads cell size and edges from the grid)
+derivativeSettings.write(getGPUTerrainDerivativesParameterValues({zFactor: ${state.zFactor}}, grid));
 compiled.encode(commandEncoder, {parameters: undefined});`
 });

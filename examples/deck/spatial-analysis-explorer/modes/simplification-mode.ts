@@ -12,6 +12,7 @@
  * segments are drawn from the compact kept IDs by a bespoke layer over the faint original trips.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -34,7 +35,7 @@ import {formatCount, SpatialAnalysisResources} from '../spatial-analysis-resourc
 import {KeptSegmentLayer} from './simplification-layers';
 
 /** Compile-time cap on Douglas-Peucker rounds (five graph nodes each). */
-const MAXIMUM_ROUNDS = 64;
+const MAXIMUM_ITERATIONS = 64;
 /** Frames between summary readbacks when nothing changed. */
 const READBACK_INTERVAL_FRAMES = 30;
 /** Slider range as log10 of the tolerance in meters (0.1 m to 1 km). */
@@ -124,7 +125,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
 
     const importView = (graph: GPUCommandGraph<void>) => ({
       positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-      trackOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         graph,
         'track-offsets',
         offsetsBuffer,
@@ -140,21 +141,29 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
       new GPULineSimplification({
         id: 'simplification-importance',
         ...importView(importanceGraph),
-        maximumRounds: MAXIMUM_ROUNDS,
-        status: {
-          converged: importGraphBuffer(importanceGraph, 'converged', convergedBuffer, 'uint32', 1),
-          roundCount: importGraphBuffer(
-            importanceGraph,
-            'round-count',
-            roundCountBuffer,
-            'uint32',
-            1
-          )
+        maximumIterations: MAXIMUM_ITERATIONS,
+        output: {
+          status: {
+            converged: importGraphBuffer(
+              importanceGraph,
+              'converged',
+              convergedBuffer,
+              'uint32',
+              1
+            ),
+            iterationCount: importGraphBuffer(
+              importanceGraph,
+              'round-count',
+              roundCountBuffer,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
     const compiledImportance: CompiledGPUCommandGraph<void> = resources.track(
-      importanceGraph.compile()
+      await importanceGraph.compileAsync()
     );
 
     // Graph 2: tolerance selection, re-encoded when the tolerance changes.
@@ -165,15 +174,9 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
         ...importView(selectionGraph),
         computeImportance: false,
         parameters: parameterBuffer.importToGraph(selectionGraph),
-        selection: {
-          output: {
-            ids: importGraphBuffer(
-              selectionGraph,
-              'kept-ids',
-              keptIdsBuffer,
-              'uint32',
-              vertexCount
-            ),
+        output: {
+          ids: importGraphBuffer(selectionGraph, 'kept-ids', keptIdsBuffer, 'uint32', vertexCount),
+          status: {
             count: importGraphBuffer(selectionGraph, 'kept-count', keptCountBuffer, 'uint32', 1),
             overflow: importGraphBuffer(
               selectionGraph,
@@ -194,7 +197,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
       })
     );
     const compiledSelection: CompiledGPUCommandGraph<void> = resources.track(
-      selectionGraph.compile()
+      await selectionGraph.compileAsync()
     );
 
     let logTolerance = DEFAULT_LOG_TOLERANCE;
@@ -294,7 +297,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
         const total = words[2];
@@ -303,7 +306,7 @@ export const simplificationMode: SpatialAnalysisModeDefinition = {
         );
         ratioReadout.setValue(`${((100 * total) / vertexCount).toFixed(1)}% kept`);
         convergedReadout.setValue(words[3] ? 'yes' : 'no (round cap, superset of DP)');
-        roundsReadout.setValue(`${words[4]} of ${MAXIMUM_ROUNDS}`);
+        roundsReadout.setValue(`${words[4]} of ${MAXIMUM_ITERATIONS}`);
       } catch {
         // The ring or device was destroyed while the read was in flight.
       } finally {

@@ -344,28 +344,32 @@ export class RingOutlineLayer extends StorageModelLayer<RingOutlineLayerProps> {
   }
 }
 
-/** One triangulated polygon set: flat corner coordinates and the polygon row of each triangle. */
+/** One triangulated polygon set: flat corner coordinates and the owner row of each triangle. */
 export type TriangulatedPolygons = {
   /** `x, y` per corner, three corners per triangle. */
   corners: Float32Array;
-  /** Polygon row of each triangle. */
+  /** Owner row of each triangle: the feature row when `featureOffsets` was given, else the polygon row. */
   owners: Uint32Array;
 };
 
 /**
  * Triangulates polygons given as GeoArrow-style offsets by ear clipping each ring. Holes are
  * ignored (every ring becomes its own fill), which is exact for the single-ring zone data of this
- * demo. It is a one-time CPU step on static input.
+ * demo. It is a one-time CPU step on static input. With `featureOffsets` (feature to polygons), the
+ * owner of each triangle is its feature row, which is the row of a feature-based analysis output.
  */
 export function triangulatePolygons(
   positions: Float32Array,
   ringOffsets: Uint32Array,
-  polygonOffsets: Uint32Array
+  polygonOffsets: Uint32Array,
+  featureOffsets?: Uint32Array
 ): TriangulatedPolygons {
   const corners: number[] = [];
   const owners: number[] = [];
   const polygonCount = polygonOffsets.length - 1;
+  let feature = 0;
   for (let polygon = 0; polygon < polygonCount; polygon++) {
+    while (featureOffsets && featureOffsets[feature + 1] <= polygon) feature++;
     for (let ring = polygonOffsets[polygon]; ring < polygonOffsets[polygon + 1]; ring++) {
       const start = ringOffsets[ring];
       const end = ringOffsets[ring + 1];
@@ -373,7 +377,7 @@ export function triangulatePolygons(
         for (const vertex of triangle) {
           corners.push(positions[vertex * 2], positions[vertex * 2 + 1]);
         }
-        owners.push(polygon);
+        owners.push(featureOffsets ? feature : polygon);
       }
     }
   }

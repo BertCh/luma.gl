@@ -7,7 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {getClassTableLayerProps, makeClassTable} from '../../cartography/class-table';
 import {
   decodeGPUNetworkStatistics,
-  encodeGPUNetworkStatisticsParameters,
+  getGPUNetworkStatisticsParameterValues,
   getGPUNetworkStatisticsLength,
   getGPUNetworkSubgraphFilterParameterLength,
   getGPUNetworkSubgraphFilterParameterValues,
@@ -22,6 +22,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
@@ -132,6 +133,24 @@ function buildTopology(graph: RoadGraph, directed: boolean): Topology {
   };
 }
 
+type PipelineInputs = {
+  csr: {
+    offsets: Buffer;
+    neighbors: Buffer;
+    reverseOffsets: Buffer | null;
+    reverseNeighbors: Buffer | null;
+    slotSource: Buffer;
+    slotLength: Buffer;
+    slotClass: Buffer;
+    slotSpeed: Buffer;
+    nodeMask: Buffer;
+  };
+  scalars: Record<
+    'residual' | 'degeneracy' | 'coreConverged' | 'componentConverged' | 'communityConverged',
+    Buffer
+  >;
+};
+
 /** Everything that depends on the topology; destroyed and rebuilt when the one-way option flips. */
 type Pipeline = {
   topology: Topology;
@@ -163,6 +182,8 @@ type Pipeline = {
   };
   analyticsReader: SummaryReader;
   statisticsReader: SummaryReader;
+  /** CSR and scalar buffers the compile helpers import. */
+  inputs: PipelineInputs;
   /** Node columns read back after the analytics ran (for tooltips, quantiles and counts). */
   nodeData: {
     degree: Uint32Array;
@@ -197,7 +218,7 @@ export async function createStreetCentrality(
     'filter-parameters',
     'float32',
     getGPUNetworkSubgraphFilterParameterLength({
-      vertexColumnCount: 1,
+      nodeColumnCount: 1,
       edgeColumnCount: 3,
       hasEdgeTimes: false
     })
@@ -374,17 +395,20 @@ export async function createStreetCentrality(
     });
   }
 
+  function destroyPipeline(target: Pipeline): void {
+    target.analyticsReader.stop();
+    target.statisticsReader.stop();
+    target.resources.destroy();
+  }
+
   function releasePipeline(): void {
     if (!pipeline) return;
-    pipeline.analyticsReader.stop();
-    pipeline.statisticsReader.stop();
-    pipeline.resources.destroy();
+    destroyPipeline(pipeline);
     pipeline = null;
   }
 
-  function buildPipeline(): void {
-    releasePipeline();
-    metricClassTables = {};
+  /** Builds and compiles a whole pipeline; the running pipeline keeps encoding meanwhile. */
+  async function buildPipeline(): Promise<Pipeline> {
     const generation = ++pipelineGeneration;
     const topology = ctx.options.oneWay ? directedTopology : undirectedTopology;
     const pipe = new SpatialAnalysisResources(device, `centrality-${generation}`);
@@ -425,7 +449,7 @@ export async function createStreetCentrality(
       slotLength: pipe.createBuffer('slot-length', topology.slotLength),
       slotClass: pipe.createBuffer('slot-class', topology.slotClass),
       slotSpeed: pipe.createBuffer('slot-speed', topology.slotSpeed),
-      vertexMask: pipe.createBuffer('vertex-mask', nodeCount * 4)
+      nodeMask: pipe.createBuffer('node-mask', nodeCount * 4)
     };
     const scalars = {
       residual: pipe.createBuffer('residual', 4),
@@ -529,7 +553,13 @@ export async function createStreetCentrality(
       invocationCount: slots,
       body: `slotMask[slotMaskOffset + index] = select(0.0, 1.0, edgeMask[edgeMaskOffset + index] != 0u);`
     });
-    const style: CompiledGPUCommandGraph<void> = pipe.track(styleGraph.compile());
+    let style: CompiledGPUCommandGraph<void>;
+    try {
+      style = pipe.track(await styleGraph.compileAsync());
+    } catch (error) {
+      pipe.destroy();
+      throw error;
+    }
 
     const analyticsReader = new SummaryReader(
       pipe,
@@ -564,7 +594,7 @@ export async function createStreetCentrality(
         handleStatistics(bytes);
       }
     );
-    pipeline = {
+    const next: Pipeline = {
       topology,
       resources: pipe,
       analytics: null,
@@ -573,45 +603,38 @@ export async function createStreetCentrality(
       buffers,
       analyticsReader,
       statisticsReader,
+      inputs: {csr, scalars},
       nodeData: null
     };
-    // Keep what the compile helpers need alongside the pipeline.
-    pipelineInputs = {csr, scalars};
-    buildAnalytics();
-    buildFilterStatistics();
+    try {
+      next.analytics = await buildAnalytics(next);
+      next.filterStatistics = await buildFilterStatistics(next);
+    } catch (error) {
+      destroyPipeline(next);
+      throw error;
+    }
+    return next;
+  }
+
+  /** Swaps a pipeline in, then destroys the one it replaces. */
+  function commitPipeline(next: Pipeline): void {
+    const previous = pipeline;
+    pipeline = next;
+    metricClassTables = {};
+    if (previous) destroyPipeline(previous);
     analyticsDirty = true;
     filterDirty = true;
     styleDirty = true;
     importanceThreshold = null;
     ctx.setReadout(
       'slots',
-      `${formatCount(slots)} ${topology.directed ? 'directed edges' : 'street slots (both directions)'}`
+      `${formatCount(next.topology.slotCount)} ${next.topology.directed ? 'directed edges' : 'street slots (both directions)'}`
     );
   }
-  let pipelineInputs!: {
-    csr: {
-      offsets: Buffer;
-      neighbors: Buffer;
-      reverseOffsets: Buffer | null;
-      reverseNeighbors: Buffer | null;
-      slotSource: Buffer;
-      slotLength: Buffer;
-      slotClass: Buffer;
-      slotSpeed: Buffer;
-      vertexMask: Buffer;
-    };
-    scalars: Record<
-      'residual' | 'degeneracy' | 'coreConverged' | 'componentConverged' | 'communityConverged',
-      Buffer
-    >;
-  };
 
   /** Compile-time analytics settings: damping, iteration counts, directed or not. */
-  function buildAnalytics(): void {
-    const current = pipeline;
-    if (!current) return;
-    if (current.analytics) current.resources.release(current.analytics);
-    const {csr, scalars} = pipelineInputs;
+  async function buildAnalytics(current: Pipeline): Promise<CompiledGPUCommandGraph<void>> {
+    const {csr, scalars} = current.inputs;
     const {buffers, topology} = current;
     const slots = topology.slotCount;
     const analyticsGraph = new GPUCommandGraph<void>(device, {id: 'centrality-analytics'});
@@ -624,12 +647,16 @@ export async function createStreetCentrality(
     analyticsGraph.add(
       new GPUNetworkAnalyticsColumns({
         id: 'centrality',
-        offsets: view('offsets', csr.offsets, 'uint32', nodeCount + 1),
-        neighbors: view('neighbors', csr.neighbors, 'uint32', slots),
+        topology: {
+          offsets: view('offsets', csr.offsets, 'uint32', nodeCount + 1),
+          neighbors: view('neighbors', csr.neighbors, 'uint32', slots)
+        },
         ...(csr.reverseOffsets && csr.reverseNeighbors
           ? {
-              reverseOffsets: view('reverse-offsets', csr.reverseOffsets, 'uint32', nodeCount + 1),
-              reverseNeighbors: view('reverse-neighbors', csr.reverseNeighbors, 'uint32', slots),
+              reverseTopology: {
+                offsets: view('reverse-offsets', csr.reverseOffsets, 'uint32', nodeCount + 1),
+                neighbors: view('reverse-neighbors', csr.reverseNeighbors, 'uint32', slots)
+              },
               inDegree: {
                 output: view('in-degree', buffers.inDegree, 'uint32', nodeCount),
                 normalized: view(
@@ -654,41 +681,38 @@ export async function createStreetCentrality(
             nodeCount
           ),
           damping: Number(ctx.options.damping),
-          iterations: Number(ctx.options.pageRankIterations),
+          iterationCount: Number(ctx.options.pageRankIterations),
           residual: view('residual', scalars.residual, 'float32', 1)
         },
         coreNumber: {
           output: view('core', buffers.core, 'uint32', nodeCount),
           normalized: view('core-normalized', buffers.coreNormalized, 'float32', nodeCount),
-          iterations: 64,
+          maximumIterations: 64,
           degeneracy: view('degeneracy', scalars.degeneracy, 'uint32', 1),
-          converged: view('core-converged', scalars.coreConverged, 'uint32', 1)
+          status: {converged: view('core-converged', scalars.coreConverged, 'uint32', 1)}
         },
         components: {
           output: view('components', buffers.components, 'uint32', nodeCount),
-          iterations: Number(ctx.options.componentIterations),
-          converged: view('component-converged', scalars.componentConverged, 'uint32', 1)
+          maximumIterations: Number(ctx.options.componentIterations),
+          status: {
+            converged: view('component-converged', scalars.componentConverged, 'uint32', 1)
+          }
         },
         communities: {
           output: view('communities', buffers.communities, 'uint32', nodeCount),
-          iterations: Number(ctx.options.communityIterations),
-          converged: view('community-converged', scalars.communityConverged, 'uint32', 1)
+          maximumIterations: Number(ctx.options.communityIterations),
+          status: {
+            converged: view('community-converged', scalars.communityConverged, 'uint32', 1)
+          }
         }
       })
     );
-    current.analytics = current.resources.track(analyticsGraph.compile());
-    analyticsDirty = true;
+    return current.resources.track(await analyticsGraph.compileAsync());
   }
 
-  /** Compile-time filter and statistics settings: isolated vertices, slot pairing, binning. */
-  function buildFilterStatistics(): void {
-    const current = pipeline;
-    if (!current) return;
-    if (current.filterStatistics) {
-      current.resources.release(current.filterStatistics);
-      current.filterStatistics = null;
-    }
-    const {csr} = pipelineInputs;
+  /** Compile-time filter and statistics settings: isolated nodes, slot pairing, binning. */
+  async function buildFilterStatistics(current: Pipeline): Promise<CompiledGPUCommandGraph<void>> {
+    const {csr} = current.inputs;
     const {buffers, topology} = current;
     const slots = topology.slotCount;
     const graphForStatistics = new GPUCommandGraph<void>(device, {
@@ -700,20 +724,19 @@ export async function createStreetCentrality(
       format: Format,
       length: number
     ) => importGraphBuffer(graphForStatistics, name, buffer, format, length);
-    const offsets = view('offsets', csr.offsets, 'uint32', nodeCount + 1);
-    const neighbors = view('neighbors', csr.neighbors, 'uint32', slots);
-    const vertexMask = view('vertex-mask', csr.vertexMask, 'uint32', nodeCount);
+    const topologyViews = {
+      offsets: view('offsets', csr.offsets, 'uint32', nodeCount + 1),
+      neighbors: view('neighbors', csr.neighbors, 'uint32', slots)
+    };
+    const nodeMask = view('node-mask', csr.nodeMask, 'uint32', nodeCount);
     const edgeMask = view('edge-mask', buffers.edgeMask, 'uint32', slots);
     const filter = new GPUNetworkSubgraphFilter({
       id: 'filter',
-      offsets,
-      neighbors,
+      topology: topologyViews,
       directed: topology.directed,
       pairUndirectedSlots: ctx.options.pairSlots,
       dropIsolated: ctx.options.dropIsolated,
-      vertexColumns: [
-        view('page-rank-normalized', buffers.pageRankNormalized, 'float32', nodeCount)
-      ],
+      nodeColumns: [view('page-rank-normalized', buffers.pageRankNormalized, 'float32', nodeCount)],
       edgeColumns: [
         view('slot-speed', csr.slotSpeed, 'float32', slots),
         view('slot-length', csr.slotLength, 'float32', slots),
@@ -721,7 +744,7 @@ export async function createStreetCentrality(
       ],
       parameters: filterParameters.importToGraph(graphForStatistics),
       output: {
-        vertexMask,
+        nodeMask,
         edgeMask,
         counts: view('counts', buffers.counts, 'uint32', GPU_NETWORK_SUBGRAPH_FILTER_COUNT_LENGTH)
       }
@@ -729,16 +752,15 @@ export async function createStreetCentrality(
     graphForStatistics.add(filter);
     const statistics = new GPUNetworkStatistics({
       id: 'statistics',
-      offsets,
-      neighbors,
+      topology: topologyViews,
       directed: topology.directed,
-      vertexMask,
+      nodeMask,
       edgeMask,
       communities: view('communities', buffers.communities, 'uint32', nodeCount),
       parameters: statisticsParameters.importToGraph(graphForStatistics),
       degreeBinCount: BIN_COUNT,
       degreeBinning: ctx.options.degreeBinning,
-      componentIterations: Number(ctx.options.componentIterations),
+      maximumComponentIterations: Number(ctx.options.componentIterations),
       output: view(
         'statistics',
         buffers.statistics,
@@ -746,20 +768,98 @@ export async function createStreetCentrality(
         getGPUNetworkStatisticsLength(BIN_COUNT)
       )
     });
-    // The statistics contributor owns scratch buffers: track it before the compiled graph.
-    current.resources.track(statistics);
     graphForStatistics.add(statistics);
-    current.filterStatistics = current.resources.track(graphForStatistics.compile());
-    filterDirty = true;
+    return current.resources.track(await graphForStatistics.compileAsync());
+  }
+
+  // ---- Asynchronous rebuilds ---------------------------------------------------------------
+  type PipelineRebuild = {pipeline: boolean; analytics: boolean; filter: boolean};
+  type PipelineRebuilt = {
+    request: PipelineRebuild;
+    next?: Pipeline;
+    analytics?: CompiledGPUCommandGraph<void>;
+    filterStatistics?: CompiledGPUCommandGraph<void>;
+  };
+  const pipelineSwap = resources.track(new GraphSwap());
+  // What the next build must rebuild. A superseded or failed build puts its share back.
+  let queuedRebuild: PipelineRebuild = {pipeline: false, analytics: false, filter: false};
+
+  function queueRebuild(request: Partial<PipelineRebuild>): void {
+    queuedRebuild = {
+      pipeline: queuedRebuild.pipeline || Boolean(request.pipeline),
+      analytics: queuedRebuild.analytics || Boolean(request.analytics),
+      filter: queuedRebuild.filter || Boolean(request.filter)
+    };
+  }
+
+  /** Requests a rebuild of the pipeline or of its compile-time graphs; requests are merged. */
+  function requestRebuild(request: Partial<PipelineRebuild>): void {
+    queueRebuild(request);
+    void pipelineSwap.request({
+      build: buildRebuild,
+      commit: commitRebuild,
+      discard: discardRebuild
+    });
+  }
+
+  async function buildRebuild(): Promise<PipelineRebuilt> {
+    const request = queuedRebuild;
+    queuedRebuild = {pipeline: false, analytics: false, filter: false};
+    try {
+      if (request.pipeline) return {request, next: await buildPipeline()};
+      const current = pipeline;
+      if (!current) return {request};
+      const result: PipelineRebuilt = {request};
+      if (request.analytics) result.analytics = await buildAnalytics(current);
+      if (request.filter) result.filterStatistics = await buildFilterStatistics(current);
+      return result;
+    } catch (error) {
+      queueRebuild(request);
+      throw error;
+    }
+  }
+
+  function commitRebuild(result: PipelineRebuilt): void {
+    if (result.next) {
+      commitPipeline(result.next);
+      writeFilterParameters();
+      writeStyleParameters();
+      ctx.requestLayers();
+      return;
+    }
+    const current = pipeline;
+    if (!current) return;
+    if (result.analytics) {
+      const previous = current.analytics;
+      current.analytics = result.analytics;
+      if (previous) current.resources.release(previous);
+      analyticsDirty = true;
+    }
+    if (result.filterStatistics) {
+      const previous = current.filterStatistics;
+      current.filterStatistics = result.filterStatistics;
+      if (previous) current.resources.release(previous);
+      filterDirty = true;
+    }
+  }
+
+  function discardRebuild(result: PipelineRebuilt): void {
+    queueRebuild(result.request);
+    if (result.next) {
+      destroyPipeline(result.next);
+      return;
+    }
+    if (result.analytics) pipeline?.resources.release(result.analytics);
+    if (result.filterStatistics) pipeline?.resources.release(result.filterStatistics);
   }
 
   function writeFilterParameters(): void {
     const {speedRange, lengthRange, classRange} = ctx.options;
     filterParameters.write(
       getGPUNetworkSubgraphFilterParameterValues(
-        {vertexColumnCount: 1, edgeColumnCount: 3, hasEdgeTimes: false},
+        {nodeColumnCount: 1, edgeColumnCount: 3, hasEdgeTimes: false},
         {
-          vertexRanges: [importanceThreshold === null ? null : [importanceThreshold, Infinity]],
+          nodeRanges: [importanceThreshold === null ? null : [importanceThreshold, Infinity]],
           edgeRanges: [
             speedRange[0] <= 0 && speedRange[1] >= SPEED_MAXIMUM
               ? null
@@ -775,7 +875,7 @@ export async function createStreetCentrality(
       )
     );
     statisticsParameters.write(
-      encodeGPUNetworkStatisticsParameters({
+      getGPUNetworkStatisticsParameterValues({
         resolution: ctx.options.resolution,
         degreeBinWidth: ctx.options.degreeBinWidth
       })
@@ -979,12 +1079,12 @@ export async function createStreetCentrality(
     const counts = decodeGPUNetworkSubgraphFilterCounts(words.subarray(statisticsWords));
     ctx.setReadout(
       'liveVertices',
-      `${formatCount(result.liveVertexCount)} of ${formatCount(nodeCount)}`
+      `${formatCount(result.liveNodeCount)} of ${formatCount(nodeCount)}`
     );
     ctx.setReadout('liveEdges', formatCount(result.liveEdgeCount));
     ctx.setReadout(
       'filterCounts',
-      `${formatCount(counts.liveVertexCount)} vertices, ${formatCount(counts.liveSlotCount)} slots`
+      `${formatCount(counts.liveNodeCount)} nodes, ${formatCount(counts.liveSlotCount)} slots`
     );
     ctx.setReadout(
       'statComponents',
@@ -992,12 +1092,12 @@ export async function createStreetCentrality(
     );
     ctx.setReadout(
       'largestComponent',
-      result.liveVertexCount > 0
-        ? `${formatCount(result.largestComponentSize)} (${((100 * result.largestComponentSize) / result.liveVertexCount).toFixed(1)}%)`
+      result.liveNodeCount > 0
+        ? `${formatCount(result.largestComponentSize)} (${((100 * result.largestComponentSize) / result.liveNodeCount).toFixed(1)}%)`
         : null
     );
-    ctx.setReadout('isolated', result.isolatedVertexCount);
-    ctx.setReadout('maxDegree', result.maxTotalDegree);
+    ctx.setReadout('isolated', result.isolatedNodeCount);
+    ctx.setReadout('maxDegree', result.maximumTotalDegree);
     ctx.setReadout('modularity', result.modularityValid ? result.modularity : 'n/a');
     // GPUNetworkStatistics still supplies the filter readouts above. The visible histogram is
     // published from the selected analytics column so its bins always match the map classes.
@@ -1027,7 +1127,7 @@ export async function createStreetCentrality(
     }
   }
 
-  buildPipeline();
+  commitPipeline(await buildPipeline());
   writeFilterParameters();
   writeStyleParameters();
   publishFurniture();
@@ -1074,24 +1174,20 @@ export async function createStreetCentrality(
     setOption(id) {
       switch (id) {
         case 'oneWay':
-          buildPipeline();
-          writeFilterParameters();
-          writeStyleParameters();
-          ctx.requestLayers();
+          requestRebuild({pipeline: true});
           break;
         case 'damping':
         case 'pageRankIterations':
         case 'communityIterations':
-          buildAnalytics();
+          requestRebuild({analytics: true});
           break;
         case 'componentIterations':
-          buildAnalytics();
-          buildFilterStatistics();
+          requestRebuild({analytics: true, filter: true});
           break;
         case 'degreeBinning':
         case 'dropIsolated':
         case 'pairSlots':
-          buildFilterStatistics();
+          requestRebuild({filter: true});
           break;
         case 'speedRange':
         case 'lengthRange':

@@ -4,10 +4,15 @@
 
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
-import {GPUKMeans} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  GPUKMeans,
+  GPU_KMEANS_PARAMETER_LENGTH,
+  getGPUKMeansParameterValues
+} from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -77,7 +82,8 @@ type KMeansGraph = {
   labels: Buffer;
   centers: Buffer;
   sizes: Buffer;
-  convergenceBuffer: Buffer;
+  iterationCountBuffer: Buffer;
+  convergedBuffer: Buffer;
   convergenceResult: readonly [number, number] | null;
   reader: SummaryReader;
   k: number;
@@ -108,7 +114,7 @@ export async function createSatelliteConstellations(
   const priorAssignments = new Map<string, Map<number, number>>();
 
   const colorRows = new Uint32Array(tracks.trackCount).fill(HIDDEN);
-  const core = createSatellitePlaybackCore(resources, tracks, colorRows, () => {
+  const core = await createSatellitePlaybackCore(resources, tracks, colorRows, () => {
     if (destroyed) return;
     const snapshot = core.getSnapshot();
     if (snapshot) ctx.setReadout('trailSegments', snapshot.trailCount);
@@ -143,7 +149,7 @@ export async function createSatelliteConstellations(
   const graphs = new Map<string, KMeansGraph>();
   let active: KMeansGraph;
 
-  function getGraph(): KMeansGraph {
+  async function getGraph(): Promise<KMeansGraph> {
     const {family, k, seed} = ctx.options;
     const iterations = Number(ctx.options.iterationFrame);
     const key = `${family}-${k}-${seed}-${iterations}`;
@@ -156,28 +162,47 @@ export async function createSatelliteConstellations(
     const labels = resources.createBuffer(`${key}-labels`, count * 4);
     const centers = resources.createBuffer(`${key}-centers`, effectiveK * 8);
     const sizes = resources.createBuffer(`${key}-sizes`, effectiveK * 4);
-    const convergence = resources.createBuffer(`${key}-convergence`, 8);
+    const iterationCount = resources.createBuffer(`${key}-iteration-count`, 4);
+    const converged = resources.createBuffer(`${key}-converged`, 4);
+    const kmeansParameters = resources.createParameterBuffer(
+      `${key}-kmeans-parameters`,
+      'uint32',
+      GPU_KMEANS_PARAMETER_LENGTH,
+      getGPUKMeansParameterValues({seed: Number(seed)})
+    );
     const graph = new GPUCommandGraph<void>(ctx.device, {id: `satellite-kmeans-${key}`});
     graph.add(
       new GPUKMeans({
         id: 'shells',
         positions: importGraphBuffer(graph, 'features', features, 'float32x2', count),
         k: effectiveK,
-        iterations,
+        maximumIterations: iterations,
         initialization: 'kmeans++',
-        seed: Number(seed),
-        labels: importGraphBuffer(graph, 'labels', labels, 'uint32', count),
-        centers: importGraphBuffer(graph, 'centers', centers, 'float32x2', effectiveK),
-        sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', effectiveK),
-        convergence: importGraphBuffer(graph, 'convergence', convergence, 'uint32', 2)
+        parameters: kmeansParameters.importToGraph(graph),
+        output: {
+          labels: importGraphBuffer(graph, 'labels', labels, 'uint32', count),
+          centers: importGraphBuffer(graph, 'centers', centers, 'float32x2', effectiveK),
+          sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', effectiveK),
+          status: {
+            iterationCount: importGraphBuffer(
+              graph,
+              'iteration-count',
+              iterationCount,
+              'uint32',
+              1
+            ),
+            converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `kmeans-${key}`,
       [
-        {buffer: convergence, size: 8},
+        {buffer: iterationCount, size: 4},
+        {buffer: converged, size: 4},
         {buffer: sizes, size: effectiveK * 4},
         {buffer: centers, size: effectiveK * 8},
         {buffer: labels, size: count * 4}
@@ -255,7 +280,8 @@ export async function createSatelliteConstellations(
       labels,
       centers,
       sizes,
-      convergenceBuffer: convergence,
+      iterationCountBuffer: iterationCount,
+      convergedBuffer: converged,
       convergenceResult: null,
       reader,
       k: effectiveK,
@@ -417,13 +443,16 @@ export async function createSatelliteConstellations(
     ctx.requestLayers();
   }
 
-  function activate(): void {
-    active = getGraph();
+  /** Makes a compiled k-means variant the active one. */
+  function commitActive(next: KMeansGraph): void {
+    active = next;
     writeFeatures(active);
     active.dirty = true;
     if (active.shells) applyShells();
   }
-  activate();
+
+  const graphSwap = resources.track(new GraphSwap());
+  commitActive(await getGraph());
 
   ctx.setReadout('satellites', `${formatCount(tracks.satelliteCount)} satellites in the dataset`);
 
@@ -436,7 +465,8 @@ export async function createSatelliteConstellations(
         case 'k':
         case 'seed':
         case 'iterationFrame':
-          activate();
+          // The variant cache is destroyed with the resources, so a superseded build is kept.
+          void graphSwap.request({build: getGraph, commit: commitActive});
           break;
         case 'altitudeWeight':
           writeFeatures(active);

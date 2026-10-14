@@ -5,8 +5,8 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -19,6 +19,7 @@ import {SpatialAnalysisFlowLayer} from '../../engine/flow-layer';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -192,7 +193,7 @@ export async function createNycTaxiTides(
   const windowBuffer = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   // The heaviest flows as arrows: endpoints, weights and draw order, rewritten after each readback.
   const flowEndpointsBuffer = resources.createBuffer('flow-endpoints', TOP_FLOW_COUNT * 16);
@@ -274,14 +275,14 @@ export async function createNycTaxiTides(
     ctx.setReadout('cellSize', formatDistance(lattice.size));
   }
 
-  function buildSide(
+  async function buildSide(
     graphResources: SpatialAnalysisResources,
     name: string,
     kind: ZoneKind,
     capacityGrid: [number, number],
     zoneCount: number,
     gateBuffer: Buffer
-  ): SideGraph {
+  ): Promise<SideGraph> {
     const sentinel = (rows: number) => {
       const values = new Float32Array(rows + 1);
       values[rows] = Number.NaN;
@@ -337,26 +338,28 @@ export async function createNycTaxiTides(
         excludeSelfFlows: ctx.options.excludeSelf,
         sumOrder: ctx.options.sumOrder,
         pairCapacity: PAIR_CAPACITY,
-        // rows * maxProbeCount must fit in a uint32.
-        maxProbeCount: 128,
+        // rows * maximumProbeCount must fit in a uint32.
+        maximumProbeCount: 128,
         output: {
           ids: view('ids', ids, 'uint32', k),
-          count: view('count', flowCount, 'uint32', 1),
-          overflow: view('overflow', overflow, 'uint32', 1),
-          requiredCount: view('total-count', requiredCount, 'uint32', 1)
-        },
-        flowOriginZoneIds: view('flow-origin', originZones, 'uint32', k),
-        flowDestinationZoneIds: view('flow-destination', destinationZones, 'uint32', k),
-        flowWeights: view('flow-weights', flowWeights, 'float32', k),
-        pairOverflow: view('pair-overflow', pairOverflow, 'uint32', 1),
-        zoneOutWeights: view('out-w', zoneOutWeights, 'float32', zoneCount),
-        zoneInWeights: view('in-w', zoneInWeights, 'float32', zoneCount),
-        zoneOutCounts: view('out-c', zoneOutCounts, 'uint32', zoneCount),
-        zoneInCounts: view('in-c', zoneInCounts, 'uint32', zoneCount)
+          status: {
+            pairOverflow: view('pair-overflow', pairOverflow, 'uint32', 1),
+            count: view('count', flowCount, 'uint32', 1),
+            overflow: view('overflow', overflow, 'uint32', 1),
+            requiredCount: view('total-count', requiredCount, 'uint32', 1)
+          },
+          flowOriginZoneIds: view('flow-origin', originZones, 'uint32', k),
+          flowDestinationZoneIds: view('flow-destination', destinationZones, 'uint32', k),
+          flowWeights: view('flow-weights', flowWeights, 'float32', k),
+          zoneOutWeights: view('out-w', zoneOutWeights, 'float32', zoneCount),
+          zoneInWeights: view('in-w', zoneInWeights, 'float32', zoneCount),
+          zoneOutCounts: view('out-c', zoneOutCounts, 'uint32', zoneCount),
+          zoneInCounts: view('in-c', zoneInCounts, 'uint32', zoneCount)
+        }
       })
     );
     return {
-      compiled: graphResources.track(commandGraph.compile()),
+      compiled: graphResources.track(await commandGraph.compileAsync()),
       count: flowCount,
       requiredCount,
       pairOverflow,
@@ -370,7 +373,7 @@ export async function createNycTaxiTides(
     };
   }
 
-  function buildGraphs(): TideGraphs {
+  async function buildGraphs(): Promise<TideGraphs> {
     const id = ++serial;
     const kind = ctx.options.zones;
     const graphResources = new SpatialAnalysisResources(device, `taxi-tides-${id}`);
@@ -380,22 +383,29 @@ export async function createNycTaxiTides(
     const values = graphResources.createBuffer('values', nanRows());
     const magnitudes = graphResources.createBuffer('magnitudes', nanRows());
     const outlines = graphResources.createBuffer('outlines', zoneCount * 6 * 16);
-    const departures = buildSide(
-      graphResources,
-      'dep',
-      kind,
-      capacity.grid,
-      zoneCount,
-      pickupHourBuffer
-    );
-    const arrivals = buildSide(
-      graphResources,
-      'arr',
-      kind,
-      capacity.grid,
-      zoneCount,
-      dropoffHourBuffer
-    );
+    let departures: SideGraph;
+    let arrivals: SideGraph;
+    try {
+      departures = await buildSide(
+        graphResources,
+        'dep',
+        kind,
+        capacity.grid,
+        zoneCount,
+        pickupHourBuffer
+      );
+      arrivals = await buildSide(
+        graphResources,
+        'arr',
+        kind,
+        capacity.grid,
+        zoneCount,
+        dropoffHourBuffer
+      );
+    } catch (error) {
+      graphResources.destroy();
+      throw error;
+    }
     const built: TideGraphs = {
       resources: graphResources,
       kind,
@@ -429,14 +439,33 @@ export async function createNycTaxiTides(
     return built;
   }
 
-  function rebuild(): void {
+  /** Swaps a finished build in; the replaced graphs are retired and destroyed a few frames later. */
+  function commitGraphs(next: TideGraphs): void {
     if (graphs) retired.push({resources: graphs.resources, frames: 0});
-    graphs = buildGraphs();
+    graphs = next;
     stats = null;
     outlineCount = 0;
     drawnFlows = 0;
     writeLattice();
     markChanged();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the graphs for the current options; the latest request wins. */
+  function requestGraphs(): Promise<boolean> {
+    return graphSwap.request({
+      build: buildGraphs,
+      commit: next => {
+        flowMaximum = 0;
+        commitGraphs(next);
+        updateFurniture();
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
   }
 
   // ---- Tables ------------------------------------------------------------------------------------
@@ -856,7 +885,7 @@ export async function createNycTaxiTides(
   ctx.setReadout('rows', count);
   ctx.setReadout('medianTrip', `${medianTripMinutes.toFixed(0)} min`);
   ctx.setCost({records: count, passes: 2});
-  rebuild();
+  commitGraphs(await buildGraphs());
   publishLegendData();
   publishCharts();
   updateFurniture();
@@ -875,10 +904,7 @@ export async function createNycTaxiTides(
         case 'zones':
         case 'excludeSelf':
         case 'sumOrder':
-          flowMaximum = 0;
-          rebuild();
-          updateFurniture();
-          ctx.requestLayers();
+          void requestGraphs();
           break;
         case 'zoneSize':
           flowMaximum = 0;
@@ -964,7 +990,7 @@ export async function createNycTaxiTides(
         lastWindowEnd = end;
         windowStart = start;
         windowEnd = end;
-        windowBuffer.write(getGPUTimeWindowParameterValues({start, end}));
+        windowBuffer.write(getGPUTimeWindowFilterParameterValues({start, end}));
         markChanged();
         ctx.setReadout('clock', formatTaxiTime(playhead));
         ctx.setReadout(

@@ -571,11 +571,12 @@ import {
   GPUTerrainLineOfSight,
   GPUTerrainCumulativeViewshed,
   getGPUTerrainViewshedParameterValues,
-  getGPUTerrainVisibilityToleranceParameterValues,
+  getGPUTerrainViewshedToleranceParameterValues,
   getGPUTerrainCurvatureCoefficient
 } from '@luma.gl/experimental/gpu-terrain';
 
 // The wide DEM averaged ${state.cellSize} x ${state.cellSize}; elevation is a float32 band with a validity mask.
+// grid: planar, cellSize = the ground size of the central row (Web Mercator pixel size * cos(latitude)).
 const graph = new GPUCommandGraph(device, {id: 'viewshed'});
 const elevation = {id: 'dem', format: 'float32', storage: {kind: 'buffer', values}, validity};
 ${
@@ -583,44 +584,43 @@ ${
     ? `
 // One min-max pyramid, built once, read by every consumer through \`pyramid\`.
 const extrema = new GPURasterExtremaPyramid({
-  width, height, input: elevation, firstBlockSize: ${state.pyramidBlockSize}, footprint: 'bilinear', combined
+  grid, input: elevation, firstBlockSize: ${state.pyramidBlockSize}, footprint: 'bilinear', output: {combined}
 });
 graph.add(extrema);
 `
     : ''
 }
 graph.add(new GPUTerrainViewshed({
-  width, height, elevation,
+  grid, elevation,
   traversal: '${state.traversal}',${state.traversal === 'pyramid' ? '\n  pyramid: extrema.output,' : ''}
-  settings: viewshedSettings.importToGraph(graph),   // observer, heights, reach, curvature
-  tolerance: toleranceSettings.importToGraph(graph), // band: marginal cells
-  visibility                                          // 0 hidden 1 visible 2 out of range 3 no data 4 marginal
+  parameters: viewshedSettings.importToGraph(graph),   // observer, heights, reach, curvature
+  toleranceParameters: toleranceSettings.importToGraph(graph), // band: marginal cells
+  output: {visibility}                                // 0 hidden 1 visible 2 out of range 3 no data 4 marginal
 }));
 graph.add(new GPUTerrainLineOfSight({
-  width, height, elevation, traversal: '${state.traversal}', pairs, settings: sightSettings.importToGraph(graph),
-  visibility: losCode, clearance                      // metres the target could sink and stay visible
+  grid, elevation, traversal: '${state.traversal}', pairs, parameters: sightSettings.importToGraph(graph),
+  output: {visibility: losCode, clearance}            // metres the target could sink and stay visible
 }));
 ${
   state.display === 'cumulative'
     ? `graph.add(new GPUTerrainCumulativeViewshed({
-  width, height, elevation, traversal: '${state.traversal}',
+  grid, elevation, traversal: '${state.traversal}',
   observers,                                          // [column, row] x ${state.cumulativeObservers}, the rest parked off the grid
-  settings: sightSettings.importToGraph(graph), visibleCount
+  parameters: sightSettings.importToGraph(graph), output: {visibleCount}
 }));
 `
     : ''
 }graph.add(new GPUHistogram({input: visibility, output: counts, edges: [0, 1, 2, 3, 4, 5]}));
-const compiled = graph.compile();                    // once
+const compiled = await graph.compileAsync();         // once
 
 // Gornergrat station, eye ${state.observerHeight} m, ${state.maxDistance} km, ${state.earthModel === 'flat' ? 'flat earth' : state.refraction === 'gdal' ? 'k = 1/7' : 'k = 0.13'}:
 viewshedSettings.write(getGPUTerrainViewshedParameterValues({
   observer: [column, row],                            // pixel-centre index space
   observerHeight: ${state.observerHeight}, targetHeight: ${state.targetHeight},
-  maxDistance: ${state.maxDistance * 1000},
-  cellSize: [groundCellSize, groundCellSize],         // Web Mercator: scale by cos(latitude)
+  maximumDistance: ${state.maxDistance * 1000},
   curvatureCoefficient: ${state.earthModel === 'flat' ? '0' : `getGPUTerrainCurvatureCoefficient(${state.refraction === 'gdal' ? '1 / 7' : '0.13'})`}
-}));
-toleranceSettings.write(getGPUTerrainVisibilityToleranceParameterValues({
+}, grid));                                            // the packer reads the ground cell size from the grid
+toleranceSettings.write(getGPUTerrainViewshedToleranceParameterValues({
   toleranceMeters: ${state.toleranceMeters}, tolerancePerKilometer: ${state.tolerancePerKilometer},
   targetIgnoreDistance: ${state.targetIgnoreDistance}, targetIgnoreFraction: ${state.targetIgnoreFraction}
 }));

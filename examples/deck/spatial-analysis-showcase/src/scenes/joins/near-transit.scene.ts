@@ -266,19 +266,21 @@ const drawCommands = new DrawCommandBuffer(device, {
 const graph = new GPUCommandGraph(device, {id: 'near-transit'});
 graph.add(
   new GPUBufferSelection({
-    points,                                  // ${POINT_LABELS[state.points]}, float32x2 meters, uploaded once
+    points: {kind: 'points', positions},     // ${POINT_LABELS[state.points]}, float32x2 meters, uploaded once
     features: ${state.features === 'lines' ? "{kind: 'segments', starts, ends}" : "{kind: 'points', positions}"},
     distance: distance.importToGraph(graph), // one float32, rewritten per frame
     candidateCapacity: points.length * ${state.features === 'lines' ? 40 : 24},
     spatialSort: ${state.spatialSort},
-    outputMask,                              // per point: 0 or 1
-    output: {ids, count, overflow, requiredCount}, // selected ids, ascending
-    // the clamped count goes straight into the indirect draw record:
-    drawInstanceCount: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
-    distances, nearestFeatureIds, overflow
+    output: {
+      outputMask,                            // per point: 0 or 1
+      matches: {ids, status: {count, overflow, requiredCount}}, // selected ids, ascending
+      // the clamped count goes straight into the indirect draw record:
+      drawInstanceCount: graph.importGPUData('count', drawCommands.getInstanceCountData(0)),
+      distances, nearestFeatureIds, status: {overflow}
+    }
   })
 );
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 distance.write(Float32Array.of(${state.distance}));        // parameter write
 compiled.encode(commandEncoder, {parameters: undefined});
 // layer: positions + ids with drawCommands, so no readback is needed`,

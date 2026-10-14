@@ -14,6 +14,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createSeededRandom} from '../../engine/projection';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
@@ -76,6 +77,7 @@ const CATEGORY_LABELS: Record<RetailCategory, string> = {
 type KBuild = {
   compiled: CompiledGPUCommandGraph<void>;
   bandCount: number;
+  rowsPerBlock: number;
   kValues: Buffer;
   envelope: Buffer;
   pairCounts: Buffer;
@@ -365,15 +367,8 @@ export async function createRetailNetworkKFunction(
     kDirty = true;
   }
 
-  function buildKGraph(): void {
-    if (build) {
-      build.reader.stop();
-      resources.release(build.compiled);
-      for (const buffer of [build.kValues, build.envelope, build.pairCounts, build.converged]) {
-        resources.release(buffer);
-      }
-      build = null;
-    }
+  /** Builds and compiles the K graph; the running graph keeps encoding meanwhile. */
+  async function buildKGraph(): Promise<KBuild> {
     const bandCount = Number(ctx.options.bandCount);
     const rowsPerBlock = Number(ctx.options.rowsPerBlock);
     const patternCount = 1 + SIMULATION_CAPACITY;
@@ -388,49 +383,55 @@ export async function createRetailNetworkKFunction(
     kGraph.add(
       new GPUNetworkKFunction({
         id: 'k',
-        points: importGraphBuffer(kGraph, 'events', eventBuffer, 'float32x2', EVENT_CAPACITY),
-        nodePositions: importGraphBuffer(
-          kGraph,
-          'node-positions',
-          nodeBuffer,
-          'float32x2',
-          nodeCount
-        ),
-        offsets: importGraphBuffer(kGraph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
-        neighbors: importGraphBuffer(kGraph, 'neighbors', neighborsBuffer, 'uint32', slotCount),
-        weights: importGraphBuffer(kGraph, 'weights', weightsBuffer, 'float32', slotCount),
-        maxSnapDistance: snapParameter.importToGraph(kGraph),
-        maxDistance: maxDistanceParameter.importToGraph(kGraph),
+        positions: importGraphBuffer(kGraph, 'events', eventBuffer, 'float32x2', EVENT_CAPACITY),
+        topology: {
+          offsets: importGraphBuffer(kGraph, 'offsets', offsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: importGraphBuffer(kGraph, 'neighbors', neighborsBuffer, 'uint32', slotCount),
+          weights: importGraphBuffer(kGraph, 'weights', weightsBuffer, 'float32', slotCount),
+          nodePositions: importGraphBuffer(
+            kGraph,
+            'node-positions',
+            nodeBuffer,
+            'float32x2',
+            nodeCount
+          )
+        },
+        maximumSnapDistance: snapParameter.importToGraph(kGraph),
+        maximumDistance: maxDistanceParameter.importToGraph(kGraph),
         networkLength: lengthParameter.importToGraph(kGraph),
         parameters: kParameters.importToGraph(kGraph),
         bandCount,
         simulationCount: SIMULATION_CAPACITY,
         rowsPerBlock,
-        maxIterations: MAXIMUM_ITERATIONS,
+        maximumIterations: MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
         spatialSort: ctx.options.spatialSort,
         candidateCapacity: EVENT_CAPACITY * 512,
-        kValues: importGraphBuffer(
-          kGraph,
-          'k-values',
-          kValues,
-          'float32',
-          patternCount * bandCount
-        ),
-        pairCounts: importGraphBuffer(
-          kGraph,
-          'pair-counts',
-          pairCounts,
-          'uint32',
-          patternCount * bandCount
-        ),
-        envelope: importGraphBuffer(kGraph, 'envelope', envelope, 'float32', 3 * bandCount),
-        snappedEventCount: importGraphBuffer(kGraph, 'snapped-count', snappedCount, 'uint32', 1),
-        overflow: importGraphBuffer(kGraph, 'snap-overflow', snapOverflow, 'uint32', 1),
-        converged: importGraphBuffer(kGraph, 'converged', converged, 'uint32', 1)
+        output: {
+          kValues: importGraphBuffer(
+            kGraph,
+            'k-values',
+            kValues,
+            'float32',
+            patternCount * bandCount
+          ),
+          pairCounts: importGraphBuffer(
+            kGraph,
+            'pair-counts',
+            pairCounts,
+            'uint32',
+            patternCount * bandCount
+          ),
+          envelope: importGraphBuffer(kGraph, 'envelope', envelope, 'float32', 3 * bandCount),
+          snappedEventCount: importGraphBuffer(kGraph, 'snapped-count', snappedCount, 'uint32', 1),
+          status: {
+            overflow: importGraphBuffer(kGraph, 'snap-overflow', snapOverflow, 'uint32', 1),
+            converged: importGraphBuffer(kGraph, 'converged', converged, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(kGraph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await kGraph.compileAsync());
     const observedBytes = bandCount * 4;
     const reader = new SummaryReader(
       resources,
@@ -448,11 +449,32 @@ export async function createRetailNetworkKFunction(
         handleSummary(bytes, bandCount);
       }
     );
-    build = {compiled, bandCount, kValues, envelope, pairCounts, converged, reader};
+    return {compiled, bandCount, rowsPerBlock, kValues, envelope, pairCounts, converged, reader};
+  }
+
+  /** Releases a build that was superseded before it was swapped in, or that was replaced. */
+  function releaseKBuild(target: KBuild): void {
+    target.reader.stop();
+    resources.release(target.compiled);
+    for (const buffer of [target.kValues, target.envelope, target.pairCounts, target.converged]) {
+      resources.release(buffer);
+    }
+  }
+
+  /** Swaps a build in, then releases the build it replaces. */
+  function commitKGraph(next: KBuild): void {
+    const previous = build;
+    build = next;
+    if (previous) releaseKBuild(previous);
     ctx.setReadout('rows', (1 + ctx.options.simulations) * EVENT_CAPACITY);
-    ctx.setReadout('blocks', Math.ceil((patternCount * EVENT_CAPACITY) / rowsPerBlock));
+    ctx.setReadout(
+      'blocks',
+      Math.ceil(((1 + SIMULATION_CAPACITY) * EVENT_CAPACITY) / next.rowsPerBlock)
+    );
     kDirty = true;
   }
+
+  const graphSwap = resources.track(new GraphSwap());
 
   function handleSummary(bytes: ArrayBuffer, bandCount: number): void {
     const floats = new Float32Array(bytes);
@@ -594,7 +616,7 @@ export async function createRetailNetworkKFunction(
 
   writeEvents();
   writeParameters();
-  buildKGraph();
+  commitKGraph(await buildKGraph());
 
   const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
 
@@ -631,7 +653,11 @@ export async function createRetailNetworkKFunction(
         case 'bandCount':
         case 'rowsPerBlock':
         case 'spatialSort':
-          buildKGraph();
+          void graphSwap.request({
+            build: buildKGraph,
+            commit: commitKGraph,
+            discard: releaseKBuild
+          });
           break;
         default:
           ctx.requestLayers();

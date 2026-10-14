@@ -345,10 +345,10 @@ import {
 // positions: longitude/latitude degrees of the ${state.species === 'all' ? 'tracks' : 'selected species'} cut to the ${state.season} window
 // 1. Line length and density per grid cell, measured as great-circle pieces
 graph.add(new GPULineDensity({
-  positions, pathOffsets, columns: 320, rows: 280,
+  positions, lineOffsets: pathOffsets, columns: 320, rows: 280,
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},                  // lengths in meters, densities in 1/m
   parameters: densityParameters.importToGraph(graph),
-  output: {lengths, densities, overflow, totalRecords}
+  output: {lengths, densities, status: {overflow, requiredCount: totalRecords}}
 }));
 densityParameters.write(getGPULineDensityParameterValues({
   minX: -20, minY: 3, cellWidth: ${state.cellSize}, cellHeight: ${state.cellSize}      // degrees: a buffer write
@@ -358,12 +358,14 @@ densityParameters.write(getGPULineDensityParameterValues({
 // compared with great-circle distances
 graph.add(new GPUTrajectoryResample({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positions: lngLat, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}', samples: routes
+  positions: lngLat, timestamps, trackOffsets, sampleCount: 96, spacing: '${state.routeSpacing}',
+  output: {samples: routes}
 }));
 graph.add(new GPUTrackSimilarity({
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},
-  positionsA: routes, offsetsA: routeOffsets, pairA, pairB,
-  hausdorff, frechet, maxFrechetVertices: 96      // distance column: ${state.similarityMetric}
+  linesA: {kind: 'lines', positions: routes, lineOffsets: routeOffsets}, pairA, pairB,
+  maximumFrechetVertexCount: 96,
+  output: {hausdorff, frechet}                           // distance column: ${state.similarityMetric}
 }));`,
 
   about: {

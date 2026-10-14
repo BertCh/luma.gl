@@ -12,7 +12,9 @@ import {
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
   GPUCostDistance,
   GPUCostDistancePath,
-  GPUDistanceField
+  GPUDistanceField,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
@@ -25,6 +27,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -44,7 +47,6 @@ import {
   getCellAt,
   getCellAtClamped,
   getCellCenter,
-  getGridSettings,
   NAN_DECLARATIONS,
   type TerrainGrid
 } from './b15-common';
@@ -128,7 +130,8 @@ type Landscape = {
   grid: TerrainGrid;
   resources: SpatialAnalysisResources;
   cellCount: number;
-  flippedExtent: [number, number, number, number];
+  /** Grid of the distance field in local display meters, row 0 at the north edge. */
+  distanceGrid: GPURasterMetadata;
   /** Starts placed by clicks (the story start first). */
   starts: number[];
   /** Starts actually used: `starts` plus the optional second start. */
@@ -143,6 +146,8 @@ type Landscape = {
   path: CompiledGPUCommandGraph<void>;
   display: CompiledGPUCommandGraph<void>;
   distanceGraphs: Map<string, CompiledGPUCommandGraph<void>>;
+  /** Distance mode whose graph `encode` runs; switched by a `GraphSwap` commit. */
+  activeDistanceMode: string;
   summary: SummaryReader;
   buffers: Record<string, Buffer>;
   parameters: {
@@ -160,7 +165,7 @@ type Landscape = {
     seedCount: ReturnType<SpatialAnalysisResources['createParameterBuffer']>;
   };
   drawCommands: DrawCommandBuffer;
-  distanceGraphBuilder: (mode: string) => CompiledGPUCommandGraph<void>;
+  distanceGraphBuilder: (mode: string) => Promise<CompiledGPUCommandGraph<void>>;
   frictionScale: ReturnType<SpatialAnalysisResources['createParameterBuffer']>;
   /** Ground distance from the nearest start to the destination, meters. */
   straightLineMeters: number;
@@ -190,7 +195,7 @@ export async function createLeastCostPaths(
       : getCellAtClamped(grid, place.lngLat![0], place.lngLat![1]);
 
   const landscapes: Landscape[] = [
-    createLandscape(
+    await createLandscape(
       {
         key: 'canyon',
         label: 'Grand Canyon',
@@ -200,7 +205,7 @@ export async function createLeastCostPaths(
       },
       canyonGrid
     ),
-    createLandscape(
+    await createLandscape(
       {
         key: 'dixie',
         label: 'Dixie fire area',
@@ -214,15 +219,16 @@ export async function createLeastCostPaths(
   ctx.setStatus('');
   let measuring = false;
 
-  function createLandscape(config: LandscapeConfig, grid: TerrainGrid): Landscape {
+  async function createLandscape(config: LandscapeConfig, grid: TerrainGrid): Promise<Landscape> {
     const resources = new SpatialAnalysisResources(device, `least-cost-${config.key}`);
     const {width, height, cellCount} = grid;
-    const flippedExtent: [number, number, number, number] = [
-      grid.bounds[0],
-      -grid.bounds[3],
-      grid.bounds[2],
-      -grid.bounds[1]
-    ];
+    // Seeds and the distance field live in the local display frame, whose cells are metric.
+    const distanceGrid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize: grid.displayCellSize,
+      origin: [grid.bounds[0], grid.bounds[3]]
+    });
     const cells = (name: string) => resources.createBuffer(name, cellCount * 4);
     const buffers: Record<string, Buffer> = {
       elevation: resources.createBuffer('elevation', grid.elevation),
@@ -308,8 +314,7 @@ export async function createLeastCostPaths(
     setupGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid: grid.rasterGrid,
         elevation: {
           id: 'elevation',
           format: 'float32',
@@ -324,20 +329,22 @@ export async function createLeastCostPaths(
             )
           }
         },
-        settings: parameters.derivatives.importToGraph(setupGraph),
-        slope: importGraphBuffer(setupGraph, 'slope', buffers.slope, 'float32', cellCount),
-        hillshade: importGraphBuffer(
-          setupGraph,
-          'hillshade',
-          buffers.hillshade,
-          'float32',
-          cellCount
-        ),
+        parameters: parameters.derivatives.importToGraph(setupGraph),
+        output: {
+          slope: importGraphBuffer(setupGraph, 'slope', buffers.slope, 'float32', cellCount),
+          hillshade: importGraphBuffer(
+            setupGraph,
+            'hillshade',
+            buffers.hillshade,
+            'float32',
+            cellCount
+          )
+        },
         cellSizeMode: grid.cellSizeMode,
         rowDirection: 'south'
       })
     );
-    const setup = resources.track(setupGraph.compile());
+    const setup = resources.track(await setupGraph.compileAsync());
 
     // --- Cost graph: friction kernel, then GPUCostDistance ---------------------------------------
     const costGraph = new GPUCommandGraph<void>(device, {id: `least-cost-${config.key}-cost`});
@@ -358,8 +365,7 @@ export async function createLeastCostPaths(
     costGraph.add(
       new GPUCostDistance({
         id: 'cost',
-        width,
-        height,
+        grid: grid.rasterGrid,
         friction: {
           id: 'friction',
           format: 'float32',
@@ -367,40 +373,44 @@ export async function createLeastCostPaths(
         },
         // friction = value * scale + offset: scale is 6 / walking speed, so one slider re-prices the map.
         frictionParameters: frictionScale.importToGraph(costGraph),
-        settings: parameters.cost.importToGraph(costGraph),
+        parameters: parameters.cost.importToGraph(costGraph),
         cellSizeMode: grid.cellSizeMode,
         sources: parameters.sources.importToGraph(costGraph),
         sourceCosts: parameters.sourceCosts.importToGraph(costGraph),
         sourceCount: parameters.sourceCount.importToGraph(costGraph),
-        maxIterations: MAXIMUM_ITERATIONS,
-        costs: importGraphBuffer(costGraph, 'costs', buffers.costs, 'float32', cellCount),
-        backLinks: importGraphBuffer(
-          costGraph,
-          'back-links',
-          buffers.backLinks,
-          'uint32',
-          cellCount
-        ),
-        bandThresholds: parameters.bands.importToGraph(costGraph),
-        bands: importGraphBuffer(costGraph, 'bands', buffers.bands, 'uint32', cellCount),
-        bandCounts: importGraphBuffer(
-          costGraph,
-          'band-counts',
-          buffers.bandCounts,
-          'uint32',
-          BAND_COUNT
-        ),
-        converged: importGraphBuffer(costGraph, 'converged', buffers.converged, 'uint32', 1),
-        iterationCount: importGraphBuffer(
-          costGraph,
-          'iteration-count',
-          buffers.iterations,
-          'uint32',
-          1
-        )
+        maximumIterations: MAXIMUM_ITERATIONS,
+        costBreaks: parameters.bands.importToGraph(costGraph),
+        output: {
+          costs: importGraphBuffer(costGraph, 'costs', buffers.costs, 'float32', cellCount),
+          backLinks: importGraphBuffer(
+            costGraph,
+            'back-links',
+            buffers.backLinks,
+            'uint32',
+            cellCount
+          ),
+          bands: importGraphBuffer(costGraph, 'bands', buffers.bands, 'uint32', cellCount),
+          bandCounts: importGraphBuffer(
+            costGraph,
+            'band-counts',
+            buffers.bandCounts,
+            'uint32',
+            BAND_COUNT
+          ),
+          status: {
+            converged: importGraphBuffer(costGraph, 'converged', buffers.converged, 'uint32', 1),
+            iterationCount: importGraphBuffer(
+              costGraph,
+              'iteration-count',
+              buffers.iterations,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
-    const cost = resources.track(costGraph.compile());
+    const cost = resources.track(await costGraph.compileAsync());
 
     // --- Path graph: back-links to a cell list to segments ---------------------------------------
     const pathGraph = new GPUCommandGraph<void>(device, {id: `least-cost-${config.key}-path`});
@@ -416,8 +426,7 @@ export async function createLeastCostPaths(
     pathGraph.add(
       new GPUCostDistancePath({
         id: 'path',
-        width,
-        height,
+        grid: grid.rasterGrid,
         backLinks: importGraphBuffer(
           pathGraph,
           'back-links',
@@ -426,31 +435,37 @@ export async function createLeastCostPaths(
           cellCount
         ),
         target: targetView,
-        // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
-        iterationLimitReached: importGraphBuffer(
-          pathGraph,
-          'path-iteration-limit',
-          buffers.pathIterationLimit,
-          'uint32',
-          1
-        ),
         output: {
-          ids: pathIds,
-          count: pathCount,
-          overflow: importGraphBuffer(
-            pathGraph,
-            'path-overflow',
-            buffers.pathOverflow,
-            'uint32',
-            1
-          ),
-          requiredCount: importGraphBuffer(
-            pathGraph,
-            'path-total-output',
-            buffers.pathTotal,
-            'uint32',
-            1
-          )
+          path: {
+            ids: pathIds,
+            status: {
+              count: pathCount,
+              overflow: importGraphBuffer(
+                pathGraph,
+                'path-overflow',
+                buffers.pathOverflow,
+                'uint32',
+                1
+              ),
+              requiredCount: importGraphBuffer(
+                pathGraph,
+                'path-total-output',
+                buffers.pathTotal,
+                'uint32',
+                1
+              )
+            }
+          },
+          // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
+          status: {
+            iterationLimitReached: importGraphBuffer(
+              pathGraph,
+              'path-iteration-limit',
+              buffers.pathIterationLimit,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
@@ -479,7 +494,7 @@ export async function createLeastCostPaths(
         1
       )
     });
-    const path = resources.track(pathGraph.compile());
+    const path = resources.track(await pathGraph.compileAsync());
 
     // --- Display graph: drawable rasters from the cost and distance outputs --------------------
     const displayGraph = new GPUCommandGraph<void>(device, {
@@ -620,11 +635,11 @@ export async function createLeastCostPaths(
   if (code == 90u || code == 95u) { result = 7u; }
   indices[indicesOffset + index] = result;`
     });
-    const display = resources.track(displayGraph.compile());
+    const display = resources.track(await displayGraph.compileAsync());
 
     // --- Distance field variants (compiled on first use) ----------------------------------------
     const distanceGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
-    const distanceGraphBuilder = (mode: string): CompiledGPUCommandGraph<void> => {
+    const distanceGraphBuilder = async (mode: string): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `least-cost-${config.key}-distance-${mode}`
       });
@@ -649,13 +664,12 @@ export async function createLeastCostPaths(
       graph.add(
         new GPUDistanceField({
           id: 'distance',
-          width,
-          height,
+          grid: distanceGrid,
           mode: mode === 'exact' ? 'exact' : 'jump-flood',
           ...(mode === 'exact'
             ? {}
-            : {jumpFloodRefinementPasses: Number(mode.slice(-1)) as 0 | 1 | 2}),
-          settings: parameters.distance.importToGraph(graph),
+            : {jumpFloodRefinementIterationCount: Number(mode.slice(-1)) as 0 | 1 | 2}),
+          parameters: parameters.distance.importToGraph(graph),
           seedPositions: importGraphBuffer(
             graph,
             'start-seeds',
@@ -683,7 +697,7 @@ export async function createLeastCostPaths(
           }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     const landscape: Landscape = {
@@ -691,7 +705,7 @@ export async function createLeastCostPaths(
       grid,
       resources,
       cellCount,
-      flippedExtent,
+      distanceGrid,
       starts: config.starts.map(place => placeCell(grid, place)),
       activeStarts: [],
       destination: placeCell(grid, config.destination),
@@ -704,6 +718,7 @@ export async function createLeastCostPaths(
       path,
       display,
       distanceGraphs,
+      activeDistanceMode: '',
       summary: null as unknown as SummaryReader,
       buffers,
       parameters: {...parameters},
@@ -731,11 +746,10 @@ export async function createLeastCostPaths(
       }
     );
     parameters.derivatives.write(
-      getGPUTerrainDerivativesParameterValues({
-        ...getGridSettings(grid),
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {azimuthDegrees: SUN_AZIMUTH_DEGREES, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+        grid.rasterGrid
+      )
     );
     return landscape;
   }
@@ -774,7 +788,7 @@ export async function createLeastCostPaths(
     landscape.frictionScale.write(Float32Array.of(getFrictionScale(), 0));
     parameters.pace.write(Float32Array.of(getFrictionScale(), 0, 0, 0));
     parameters.cost.write(
-      getGPUCostDistanceParameterValues({...getGridSettings(grid), costLimit: getCostLimit()})
+      getGPUCostDistanceParameterValues({costLimit: getCostLimit()}, grid.rasterGrid)
     );
     parameters.bands.write(
       Float32Array.from({length: BAND_COUNT}, (_, band) => (band + 1) * options.bandMinutes)
@@ -788,12 +802,15 @@ export async function createLeastCostPaths(
     parameters.seed.write(Float32Array.of(seedClass, 0, 0, 0));
     writeSeedCount(landscape);
     parameters.distance.write(
-      getGPUDistanceFieldParameterValues({
-        bounds: landscape.flippedExtent,
-        gridSize: [grid.width, grid.height],
-        maxDistance:
-          options.distanceCap >= NO_DISTANCE_CAP_KILOMETERS ? Infinity : options.distanceCap * 1000
-      })
+      getGPUDistanceFieldParameterValues(
+        {
+          maximumDistance:
+            options.distanceCap >= NO_DISTANCE_CAP_KILOMETERS
+              ? Infinity
+              : options.distanceCap * 1000
+        },
+        landscape.distanceGrid
+      )
     );
     landscape.costDirty = true;
     landscape.pathDirty = true;
@@ -819,9 +836,8 @@ export async function createLeastCostPaths(
       sources[index] = cell;
       costs[index] = index === 0 ? 0 : ctx.options.extraDelay;
       const [x, y] = getCellCenter(grid, cell);
-      // The distance field wants row 0 at the minimum y: negate y, as in `flippedExtent`.
       positions[2 * index] = x;
-      positions[2 * index + 1] = -y;
+      positions[2 * index + 1] = y;
     });
     parameters.sources.write(sources);
     parameters.sourceCosts.write(costs);
@@ -940,21 +956,53 @@ export async function createLeastCostPaths(
     );
   }
 
-  /** The distance graph compiled for `mode`, built on first use. */
-  function getDistanceGraph(landscape: Landscape, mode: string): CompiledGPUCommandGraph<void> {
-    let graph = landscape.distanceGraphs.get(mode);
-    if (!graph) {
-      graph = landscape.distanceGraphBuilder(mode);
-      landscape.distanceGraphs.set(mode, graph);
+  /** The distance graph for the active mode of `landscape`. */
+  function getActiveDistanceGraph(landscape: Landscape): CompiledGPUCommandGraph<void> {
+    return landscape.distanceGraphs.get(landscape.activeDistanceMode)!;
+  }
+
+  /** The distance graph compiled for `mode`, built on first use and cached in the landscape. */
+  async function ensureDistanceGraph(
+    landscape: Landscape,
+    mode: string
+  ): Promise<CompiledGPUCommandGraph<void>> {
+    const cached = landscape.distanceGraphs.get(mode);
+    if (cached) return cached;
+    const graph = await landscape.distanceGraphBuilder(mode);
+    // A concurrent caller (timing run versus mode switch) may have filled the entry meanwhile.
+    const raced = landscape.distanceGraphs.get(mode);
+    if (raced) {
+      landscape.resources.release(graph);
+      return raced;
     }
+    landscape.distanceGraphs.set(mode, graph);
     return graph;
+  }
+
+  const distanceSwap = new GraphSwap();
+
+  /** Switches every landscape to the distance graph of `mode` once it is compiled. */
+  function requestDistanceMode(mode: string): Promise<boolean> {
+    return distanceSwap.request({
+      build: async () => {
+        for (const landscape of landscapes) await ensureDistanceGraph(landscape, mode);
+      },
+      commit: () => {
+        for (const landscape of landscapes) {
+          landscape.activeDistanceMode = mode;
+          landscape.distanceDirty = true;
+          landscape.displayDirty = true;
+        }
+        ctx.requestLayers();
+      }
+    });
   }
 
   for (const landscape of landscapes) {
     writeLandscapeParameters(landscape);
     writeEndpoints(landscape);
-    getDistanceGraph(landscape, ctx.options.distanceAlgorithm);
   }
+  await requestDistanceMode(ctx.options.distanceAlgorithm);
 
   async function timeDistanceAlgorithms(): Promise<void> {
     if (measuring || destroyed) return;
@@ -964,7 +1012,7 @@ export async function createLeastCostPaths(
       const canyon = landscapes[0];
       const parts: string[] = [];
       for (const mode of ['exact', 'jump-flood-0', 'jump-flood-1', 'jump-flood-2']) {
-        const timing = await measureCompiledGraph(device, getDistanceGraph(canyon, mode), {
+        const timing = await measureCompiledGraph(device, await ensureDistanceGraph(canyon, mode), {
           parameters: undefined,
           completionBuffer: canyon.buffers.converged,
           signal: ctx.signal
@@ -1001,16 +1049,12 @@ export async function createLeastCostPaths(
         landscape.cost,
         landscape.path,
         landscape.display,
-        getDistanceGraph(landscape, ctx.options.distanceAlgorithm)
+        getActiveDistanceGraph(landscape)
       ]),
 
     setOption(id, _value, state) {
       if (id === 'distanceAlgorithm') {
-        for (const landscape of landscapes) {
-          getDistanceGraph(landscape, state.distanceAlgorithm);
-          landscape.distanceDirty = true;
-          landscape.displayDirty = true;
-        }
+        void requestDistanceMode(state.distanceAlgorithm);
       } else if (id === 'extraDelay' || id === 'secondStart') {
         for (const landscape of landscapes) writeEndpoints(landscape);
       } else if (
@@ -1041,7 +1085,6 @@ export async function createLeastCostPaths(
     },
 
     encode(commandEncoder: CommandEncoder, frame) {
-      const mode = ctx.options.distanceAlgorithm;
       for (const landscape of landscapes) {
         if (frame.frameIndex < 2) landscape.setup.encode(commandEncoder, {parameters: undefined});
         let changed = false;
@@ -1066,7 +1109,7 @@ export async function createLeastCostPaths(
           changed = true;
         }
         if (landscape.distanceDirty) {
-          getDistanceGraph(landscape, mode).encode(commandEncoder, {parameters: undefined});
+          getActiveDistanceGraph(landscape).encode(commandEncoder, {parameters: undefined});
           landscape.distanceDirty = false;
           landscape.displayDirty = true;
         }
@@ -1370,6 +1413,7 @@ export async function createLeastCostPaths(
 
     destroy() {
       destroyed = true;
+      distanceSwap.destroy();
       for (const landscape of landscapes) {
         landscape.summary.stop();
         landscape.resources.destroy();

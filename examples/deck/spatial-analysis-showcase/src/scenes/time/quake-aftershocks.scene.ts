@@ -543,22 +543,23 @@ import {GPUTemporalReduction, getGPUTemporalReductionParameterValues} from '@lum
 
 // Pairs within ${state.spatialRadius} km (azimuthal equidistant meters around the window center), then the Knox test.
 graph.add(new GPUNeighborSearch({
-  mode: 'radius', positions, parameters: searchParameters, gridSize: [64, 64], weights: pairs, overflow
+  mode: 'radius', positions, parameters: searchParameters, gridSize: [64, 64],
+  output: pairs   // CSR {offsets, neighbors, weights, status: {overflow}}
 }));
 graph.add(new GPUKnoxTest({
   pairs, times: days, parameters: testParameters,
-  maximumPermutations: 999, statistics, summary
+  maximumPermutations: 999, output: {statistics, summary}
 }));
 
 // Events by (grid cell, 30.44-day month): count, min, max, first and last magnitude.
 monthlyGraph.add(new GPUTemporalReduction({
   cellIds, timestamps: days, values: magnitude, parameters: reductionParameters,
-  cellCount: 48 * 48, bucketCount: 60, output: {counts, min, max, first, last, occupiedSlots}
+  cellCount: 48 * 48, bucketCount: 60, output: {counts, minimums, maximums, first, last, occupiedSlots}
 }));
 
 // Per change (parameter writes, no recompile):
 searchParameters.write(getGPUNeighborSearchParameterValues({bounds, radius: ${state.spatialRadius * 1000}, weightKind: 'binary'}));
-testParameters.write(getGPUSpaceTimeParameterValues({seed, permutations: ${state.permutations}, timeThreshold: ${state.timeThreshold}}));
+testParameters.write(getGPUSpaceTimeParameterValues({seed, permutationCount: ${state.permutations}, timeThreshold: ${state.timeThreshold}}));
 reductionParameters.write(getGPUTemporalReductionParameterValues(0, 365.25 / 12));`,
 
   create: async ctx => (await import('./quake-aftershocks.compute')).createQuakeAftershocks(ctx)

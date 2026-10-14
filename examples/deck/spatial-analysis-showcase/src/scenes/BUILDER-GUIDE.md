@@ -76,6 +76,11 @@ Rules that keep the "compile once" proof honest:
 
 - Never compile, submit or synchronously read back inside `encode`. Compile in `create` or in
   `setOption` for a compile-time option. Prefer compiling every variant up front and switching.
+- Compile with `await graph.compileAsync()`, never `graph.compile()` (it blocks the page while
+  every pipeline is created). In `setOption`, run rebuilds through `GraphSwap`
+  (`../../engine/graph-swap`, tracked in `resources`): `build` compiles without touching the
+  running graphs, `commit` swaps the result in, then releases the old graphs, marks the outputs
+  dirty and calls `ctx.requestLayers()`. The latest request wins; superseded builds are discarded.
 - A `compile` option that really rebuilds returns new graph objects from `getCompiledGraphs()`; the
   shell counts them as rebuilds. A `param` option must never change graph identity.
 - Create every GPU resource through `SpatialAnalysisResources` so `destroy()` frees it in order.

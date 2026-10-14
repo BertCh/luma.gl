@@ -290,37 +290,37 @@ export default defineScene<TransitReachabilityOptions>({
 
   snippet: state => `import {
   GPUNetworkReachability, GPUNetworkIsochrones, GPUNetworkCostMatrix,
-  getGPUNetworkIsochroneParameterValues
+  getGPUNetworkIsochronesParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 // offsets / neighbors / weights: CSR of the rail graph, weights = scheduled seconds (+ dwell)
 const graph = new GPUCommandGraph(device, {id: 'rail-reach'});
 graph.add(new GPUNetworkReachability({
-  offsets, neighbors, weights,
-  sources: originParameter.importToGraph(graph),       // one word: the clicked station
+  topology: {offsets, neighbors, weights},
+  startNodes: originParameter.importToGraph(graph),    // one word: the clicked station
   costLimit: costLimitParameter.importToGraph(graph),  // ${state.costLimitMinutes * 60} s
-  maxIterations: 16, localIterations: ${state.localIterations},      // compile time
-  costs, predecessors, converged
+  maximumIterations: 16, localIterations: ${state.localIterations},  // compile time
+  output: {costs, predecessors, status: {converged}}
 }));
 graph.add(new GPUNetworkIsochrones({
-  offsets: stationOnlyOffsets, neighbors: stationOnlyNeighbors, weights: zeros,   // sample stations, not the line between them
-  nodePositions, costs, breaks: breaksParameter.importToGraph(graph),
+  topology: {offsets: stationOnlyOffsets, neighbors: stationOnlyNeighbors, weights: zeros, nodePositions},   // sample stations, not the line between them
+  costs, costBreaks: breaksParameter.importToGraph(graph),
   parameters: isochroneParameters.importToGraph(graph),
   raster: {width: 800, height, mode: 'min', maximumBufferPixels: 16, maximumSamplesPerEdge: 2,
-           output: {triangles, triangleBands, count, overflow, vertexCount}}
+           output: {triangles, triangleBands, status: {count, vertexCount, overflow}}}
 }));
 
 // per change: parameter writes
 originParameter.write(Uint32Array.of(stationIndex));
 breaksParameter.write(Float32Array.of(1800, 3600, 5400, 5400)); // fixed up-to 30/60/90 min bands
-isochroneParameters.write(getGPUNetworkIsochroneParameterValues({
+isochroneParameters.write(getGPUNetworkIsochronesParameterValues({
   breakCount: 3, extent, bufferRadius: ${state.lastMile === 'none' ? 0 : Math.round(({walk: 1.34, bike: 4.2} as const)[state.lastMile] * state.lastMileMinutes * 60)}, walkCostPerUnit: ${state.lastMile === 'none' ? 0 : (1 / ({walk: 1.34, bike: 4.2} as const)[state.lastMile]).toFixed(3)}
 }));
 
 // many-to-all travel times between hubs (one lane-expanded search per hub)
 matrixGraph.add(new GPUNetworkCostMatrix({
-  offsets, neighbors, weights, seedNodes: hubNodes, laneCount: hubNodes.length,
-  costs: matrix                                   // hubs x stations, +Infinity when unreached
+  topology: {offsets, neighbors, weights}, startNodes: hubNodes, laneCount: hubNodes.length,
+  output: {costs: matrix}                         // hubs x stations, +Infinity when unreached
 }));`,
 
   about: {

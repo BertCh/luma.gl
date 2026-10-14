@@ -31,6 +31,7 @@ import {ALPS} from '../../cartography/gazetteer';
 import {getTerrainInk} from './terrain-palettes';
 import type {MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -38,8 +39,8 @@ import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
 import {loadAlpsGrid} from './b14a-grid';
 import {ColorRasterLayer} from './b14a-layers';
-import {Stage, TerrainSession, type ValueStats} from './b14a-session';
-import {StageRegistry, type StageEntry} from './b14a-stage-registry';
+import {Stage, TerrainSession, type ProductBuild, type ValueStats} from './b14a-session';
+import {StageRegistry, type StageEntry, type StageLookup} from './b14a-stage-registry';
 import {createDemProbe, createTerrainDemFromGrid} from './cpu-dem';
 import {
   addSunPaintPass,
@@ -278,7 +279,6 @@ export async function createSunAndShadow(
   await ground.prepare();
   ctx.signal.throwIfAborted();
 
-  const cell = grid.cellSettings;
   const [centerLongitude, centerLatitude] = grid.origin;
   // The village: the gazetteer's Zermatt, on the DEM cell that contains it.
   const villagePixel = grid.getPixel(
@@ -521,11 +521,11 @@ export async function createSunAndShadow(
   const markPaintDirty = () => registry.markDirty(PAINT_STAGES);
 
   // --- Stages ----------------------------------------------------------------------------------------
-  function buildStage(
+  async function buildStage(
     id: StageId,
     state: SunOptions,
-    stages: StageRegistry<StageId, SunOptions>
-  ): StageEntry {
+    stages: StageLookup<StageId>
+  ): Promise<StageEntry> {
     const builder = session.builder(id);
     const elevation = builder.elevation();
     const importFrom = <Format extends 'float32' | 'uint32'>(
@@ -548,18 +548,17 @@ export async function createSunAndShadow(
         builder.graph.add(
           new GPUTerrainDerivatives({
             id: 'derivatives',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
-            slope: builder.floats('slope'),
-            aspect: builder.floats('aspect'),
+            parameters: settings.view,
             cellSizeMode: 'web-mercator',
-            rowDirection: 'south'
+            rowDirection: 'south',
+            output: {slope: builder.floats('slope'), aspect: builder.floats('aspect')}
           })
         );
-        stage = builder.finishStage({
-          write: () => settings.parameters.write(getGPUTerrainDerivativesParameterValues({...cell}))
+        stage = await builder.finishStage({
+          write: () =>
+            settings.parameters.write(getGPUTerrainDerivativesParameterValues({}, grid.grid))
         });
         break;
       }
@@ -570,10 +569,9 @@ export async function createSunAndShadow(
         builder.graph.add(
           new GPUTerrainHorizon({
             id: 'horizon',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             directionCount: info.directions,
             maximumRadius: Math.min(Number(state.horizonRadius), Math.max(width, height) - 1),
             algorithm: state.horizonAlgorithm,
@@ -581,18 +579,20 @@ export async function createSunAndShadow(
             horizonFormat: state.horizonFormat,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            horizon: importGraphBuffer(
-              builder.graph,
-              'horizon',
-              builder.getBuffer('horizon'),
-              info.unorm ? 'uint32' : 'float32',
-              info.wordCount
-            ),
-            skyViewFactor: builder.floats('svf')
+            output: {
+              horizon: importGraphBuffer(
+                builder.graph,
+                'horizon',
+                builder.getBuffer('horizon'),
+                info.unorm ? 'uint32' : 'float32',
+                info.wordCount
+              ),
+              skyViewFactor: builder.floats('svf')
+            }
           })
         );
-        stage = builder.finishStage({
-          write: () => settings.parameters.write(getGPUTerrainHorizonParameterValues({...cell}))
+        stage = await builder.finishStage({
+          write: () => settings.parameters.write(getGPUTerrainHorizonParameterValues({}, grid.grid))
         });
         break;
       }
@@ -615,11 +615,9 @@ export async function createSunAndShadow(
           new GPUSolarPosition({
             id: 'solar-position',
             positions: importGraphBuffer(builder.graph, 'positions', positions, 'float32x2', 4),
-            settings: solarSettings.view,
-            azimuth,
-            altitude,
-            daylight,
-            refraction: state.refraction
+            parameters: solarSettings.view,
+            refraction: state.refraction,
+            output: {azimuth, altitude, daylight}
           })
         );
         // The GPU sun drives the shadow: copy its azimuth and altitude over the first two
@@ -647,8 +645,7 @@ export async function createSunAndShadow(
         builder.graph.add(
           new GPUSolarShadowMask({
             id: 'shadow-mask',
-            width,
-            height,
+            grid: grid.grid,
             directionCount: info.directions,
             horizonFormat: state.horizonFormat,
             horizon: importFrom(
@@ -657,15 +654,17 @@ export async function createSunAndShadow(
               info.unorm ? 'uint32' : 'float32',
               info.wordCount
             ),
-            settings: maskSettings,
+            parameters: maskSettings,
             slope: importFrom('derivatives', 'slope', 'float32', pixelCount),
             aspect: importFrom('derivatives', 'aspect', 'float32', pixelCount),
             skyViewFactor: importFrom('horizon', 'svf', 'float32', pixelCount),
-            sunVisibility: builder.floats('sunVisibility'),
-            illumination: builder.floats('illumination')
+            output: {
+              sunVisibility: builder.floats('sunVisibility'),
+              illumination: builder.floats('illumination')
+            }
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: [stages.require('horizon').stage, stages.require('derivatives').stage],
           write: () => {
             const o = ctx.options;
@@ -694,27 +693,30 @@ export async function createSunAndShadow(
         builder.graph.add(
           new GPUTerrainCastShadow({
             id: 'cast-shadow',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             maximumRadius: state.castRadius === 'tile' ? undefined : Number(state.castRadius),
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            sunVisibility: builder.floats('sunVisibility'),
-            horizonAngle: builder.floats('horizonAngle')
+            output: {
+              sunVisibility: builder.floats('sunVisibility'),
+              horizonAngle: builder.floats('horizonAngle')
+            }
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () => {
             const sun = getVillageSun();
             settings.parameters.write(
-              getGPUTerrainCastShadowParameterValues({
-                ...cell,
-                azimuthDegrees: sun.azimuthDegrees,
-                altitudeDegrees: sun.altitudeDegrees,
-                angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * ctx.options.softness
-              })
+              getGPUTerrainCastShadowParameterValues(
+                {
+                  azimuthDegrees: sun.azimuthDegrees,
+                  altitudeDegrees: sun.altitudeDegrees,
+                  angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * ctx.options.softness
+                },
+                grid.grid
+              )
             );
           }
         });
@@ -732,8 +734,7 @@ export async function createSunAndShadow(
         builder.graph.add(
           new GPUSolarIrradiance({
             id: 'solar-irradiance',
-            width,
-            height,
+            grid: grid.grid,
             directionCount: info.directions,
             horizonFormat: state.horizonFormat,
             horizon: importFrom(
@@ -750,12 +751,11 @@ export async function createSunAndShadow(
               SUN_TABLE_CAPACITY * GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE
             ),
             sampleCapacity: SUN_TABLE_CAPACITY,
-            settings: settings.view,
+            parameters: settings.view,
             slope: importFrom('derivatives', 'slope', 'float32', pixelCount),
             aspect: importFrom('derivatives', 'aspect', 'float32', pixelCount),
             skyViewFactor: importFrom('horizon', 'svf', 'float32', pixelCount),
-            sunHours,
-            insolation
+            output: {sunHours, insolation}
           })
         );
         // One thread copies the village's two values into a 16 byte buffer the CPU can read back
@@ -773,7 +773,7 @@ export async function createSunAndShadow(
   probeValues[probeValuesOffset] = sunHoursMap[sunHoursMapOffset + ${villageIndex}u];
   probeValues[probeValuesOffset + 1u] = insolationMap[insolationMapOffset + ${villageIndex}u];`
         });
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: [stages.require('horizon').stage, stages.require('derivatives').stage],
           // The irradiance integral is the heaviest per-change job: let the GPU finish one run
           // before the next is queued while a slider is dragged.
@@ -834,7 +834,7 @@ export async function createSunAndShadow(
           settings: settings.view,
           output: builder.words('paint')
         });
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: [stages.require('sun').stage, stages.require('cast').stage],
           write: () => settings.parameters.write(getSunPaintParameters(getPaintSettings(id)))
         });
@@ -852,7 +852,7 @@ export async function createSunAndShadow(
           settings: settings.view,
           output: builder.words('paint')
         });
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: DEPENDENCIES[id].map(dependency => stages.require(dependency).stage),
           write: () => settings.parameters.write(getSunPaintParameters(getPaintSettings(id)))
         });
@@ -864,40 +864,70 @@ export async function createSunAndShadow(
   // --- Product display -----------------------------------------------------------------------------
   let activeStageId: StageId = 'paint-shadow';
 
-  function showProduct(): void {
+  const showSwap = resources.track(new GraphSwap());
+
+  /** Makes a built product the displayed one. */
+  function activateBuild(build: ProductBuild, stageId: StageId): void {
+    activeStageId = stageId;
+    ctx.setStatus('');
+    session.activate(build, UNUSED_PAINT);
+    lastFloatStats = null;
+    ctx.setReadout('tileMean', null);
+    ctx.setChart('sunHistogram', null);
+    lastDifferenceRun = -1;
+    publishFurniture();
+    publishAnnotations();
+    publishMemory();
+    ctx.requestLayers();
+  }
+
+  /**
+   * Shows the selected product. Stages and builds that are missing are built asynchronously; the
+   * displayed product keeps running until the new one is swapped in. The promise settles once the
+   * request committed or was superseded.
+   */
+  function showProduct(): Promise<unknown> {
     const state = ctx.options;
-    try {
-      const stageId = getPaintStageId(state);
-      const source = getValueSource(state);
-      const key = registry.getFullKey(stageId, state);
-      let build = session.getBuild(source.buildId, key);
-      if (!build) {
-        const entry = registry.ensure(stageId, state);
-        const valueEntry = registry.require(source.stage);
-        build = session.addBuild(
-          session.createBuild(
-            source.buildId,
-            entry.stage,
-            valueEntry.builder.getBuffer(source.buffer),
-            'float32'
-          ),
-          key
-        );
-      }
-      activeStageId = stageId;
-      ctx.setStatus('');
-      session.activate(build, UNUSED_PAINT);
-      lastFloatStats = null;
-      ctx.setReadout('tileMean', null);
-      ctx.setChart('sunHistogram', null);
-      lastDifferenceRun = -1;
-      publishFurniture();
-      publishAnnotations();
-      publishMemory();
-      ctx.requestLayers();
-    } catch (error) {
-      ctx.setStatus(`Cannot build ${state.product}: ${(error as Error).message}`);
+    const stageId = getPaintStageId(state);
+    const source = getValueSource(state);
+    const key = registry.getFullKey(stageId, state);
+    const existing = session.getBuild(source.buildId, key);
+    if (existing) {
+      activateBuild(existing, stageId);
+      return Promise.resolve();
     }
+    return showSwap
+      .request({
+        build: async () => {
+          const plan = await registry.plan(stageId, state);
+          const build = session.createBuild(
+            source.buildId,
+            plan.require(stageId).stage,
+            plan.require(source.stage).builder.getBuffer(source.buffer),
+            'float32'
+          );
+          try {
+            await session.prepareBuild(build);
+          } catch (error) {
+            registry.discard(plan);
+            throw error;
+          }
+          return {plan, build};
+        },
+        commit: ({plan, build}) => {
+          registry.commit(plan);
+          session.addBuild(build, key);
+          // The options may have changed while building: show whatever is selected now.
+          void showProduct();
+        },
+        discard: ({plan, build}) => {
+          registry.discard(plan);
+          session.discardBuild(build);
+        }
+      })
+      .catch(error => {
+        ctx.setStatus(`Cannot build ${state.product}: ${(error as Error).message}`);
+      });
   }
 
   // --- Readouts and the hover probe --------------------------------------------------------------------
@@ -1060,7 +1090,7 @@ export async function createSunAndShadow(
   publishMemory();
   refreshDay();
   refreshClock();
-  showProduct();
+  await showProduct();
   publishCharts();
 
   // --- Animation ---------------------------------------------------------------------------------------
@@ -1082,7 +1112,7 @@ export async function createSunAndShadow(
       switch (key) {
         case 'product':
         case 'method':
-          showProduct();
+          void showProduct();
           return;
         case 'light':
           publishFurniture();
@@ -1156,7 +1186,7 @@ export async function createSunAndShadow(
           refreshClock();
         }
         publishMemory();
-        timers.push(setTimeout(() => !destroyed && showProduct(), REBUILD_DELAY_MILLISECONDS));
+        timers.push(setTimeout(() => !destroyed && void showProduct(), REBUILD_DELAY_MILLISECONDS));
         return;
       }
       const stages = PARAMETER_STAGES[key];

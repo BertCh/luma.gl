@@ -124,7 +124,8 @@ function getRowTicks(rows: RowChart['rows'], maxWidth = 110): AxisTick[] {
 
 /** Faint bands behind highlighted rows. */
 function drawRowHighlights(frame: Frame, rows: RowChart['rows']): void {
-  const span = (frame.bottom - frame.top) / Math.max(1, rows.length);
+  // Titles and axis labels can consume the plot height; an empty plot has no highlight band.
+  const span = Math.max(0, frame.bottom - frame.top) / Math.max(1, rows.length);
   rows.forEach((row, index) => {
     if (!row.highlight) return;
     frame.layers.back.append(

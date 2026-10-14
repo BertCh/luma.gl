@@ -466,7 +466,7 @@ Change **Dissolve counties by** below to the USDA rural-urban continuum code: th
       headline: 'Shared-border simplification preserves coincident vertices',
       textAlternative:
         'Blue county outlines simplify each shared arc once while red outlines simplify rings independently, with kept-vertex shares and repaired crossings reported; the selected distance tolerance does not preserve polygon area.',
-      body: `Simplifying every county on its own is the classic trap: two neighbours decide differently about their shared boundary and a **gap or overlap** opens. \`GPUCoverageSimplification\` simplifies every shared arc once, so neighbours keep identical vertices. Blue is the coverage result; red is each ring simplified independently with \`GPULineSimplification\`.
+      body: `Simplifying every county on its own is the classic trap: two neighbours decide differently about their shared boundary and a **gap or overlap** opens. \`GPUCoverageSimplification\` simplifies every shared arc once, so neighbours keep identical vertices. Coverage members are features (one row per county, however many parts it has), not single polygon parts. Blue is the coverage result; red is each ring simplified independently with \`GPULineSimplification\`.
 
 Use **Outlines** to show one result at a time, and zoom into a state border and raise **Tolerance** below: the blue line is single, the red one splits into two lines that disagree. **Topology repair rounds** (below) also find crossings and restore vertices (see the readout). Compare the kept percentage of the two.`,
       camera: {longitude: -80.5, latitude: 38.5, zoom: 6.4, transitionMs: 1600},
@@ -584,8 +584,11 @@ Use **Outlines** to show one result at a time, and zoom into a state border and 
 graph.add(new GPUSegmentIntersection({
   left: {kind: 'lines', positions: streets, lineOffsets: streetOffsets},${state.crossMode === 'streets-rail' ? "\n  right: {kind: 'lines', positions: rail, lineOffsets: railOffsets}," : `\n  sameFeatureOnly: ${state.sameFeatureOnly},`}
   spatialSort: ${state.crossSpatialSort},
-  pairs: {leftIds, rightIds, count, overflow, requiredCount},
-  kinds, points, uncertainCount          // 1 proper, 2 touch, 3 collinear touch, 4 overlap
+  output: {
+    pairs: {leftIds, rightIds, status: {count, overflow, requiredCount}},
+    kinds, points,                       // 1 proper, 2 touch, 3 collinear touch, 4 overlap
+    status: {uncertainCount}
+  }
 }));`;
     }
     if (state.view === 'noding') {
@@ -595,15 +598,27 @@ import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
 graph.add(new GPULineSplit({
   lines: {kind: 'lines', positions, lineOffsets},
   intersectionCapacity: ${state.nodingCapacity}, spatialSort: ${state.nodingSpatialSort},
-  pieces: {lineIds, offsets, positions: pieces, count, vertexCount, overflow}
+  output: {
+    pieces: {
+      geometry: {kind: 'lines', positions: pieces, lineOffsets: offsets}, sourceIds: lineIds,
+      status: {count, overflow, vertexCount}
+    },
+    status: {uncertainCount}
+  }
 }));
-graph.add(new GPULineMerge({positions: pieces, lineOffsets: offsets, output: {chainOffsets, positions: chains, count}}));
+graph.add(new GPULineMerge({
+  positions: pieces, lineOffsets: offsets,
+  output: {chainOffsets, positions: chains, status: {count}}
+}));
 
 graph.add(new GPUNetworkNoding({
   lines, intersectionCapacity: ${state.nodingCapacity},
   tolerance: tolerance.importToGraph(graph),   // ${state.nodingTolerance} m, per frame
-  pieces, nodes: {positions: nodes, count}, edges: {fromNodes, toNodes, lengths},
-  csr: {offsets, neighbors, weights}
+  output: {
+    pieces, nodes: {positions: nodes, status: {count}}, edges: {fromNodes, toNodes, lengths},
+    topology: {offsets, neighbors, weights},
+    status: {uncertainCount, overflow}
+  }
 }));`;
     }
     if (state.view === 'dissolve') {
@@ -616,18 +631,24 @@ graph.add(new GPUSegmentRingAssembly({
   interiorSide: '${state.interiorSide}',
   cancelOpposingSegments: ${state.cancelOpposing},
   splitTouchingRings: ${state.splitTouching},
-  output: {ringOffsets, positions, ringAreas, ringIsHole, ringGroups, count, overflow}
+  output: {
+    ringOffsets, positions, ringAreas, ringIsHole, ringGroups,
+    status: {count, overflow}
+  }
 }));`;
     }
     return `import {GPUCoverageSimplification, getGPULineSimplificationParameterValues}
   from '@luma.gl/experimental/gpu-spatial-analysis';
 
 graph.add(new GPUCoverageSimplification({
-  positions, ringOffsets, polygonOffsets,   // Albers CONUS metres
+  positions, featureOffsets, polygonOffsets, ringOffsets,   // Albers CONUS metres, one polygon port
   snapTolerance: ${state.coverageSnap},
-  topologyRounds: ${state.topologyRounds}, maximumRounds: ${state.coverageRounds},
+  topologyIterationCount: ${state.topologyRounds}, maximumIterations: ${state.coverageRounds},
   parameters: tolerance.importToGraph(graph),
-  output: {positions: outPositions, ringOffsets: outRings, keepMask, overflow, topologyStats}
+  output: {
+    positions: outPositions, ringOffsets: outRings, outputMask: keepMask, topologyStatistics,
+    status: {converged, overflow}
+  }
 }));
 tolerance.write(getGPULineSimplificationParameterValues({tolerance: ${(10 ** state.coverageTolerance).toFixed(0)}}));`;
   },

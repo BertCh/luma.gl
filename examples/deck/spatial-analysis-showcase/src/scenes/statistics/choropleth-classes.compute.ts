@@ -51,6 +51,7 @@ import {hexToRgba, MAP_INK, NO_DATA_COLOR} from '../../cartography/hue-registry'
 import {formatCount, formatPercent, formatOrdinal, liveText} from '../../cartography/live-text';
 import type {ClassColor, ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
 import {getHairlineColor, getStateLineStyle} from '../weights/hot-spots.style';
@@ -417,13 +418,25 @@ export async function createChoroplethClasses(
     return best;
   })();
 
-  function buildGraphs(): void {
-    for (const graph of [main, bivariateGraph, profileGraph, fitGraph]) {
-      if (graph) resources.release(graph);
-    }
-    activeNaturalBins = Number(ctx.options.naturalBreaksBinCount);
-    activeProfileBins = Number(ctx.options.histogramBins);
-    activeHllPrecision = ctx.options.hllPrecision;
+  /** The four compiled graphs of one build and the compile-time options they were built with. */
+  type ClassesGraphs = {
+    main: CompiledGPUCommandGraph<void>;
+    bivariate: CompiledGPUCommandGraph<void>;
+    profile: CompiledGPUCommandGraph<void>;
+    fit: CompiledGPUCommandGraph<void>;
+    naturalBins: number;
+    profileBins: number;
+    hllPrecision: typeof activeHllPrecision;
+  };
+
+  /**
+   * Builds and compiles all four graphs without touching the running ones. Readbacks and
+   * `encode` keep using the previous graphs and `active*` options until `commitGraphs`.
+   */
+  async function compileGraphs(): Promise<ClassesGraphs> {
+    const naturalBins = Number(ctx.options.naturalBreaksBinCount);
+    const profileBins = Number(ctx.options.histogramBins);
+    const hllPrecision = ctx.options.hllPrecision;
 
     const graph = new GPUCommandGraph<void>(device, {id: 'classes-main'});
     const bind = createGraphImporter(graph);
@@ -439,7 +452,7 @@ export async function createChoroplethClasses(
         output: {
           quantiles: bind.float(quantiles, QUANTILE_PROBABILITIES.length),
           validCount: bind.word(validCount, 1),
-          filterMask: filter,
+          outputMask: filter,
           filterBounds: bind.float(filterBounds, 2)
         }
       })
@@ -467,7 +480,7 @@ export async function createChoroplethClasses(
         parameters: breaksParameterView,
         maximumClassCount: MAXIMUM_CLASS_COUNT,
         methods: GPU_CLASS_BREAKS_METHODS.filter(value => value !== 'head-tail'),
-        naturalBreaksBinCount: activeNaturalBins,
+        naturalBreaksBinCount: naturalBins,
         output: {breaks: primaryBreaks, classCount: primaryClassCount}
       })
     );
@@ -514,7 +527,6 @@ export async function createChoroplethClasses(
         }
       })
     );
-    main = resources.track(graph.compile());
 
     const biGraph = new GPUCommandGraph<void>(device, {id: 'classes-bivariate'});
     const biBind = createGraphImporter(biGraph);
@@ -560,7 +572,6 @@ export async function createChoroplethClasses(
         }
       })
     );
-    bivariateGraph = resources.track(biGraph.compile());
 
     const profile = new GPUCommandGraph<void>(device, {id: 'classes-profile'});
     const profileBind = createGraphImporter(profile);
@@ -574,15 +585,15 @@ export async function createChoroplethClasses(
           {values: profileBind.float(logXBuffer, n)}
         ],
         mask: profileBind.word(filterMask, n),
-        histogramBinCount: activeProfileBins,
-        hyperLogLogPrecision: Number(ctx.options.hllPrecision),
+        histogramBinCount: profileBins,
+        hyperLogLogPrecision: Number(hllPrecision),
         topCategoryCount: TOP_CATEGORY_COUNT,
         output: {
           statistics: profileBind.float(
             profileStatistics,
             PROFILE_COLUMN_COUNT * GPU_COLUMN_PROFILE_STATISTIC_COUNT
           ),
-          histograms: profileBind.word(profileHistograms, PROFILE_COLUMN_COUNT * activeProfileBins),
+          histograms: profileBind.word(profileHistograms, PROFILE_COLUMN_COUNT * profileBins),
           topCategories: profileBind.word(topCategories, PROFILE_COLUMN_COUNT * TOP_CATEGORY_COUNT),
           topCategoryCounts: profileBind.word(
             topCategoryCounts,
@@ -591,7 +602,6 @@ export async function createChoroplethClasses(
         }
       })
     );
-    profileGraph = resources.track(profile.compile());
 
     const fit = new GPUCommandGraph<void>(device, {id: 'classes-fit'});
     const fitBind = createGraphImporter(fit);
@@ -622,8 +632,57 @@ export async function createChoroplethClasses(
         }
       })
     );
-    fitGraph = resources.track(fit.compile());
+
+    // Every graph compiles concurrently; each is tracked as soon as it is ready, so a failed
+    // build leaves nothing untracked.
+    const [compiledMain, compiledBivariate, compiledProfile, compiledFit] = await Promise.all(
+      [graph, biGraph, profile, fit].map(async next => resources.track(await next.compileAsync()))
+    );
+    return {
+      main: compiledMain,
+      bivariate: compiledBivariate,
+      profile: compiledProfile,
+      fit: compiledFit,
+      naturalBins,
+      profileBins,
+      hllPrecision
+    };
+  }
+
+  /** Swaps a finished build in, then releases the graphs it replaces. */
+  function commitGraphs(next: ClassesGraphs): void {
+    const previous = [main, bivariateGraph, profileGraph, fitGraph];
+    main = next.main;
+    bivariateGraph = next.bivariate;
+    profileGraph = next.profile;
+    fitGraph = next.fit;
+    activeNaturalBins = next.naturalBins;
+    activeProfileBins = next.profileBins;
+    activeHllPrecision = next.hllPrecision;
+    for (const graph of previous) {
+      if (graph) resources.release(graph);
+    }
+    latestSummary = null;
+    dirtyFrames = ENCODED_FRAMES_AFTER_CHANGE;
+    readbackWanted = true;
     publishCost();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the graphs for the current compile-time options; the latest request wins. */
+  function rebuildGraphs(): Promise<boolean> {
+    return graphSwap.request({
+      build: compileGraphs,
+      commit: next => {
+        commitGraphs(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        for (const graph of [next.main, next.bivariate, next.profile, next.fit]) {
+          resources.release(graph);
+        }
+      }
+    });
   }
 
   /** The cost line of the card: counties and GPU passes of the graphs that run every frame. */
@@ -1215,6 +1274,8 @@ export async function createChoroplethClasses(
     ticket.markEncoded({byteOffset: 0, byteLength: readbackByteLength});
     readbackPending = true;
     try {
+      // Deck submits this frame's encoder synchronously before the next task maps the slot.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
       const bytes = await ticket.read();
       if (destroyed) return;
       const copy = new ArrayBuffer(bytes.byteLength);
@@ -1252,7 +1313,7 @@ export async function createChoroplethClasses(
   );
   loadVariables();
   writePalette(ctx.options.classCount);
-  buildGraphs();
+  commitGraphs(await compileGraphs());
   writeParameters();
   ctx.setFurniture({
     title: {
@@ -1342,8 +1403,7 @@ export async function createChoroplethClasses(
           Number(ctx.options.histogramBins) !== activeProfileBins ||
           ctx.options.hllPrecision !== activeHllPrecision
         ) {
-          buildGraphs();
-          latestSummary = null;
+          void rebuildGraphs();
         }
       }
       if (id === 'variable' || id === 'bivariateVariable' || id === 'classCount') {

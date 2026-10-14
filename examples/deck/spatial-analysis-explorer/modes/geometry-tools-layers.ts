@@ -114,11 +114,11 @@ export type ShapeOverlay = {
  * through the points in curve order. The shape kind is compiled up front (three graphs); radius,
  * segment count, sector sweep and Hilbert order are buffer writes.
  */
-export function createShapeOverlay(
+export async function createShapeOverlay(
   context: SpatialAnalysisModeContext,
   resources: SpatialAnalysisResources,
   parking: SpatialAnalysisBikeParking
-): ShapeOverlay {
+): Promise<ShapeOverlay> {
   const {device} = context;
   const pointCount = parking.positions.length / 2;
   const maximumVertices = getGPUShapeVertexCount('sector', MAXIMUM_SEGMENTS);
@@ -204,36 +204,44 @@ export function createShapeOverlay(
 
   // Shape graphs, one per kind (compile-time), all writing the same output buffers.
   const shapeGraphs = Object.fromEntries(
-    SHAPE_TYPES.map(kind => {
-      const graph = new GPUCommandGraph<void>(device, {id: `geometry-tools-${kind}`});
-      graph.add(
-        new GPUShapeGenerator({
-          id: `shape-${kind}`,
-          shape: kind,
-          maximumSegments: MAXIMUM_SEGMENTS,
-          centers: importGraphBuffer(graph, 'centers', centersBuffer, 'float32x2', pointCount),
-          radii:
-            kind === 'ellipse'
-              ? importGraphBuffer(graph, 'radii', ellipseRadiiBuffer, 'float32x2', pointCount)
-              : importGraphBuffer(graph, 'radii', circleRadiiBuffer, 'float32', pointCount),
-          bearings:
-            kind === 'sector'
-              ? importGraphBuffer(graph, 'bearings', bearingsBuffer, 'float32x2', pointCount)
-              : undefined,
-          rotations:
-            kind === 'ellipse'
-              ? importGraphBuffer(graph, 'rotations', rotationsBuffer, 'float32', pointCount)
-              : undefined,
-          parameters: shapeParameters.importToGraph(graph),
-          output: {
-            positions: importGraphBuffer(graph, 'positions', ringPositions, 'float32x2', slotCount),
-            offsets: importGraphBuffer(graph, 'offsets', ringOffsets, 'uint32', pointCount + 1),
-            vertexCount: importGraphBuffer(graph, 'vertex-count', ringVertexCount, 'uint32', 1)
-          }
-        })
-      );
-      return [kind, resources.track(graph.compile())];
-    })
+    await Promise.all(
+      SHAPE_TYPES.map(async kind => {
+        const graph = new GPUCommandGraph<void>(device, {id: `geometry-tools-${kind}`});
+        graph.add(
+          new GPUShapeGenerator({
+            id: `shape-${kind}`,
+            shape: kind,
+            maximumSegments: MAXIMUM_SEGMENTS,
+            centers: importGraphBuffer(graph, 'centers', centersBuffer, 'float32x2', pointCount),
+            radii:
+              kind === 'ellipse'
+                ? importGraphBuffer(graph, 'radii', ellipseRadiiBuffer, 'float32x2', pointCount)
+                : importGraphBuffer(graph, 'radii', circleRadiiBuffer, 'float32', pointCount),
+            bearings:
+              kind === 'sector'
+                ? importGraphBuffer(graph, 'bearings', bearingsBuffer, 'float32x2', pointCount)
+                : undefined,
+            rotations:
+              kind === 'ellipse'
+                ? importGraphBuffer(graph, 'rotations', rotationsBuffer, 'float32', pointCount)
+                : undefined,
+            parameters: shapeParameters.importToGraph(graph),
+            output: {
+              positions: importGraphBuffer(
+                graph,
+                'positions',
+                ringPositions,
+                'float32x2',
+                slotCount
+              ),
+              offsets: importGraphBuffer(graph, 'offsets', ringOffsets, 'uint32', pointCount + 1),
+              vertexCount: importGraphBuffer(graph, 'vertex-count', ringVertexCount, 'uint32', 1)
+            }
+          })
+        );
+        return [kind, resources.track(await graph.compileAsync())] as const;
+      })
+    )
   ) as Record<GPUShapeType, CompiledGPUCommandGraph<void>>;
 
   // Hilbert graph: keys and the sorted permutation of the point centers (static), the curve
@@ -253,7 +261,7 @@ export function createShapeOverlay(
       new GPUHilbertKeys({
         id: 'hilbert',
         order: GPU_HILBERT_MAXIMUM_ORDER,
-        points: centers,
+        positions: centers,
         bounds: hilbertBounds.importToGraph(hilbertGraph),
         output: {keys, sortedRows: rows}
       })
@@ -301,7 +309,7 @@ export function createShapeOverlay(
   values[valuesOffset + index] = f32(index) / f32(max(POINT_COUNT - 1u, 1u));`
     });
   }
-  const compiledHilbert = resources.track(hilbertGraph.compile());
+  const compiledHilbert = resources.track(await hilbertGraph.compileAsync());
 
   // Derive graph: ring segments (and fan triangles) from the rings and the order coloring from
   // the keys, re-encoded when a control moved.
@@ -427,7 +435,7 @@ export function createShapeOverlay(
     f32(keys[keysOffset + index] >> shift) * colorParameters[colorParametersOffset + 1u];`
     });
   }
-  const compiledDerive = resources.track(deriveGraph.compile());
+  const compiledDerive = resources.track(await deriveGraph.compileAsync());
 
   // Parameter writes.
   const writeShape = () => {

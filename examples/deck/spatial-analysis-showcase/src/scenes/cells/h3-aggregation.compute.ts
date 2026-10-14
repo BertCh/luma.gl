@@ -50,6 +50,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {findArea, readAreaPolygons} from './b8-areas';
@@ -417,7 +418,10 @@ export async function createH3Aggregation(
 
   // --- Index pipeline ---------------------------------------------------------------------------
 
-  const buildIndexPipeline = (family: GPUCellIndexFamily, resolution: number): IndexPipeline => {
+  const buildIndexPipeline = async (
+    family: GPUCellIndexFamily,
+    resolution: number
+  ): Promise<IndexPipeline> => {
     const settings = FAMILIES[family];
     const {tabular, maximumVertexCount} = settings;
     const pipelineSerial = ++serial;
@@ -487,16 +491,18 @@ export async function createH3Aggregation(
               'uint32',
               TABLE_CAPACITY
             ),
-            count: importCellBuffer(indexGraph, 'table-count', tableCount, 'uint32', 1),
-            overflow: importCellBuffer(indexGraph, 'table-overflow', tableOverflow, 'uint32', 1),
-            requiredCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
+            status: {
+              count: importCellBuffer(indexGraph, 'table-count', tableCount, 'uint32', 1),
+              overflow: importCellBuffer(indexGraph, 'table-overflow', tableOverflow, 'uint32', 1),
+              requiredCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
+            }
           }
         })
       );
       geometryInput = tableCellsView;
     }
     addGeometryNode(indexGraph, 'cell', family, geometryInput, cells);
-    const compiledIndex = owned.track(indexGraph.compile());
+    const compiledIndex = owned.track(await indexGraph.compileAsync());
 
     // Outline graphs (H3 and Quadbin), each compiled on its own; ring assembly falls back to plain
     // segments if it does not compile on the device.
@@ -505,11 +511,11 @@ export async function createH3Aggregation(
     let outline: OutlineBuffers | null = null;
     let groupOutline: OutlineBuffers | null = null;
     if (tabular && tableCells && tableCounts && tableCount) {
-      const buildOutline = (
+      const buildOutline = async (
         name: string,
         grouped: boolean,
         withRings: boolean
-      ): OutlineBuffers | null => {
+      ): Promise<OutlineBuffers | null> => {
         try {
           const graph = new GPUCommandGraph<void>(device, {id: `h3-${name}-${pipelineSerial}`});
           const view = <Format extends Parameters<typeof importGraphBuffer>[3]>(
@@ -566,9 +572,11 @@ export async function createH3Aggregation(
               output: {
                 ringOffsets: ringOffsetsView,
                 positions: view('ring-positions', rings.positions, 'float32x2', OUTLINE_CAPACITY),
-                count: view('ring-count', rings.count, 'uint32', 1),
-                overflow: view('ring-overflow', rings.overflow, 'uint32', 1),
-                openSegmentCount: view('ring-open', rings.openSegments, 'uint32', 1)
+                status: {
+                  count: view('ring-count', rings.count, 'uint32', 1),
+                  overflow: view('ring-overflow', rings.overflow, 'uint32', 1),
+                  openSegmentCount: view('ring-open', rings.openSegments, 'uint32', 1)
+                }
               }
             };
             // Vertex count of every ring (offsets past the ring count repeat the last offset), which
@@ -617,12 +625,14 @@ export async function createH3Aggregation(
                 ),
                 endpoints: view('endpoints', endpoints, 'float32x4', OUTLINE_CAPACITY),
                 groups: groups ? view('groups', groups, 'uint32', OUTLINE_CAPACITY) : undefined,
-                count: view('count', outlineCount, 'uint32', 1),
-                overflow: view('overflow', outlineOverflow, 'uint32', 1)
+                status: {
+                  count: view('count', outlineCount, 'uint32', 1),
+                  overflow: view('overflow', outlineOverflow, 'uint32', 1)
+                }
               }
             })
           );
-          const compiled = owned.track(graph.compile());
+          const compiled = owned.track(await graph.compileAsync());
           const drawCommands = owned.track(
             new DrawCommandBuffer(device, {
               id: `h3-${pipelineSerial}-${name}-draw`,
@@ -646,9 +656,9 @@ export async function createH3Aggregation(
           return null;
         }
       };
-      outline = buildOutline('outline', false, true);
-      if (!outline) outline = buildOutline('outline', false, false);
-      groupOutline = buildOutline('group-outline', true, false);
+      outline = await buildOutline('outline', false, true);
+      if (!outline) outline = await buildOutline('outline', false, false);
+      groupOutline = await buildOutline('group-outline', true, false);
     }
 
     // Summary: ten header words, then the table counts and keys.
@@ -767,12 +777,12 @@ export async function createH3Aggregation(
 
   // --- Zones pipeline ---------------------------------------------------------------------------
 
-  const buildZonesPipeline = (
+  const buildZonesPipeline = async (
     family: 'h3' | 'quadbin',
     resolution: number,
     containment: GPUCellCoverContainment,
     compactDepth: number
-  ): ZonesPipeline => {
+  ): Promise<ZonesPipeline> => {
     const settings = FAMILIES[family];
     const {maximumVertexCount} = settings;
     const pipelineSerial = ++serial;
@@ -831,7 +841,7 @@ export async function createH3Aggregation(
         family,
         resolution,
         containment,
-        polygonPositions: importCellBuffer(
+        positions: importCellBuffer(
           graph,
           'area-positions',
           areaPositions,
@@ -870,16 +880,18 @@ export async function createH3Aggregation(
           ),
           core: importCellBuffer(graph, 'cover-core', coverCore, 'uint32', COVER_CAPACITY),
           cells: coverCellsView,
-          count: coverCountView,
-          overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
-          candidateOverflow: importCellBuffer(
-            graph,
-            'cover-candidate-overflow',
-            coverCandidateOverflow,
-            'uint32',
-            1
-          ),
-          requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1)
+          status: {
+            count: coverCountView,
+            requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1),
+            overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
+            candidateOverflow: importCellBuffer(
+              graph,
+              'cover-candidate-overflow',
+              coverCandidateOverflow,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
@@ -896,8 +908,10 @@ export async function createH3Aggregation(
         count: coverCountView,
         output: {
           cells: compactCellsView,
-          count: compactCountView,
-          overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+          status: {
+            count: compactCountView,
+            overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+          }
         }
       })
     );
@@ -916,15 +930,23 @@ export async function createH3Aggregation(
             'uint32x2',
             COVER_CAPACITY
           ),
-          count: importCellBuffer(graph, 'uncompact-count', uncompactCount, 'uint32', 1),
-          overflow: importCellBuffer(graph, 'uncompact-overflow', uncompactOverflow, 'uint32', 1),
-          droppedCount: importCellBuffer(graph, 'uncompact-dropped', uncompactDropped, 'uint32', 1)
+          status: {
+            count: importCellBuffer(graph, 'uncompact-count', uncompactCount, 'uint32', 1),
+            overflow: importCellBuffer(graph, 'uncompact-overflow', uncompactOverflow, 'uint32', 1),
+            droppedCount: importCellBuffer(
+              graph,
+              'uncompact-dropped',
+              uncompactDropped,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
     addGeometryNode(graph, 'cover', family, coverCellsView, coverGeometry);
     addGeometryNode(graph, 'compact', family, compactCellsView, compactGeometry);
-    const compiled = owned.track(graph.compile());
+    const compiled = owned.track(await graph.compileAsync());
 
     const reader = new SummaryReader(
       owned,
@@ -1023,11 +1045,11 @@ export async function createH3Aggregation(
     return `${options.family}|${resolution}|${selectionOperation}|${parameter}`;
   };
 
-  const buildSelectionPipeline = (
+  const buildSelectionPipeline = async (
     family: 'h3' | 'quadbin',
     resolution: number,
     options: Readonly<H3AggregationOptions>
-  ): SelectionPipeline => {
+  ): Promise<SelectionPipeline> => {
     const {maximumVertexCount} = FAMILIES[family];
     const operation = getSelectionOperation(family, resolution, options);
     const stride = getCellTopologyStride(family, operation);
@@ -1076,7 +1098,7 @@ export async function createH3Aggregation(
     );
     addGeometryNode(graph, 'result', family, resultCellsView, result);
     addGeometryNode(graph, 'selected', family, selectedCellView, selected);
-    const compiled = owned.track(graph.compile());
+    const compiled = owned.track(await graph.compileAsync());
     const reader = new SummaryReader(
       owned,
       `h3-selection-${pipelineSerial}`,
@@ -1227,43 +1249,95 @@ export async function createH3Aggregation(
     ctx.setReadout('memory', bytes);
   };
 
-  const rebuild = (index: boolean, zones: boolean, selection: boolean) => {
-    const options = ctx.options;
+  /** Pipelines of one rebuild; a field stays `undefined` when that part was not rebuilt. */
+  type RebuiltPipelines = {
+    index?: IndexPipeline;
+    zones?: ZonesPipeline | null;
+    selection?: SelectionPipeline | null;
+  };
+
+  const discardPipelines = (built: RebuiltPipelines) => {
+    built.index?.resources.destroy();
+    built.zones?.resources.destroy();
+    built.selection?.resources.destroy();
+  };
+
+  /**
+   * Builds the requested pipelines without touching the live ones: the previous pipelines keep
+   * encoding and drawing until `commitRebuild` swaps the new ones in.
+   */
+  const buildRebuild = async (
+    index: boolean,
+    zones: boolean,
+    selection: boolean
+  ): Promise<RebuiltPipelines> => {
+    const options: Readonly<H3AggregationOptions> = {...ctx.options};
     const family = options.family;
     const resolution = getResolution(family, options.resolutionOffset);
     const tabular = FAMILIES[family].tabular;
-    if (index) {
+    const built: RebuiltPipelines = {};
+    try {
+      if (index) built.index = await buildIndexPipeline(family, resolution);
+      if (zones || index) {
+        built.zones = tabular
+          ? await buildZonesPipeline(
+              family as 'h3' | 'quadbin',
+              resolution,
+              getEffectiveContainment(options),
+              options.compactDepth
+            )
+          : null;
+      }
+      if (selection || index) {
+        built.selection = tabular
+          ? await buildSelectionPipeline(family as 'h3' | 'quadbin', resolution, options)
+          : null;
+      }
+    } catch (error) {
+      discardPipelines(built);
+      throw error;
+    }
+    return built;
+  };
+
+  /** Swaps a finished rebuild in, then retires the pipelines it replaces. */
+  const commitRebuild = (built: RebuiltPipelines) => {
+    if (built.index) {
       const previous = indexPipeline;
-      indexPipeline = buildIndexPipeline(family, resolution);
+      indexPipeline = built.index;
       retire(previous);
     }
-    if (zones || index) {
+    if (built.zones !== undefined) {
       const previous = zonesPipeline;
-      zonesPipeline = tabular
-        ? buildZonesPipeline(
-            family as 'h3' | 'quadbin',
-            resolution,
-            getEffectiveContainment(options),
-            options.compactDepth
-          )
-        : null;
+      zonesPipeline = built.zones;
       retire(previous);
     }
-    if (selection || index) {
+    if (built.selection !== undefined) {
       for (const pipeline of selectionPipelines.values()) retire(pipeline);
       selectionPipelines.clear();
       activeSelection = null;
       lastSelectionWords = null;
-      if (tabular) {
-        const pipeline = buildSelectionPipeline(family as 'h3' | 'quadbin', resolution, options);
-        selectionPipelines.set(pipeline.key, pipeline);
-        activeSelection = pipeline;
+      if (built.selection) {
+        selectionPipelines.set(built.selection.key, built.selection);
+        activeSelection = built.selection;
       }
     }
     describeGrid();
     updateMemory();
     ctx.requestLayers();
   };
+
+  // One channel for rebuilds and one for lazily compiled selection variants, so neither
+  // supersedes the other.
+  const rebuildSwap = resources.track(new GraphSwap());
+  const selectionSwap = resources.track(new GraphSwap());
+
+  const rebuild = (index: boolean, zones: boolean, selection: boolean): Promise<boolean> =>
+    rebuildSwap.request({
+      build: () => buildRebuild(index, zones, selection),
+      commit: commitRebuild,
+      discard: discardPipelines
+    });
 
   const flushRebuild = () => {
     rebuildTimer = undefined;
@@ -1272,7 +1346,7 @@ export async function createH3Aggregation(
     const zones = needZones;
     const selection = needSelection;
     needIndex = needZones = needSelection = false;
-    rebuild(index, zones, selection);
+    void rebuild(index, zones, selection);
   };
 
   const scheduleRebuild = (index: boolean, zones: boolean, selection: boolean) => {
@@ -1283,17 +1357,7 @@ export async function createH3Aggregation(
     rebuildTimer = setTimeout(flushRebuild, REBUILD_DEBOUNCE_MILLISECONDS);
   };
 
-  /** Switches to the selection graph of the current operation, compiling it the first time. */
-  const syncSelectionVariant = () => {
-    const options = ctx.options;
-    if (!FAMILIES[options.family].tabular) return;
-    const resolution = getResolution(options.family, options.resolutionOffset);
-    const key = getSelectionKey(options, resolution);
-    let pipeline = selectionPipelines.get(key);
-    if (!pipeline) {
-      pipeline = buildSelectionPipeline(options.family as 'h3' | 'quadbin', resolution, options);
-      selectionPipelines.set(key, pipeline);
-    }
+  const activateSelection = (pipeline: SelectionPipeline) => {
     if (pipeline !== activeSelection) {
       activeSelection = pipeline;
       pipeline.dirty = true;
@@ -1302,8 +1366,44 @@ export async function createH3Aggregation(
     ctx.requestLayers();
   };
 
+  /**
+   * Switches to the selection graph of the current operation. The first use of an operation
+   * compiles it; the previous selection graph stays active until that finishes.
+   */
+  const syncSelectionVariant = () => {
+    const options: Readonly<H3AggregationOptions> = {...ctx.options};
+    if (!FAMILIES[options.family].tabular) return;
+    const resolution = getResolution(options.family, options.resolutionOffset);
+    const key = getSelectionKey(options, resolution);
+    const existing = selectionPipelines.get(key);
+    if (existing) {
+      activateSelection(existing);
+      return;
+    }
+    void selectionSwap.request({
+      build: () => buildSelectionPipeline(options.family as 'h3' | 'quadbin', resolution, options),
+      commit: pipeline => {
+        const current = ctx.options;
+        const cached = selectionPipelines.get(pipeline.key);
+        if (
+          cached ||
+          pipeline.key !==
+            getSelectionKey(current, getResolution(current.family, current.resolutionOffset))
+        ) {
+          // A rebuild already made this variant, or the options moved on while it compiled.
+          pipeline.resources.destroy();
+          if (cached) activateSelection(cached);
+          return;
+        }
+        selectionPipelines.set(pipeline.key, pipeline);
+        activateSelection(pipeline);
+      },
+      discard: pipeline => pipeline.resources.destroy()
+    });
+  };
+
   updateMask();
-  rebuild(true, true, true);
+  await rebuild(true, true, true);
 
   const getHoverText = (longitude: number, latitude: number): string | null => {
     const area = findArea(areas, longitude, latitude);

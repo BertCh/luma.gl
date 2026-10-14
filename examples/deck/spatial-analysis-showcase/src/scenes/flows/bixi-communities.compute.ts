@@ -22,6 +22,7 @@ import {
   SpatialAnalysisPolygonLayer,
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent} from '../scene';
@@ -320,7 +321,7 @@ export async function createBixiCommunities(
   }
 
   // ---- The analysis graph ------------------------------------------------------------------------
-  function buildAnalysis(resolution: number, sweepOnly: boolean): Analysis {
+  async function buildAnalysis(resolution: number, sweepOnly: boolean): Promise<Analysis> {
     const id = ++serial;
     const graphResources = new SpatialAnalysisResources(device, `bixi-communities-${id}`);
     const vectors = graphResources.track(new BixiGraphVectors(device, `bixi-communities-${id}`));
@@ -388,7 +389,7 @@ export async function createBixiCommunities(
       output: boroughScore,
       resolution
     }).addToGraph(commandGraph);
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const column = (vector: typeof propagation) => ({
       buffer: vectors.getBuffer(vector),
       size: stationCount * 4
@@ -447,14 +448,34 @@ export async function createBixiCommunities(
     return built;
   }
 
-  function rebuild(): void {
+  /** Swaps a built analysis in; the replaced one is retired and destroyed a few frames later. */
+  function commitAnalysis(next: Analysis): void {
     if (analysis) retired.push({resources: analysis.resources, frames: 0});
     computeActiveEdges();
-    analysis = buildAnalysis(ctx.options.resolution, false);
+    analysis = next;
     writeEdgeInputs(analysis);
     computeReplay();
     dirty = true;
     ctx.setCost({records: edges.count, passes: analysis.compiled.stats.nodeOrder.length});
+  }
+
+  /** Releases an analysis that was never swapped in. */
+  function discardAnalysis(next: Analysis): void {
+    next.reader.stop();
+    next.resources.destroy();
+  }
+
+  const analysisSwap = resources.track(new GraphSwap());
+  /** Rebuilds the analysis for the current resolution; the latest request wins. */
+  function requestAnalysis(): Promise<boolean> {
+    return analysisSwap.request({
+      build: () => buildAnalysis(ctx.options.resolution, false),
+      commit: next => {
+        commitAnalysis(next);
+        ctx.requestLayers();
+      },
+      discard: discardAnalysis
+    });
   }
 
   /** Compile-time options change in bursts while a slider moves: wait for the pointer to rest. */
@@ -462,7 +483,7 @@ export async function createBixiCommunities(
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => {
       rebuildTimer = null;
-      if (!destroyed) rebuild();
+      if (!destroyed) void requestAnalysis();
     }, REBUILD_DELAY_MS);
   }
 
@@ -538,6 +559,26 @@ export async function createBixiCommunities(
     publishSweepChart();
   }
 
+  const sweepSwap = resources.track(new GraphSwap());
+
+  /** Compiles the analysis of one sweep resolution outside `encode`; the sweep runs it later. */
+  function requestSweepAnalysis(index: number, key: string): void {
+    void sweepSwap.request({
+      build: () => buildAnalysis(SWEEP_RESOLUTIONS[index], true),
+      commit: next => {
+        // The sweep restarted while the graph compiled.
+        if (sweep.next !== index || sweep.key !== key || sweep.active) {
+          discardAnalysis(next);
+          return;
+        }
+        sweep.active = next;
+        writeEdgeInputs(next);
+        sweep.encoded = false;
+      },
+      discard: discardAnalysis
+    });
+  }
+
   function advanceSweep(commandEncoder: CommandEncoder): void {
     const key = getSweepKey();
     if (key !== sweep.key) {
@@ -546,10 +587,8 @@ export async function createBixiCommunities(
     }
     if (sweep.next >= SWEEP_RESOLUTIONS.length) return;
     if (!sweep.active) {
-      // One analysis per frame: compile now, run on the next frame.
-      sweep.active = buildAnalysis(SWEEP_RESOLUTIONS[sweep.next], true);
-      writeEdgeInputs(sweep.active);
-      sweep.encoded = false;
+      // One analysis at a time: it compiles while the frames go on and runs once it is ready.
+      if (!sweepSwap.pending) requestSweepAnalysis(sweep.next, sweep.key);
       return;
     }
     if (!sweep.encoded) {
@@ -1039,7 +1078,7 @@ export async function createBixiCommunities(
     };
   }
 
-  rebuild();
+  commitAnalysis(await buildAnalysis(ctx.options.resolution, false));
 
   return {
     getCompiledGraphs: () =>

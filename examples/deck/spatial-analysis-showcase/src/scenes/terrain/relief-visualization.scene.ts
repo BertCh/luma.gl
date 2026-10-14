@@ -1096,31 +1096,33 @@ import {
   GPUTerrainHorizon, GPUReliefShading, GPUSimpleLocalRelief, GPUReliefBlend,
   getGPUReliefShadingParameterValues, GPU_RELIEF_BLEND_VAT_ARCHAEOLOGICAL
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 
-const cell = {cellSize: [9.5546, 9.5546], northEdge, southEdge}; // Web Mercator tile
+// Web Mercator tile: EPSG:3857 meters, origin [minX, maxY], cellSize the equatorial pixel size
+const grid = makeGPURasterMetadata({width, height, cellSize: 9.5546, origin: [minX, maxY]});
 const graph = new GPUCommandGraph(device, {id: 'relief'});
 graph.add(new GPUTerrainHorizon({
-  width, height, elevation, settings: horizonSettings.importToGraph(graph),
+  grid, elevation, parameters: horizonSettings.importToGraph(graph),
   directionCount: ${state.horizonDirections}, maximumRadius: ${state.horizonRadius}, algorithm: '${state.horizonAlgorithm}',
-  cellSizeMode: 'web-mercator', skyViewFactor
+  cellSizeMode: 'web-mercator', output: {skyViewFactor}
 }));
 graph.add(new GPUReliefShading({
-  width, height, elevation, settings: reliefSettings.importToGraph(graph),
-  imhofSwing: true, cellSizeMode: 'web-mercator', hillshade, color
+  grid, elevation, parameters: reliefSettings.importToGraph(graph),
+  imhofSwing: true, cellSizeMode: 'web-mercator', output: {hillshade, color}
 }));
 graph.add(new GPUSimpleLocalRelief({
-  width, height, elevation, settings: slrmSettings.importToGraph(graph), radius: ${state.slrmRadius}, relief
+  grid, elevation, parameters: slrmSettings.importToGraph(graph),
+  maximumRadius: ${state.slrmRadius}, output: {relief}
 }));
-const compiled = graph.compile(); // once
+const compiled = await graph.compileAsync(); // once
 
 // per frame or on input: parameter writes only
 reliefSettings.write(getGPUReliefShadingParameterValues({
-  ...cell,
   lights: [{azimuthDegrees: ${state.lightAzimuth}, altitudeDegrees: ${state.lightAltitude}}],
   lightWeighting: '${state.recipe >= 4 ? 'imhof-swing' : 'fixed'}', imhofSwingDegrees: ${state.imhofSwing},
   tintStrength: ${state.recipe >= 2 ? 0.55 : 0}, contrastStrength: ${state.recipe >= 3 ? 0.6 : 0},
   contrastLowElevation: 1800, contrastHighElevation: 4200,
   elevationStops: ${state.recipe >= 1 ? 'paleTintStops' : '[]'}
-}));
+}, grid));
 compiled.encode(commandEncoder, {parameters: undefined});`
 });

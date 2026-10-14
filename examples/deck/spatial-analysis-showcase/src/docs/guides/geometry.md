@@ -10,7 +10,7 @@ The geometry contributors work on the shapes themselves rather than on values at
 
 ## Measure: `GPUGeometryMeasures`, `GPUShapeDescriptors`, `GPULabelPoint`, `GPUGeometryValidity`, `GPUMapColoring`
 
-`GPUGeometryMeasures` gives area, perimeter, centroid, bounds and vertex count per polygon, and per group. The **spatial context** is the option that matters: planar for projected data, or longitude/latitude with a great-circle metric (spherical, turf parity) or an ellipsoidal one (WGS84: authalic area, Vincenty edges). On US counties a Web Mercator planar area overstates Whatcom County, Washington by 2.3 times; at city scale all three agree. `GPUShapeDescriptors` adds compactness (Polsby-Popper, Schwartzberg), elongation, convexity, orientation and a sliver flag whose threshold is a parameter. `GPULabelPoint` finds the pole of inaccessibility, which stays inside concave polygons where a centroid can fall outside. `GPUGeometryValidity` writes a bitmask of defects; check the **orientation convention** before reading orientation flags as errors (Chicago's files wind clockwise). `GPUMapColoring` colours touching polygons differently using adjacency from `GPUContiguityWeights`.
+`GPUGeometryMeasures` gives area, perimeter, centroid, bounds and vertex count per feature, and per group. Polygons use four levels (`featureOffsets`, `polygonOffsets`, `ringOffsets`, vertices) and ring roles are positional: the first ring of each polygon is its shell and later rings are holes, whatever their winding, so how rings are grouped into polygons decides what is a hole. `GPUMapColoring` colours features, so a multi-part feature is one row. The **spatial context** is the option that matters: planar for projected data, or longitude/latitude with a great-circle metric (spherical, turf parity) or an ellipsoidal one (WGS84: authalic area, Vincenty edges). On US counties a Web Mercator planar area overstates Whatcom County, Washington by 2.3 times; at city scale all three agree. `GPUShapeDescriptors` adds compactness (Polsby-Popper, Schwartzberg), elongation, convexity, orientation and a sliver flag whose threshold is a parameter. `GPULabelPoint` finds the pole of inaccessibility, which stays inside concave polygons where a centroid can fall outside. `GPUGeometryValidity` writes a bitmask of defects; check the **orientation convention** before reading orientation flags as errors (Chicago's files wind clockwise). `GPUMapColoring` colours touching polygons differently using adjacency from `GPUContiguityWeights`.
 
 Story: [#/story/polygon-measures](#/story/polygon-measures).
 
@@ -22,7 +22,7 @@ Story: [#/story/buffers-and-shapes](#/story/buffers-and-shapes).
 
 ## Lines: `GPULineSegmentize`, `GPULineChunk`, `GPULineLocate`, `GPULinearReferencing`, `GPULineSimplification`, `GPULineSmooth`
 
-Densify to add vertices, chunk to cut into pieces or take a substring between two measures, locate to place events by distance or fraction, linear referencing to snap points to lines and read the measure and side. Simplification computes importance once and re-selects at a per-frame tolerance; use *time-ratio* for tracks where speed matters. Chaikin smoothing doubles vertices per iteration. Output sizes are capacities fixed at compile time: watch the overflow flag.
+Densify to add vertices, chunk to cut into pieces or take a substring between two measures, locate to place events by distance or fraction, linear referencing to snap points to lines and read the measure and side. Simplification computes importance once and re-selects at a per-frame tolerance; use *time-ratio* for tracks where speed matters. Chaikin smoothing doubles vertices per iteration. Output sizes are capacities fixed at compile time: watch `status.overflow`.
 
 Story: [#/story/line-operations](#/story/line-operations).
 
@@ -50,6 +50,6 @@ Story: [#/story/noding-and-coverage](#/story/noding-and-coverage).
 
 - Planar measures are only as good as the projection; the planar column is wrong at national scale.
 - Buffers are not unioned. Grids are not clipped. Rectangle clips are planar.
-- Capacities (pairs, pieces, rings, candidates) are compile-time; a small one truncates and sets an overflow flag.
+- Capacities (pairs, pieces, rings, candidates) are compile-time; a small one truncates and sets `status.overflow`.
 - Noding connects end points only, within a snap cell; it does not connect a line ending near another's middle.
 - Simplification can cross itself unless the topology-preserving coverage tool is used.

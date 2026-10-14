@@ -121,11 +121,11 @@ export function getGeomorphonKey(
  * Geomorphons at one search radius. `radius`, the skip radius and the comparison are compile-time;
  * the flatness threshold and flat distance are read from `getOptions` on every encode.
  */
-export function buildGeomorphons(
+export async function buildGeomorphons(
   session: TerrainSession,
   radius: number,
   getOptions: () => LandformOptions
-): LandformBuild {
+): Promise<LandformBuild> {
   const {grid} = session;
   const options = getOptions();
   const id = `geo-${getGeomorphonKey(radius, options).replace(/\|/g, '-')}`;
@@ -136,28 +136,29 @@ export function buildGeomorphons(
   builder.graph.add(
     new GPUGeomorphons({
       id: 'geomorphons',
-      width: grid.width,
-      height: grid.height,
+      grid: grid.grid,
       elevation,
-      settings: settings.view,
+      parameters: settings.view,
       searchRadius: radius,
       skipRadius: Math.min(options.geomorphonSkip, radius - 2),
       comparison: options.geomorphonComparison,
-      forms,
+      output: {forms},
       cellSizeMode: 'web-mercator',
       rowDirection: 'south'
     })
   );
-  const stage = builder.finishStage({
+  const stage = await builder.finishStage({
     minIntervalMs: 40,
     write: () => {
       const state = getOptions();
       settings.parameters.write(
-        getGPUGeomorphonsParameterValues({
-          ...grid.cellSettings,
-          flatThresholdDegrees: state.geomorphonFlatAngle,
-          flatDistance: state.geomorphonFlatDistance
-        })
+        getGPUGeomorphonsParameterValues(
+          {
+            flatThresholdDegrees: state.geomorphonFlatAngle,
+            flatDistance: state.geomorphonFlatDistance
+          },
+          grid.grid
+        )
       );
     }
   });
@@ -187,10 +188,10 @@ export function getCurvatureConfigKey(state: LandformOptions): string {
  * recompiles nothing); any other kind, and the ring curvature, is a build of its own. The
  * displayed raster is `values.curvature` for those and `values.profile` / `values.plan`.
  */
-export function buildCurvature(
+export async function buildCurvature(
   session: TerrainSession,
   getOptions: () => LandformOptions
-): LandformBuild {
+): Promise<LandformBuild> {
   const {grid} = session;
   const state = getOptions();
   const kind = getCurvatureKind(state);
@@ -202,10 +203,9 @@ export function buildCurvature(
   const outputs: Record<string, {buffer: Buffer; format: 'float32'}> = {};
   const common = {
     id: 'curvature',
-    width: grid.width,
-    height: grid.height,
+    grid: grid.grid,
     elevation,
-    settings: settings.view,
+    parameters: settings.view,
     method: state.curvatureMethod,
     cellSizeMode: 'web-mercator' as const,
     rowDirection: 'south' as const,
@@ -214,7 +214,7 @@ export function buildCurvature(
   if (standard) {
     const profile = builder.floats('profile');
     const plan = builder.floats('plan');
-    builder.graph.add(new GPUTerrainCurvature({...common, curvatures: {profile, plan}}));
+    builder.graph.add(new GPUTerrainCurvature({...common, output: {curvatures: {profile, plan}}}));
     outputs.profile = {buffer: builder.getBuffer('profile'), format: 'float32'};
     outputs.plan = {buffer: builder.getBuffer('plan'), format: 'float32'};
   } else if (kind === 'ring-multi-radius') {
@@ -223,7 +223,7 @@ export function buildCurvature(
     builder.graph.add(
       new GPUTerrainCurvature({
         ...common,
-        ringCurvature: output,
+        output: {ringCurvature: output},
         ringRadii: [state.ringRadiusInner, outerRadius],
         ringSquash: state.ringSquash ? ('pade-tanh' as const) : ('none' as const)
       })
@@ -234,21 +234,23 @@ export function buildCurvature(
     builder.graph.add(
       new GPUTerrainCurvature({
         ...common,
-        curvatures: {[kind as GPUTerrainCurvatureKind]: output}
+        output: {curvatures: {[kind as GPUTerrainCurvatureKind]: output}}
       })
     );
     outputs.curvature = {buffer: builder.getBuffer('curvature'), format: 'float32'};
   }
-  const stage = builder.finishStage({
+  const stage = await builder.finishStage({
     write: () => {
       const current = getOptions();
       settings.parameters.write(
-        getGPUTerrainCurvatureParameterValues({
-          ...grid.cellSettings,
-          zFactor: current.zFactor,
-          flatGradient: Math.max(current.flatGradient, 1e-6),
-          ringGains: [current.ringGainInner, current.ringGainOuter]
-        })
+        getGPUTerrainCurvatureParameterValues(
+          {
+            zFactor: current.zFactor,
+            flatGradient: Math.max(current.flatGradient, 1e-6),
+            ringGains: [current.ringGainInner, current.ringGainOuter]
+          },
+          grid.grid
+        )
       );
     }
   });
@@ -275,11 +277,11 @@ export function getPositionConfigKey(state: LandformOptions): string {
  * recompiles nothing); `scale` keeps DEVmax and the radius it occurs at and writes the scale
  * class: code 1-8 for the eight windows, 0 for none.
  */
-export function buildPosition(
+export async function buildPosition(
   session: TerrainSession,
   product: PositionProduct,
   getOptions: () => LandformOptions
-): LandformBuild {
+): Promise<LandformBuild> {
   const {grid} = session;
   const {pixelCount} = grid;
   const state = getOptions();
@@ -295,8 +297,7 @@ export function buildPosition(
   }));
   const common = {
     id: 'topographic-position',
-    width: grid.width,
-    height: grid.height,
+    grid: grid.grid,
     elevation,
     scales,
     quantum: QUANTUMS[state.quantum]
@@ -306,7 +307,7 @@ export function buildPosition(
     builder.graph.add(
       new GPUTerrainTopographicPosition({
         ...common,
-        ...(product === 'tpi' ? {topographicPositionIndex: planes} : {deviationFromMean: planes})
+        output: product === 'tpi' ? {topographicPositionIndex: planes} : {deviationFromMean: planes}
       })
     );
     const select = builder.settings(4);
@@ -324,7 +325,7 @@ export function buildPosition(
   let plane = u32(select[selectOffset]);
   value[valueOffset + index] = planes[planesOffset + plane * PIXEL_COUNT + index];`
     });
-    const stage = builder.finishStage({
+    const stage = await builder.finishStage({
       write: () =>
         select.parameters.write(
           Float32Array.of(Math.min(getOptions().scaleIndex, radii.length - 1), 0, 0, 0)
@@ -339,8 +340,7 @@ export function buildPosition(
   builder.graph.add(
     new GPUTerrainTopographicPosition({
       ...common,
-      maximumDeviation,
-      maximumDeviationRadius: maximumRadius
+      output: {maximumDeviation, maximumDeviationRadius: maximumRadius}
     })
   );
   const codes = builder.words('codes');
@@ -368,7 +368,7 @@ var<private> SCALE_RADII: array<u32, ${radii.length}> = array<u32, ${radii.lengt
   }
   codes[codesOffset + index] = code;`
   });
-  const stage = builder.finishStage({write: () => {}});
+  const stage = await builder.finishStage({write: () => {}});
   return createBuild(session, id, stage, {
     codes: {buffer: builder.getBuffer('codes'), format: 'uint32'}
   });
@@ -384,10 +384,10 @@ export function getWeissConfigKey(state: LandformOptions): string {
 }
 
 /** Weiss (2001) landforms from a small and a large TPI scale and the Horn slope. */
-export function buildWeiss(
+export async function buildWeiss(
   session: TerrainSession,
   getOptions: () => LandformOptions
-): LandformBuild {
+): Promise<LandformBuild> {
   const {grid} = session;
   const state = getOptions();
   const id = 'weiss';
@@ -398,27 +398,28 @@ export function buildWeiss(
   builder.graph.add(
     new GPUTerrainWeissLandforms({
       id: 'weiss',
-      width: grid.width,
-      height: grid.height,
+      grid: grid.grid,
       elevation,
-      settings: settings.view,
+      parameters: settings.view,
       smallScale: {radius: state.weissSmall},
       largeScale: {radius: Math.max(state.weissLarge, state.weissSmall + 1)},
       standardization: state.weissStandardization,
       quantum: QUANTUMS[state.quantum],
-      landforms: codes,
+      output: {landforms: codes},
       cellSizeMode: 'web-mercator'
     })
   );
-  const stage = builder.finishStage({
+  const stage = await builder.finishStage({
     write: () => {
       const current = getOptions();
       settings.parameters.write(
-        getGPUTerrainWeissLandformsParameterValues({
-          ...grid.cellSettings,
-          standardThreshold: current.weissThreshold,
-          slopeThresholdDegrees: current.weissSlope
-        })
+        getGPUTerrainWeissLandformsParameterValues(
+          {
+            standardThreshold: current.weissThreshold,
+            slopeThresholdDegrees: current.weissSlope
+          },
+          grid.grid
+        )
       );
     }
   });
@@ -437,11 +438,11 @@ export const AGREEMENT_CODES = {agree: 0, disagree: 1, opposite: 2, none: 3} as 
  * hollow, footslope, valley, pit. Output: 0 agree, 1 disagree, 2 opposite (convex against
  * concave), 3 where either has no class. Depends on both stages, so it re-runs when either does.
  */
-export function buildAgreement(
+export async function buildAgreement(
   session: TerrainSession,
   weiss: LandformBuild,
   geomorphons: LandformBuild
-): LandformBuild {
+): Promise<LandformBuild> {
   const {pixelCount} = session.grid;
   const id = 'agreement';
   const builder = session.builder(id);
@@ -497,7 +498,7 @@ fn formGroup(code: u32) -> u32 {
   }
   agreement[agreementOffset + index] = result;`
   });
-  const stage = builder.finishStage({
+  const stage = await builder.finishStage({
     write: () => {},
     dependencies: [weiss.stage, geomorphons.stage]
   });

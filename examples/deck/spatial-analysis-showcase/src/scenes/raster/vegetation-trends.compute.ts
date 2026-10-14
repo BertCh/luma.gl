@@ -185,7 +185,9 @@ export async function createVegetationTrends(
 
   // Two graphs: the t-test one carries every statistic; the second only switches the significance
   // source (compile-time) to Mann-Kendall.
-  const buildGraph = (source: 't-test' | 'mann-kendall'): CompiledGPUCommandGraph<void> => {
+  const buildGraph = async (
+    source: 't-test' | 'mann-kendall'
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: `trend-${source}`});
     const view = createGraphViewer(graph);
     const f = (
@@ -220,9 +222,12 @@ export async function createVegetationTrends(
             : {significance: view('significance', significanceMannKendall, 'uint32', cellCount)}
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
-  const compiled = {'t-test': buildGraph('t-test'), 'mann-kendall': buildGraph('mann-kendall')};
+  const compiled = {
+    't-test': await buildGraph('t-test'),
+    'mann-kendall': await buildGraph('mann-kendall')
+  };
 
   // --- State -----------------------------------------------------------------------------------
   let destroyed = false;

@@ -19,6 +19,7 @@ import {
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -326,7 +327,7 @@ export async function createNearestFacility(
   };
 
   /** Builds the compiled graph and buffers of one compile-time configuration. */
-  function buildVariant(state: NearestFacilityOptions, forTiming = false): Variant {
+  async function buildVariant(state: NearestFacilityOptions, forTiming = false): Promise<Variant> {
     const set = getEffectiveSet(state);
     const key = getVariantKey(state);
     const own = new SpatialAnalysisResources(device, `nf-${key}`);
@@ -400,28 +401,38 @@ export async function createNearestFacility(
       graph.add(
         new GPUNearestFeatureJoin({
           id: 'nearest',
-          points: places,
+          queries: {kind: 'points', positions: places},
           features,
           radius: limit.importToGraph(graph),
           candidateCapacity: placeCount * set.candidatesPerPoint,
           spatialSort: state.spatialSort,
-          nearestFeatureIds: importGraphBuffer(
-            graph,
-            'nearest-ids',
-            nearestIds,
-            'uint32',
-            placeCount
-          ),
-          nearestDistances: distancesView,
-          featureCounts: importGraphBuffer(
-            graph,
-            'feature-counts',
-            featureCounts,
-            'uint32',
-            Math.max(featureTotal, 1)
-          ),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-          candidateCount: importGraphBuffer(graph, 'candidate-count', candidateCount, 'uint32', 1)
+          output: {
+            nearestFeatureIds: importGraphBuffer(
+              graph,
+              'nearest-ids',
+              nearestIds,
+              'uint32',
+              placeCount
+            ),
+            nearestDistances: distancesView,
+            featureCounts: importGraphBuffer(
+              graph,
+              'feature-counts',
+              featureCounts,
+              'uint32',
+              Math.max(featureTotal, 1)
+            ),
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+              candidateCount: importGraphBuffer(
+                graph,
+                'candidate-count',
+                candidateCount,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       addKernelPass(graph, {
@@ -495,24 +506,26 @@ export async function createNearestFacility(
       graph.add(
         new GPUNearestFeatureJoin({
           id: 'neighbors',
-          points: places,
+          queries: {kind: 'points', positions: places},
           features,
           k: NEIGHBOR_CAPACITY,
           neighborCapacity: capacity,
           ties: state.ties,
-          maxDistance: limit.importToGraph(graph),
+          radius: limit.importToGraph(graph),
           spatialSort: state.spatialSort,
-          neighborIds: neighborIdsView,
-          neighborCounts: neighborCountsView,
-          neighborDistances: neighborDistancesView,
-          neighborFootPoints: importGraphBuffer(
-            graph,
-            'foot-points',
-            footPoints,
-            'float32x2',
-            placeCount * capacity
-          ),
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+          output: {
+            neighborIds: neighborIdsView,
+            neighborCounts: neighborCountsView,
+            neighborDistances: neighborDistancesView,
+            neighborFootPoints: importGraphBuffer(
+              graph,
+              'foot-points',
+              footPoints,
+              'float32x2',
+              placeCount * capacity
+            ),
+            status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          }
         })
       );
       addKernelPass(graph, {
@@ -581,13 +594,15 @@ export async function createNearestFacility(
       graph.add(
         new GPUNearestFeatureJoin({
           id: 'weights-join',
-          points: featuresView,
+          queries: {kind: 'points', positions: featuresView},
           features: {kind: 'points', positions: featuresView},
           k: capacity,
-          neighborIds: neighborIdsView,
-          neighborCounts: neighborCountsView,
-          neighborDistances: neighborDistancesView,
-          overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)
+          output: {
+            neighborIds: neighborIdsView,
+            neighborCounts: neighborCountsView,
+            neighborDistances: neighborDistancesView,
+            status: {overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1)}
+          }
         })
       );
       graph.add(
@@ -601,13 +616,15 @@ export async function createNearestFacility(
           excludeSelf: true,
           weightType: state.weightType,
           power: state.weightPower,
-          weights: {
+          output: {
             offsets: importGraphBuffer(graph, 'csr-offsets', csrOffsets, 'uint32', rows + 1),
             neighbors: importGraphBuffer(graph, 'csr-neighbors', csrNeighbors, 'uint32', rows * k),
             weights: importGraphBuffer(graph, 'csr-weights', csrWeights, 'float32', rows * k),
-            distances: importGraphBuffer(graph, 'csr-distances', csrDistances, 'float32', rows * k)
-          },
-          overflow: importGraphBuffer(graph, 'weights-overflow', weightsOverflow, 'uint32', 1)
+            distances: importGraphBuffer(graph, 'csr-distances', csrDistances, 'float32', rows * k),
+            status: {
+              overflow: importGraphBuffer(graph, 'weights-overflow', weightsOverflow, 'uint32', 1)
+            }
+          }
         })
       );
       addKernelPass(graph, {
@@ -692,12 +709,14 @@ export async function createNearestFacility(
           left: {kind: 'points', positions: left},
           right: polygons,
           distance,
-          pairs: {
+          output: {
             leftIds: importGraphBuffer(graph, 'pairs-left', leftIds, 'uint32', capacity),
             rightIds: importGraphBuffer(graph, 'pairs-right', rightIds, 'uint32', capacity),
-            count: importGraphBuffer(graph, 'pairs-count', count, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'pairs-total', total, 'uint32', 1)
+            status: {
+              count: importGraphBuffer(graph, 'pairs-count', count, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'overflow', overflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'pairs-total', total, 'uint32', 1)
+            }
           }
         })
       );
@@ -770,7 +789,7 @@ export async function createNearestFacility(
       if (destroyed || variant !== result) return;
       handleSummary(result, bytes);
     });
-    result.compiled = own.track(graph.compile());
+    result.compiled = own.track(await graph.compileAsync());
     if (forTiming) return result;
     void candidateCount;
     return result;
@@ -886,19 +905,42 @@ export async function createNearestFacility(
     placeMaskBuffer.write(placeMask);
   }
 
-  function replaceVariant(state: NearestFacilityOptions): void {
+  /** Stops the readers of a variant; its resources are destroyed separately. */
+  function stopVariantReaders(target: Variant): void {
+    target.reader.stop();
+    target.weightsReader?.stop();
+    target.candidates?.reader.stop();
+  }
+
+  /** Makes a built variant the live one and retires the previous one. */
+  function commitVariant(next: Variant, state: NearestFacilityOptions): void {
     const previous = variant;
-    variant = buildVariant(state);
+    variant = next;
     dirty = true;
     tractCandidateFlags = state.mode === 'candidates' ? tractCandidateFlags : false;
     if (previous) {
-      previous.reader.stop();
-      previous.weightsReader?.stop();
-      previous.candidates?.reader.stop();
+      stopVariantReaders(previous);
       // Deck may still hold the previous frame; free two frames later.
       requestAnimationFrame(() => requestAnimationFrame(() => previous.resources.destroy()));
     }
     updateStaticReadouts(state);
+  }
+
+  const variantSwap = resources.track(new GraphSwap());
+  /** Builds the variant for `state` and swaps it in; the latest request wins. */
+  function requestVariant(state: NearestFacilityOptions): Promise<boolean> {
+    const wanted = {...state};
+    return variantSwap.request({
+      build: () => buildVariant(wanted),
+      commit: next => {
+        commitVariant(next, wanted);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        stopVariantReaders(next);
+        next.resources.destroy();
+      }
+    });
   }
 
   function updateStaticReadouts(state: NearestFacilityOptions): void {
@@ -937,7 +979,7 @@ export async function createNearestFacility(
   }
 
   writeMask(ctx.options);
-  variant = buildVariant(ctx.options);
+  variant = await buildVariant(ctx.options);
   updateStaticReadouts(ctx.options);
 
   /** Times the active variant and the other `spatialSort` choice outside the frame. */
@@ -953,7 +995,7 @@ export async function createNearestFacility(
     const results: string[] = [];
     try {
       for (const spatialSort of [false, true]) {
-        const built = buildVariant({...state, spatialSort}, true);
+        const built = await buildVariant({...state, spatialSort}, true);
         try {
           const timing = await measureCompiledGraph(device, built.compiled, {
             parameters: undefined,
@@ -995,7 +1037,8 @@ export async function createNearestFacility(
         case 'weightType':
         case 'weightPower':
         case 'candidateDistance':
-          if (getVariantKey(state) !== variant.key) replaceVariant(state);
+          if (variantSwap.pending || getVariantKey(state) !== variant.key)
+            void requestVariant(state);
           else updateStaticReadouts(state);
           break;
         case 'placeCategory':

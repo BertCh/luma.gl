@@ -54,6 +54,7 @@
  * Hover the map to draw the neighbor links of the nearest row; click to pin it.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -66,7 +67,7 @@ import {
 import {
   getGPUNeighborSearchParameterValues,
   getGPUPermutationParameterValues,
-  GPU_GLOBAL_PERMUTATION_RESULT,
+  GPU_GLOBAL_PERMUTATION_SUMMARY,
   GPU_GLOBAL_SPATIAL_STATISTIC_FIELD,
   GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT,
   GPU_GLOBAL_SPATIAL_STATISTICS_SUMMARY,
@@ -166,7 +167,7 @@ const NEIGHBORHOOD_COLUMNS: readonly GPUNeighborhoodSummaryStatistic[] = [
 const STATISTICS_LENGTH = GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT.length;
 /** Uint32 `counts` of a `GPUSpatialWeightsSummary`. */
 const SUMMARY_COUNTS_LENGTH = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length;
-const PERMUTATION_RESULT_LENGTH = GPU_GLOBAL_PERMUTATION_RESULT.length;
+const PERMUTATION_RESULT_LENGTH = GPU_GLOBAL_PERMUTATION_SUMMARY.length;
 // Summary layout (float32 words): statistics, permutation results, histogram, class counts, flags.
 const SUMMARY_STATISTICS = 0;
 const SUMMARY_PERMUTATION = SUMMARY_STATISTICS + STATISTICS_LENGTH;
@@ -522,7 +523,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       };
     }
 
-    function compileSearch(mode: 'knn' | 'radius', k: number): SearchVariant {
+    async function compileSearch(mode: 'knn' | 'radius', k: number): Promise<SearchVariant> {
       const graph = new GPUCommandGraph<void>(device, {id: `weights-search-${mode}-${k}`});
       const positions = importGraphBuffer(
         graph,
@@ -540,15 +541,25 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           gridSize: GRID_SIZE,
           positions,
           parameters: searchParameters.importToGraph(graph),
-          weights,
-          overflow: importGraphBuffer(graph, 'search-overflow', searchOverflowBuffer, 'uint32', 1),
-          totalNeighbors: importGraphBuffer(
-            graph,
-            'total-neighbors',
-            totalNeighborsBuffer,
-            'uint32',
-            1
-          )
+          output: {
+            ...weights,
+            status: {
+              overflow: importGraphBuffer(
+                graph,
+                'search-overflow',
+                searchOverflowBuffer,
+                'uint32',
+                1
+              ),
+              requiredCount: importGraphBuffer(
+                graph,
+                'total-neighbors',
+                totalNeighborsBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       // One thread per slot finds its row by binary search and writes the drawable segment.
@@ -575,7 +586,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         declarations: `const ROW_COUNT: u32 = ${cellCount}u;`,
         body: SEGMENT_BODY
       });
-      return {compiled: resources.track(graph.compile())};
+      return {compiled: resources.track(await graph.compileAsync())};
     }
 
     // Global statistics and the Moran reference distribution: one graph, no compile-time choices
@@ -590,13 +601,15 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           weights,
           values,
           statistics: ['moran', 'geary', 'getisOrdG'],
-          results: importGraphBuffer(
-            globalGraph,
-            'statistics',
-            statisticsBuffer,
-            'float32',
-            STATISTICS_LENGTH
-          )
+          output: {
+            summary: importGraphBuffer(
+              globalGraph,
+              'statistics',
+              statisticsBuffer,
+              'float32',
+              STATISTICS_LENGTH
+            )
+          }
         })
       );
       globalGraph.add(
@@ -607,34 +620,36 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           statistic: 'moran',
           parameters: permutationParameters.importToGraph(globalGraph),
           maximumPermutations: MAXIMUM_PERMUTATIONS,
-          results: importGraphBuffer(
-            globalGraph,
-            'permutation-results',
-            permutationResultBuffer,
-            'float32',
-            PERMUTATION_RESULT_LENGTH
-          ),
-          referenceDistribution: importGraphBuffer(
-            globalGraph,
-            'reference',
-            referenceBuffer,
-            'float32',
-            MAXIMUM_PERMUTATIONS
-          ),
-          histogram: importGraphBuffer(
-            globalGraph,
-            'histogram',
-            histogramBuffer,
-            'uint32',
-            HISTOGRAM_BINS
-          )
+          output: {
+            summary: importGraphBuffer(
+              globalGraph,
+              'permutation-results',
+              permutationResultBuffer,
+              'float32',
+              PERMUTATION_RESULT_LENGTH
+            ),
+            referenceDistribution: importGraphBuffer(
+              globalGraph,
+              'reference',
+              referenceBuffer,
+              'float32',
+              MAXIMUM_PERMUTATIONS
+            ),
+            histogram: importGraphBuffer(
+              globalGraph,
+              'histogram',
+              histogramBuffer,
+              'uint32',
+              HISTOGRAM_BINS
+            )
+          }
         })
       );
     }
-    const globalCompiled = resources.track(globalGraph.compile());
+    const globalCompiled = resources.track(await globalGraph.compileAsync());
 
     // The local test's Benjamini-Hochberg option is compile-time: compile both and pick.
-    function compileLocal(fdr: boolean): SearchVariant {
+    async function compileLocal(fdr: boolean): Promise<SearchVariant> {
       const graph = new GPUCommandGraph<void>(device, {
         id: `weights-local${fdr ? '-fdr' : ''}`
       });
@@ -658,24 +673,28 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           parameters: permutationParameters.importToGraph(graph),
           maximumPermutations: MAXIMUM_PERMUTATIONS,
           maximumNeighbors: MAXIMUM_LOCAL_NEIGHBORS,
-          exceedances: importGraphBuffer(
-            graph,
-            'exceedances',
-            exceedancesBuffer,
-            'uint32',
-            cellCount
-          ),
-          pseudoPValues: importGraphBuffer(
-            graph,
-            'pseudo-p-values',
-            pseudoPValuesBuffer,
-            'float32',
-            cellCount
-          ),
-          observed,
-          significant,
           multipleTesting: fdr ? 'benjamini-hochberg' : 'none',
-          overflow: importGraphBuffer(graph, 'local-overflow', localOverflowBuffer, 'uint32', 1)
+          output: {
+            exceedances: importGraphBuffer(
+              graph,
+              'exceedances',
+              exceedancesBuffer,
+              'uint32',
+              cellCount
+            ),
+            pseudoPValues: importGraphBuffer(
+              graph,
+              'pseudo-p-values',
+              pseudoPValuesBuffer,
+              'float32',
+              cellCount
+            ),
+            observed,
+            significant,
+            status: {
+              overflow: importGraphBuffer(graph, 'local-overflow', localOverflowBuffer, 'uint32', 1)
+            }
+          }
         })
       );
       // LISA class from the sign of the local statistic and of the centered value.
@@ -727,15 +746,15 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           edges: [0, 1, 2, 3, 4, 5]
         })
       );
-      return {compiled: resources.track(graph.compile())};
+      return {compiled: resources.track(await graph.compileAsync())};
     }
 
     const searchVariants = new Map<NeighborChoice, SearchVariant>();
     for (const k of K_CHOICES) {
-      searchVariants.set(`k${k}`, compileSearch('knn', k));
+      searchVariants.set(`k${k}`, await compileSearch('knn', k));
     }
-    searchVariants.set('radius', compileSearch('radius', 1));
-    const localVariants = {plain: compileLocal(false), fdr: compileLocal(true)};
+    searchVariants.set('radius', await compileSearch('radius', 1));
+    const localVariants = {plain: await compileLocal(false), fdr: await compileLocal(true)};
 
     const getActiveSearch = () => searchVariants.get(neighborChoice)!;
     const getActiveLocal = () => (falseDiscoveryRate ? localVariants.fdr : localVariants.plain);
@@ -834,19 +853,29 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           cellCount
         ),
         parameters: bandParameters.importToGraph(bandGraph),
-        weights: importCsr(bandGraph, 'b', weightsB, bandCapacity),
-        overflow: importGraphBuffer(bandGraph, 'band-overflow', bandOverflowBuffer, 'uint32', 1),
-        totalNeighbors: importGraphBuffer(bandGraph, 'band-total', bandTotalBuffer, 'uint32', 1)
+        output: {
+          ...importCsr(bandGraph, 'b', weightsB, bandCapacity),
+          status: {
+            overflow: importGraphBuffer(
+              bandGraph,
+              'band-overflow',
+              bandOverflowBuffer,
+              'uint32',
+              1
+            ),
+            requiredCount: importGraphBuffer(bandGraph, 'band-total', bandTotalBuffer, 'uint32', 1)
+          }
+        }
       })
     );
-    const bandCompiled = resources.track(bandGraph.compile());
+    const bandCompiled = resources.track(await bandGraph.compileAsync());
 
     // Algebra: every operation, order and cumulative choice is a compiled variant.
-    const compileAlgebra = (
+    const compileAlgebra = async (
       operation: AlgebraOperation,
       order: number,
       cumulative: boolean
-    ): CompiledGPUCommandGraph<void> => {
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {
         id: `weights-algebra-${operation}${operation === 'higherOrder' ? `-${order}-${cumulative}` : ''}`
       });
@@ -854,9 +883,19 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       const right = importCsr(graph, 'b', weightsB, bandCapacity);
       const common = {
         id: 'algebra',
-        output: importCsr(graph, 'c', weightsC, resultCapacity),
-        overflow: importGraphBuffer(graph, 'result-overflow', resultOverflowBuffer, 'uint32', 1),
-        totalNeighbors: importGraphBuffer(graph, 'result-total', resultTotalBuffer, 'uint32', 1)
+        output: {
+          ...importCsr(graph, 'c', weightsC, resultCapacity),
+          status: {
+            overflow: importGraphBuffer(
+              graph,
+              'result-overflow',
+              resultOverflowBuffer,
+              'uint32',
+              1
+            ),
+            requiredCount: importGraphBuffer(graph, 'result-total', resultTotalBuffer, 'uint32', 1)
+          }
+        }
       };
       switch (operation) {
         case 'union':
@@ -891,7 +930,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           );
           break;
       }
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
     const algebraVariants = new Map<string, CompiledGPUCommandGraph<void>>();
     const getAlgebraKey = (operation: AlgebraOperation, order: number, cumulative: boolean) =>
@@ -904,13 +943,16 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       'subgraph',
       'block'
     ] as const) {
-      algebraVariants.set(getAlgebraKey(operation, 0, false), compileAlgebra(operation, 0, false));
+      algebraVariants.set(
+        getAlgebraKey(operation, 0, false),
+        await compileAlgebra(operation, 0, false)
+      );
     }
     for (const order of [2, 3]) {
       for (const cumulative of [false, true]) {
         algebraVariants.set(
           getAlgebraKey('higherOrder', order, cumulative),
-          compileAlgebra('higherOrder', order, cumulative)
+          await compileAlgebra('higherOrder', order, cumulative)
         );
       }
     }
@@ -937,21 +979,23 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         new GPUSpatialWeightsSummary({
           id: 'result-summary',
           weights: result,
-          statistics: importGraphBuffer(
-            resultGraph,
-            'summary-statistics-c',
-            summaryStatisticsCBuffer,
-            'float32',
-            3
-          ),
-          counts: importGraphBuffer(
-            resultGraph,
-            'summary-counts-c',
-            summaryCountsCBuffer,
-            'uint32',
-            SUMMARY_COUNTS_LENGTH
-          ),
-          cardinality
+          output: {
+            statistics: importGraphBuffer(
+              resultGraph,
+              'summary-statistics-c',
+              summaryStatisticsCBuffer,
+              'float32',
+              3
+            ),
+            counts: importGraphBuffer(
+              resultGraph,
+              'summary-counts-c',
+              summaryCountsCBuffer,
+              'uint32',
+              SUMMARY_COUNTS_LENGTH
+            ),
+            cardinality
+          }
         })
       );
       resultGraph.add(
@@ -1004,7 +1048,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         body: SEGMENT_BODY
       });
     }
-    const resultCompiled = resources.track(resultGraph.compile());
+    const resultCompiled = resources.track(await resultGraph.compileAsync());
 
     // Summary of A (after any transform).
     const summaryGraph = new GPUCommandGraph<void>(device, {id: 'weights-summary'});
@@ -1012,23 +1056,25 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       new GPUSpatialWeightsSummary({
         id: 'weights-summary',
         weights: importCsr(summaryGraph, 'a', weightsA, capacity),
-        statistics: importGraphBuffer(
-          summaryGraph,
-          'summary-statistics-a',
-          summaryStatisticsABuffer,
-          'float32',
-          3
-        ),
-        counts: importGraphBuffer(
-          summaryGraph,
-          'summary-counts-a',
-          summaryCountsABuffer,
-          'uint32',
-          SUMMARY_COUNTS_LENGTH
-        )
+        output: {
+          statistics: importGraphBuffer(
+            summaryGraph,
+            'summary-statistics-a',
+            summaryStatisticsABuffer,
+            'float32',
+            3
+          ),
+          counts: importGraphBuffer(
+            summaryGraph,
+            'summary-counts-a',
+            summaryCountsABuffer,
+            'uint32',
+            SUMMARY_COUNTS_LENGTH
+          )
+        }
       })
     );
-    const summaryCompiled = resources.track(summaryGraph.compile());
+    const summaryCompiled = resources.track(await summaryGraph.compileAsync());
 
     // ---- Weights sources: the analysis kit (transforms, transpose, lag, focus links) ----------
     const projection = new LocalMetricProjection(trips.origin);
@@ -1081,7 +1127,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       rowCount: cellCount,
       positions: positionsBuffer,
       values: valuesBuffer,
-      kit: createWeightsKit({
+      kit: await createWeightsKit({
         device,
         resources,
         id: 'cells',
@@ -1151,12 +1197,16 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
             radius,
             cellSize: [lattice.cellMeters, lattice.cellMeters],
             mask: importGraphBuffer(graph, 'mask', latticeMaskBuffer, 'uint32', latticeRows),
-            weights: importCsr(graph, 'l', latticeCsr, latticeSlots, latticeRows),
-            overflow: importGraphBuffer(graph, 'overflow', latticeOverflowBuffer, 'uint32', 1),
-            totalNeighbors: importGraphBuffer(graph, 'total', latticeTotalBuffer, 'uint32', 1)
+            output: {
+              ...importCsr(graph, 'l', latticeCsr, latticeSlots, latticeRows),
+              status: {
+                overflow: importGraphBuffer(graph, 'overflow', latticeOverflowBuffer, 'uint32', 1),
+                requiredCount: importGraphBuffer(graph, 'total', latticeTotalBuffer, 'uint32', 1)
+              }
+            }
           })
         );
-        latticeProducers.set(`${criterion}-${radius}`, resources.track(graph.compile()));
+        latticeProducers.set(`${criterion}-${radius}`, resources.track(await graph.compileAsync()));
       }
     }
     let latticeActive = 0;
@@ -1179,7 +1229,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       rowCount: latticeRows,
       positions: latticePositionsBuffer,
       values: latticeValuesBuffer,
-      kit: createWeightsKit({
+      kit: await createWeightsKit({
         device,
         resources,
         id: 'lattice',
@@ -1258,6 +1308,10 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       'block-polygon-offsets',
       blocks.polygonOffsets
     );
+    const blockFeatureOffsetsBuffer = resources.createBuffer(
+      'block-feature-offsets',
+      blocks.featureOffsets
+    );
     const blockCentroidsBuffer = resources.createBuffer('block-centroids', blocks.centroids);
     const blockOutlineBuffer = resources.createBuffer('block-outline', blocks.outline);
     const blockValuesBuffer = resources.createBuffer('block-values', blockTrips);
@@ -1275,40 +1329,55 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         new GPUContiguityWeights({
           id: 'contiguity',
           criterion,
-          positions: importGraphBuffer(
-            graph,
-            'vertices',
-            blockVerticesBuffer,
-            'float32x2',
-            blockCount * 4
-          ),
-          ringOffsets: importGraphBuffer(
-            graph,
-            'ring-offsets',
-            blockRingOffsetsBuffer,
-            'uint32',
-            blockCount + 1
-          ),
-          polygonOffsets: importGraphBuffer(
-            graph,
-            'polygon-offsets',
-            blockPolygonOffsetsBuffer,
-            'uint32',
-            blockCount + 1
-          ),
-          weights: importCsr(graph, 'p', blockCsr, blockSlots, blockCount),
-          overflow: importGraphBuffer(graph, 'overflow', blockOverflowBuffer, 'uint32', 1),
-          totalNeighbors: importGraphBuffer(graph, 'total', blockTotalBuffer, 'uint32', 1)
+          // One ring per polygon and one polygon per feature, so W rows are the blocks.
+          polygons: {
+            kind: 'polygons',
+            positions: importGraphBuffer(
+              graph,
+              'vertices',
+              blockVerticesBuffer,
+              'float32x2',
+              blockCount * 4
+            ),
+            ringOffsets: importGraphBuffer(
+              graph,
+              'ring-offsets',
+              blockRingOffsetsBuffer,
+              'uint32',
+              blockCount + 1
+            ),
+            polygonOffsets: importGraphBuffer(
+              graph,
+              'polygon-offsets',
+              blockPolygonOffsetsBuffer,
+              'uint32',
+              blockCount + 1
+            ),
+            featureOffsets: importGraphBuffer(
+              graph,
+              'feature-offsets',
+              blockFeatureOffsetsBuffer,
+              'uint32',
+              blockCount + 1
+            )
+          },
+          output: {
+            ...importCsr(graph, 'p', blockCsr, blockSlots, blockCount),
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', blockOverflowBuffer, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'total', blockTotalBuffer, 'uint32', 1)
+            }
+          }
         })
       );
-      blockProducers.set(criterion, resources.track(graph.compile()));
+      blockProducers.set(criterion, resources.track(await graph.compileAsync()));
     }
     const blocksSource: WeightsSourceState = {
       label: 'Block',
       rowCount: blockCount,
       positions: blockCentroidsBuffer,
       values: blockValuesBuffer,
-      kit: createWeightsKit({
+      kit: await createWeightsKit({
         device,
         resources,
         id: 'blocks',
@@ -1401,17 +1470,21 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
           ),
           includeFocal: false,
           statistics: NEIGHBORHOOD_COLUMNS,
-          output: table,
           maximumNeighbors: 64,
-          overflow: importGraphBuffer(
-            neighborhoodGraph,
-            'neighborhood-overflow',
-            neighborhoodOverflowBuffer,
-            'uint32',
-            1
-          ),
-          modes,
-          entropy
+          output: {
+            table,
+            modes,
+            entropy,
+            status: {
+              overflow: importGraphBuffer(
+                neighborhoodGraph,
+                'neighborhood-overflow',
+                neighborhoodOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       addKernelPass(neighborhoodGraph, {
@@ -1467,7 +1540,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         })
       );
     }
-    const neighborhoodCompiled = resources.track(neighborhoodGraph.compile());
+    const neighborhoodCompiled = resources.track(await neighborhoodGraph.compileAsync());
 
     const getActiveAlgebra = () =>
       algebraVariants.get(getAlgebraKey(algebraOperation, higherOrder, cumulative))!;
@@ -1490,7 +1563,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
     };
     const writePermutationParameters = () => {
       permutationParameters.write(
-        getGPUPermutationParameterValues({seed, permutations, significanceLevel})
+        getGPUPermutationParameterValues({seed, permutationCount: permutations, significanceLevel})
       );
       dirty = true;
       needsReadback = true;
@@ -2078,7 +2151,7 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       needsReadback = false;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
@@ -2133,12 +2206,12 @@ export const spatialWeightsMode: SpatialAnalysisModeDefinition = {
         );
 
         const permutation = (index: number) => floats[SUMMARY_PERMUTATION + index];
-        const result = GPU_GLOBAL_PERMUTATION_RESULT;
+        const result = GPU_GLOBAL_PERMUTATION_SUMMARY;
         permutationReadout.setValue(
           `${formatP(permutation(result.pseudoPValue))} (z ${formatNumber(
             permutation(result.zSimulated),
             1
-          )}), P = ${permutation(result.permutations)}`
+          )}), P = ${permutation(result.permutationCount)}`
         );
         nullReadout.setValue(
           `${formatNumber(permutation(result.simulatedMean), 4)} ± ${formatNumber(

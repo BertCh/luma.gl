@@ -131,21 +131,24 @@ function getSnippet(state: SegregationOptions): string {
 scales.forEach(({weights, searchParameters}) => {
   graph.add(new GPUNeighborSearch({
     mode: 'radius', gridSize: [32, 32], positions: tractPoints,
-    parameters: searchParameters, weights, overflow
+    parameters: searchParameters, output: {...weights, status: {overflow}}
   }));${kernel}${row}
 });
 
 const common = {
-  unitCount: 791, groupCount: 5,                       // tracts x [Black, White, Hispanic, Asian, other]
+  groupCount: 5,                                       // [Black, White, Hispanic, Asian, other]; 791 tracts = groupCounts.length / 5
   scales: [null, ...scales.map(s => s.weights)],       // null = aspatial
-  selfWeight: ${state.selfWeight}, spatialForm: '${state.spatialForm}', atkinsonB: ${state.atkinsonB}
+  selfWeight: ${state.selfWeight}, spatialForm: '${state.spatialForm}', atkinsonInequalityAversion: ${state.atkinsonB}
 };
 graph.add(new GPUSegregation({
-  ...common, groupCounts, indices,                     // layout from getGPUSegregationLayout(5)
-  local: {environment, entropy, dissimilarity, theil}  // per-tract terms that sum to the indices
+  ...common, groupCounts,
+  output: {
+    indices,                                           // layout from getGPUSegregationLayout(5)
+    localEnvironment, localEntropy, localDissimilarity, localTheil   // per-tract terms that sum to the indices
+  }
 }));
 // The checkerboard null: the same weights, whole tract rows shuffled with a seed.
-graph.add(new GPUSegregation({...common, groupCounts: shuffledCounts, indices: shuffledIndices}));`;
+graph.add(new GPUSegregation({...common, groupCounts: shuffledCounts, output: {indices: shuffledIndices}}));`;
 }
 
 export default defineScene<SegregationOptions>({

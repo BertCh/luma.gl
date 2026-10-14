@@ -126,7 +126,7 @@ const options: readonly OptionSpec<IsochronesOptions>[] = [
     step: 100,
     default: 2000,
     unit: 'm',
-    help: 'maxDistance of the distance field: raster cells farther than this from every facility belong to no zone. 2 km is roughly four minutes at 30 km/h, the middle band of the default bands.'
+    help: 'maximumDistance of the distance field: raster cells farther than this from every facility belong to no zone. 2 km is roughly four minutes at 30 km/h, the middle band of the default bands.'
   },
   {
     kind: 'toggle',
@@ -377,31 +377,34 @@ export default defineScene<IsochronesOptions>({
   },
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {addStraightLineCatchmentsRecipe} from '@luma.gl/experimental/gpu-spatial-analysis';
+import {
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import {
   addDriveTimeCatchmentRecipe,
-  addStraightLineCatchmentsRecipe,
-  getGPUDistanceFieldParameterValues
-} from '@luma.gl/experimental/gpu-spatial-analysis';
-import {getGPUNetworkIsochroneParameterValues} from '@luma.gl/experimental/gpu-network';
+  getGPUNetworkIsochronesParameterValues
+} from '@luma.gl/experimental/gpu-network';
 
 const graph = new GPUCommandGraph(device, {id: 'catchments'});
 const catchment = addDriveTimeCatchmentRecipe(graph, {
-  network: {offsets, neighbors, weights, nodePositions},   // CSR in seconds, planar meters
+  topology: {offsets, neighbors, weights, nodePositions},  // CSR in seconds, planar meters
   facilities, demand, demandValues: population,            // float32x2 points
-  costLimit, maxIterations: 64,
-  bandBreaks: breaks,                                       // ascending seconds, per frame
+  costLimit, maximumIterations: 64,
+  costBreaks: breaks,                                       // ascending seconds, per frame
   isochrones: {
-    breaks, parameters,
-    raster: {width: 1024, height: 640, mode: '${state.rasterMode}', output: {triangles, triangleBands, count, overflow, vertexCount}}
+    costBreaks: breaks, parameters,
+    raster: {width: 1024, height: 640, mode: '${state.rasterMode}', output: {triangles, triangleBands, status: {count, vertexCount, overflow}}}
   },
-  assignments, nodeCosts, demandBands, bands: {keys, counts, count, overflow, sumValues}
+  outputs: {assignments, nodeCosts, demandBands, bands: {keys, counts, sumValues, status: {count, overflow}}}
 });
 // Closed rings of the reached ${state.cellChoice.startsWith('h3') ? 'H3' : 'Quadbin'} cells (resolution ${state.cellChoice.split('-')[1]}):
 graph.add(new GPUNetworkIsochrones({
-  offsets, neighbors, weights, nodePositions: lngLat, costs: catchment.nodeCosts, breaks, parameters,
+  topology: {offsets, neighbors, weights, nodePositions: lngLat}, costs: catchment.outputs.nodeCosts, costBreaks: breaks, parameters,
   cellOutline: {family: '${state.cellChoice.startsWith('h3') ? 'h3' : 'quadbin'}', resolution: ${state.cellChoice.split('-')[1]}, output, rings: {output: ringOutput}}
 }));
-parameters.write(getGPUNetworkIsochroneParameterValues({
+parameters.write(getGPUNetworkIsochronesParameterValues({
   breakCount: 4, extent, bufferRadius: ${state.walkBuffer}, walkCostPerUnit: 1 / 1.34, cellCostLimit: 8 * 60
 }));
 breaks.write(Float32Array.of(120, 240, 360, 480, 0, 0));
@@ -409,11 +412,13 @@ breaks.write(Float32Array.of(120, 240, 360, 480, 0, 0));
 // As the crow flies, for comparison:
 const straight = new GPUCommandGraph(device, {id: 'straight'});
 addStraightLineCatchmentsRecipe(straight, {
-  width, height, settings, seedPositions: facilities, seedCount, values: populationRaster,
-  mode: '${state.distanceMode}', sumOrder: '${state.sumOrder}', allocation, distances, statistics
+  grid, parameters, facilities: {kind: 'points', positions: facilityPositions}, facilityCount, values: populationRaster,
+  mode: '${state.distanceMode}', sumOrder: '${state.sumOrder}', outputs: {allocation, distances, statistics}
 });
-settings.write(getGPUDistanceFieldParameterValues({bounds, gridSize: [width, height], maxDistance: ${state.straightRadius}}));
-graph.compile(); straight.compile();   // once; moving a facility is one buffer write`,
+// grid: origin at the south-west corner, rows advance north (planar meters)
+const grid = makeGPURasterMetadata({width, height, cellSize, origin: [minX, minY], rowDirection: 'north'});
+parameters.write(getGPUDistanceFieldParameterValues({maximumDistance: ${state.straightRadius}}, grid));
+await graph.compileAsync(); await straight.compileAsync();  // once; moving a facility is one buffer write`,
 
   about: {
     what: '`addDriveTimeCatchmentRecipe` chains `GPUNetworkSnapping` (each facility and each demand point snaps to its nearest street edge), `GPUNetworkServiceAreas` (a multi-source search that gives every intersection its cost and its nearest facility) and `GPUNetworkIsochrones` (edge-interpolated costs splatted onto a raster and contoured into bands by `GPUIsobands`). A second `GPUNetworkIsochrones` producer outlines the reached H3 or Quadbin cells into rings. `addStraightLineCatchmentsRecipe` gives the as-the-crow-flies answer.',

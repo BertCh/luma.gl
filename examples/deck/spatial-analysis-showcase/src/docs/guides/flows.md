@@ -35,7 +35,7 @@ Pitfall: zone totals count every accepted record, not every weight unit, so colo
 [`GPUEdgeBundling`](#/reference/GPUEdgeBundling) implements kernel-density edge bundling. Each edge is a polyline with its endpoints pinned. Every iteration splats the density of all control points, moves interior points up the density gradient, resamples them evenly and smooths them. The radius shrinks by a decay factor each round, so lines merge into bundles and then tighten.
 
 - **Per-frame:** active iterations, kernel radius, radius decay, smoothing (stiffness), step scale, and the edge mask. Moving a slider re-encodes the same graph.
-- **Compile-time:** control points per edge, the maximum iteration count, the density grid resolution, and `geographic` (longitude is scaled by the cosine of the latitude so the kernel is round on the ground).
+- **Compile-time:** control points per edge, the maximum iteration count (`maximumIterations`), the density grid resolution, and a longitude-latitude `spatialContext` (longitude is scaled by the cosine of the latitude so the kernel is round on the ground).
 
 Pitfalls: bundled lines are not routes, and curvature has no meaning beyond grouping. The kernel radius is relative to the box around the live edges, so a few far-away edges make every bundle looser; mask them out rather than lowering the radius. Straight lines in longitude and latitude cross the whole map for pairs that span the antimeridian; split such edges (the scenes do) or filter them.
 

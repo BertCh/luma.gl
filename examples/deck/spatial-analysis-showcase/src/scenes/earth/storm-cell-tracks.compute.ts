@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -37,6 +37,7 @@ import {
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
 import {getViewportFrameBounds} from '../../engine/analysis-frame';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {TriangleListLayer} from '../geometry/b3-layers';
@@ -274,70 +275,72 @@ export async function createStormCellTracks(
         trackCount + 1
       ),
       parameters: metricsParameters.importToGraph(metricsGraph),
-      trackLengths: importGraphBuffer(
-        metricsGraph,
-        'track-lengths',
-        trackLengths,
-        'float32',
-        trackCount
-      ),
-      trackDurations: importGraphBuffer(
-        metricsGraph,
-        'track-durations',
-        trackDurations,
-        'float32',
-        trackCount
-      ),
-      averageSpeeds: importGraphBuffer(
-        metricsGraph,
-        'average-speeds',
-        averageSpeeds,
-        'float32',
-        trackCount
-      ),
-      maximumSpeeds: importGraphBuffer(
-        metricsGraph,
-        'maximum-speeds',
-        maximumSpeeds,
-        'float32',
-        trackCount
-      ),
-      stepSpeeds: stepSpeedsView,
-      stepHeadings: stepHeadingsView,
-      trackStopCounts: importGraphBuffer(
-        metricsGraph,
-        'track-stop-counts',
-        trackStopCounts,
-        'uint32',
-        trackCount
-      ),
-      stops: {
-        output: {
-          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
-          count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
-          overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
-        },
-        drawInstanceCount: metricsGraph.importGPUData(
-          'stop-draw-count',
-          stopDraw.getInstanceCountData(0)
-        ),
-        startRows: stopStartView,
-        endRows: stopEndView,
-        centroids: importGraphBuffer(
+      output: {
+        trackLengths: importGraphBuffer(
           metricsGraph,
-          'stop-centroids',
-          stopCentroids,
-          'float32x2',
-          STOP_CAPACITY
-        ),
-        durations: importGraphBuffer(
-          metricsGraph,
-          'stop-durations',
-          stopDurations,
+          'track-lengths',
+          trackLengths,
           'float32',
-          STOP_CAPACITY
-        )
+          trackCount
+        ),
+        trackDurations: importGraphBuffer(
+          metricsGraph,
+          'track-durations',
+          trackDurations,
+          'float32',
+          trackCount
+        ),
+        averageSpeeds: importGraphBuffer(
+          metricsGraph,
+          'average-speeds',
+          averageSpeeds,
+          'float32',
+          trackCount
+        ),
+        maximumSpeeds: importGraphBuffer(
+          metricsGraph,
+          'maximum-speeds',
+          maximumSpeeds,
+          'float32',
+          trackCount
+        ),
+        stepSpeeds: stepSpeedsView,
+        stepHeadings: stepHeadingsView,
+        trackStopCounts: importGraphBuffer(
+          metricsGraph,
+          'track-stop-counts',
+          trackStopCounts,
+          'uint32',
+          trackCount
+        ),
+        stops: {
+          ids: importGraphBuffer(metricsGraph, 'stop-ids', stopIds, 'uint32', STOP_CAPACITY),
+          drawInstanceCount: metricsGraph.importGPUData(
+            'stop-draw-count',
+            stopDraw.getInstanceCountData(0)
+          ),
+          startRows: stopStartView,
+          endRows: stopEndView,
+          centroids: importGraphBuffer(
+            metricsGraph,
+            'stop-centroids',
+            stopCentroids,
+            'float32x2',
+            STOP_CAPACITY
+          ),
+          durations: importGraphBuffer(
+            metricsGraph,
+            'stop-durations',
+            stopDurations,
+            'float32',
+            STOP_CAPACITY
+          ),
+          status: {
+            count: importGraphBuffer(metricsGraph, 'stop-count', stopCount, 'uint32', 1),
+            overflow: importGraphBuffer(metricsGraph, 'stop-overflow', stopOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(metricsGraph, 'stop-total', stopTotal, 'uint32', 1)
+          }
+        }
       }
     })
   );
@@ -403,7 +406,7 @@ export async function createStormCellTracks(
   stallPositions[stallPositionsOffset + index * 2u] = mean.x;
   stallPositions[stallPositionsOffset + index * 2u + 1u] = mean.y;`
   });
-  const metricsCompiled = resources.track(metricsGraph.compile());
+  const metricsCompiled = resources.track(await metricsGraph.compileAsync());
 
   // ---- Playhead graph ---------------------------------------------------------------------------
   const currentPositions = resources.createBuffer('current-positions', trackCount * 8);
@@ -482,18 +485,28 @@ export async function createStormCellTracks(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: playCurrentView,
-      status: playStatusView,
-      segmentRows: playSegmentRowsView,
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: playCurrentView,
+        trackStatus: playStatusView,
+        segmentRows: playSegmentRowsView,
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
   // The playhead gives the segment each cell is on; its speed and heading are the step columns of
@@ -701,7 +714,7 @@ export async function createStormCellTracks(
   arrivals[arrivalsOffset + index * 2u] = vector.z;
   arrivals[arrivalsOffset + index * 2u + 1u] = vector.w;`
   });
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail graph ------------------------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -712,7 +725,7 @@ export async function createStormCellTracks(
   const trailParameters = resources.createParameterBuffer(
     'trail-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -742,30 +755,32 @@ export async function createStormCellTracks(
       window: trailParameters.importToGraph(trailGraph),
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Swath graphs (join smoothness is compile-time) -------------------------------------------
   const swathInput = resources.createBuffer('swath-input', vertexCount * 8);
@@ -773,7 +788,7 @@ export async function createStormCellTracks(
   const swathDistance = resources.createParameterBuffer('swath-distance', 'float32', 4);
   const swathGraphs = new Map<string, SwathGraph>();
 
-  function buildSwath(join: number): SwathGraph {
+  async function buildSwath(join: number): Promise<SwathGraph> {
     const existing = swathGraphs.get(String(join));
     if (existing) return existing;
     const verticesPerInput = getGPUOutlineGeometryVerticesPerInput(join);
@@ -810,7 +825,7 @@ export async function createStormCellTracks(
         id: 'swath',
         positions: inputView,
         geometryType: 'lines',
-        pathOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
+        lineOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         spatialContext: {
           coordinateSpace: 'longitude-latitude',
           metric: 'great-circle',
@@ -824,7 +839,7 @@ export async function createStormCellTracks(
       })
     );
     const built = {
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       triangles,
       triangleCount: outputCount / 3
     };
@@ -840,7 +855,7 @@ export async function createStormCellTracks(
   const flashParameters = resources.createParameterBuffer(
     'flash-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const flashDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -863,17 +878,19 @@ export async function createStormCellTracks(
       window: flashParameters.importToGraph(flashGraph),
       output: {
         ids: importGraphBuffer(flashGraph, 'flash-ids', flashIds, 'uint32', flashCount),
-        count: importGraphBuffer(flashGraph, 'flash-selected', flashSelected, 'uint32', 1),
-        overflow: importGraphBuffer(flashGraph, 'flash-overflow', flashOverflow, 'uint32', 1)
-      },
-      outputMask: importGraphBuffer(flashGraph, 'flash-mask', flashMask, 'uint32', flashCount),
-      drawInstanceCount: flashGraph.importGPUData(
-        'flash-draw-count',
-        flashDraw.getInstanceCountData(0)
-      )
+        outputMask: importGraphBuffer(flashGraph, 'flash-mask', flashMask, 'uint32', flashCount),
+        drawInstanceCount: flashGraph.importGPUData(
+          'flash-draw-count',
+          flashDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: importGraphBuffer(flashGraph, 'flash-selected', flashSelected, 'uint32', 1),
+          overflow: importGraphBuffer(flashGraph, 'flash-overflow', flashOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const flashCompiled = resources.track(flashGraph.compile());
+  const flashCompiled = resources.track(await flashGraph.compileAsync());
 
   const densityBounds = resources.createParameterBuffer('density-bounds', 'float32', 4);
   const kernel = resources.createParameterBuffer(
@@ -953,7 +970,7 @@ export async function createStormCellTracks(
     ctx.requestLayers();
   }
 
-  function buildDensity(options: StormCellTracksOptions): DensityGraph {
+  async function buildDensity(options: StormCellTracksOptions): Promise<DensityGraph> {
     const key = `${options.statistic}:${options.resolution}`;
     const existing = densitySets.get(key);
     if (existing) return existing;
@@ -1021,7 +1038,7 @@ export async function createStormCellTracks(
       }
     );
     const built: DensityGraph = {
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       values,
       extent,
       reader,
@@ -1031,14 +1048,46 @@ export async function createStormCellTracks(
     return built;
   }
 
-  function selectDensity(): void {
-    const key = `${ctx.options.statistic}:${ctx.options.resolution}`;
-    if (key === currentDensityKey && currentDensity) return;
-    currentDensity = buildDensity(ctx.options);
+  /** Makes a compiled density variant the current one. */
+  function commitDensity(next: DensityGraph, key: string): void {
+    currentDensity = next;
     currentDensityKey = key;
     lastDensityValues = null;
-    ctx.setReadout('grid', `${currentDensity.gridSize[0]} x ${currentDensity.gridSize[1]} cells`);
+    ctx.setReadout('grid', `${next.gridSize[0]} x ${next.gridSize[1]} cells`);
     markChanged();
+  }
+
+  // The variant caches are destroyed with the resources, so superseded builds are kept.
+  const densitySwap = resources.track(new GraphSwap());
+  const swathSwap = resources.track(new GraphSwap());
+
+  /** Requests the density variant for the current options unless it is already current. */
+  function requestDensity(): void {
+    const key = `${ctx.options.statistic}:${ctx.options.resolution}`;
+    if (key === currentDensityKey && currentDensity && !densitySwap.pending) return;
+    const options = {...ctx.options};
+    void densitySwap.request({
+      build: () => buildDensity(options),
+      commit: next => {
+        commitDensity(next, key);
+        ctx.requestLayers();
+      }
+    });
+  }
+
+  let swathRequestedJoin = '';
+  /** Starts compiling a swath variant when it is missing and not already requested. */
+  function requestSwath(join: number): void {
+    const key = String(join);
+    if (swathGraphs.has(key) || swathRequestedJoin === key) return;
+    swathRequestedJoin = key;
+    void swathSwap.request({
+      build: () => buildSwath(join),
+      commit: () => {
+        if (swathRequestedJoin === key) swathRequestedJoin = '';
+        ctx.requestLayers();
+      }
+    });
   }
 
   // ---- Initial writes ---------------------------------------------------------------------------
@@ -1075,8 +1124,11 @@ export async function createStormCellTracks(
   writeArrowParameters();
   writeSwathDistance();
   writeKernel(ctx.options.sigma);
-  selectDensity();
-  buildSwath(Number(ctx.options.swathJoin));
+  commitDensity(
+    await buildDensity(ctx.options),
+    `${ctx.options.statistic}:${ctx.options.resolution}`
+  );
+  await buildSwath(Number(ctx.options.swathJoin));
 
   ctx.setReadout(
     'tracks',
@@ -1329,16 +1381,14 @@ export async function createStormCellTracks(
           writeSwathDistance();
           break;
         case 'swathJoin':
-          buildSwath(Number(state.swathJoin));
-          ctx.requestLayers();
+          requestSwath(Number(state.swathJoin));
           break;
         case 'sigma':
           writeKernel(state.sigma);
           break;
         case 'statistic':
         case 'resolution':
-          selectDensity();
-          ctx.requestLayers();
+          requestDensity();
           break;
         case 'lightningMode':
         case 'lightningMinutes':
@@ -1378,13 +1428,13 @@ export async function createStormCellTracks(
         metricsReader.flush(commandEncoder);
       }
 
-      playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
+      playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: 0}));
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
 
       if (options.showTrails) {
         const trailSeconds = options.trailMinutes * 60;
         trailParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds * options.tailFade
@@ -1394,23 +1444,27 @@ export async function createStormCellTracks(
       }
 
       if (options.showSwath) {
-        const swath = buildSwath(Number(options.swathJoin));
-        swathParameters.write(
-          Float32Array.of(
-            options.swathMode === 'so-far' ? playhead : STORM_EVENT_SECONDS + 1,
-            0,
-            0,
-            0
-          )
-        );
-        swath.compiled.encode(commandEncoder, {parameters: undefined});
+        const swath = swathGraphs.get(String(options.swathJoin));
+        if (swath) {
+          swathParameters.write(
+            Float32Array.of(
+              options.swathMode === 'so-far' ? playhead : STORM_EVENT_SECONDS + 1,
+              0,
+              0,
+              0
+            )
+          );
+          swath.compiled.encode(commandEncoder, {parameters: undefined});
+        } else {
+          requestSwath(Number(options.swathJoin));
+        }
       }
 
       if (options.showLightning || options.showFlashes) {
         const windowSeconds = options.lightningMinutes * 60;
         const start = options.lightningMode === 'window' ? playhead - windowSeconds : 0;
         const end = options.lightningMode === 'event' ? STORM_EVENT_SECONDS : playhead;
-        flashParameters.write(getGPUTimeWindowParameterValues({start, end}));
+        flashParameters.write(getGPUTimeWindowFilterParameterValues({start, end}));
         flashCompiled.encode(commandEncoder, {parameters: undefined});
       }
 

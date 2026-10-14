@@ -47,8 +47,12 @@ graph.add(
     output: {values: importGraphBuffer(graph, 'values', values, 'float32', 16000)}
   })
 );
-const compiled = resources.track(graph.compile());
+const compiled = resources.track(await graph.compileAsync());
 ```
+
+`compileAsync()` creates the pipelines without blocking the page. A rebuild for a compile-time option
+builds the new graph, awaits `compileAsync()`, swaps it in and only then releases the old graph;
+`GraphSwap` in `src/engine/graph-swap.ts` does this and lets the latest request win.
 
 ## 4. Encode every frame, draw the output
 

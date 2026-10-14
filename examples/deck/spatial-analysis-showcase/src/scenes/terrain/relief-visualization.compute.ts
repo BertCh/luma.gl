@@ -44,6 +44,7 @@ import {getClassIndexOf} from '../../cartography/class-table';
 import {formatCount} from '../../cartography/live-text';
 import type {ClassTable, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {sampleRamp} from '../../engine/ramps';
 import {getReliefTintColor} from '../../engine/relief';
@@ -64,7 +65,7 @@ import {
 import {loadAlpsGrid} from './b14a-grid';
 import {ColorRasterLayer} from './b14a-layers';
 import {TerrainSession, type ProductBuild, type Stage, type ValueStats} from './b14a-session';
-import {StageRegistry, type StageEntry} from './b14a-stage-registry';
+import {StageRegistry, type StageEntry, type StageLookup} from './b14a-stage-registry';
 import {createDemProbe, createTerrainDemFromGrid} from './cpu-dem';
 import {
   createValueClassPaintGraph,
@@ -372,7 +373,6 @@ export async function createReliefVisualization(
   const dem = createTerrainDemFromGrid(grid);
   const probe = createDemProbe(dem);
   const origin: [number, number, number] = [grid.origin[0], grid.origin[1], 0];
-  const cell = grid.cellSettings;
   let groundTone: 'light' | 'dark' = ctx.ground();
   const terrainGround: TerrainGround = createTerrainGround({
     dem,
@@ -418,25 +418,24 @@ export async function createReliefVisualization(
   }
 
   // --- The reference (left) side of a swipe -----------------------------------------------------
-  const reference = buildReferenceStage();
+  const reference = await buildReferenceStage();
   let referencePaintDirty = true;
 
-  function buildReferenceStage() {
+  async function buildReferenceStage() {
     const builder = session.builder('reference');
     const settings = builder.settings(GPU_RELIEF_SHADING_PARAMETER_LENGTH);
     builder.graph.add(
       new GPUReliefShading({
         id: 'reference-shading',
-        width,
-        height,
+        grid: grid.grid,
         elevation: builder.elevation(),
-        settings: settings.view,
+        parameters: settings.view,
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
-        hillshade: builder.floats('hillshade')
+        output: {hillshade: builder.floats('hillshade')}
       })
     );
-    const stage = builder.finishStage({
+    const stage = await builder.finishStage({
       write: () => {
         const lights =
           ctx.options.reference === 'mdow'
@@ -446,17 +445,19 @@ export async function createReliefVisualization(
                 lightWeighting: 'fixed' as const
               };
         settings.parameters.write(
-          getGPUReliefShadingParameterValues({
-            ...cell,
-            zFactor: ctx.options.zFactor,
-            ...lights,
-            hillshadeStrength: 1,
-            skyViewStrength: 0,
-            textureShadeStrength: 0,
-            tintStrength: 0,
-            exposure: 1,
-            elevationStops: []
-          })
+          getGPUReliefShadingParameterValues(
+            {
+              zFactor: ctx.options.zFactor,
+              ...lights,
+              hillshadeStrength: 1,
+              skyViewStrength: 0,
+              textureShadeStrength: 0,
+              tintStrength: 0,
+              exposure: 1,
+              elevationStops: []
+            },
+            grid.grid
+          )
         );
       }
     });
@@ -473,7 +474,7 @@ export async function createReliefVisualization(
       high: HILLSHADE_PAINT.high,
       alpha: 1
     });
-    const paintGraph = createColorizeGraph(
+    const paintGraph = await createColorizeGraph(
       resources,
       device,
       'reference',
@@ -485,11 +486,11 @@ export async function createReliefVisualization(
   }
 
   // --- Stage builders ----------------------------------------------------------------------------
-  function buildStage(
+  async function buildStage(
     id: StageId,
     state: ReliefOptions,
-    stages: StageRegistry<StageId, ReliefOptions>
-  ): StageEntry {
+    stages: StageLookup<StageId>
+  ): Promise<StageEntry> {
     const builder = session.builder(id);
     const elevation = builder.elevation();
     const dependency = (stage: StageId) => stages.require(stage);
@@ -508,32 +509,35 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUTerrainHorizon({
             id: 'horizon',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             directionCount: Number(state.horizonDirections),
             maximumRadius: Math.min(Number(state.horizonRadius), Math.max(width, height) - 1),
             algorithm: state.horizonAlgorithm,
             ...(state.horizonAlgorithm === 'march' ? {stepGrowth: state.horizonGrowth} : {}),
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            skyViewFactor: builder.floats('svf'),
-            anisotropicSkyViewFactor: builder.floats('aniso'),
-            positiveOpenness: builder.floats('pos'),
-            negativeOpenness: builder.floats('neg')
+            output: {
+              skyViewFactor: builder.floats('svf'),
+              anisotropicSkyViewFactor: builder.floats('aniso'),
+              positiveOpenness: builder.floats('pos'),
+              negativeOpenness: builder.floats('neg')
+            }
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () =>
             settings.parameters.write(
-              getGPUTerrainHorizonParameterValues({
-                ...cell,
-                zFactor: ctx.options.zFactor,
-                anisotropyAzimuthDegrees: ctx.options.anisotropyAzimuth,
-                anisotropyLevel: ctx.options.anisotropyLevel,
-                anisotropyMinimumWeight: ctx.options.anisotropyMinimumWeight
-              })
+              getGPUTerrainHorizonParameterValues(
+                {
+                  zFactor: ctx.options.zFactor,
+                  anisotropyAzimuthDegrees: ctx.options.anisotropyAzimuth,
+                  anisotropyLevel: ctx.options.anisotropyLevel,
+                  anisotropyMinimumWeight: ctx.options.anisotropyMinimumWeight
+                },
+                grid.grid
+              )
             )
         });
         break;
@@ -543,18 +547,17 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUTextureShading({
             id: 'texture-shading',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             levelCount: state.textureLevels,
             baseSigma: state.textureBaseSigma,
             hasNodata: state.textureHasNodata,
             downsampleLevels: state.textureDownsample,
-            textureShade: builder.floats('textureShade')
+            output: {textureShade: builder.floats('textureShade')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () =>
             settings.parameters.write(
               getGPUTextureShadingParameterValues({
@@ -570,25 +573,26 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUTerrainCurvature({
             id: 'ring-curvature',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
-            ringCurvature: builder.floats('curvature'),
+            parameters: settings.view,
             ringRadii: [2, 6],
             ringSquash: 'pade-tanh',
             cellSizeMode: 'web-mercator',
-            rowDirection: 'south'
+            rowDirection: 'south',
+            output: {ringCurvature: builder.floats('curvature')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () =>
             settings.parameters.write(
-              getGPUTerrainCurvatureParameterValues({
-                ...cell,
-                zFactor: ctx.options.zFactor,
-                ringGains: [0.55, 0.45]
-              })
+              getGPUTerrainCurvatureParameterValues(
+                {
+                  zFactor: ctx.options.zFactor,
+                  ringGains: [0.55, 0.45]
+                },
+                grid.grid
+              )
             )
         });
         break;
@@ -598,17 +602,16 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUReliefShading({
             id: 'relief-shading',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
             imhofSwing: true,
-            hillshade: builder.floats('hillshade')
+            output: {hillshade: builder.floats('hillshade')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () => {
             const o = ctx.options;
             const single = [
@@ -621,18 +624,20 @@ export async function createReliefVisualization(
                   ? {lights: single, lightWeighting: 'imhof-swing' as const}
                   : {lights: single, lightWeighting: 'fixed' as const};
             settings.parameters.write(
-              getGPUReliefShadingParameterValues({
-                ...cell,
-                zFactor: o.zFactor,
-                ...lights,
-                imhofSwingDegrees: o.product === 'swing' ? o.imhofSwing : 0,
-                hillshadeStrength: 1,
-                skyViewStrength: 0,
-                textureShadeStrength: 0,
-                tintStrength: 0,
-                exposure: 1,
-                elevationStops: []
-              })
+              getGPUReliefShadingParameterValues(
+                {
+                  zFactor: o.zFactor,
+                  ...lights,
+                  imhofSwingDegrees: o.product === 'swing' ? o.imhofSwing : 0,
+                  hillshadeStrength: 1,
+                  skyViewStrength: 0,
+                  textureShadeStrength: 0,
+                  tintStrength: 0,
+                  exposure: 1,
+                  elevationStops: []
+                },
+                grid.grid
+              )
             );
           }
         });
@@ -643,21 +648,19 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUReliefShading({
             id: 'relief-shading-full',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
-            hillshade: builder.floats('hillshade'),
             skyViewFactor: pixelFloats('horizon', 'svf'),
             textureShade: pixelFloats('texture', 'textureShade'),
             curvature: pixelFloats('curvature', 'curvature'),
             imhofSwing: true,
-            color: builder.words('color')
+            output: {hillshade: builder.floats('hillshade'), color: builder.words('color')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: [
             dependency('horizon').stage,
             dependency('texture').stage,
@@ -666,25 +669,27 @@ export async function createReliefVisualization(
           write: () => {
             const o = ctx.options;
             settings.parameters.write(
-              getGPUReliefShadingParameterValues({
-                ...cell,
-                zFactor: o.zFactor,
-                lights: [{azimuthDegrees: o.lightAzimuth, altitudeDegrees: o.lightAltitude}],
-                lightWeighting: 'imhof-swing',
-                imhofSwingDegrees: o.imhofSwing,
-                curvatureStrength: o.curvatureStrength,
-                contrastLowElevation: RECIPE_CONTRAST.from,
-                contrastHighElevation: o.contrastHighElevation,
-                contrastStrength: o.contrastStrength,
-                hillshadeStrength: o.hillshadeStrength,
-                skyViewStrength: o.skyViewStrength,
-                textureShadeStrength: o.textureStrength,
-                exposure: o.exposure,
-                tintStrength: o.tintStrength,
-                warmColor: getUnitColor(RECIPE_LIT_COLOR),
-                coolColor: getUnitColor(RECIPE_SHADE_COLOR),
-                elevationStops: getPaleTintStops(groundTone)
-              })
+              getGPUReliefShadingParameterValues(
+                {
+                  zFactor: o.zFactor,
+                  lights: [{azimuthDegrees: o.lightAzimuth, altitudeDegrees: o.lightAltitude}],
+                  lightWeighting: 'imhof-swing',
+                  imhofSwingDegrees: o.imhofSwing,
+                  curvatureStrength: o.curvatureStrength,
+                  contrastLowElevation: RECIPE_CONTRAST.from,
+                  contrastHighElevation: o.contrastHighElevation,
+                  contrastStrength: o.contrastStrength,
+                  hillshadeStrength: o.hillshadeStrength,
+                  skyViewStrength: o.skyViewStrength,
+                  textureShadeStrength: o.textureStrength,
+                  exposure: o.exposure,
+                  tintStrength: o.tintStrength,
+                  warmColor: getUnitColor(RECIPE_LIT_COLOR),
+                  coolColor: getUnitColor(RECIPE_SHADE_COLOR),
+                  elevationStops: getPaleTintStops(groundTone)
+                },
+                grid.grid
+              )
             );
           }
         });
@@ -695,40 +700,40 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUReliefShading({
             id: 'relief-recipe',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             cellSizeMode: 'web-mercator',
             rowDirection: 'south',
             imhofSwing: true,
-            hillshade: builder.floats('hillshade'),
-            color: builder.words('color')
+            output: {hillshade: builder.floats('hillshade'), color: builder.words('color')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () => {
             const o = ctx.options;
             const spec = RECIPE_STAGES[Math.min(Math.max(o.recipe, 0), RECIPE_STAGES.length - 1)];
             settings.parameters.write(
-              getGPUReliefShadingParameterValues({
-                ...cell,
-                zFactor: o.zFactor,
-                lights: [{azimuthDegrees: o.lightAzimuth, altitudeDegrees: o.lightAltitude}],
-                lightWeighting: spec.swing ? 'imhof-swing' : 'fixed',
-                imhofSwingDegrees: spec.swing ? o.imhofSwing : 0,
-                hillshadeStrength: 1,
-                skyViewStrength: 0,
-                textureShadeStrength: 0,
-                exposure: o.exposure,
-                tintStrength: spec.warmCool ? RECIPE_WARM_COOL_STRENGTH : 0,
-                warmColor: getUnitColor(RECIPE_LIT_COLOR),
-                coolColor: getUnitColor(RECIPE_SHADE_COLOR),
-                contrastLowElevation: RECIPE_CONTRAST.from,
-                contrastHighElevation: RECIPE_CONTRAST.to,
-                contrastStrength: spec.contrast ? RECIPE_CONTRAST.strength : 0,
-                elevationStops: spec.tint ? getPaleTintStops(groundTone) : []
-              })
+              getGPUReliefShadingParameterValues(
+                {
+                  zFactor: o.zFactor,
+                  lights: [{azimuthDegrees: o.lightAzimuth, altitudeDegrees: o.lightAltitude}],
+                  lightWeighting: spec.swing ? 'imhof-swing' : 'fixed',
+                  imhofSwingDegrees: spec.swing ? o.imhofSwing : 0,
+                  hillshadeStrength: 1,
+                  skyViewStrength: 0,
+                  textureShadeStrength: 0,
+                  exposure: o.exposure,
+                  tintStrength: spec.warmCool ? RECIPE_WARM_COOL_STRENGTH : 0,
+                  warmColor: getUnitColor(RECIPE_LIT_COLOR),
+                  coolColor: getUnitColor(RECIPE_SHADE_COLOR),
+                  contrastLowElevation: RECIPE_CONTRAST.from,
+                  contrastHighElevation: RECIPE_CONTRAST.to,
+                  contrastStrength: spec.contrast ? RECIPE_CONTRAST.strength : 0,
+                  elevationStops: spec.tint ? getPaleTintStops(groundTone) : []
+                },
+                grid.grid
+              )
             );
           }
         });
@@ -739,19 +744,18 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUTerrainDerivatives({
             id: 'derivatives',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
-            slope: builder.floats('slope'),
+            parameters: settings.view,
             cellSizeMode: 'web-mercator',
-            rowDirection: 'south'
+            rowDirection: 'south',
+            output: {slope: builder.floats('slope')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           write: () =>
             settings.parameters.write(
-              getGPUTerrainDerivativesParameterValues({...cell, zFactor: ctx.options.zFactor})
+              getGPUTerrainDerivativesParameterValues({zFactor: ctx.options.zFactor}, grid.grid)
             )
         });
         break;
@@ -761,15 +765,14 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUSimpleLocalRelief({
             id: 'simple-local-relief',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
-            radius: Number(state.slrmRadius),
-            relief: builder.floats('relief')
+            parameters: settings.view,
+            maximumRadius: Number(state.slrmRadius),
+            output: {relief: builder.floats('relief')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           minIntervalMs: 80,
           write: () =>
             settings.parameters.write(
@@ -785,18 +788,17 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUMultiScaleRelief({
             id: 'multi-scale-relief',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             resolution: grid.groundCellSize,
             featureMinimum: state.msrmMinimumFeature,
             featureMaximum: state.msrmMaximumFeature,
             scalingFactor: state.msrmScaling,
-            relief: builder.floats('relief')
+            output: {relief: builder.floats('relief')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           minIntervalMs: 80,
           write: () =>
             settings.parameters.write(
@@ -812,10 +814,9 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPULocalDominance({
             id: 'local-dominance',
-            width,
-            height,
+            grid: grid.grid,
             elevation,
-            settings: settings.view,
+            parameters: settings.view,
             minimumRadius: state.dominanceMinimumRadius,
             maximumRadius: Math.max(
               state.dominanceMaximumRadius,
@@ -823,10 +824,10 @@ export async function createReliefVisualization(
             ),
             radiusIncrement: state.dominanceIncrement,
             angularResolution: Number(state.dominanceAngle),
-            dominance: builder.floats('dominance')
+            output: {dominance: builder.floats('dominance')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           // 264 taps per pixel: let the GPU finish one run before the next is queued.
           minIntervalMs: 450,
           write: () =>
@@ -844,8 +845,7 @@ export async function createReliefVisualization(
         builder.graph.add(
           new GPUReliefBlend({
             id: 'relief-blend',
-            width,
-            height,
+            grid: grid.grid,
             // Bottom to top, the VAT input order: hillshade, slope, positive openness, sky-view.
             layers: [
               pixelFloats('look-plain', 'hillshade'),
@@ -853,11 +853,11 @@ export async function createReliefVisualization(
               pixelFloats('horizon', 'pos'),
               pixelFloats('horizon', 'svf')
             ],
-            settings: settings.view,
-            color: builder.words('color')
+            parameters: settings.view,
+            output: {color: builder.words('color')}
           })
         );
-        stage = builder.finishStage({
+        stage = await builder.finishStage({
           dependencies: [
             dependency('look-plain').stage,
             dependency('slope').stage,
@@ -1031,7 +1031,16 @@ export async function createReliefVisualization(
     ctx.setChart('lightDial', makeLightDialDiagram(state.lightAzimuth, state.lightAltitude));
   }
 
-  function showProduct(): void {
+  const showSwap = resources.track(new GraphSwap());
+  // Builds whose paint graphs (and the underlay of classed products) are compiled.
+  const preparedBuilds = new WeakSet<ProductBuild>();
+
+  /**
+   * Shows the selected product. Stages and builds that are missing are built asynchronously; the
+   * displayed product keeps running until the new one is swapped in. The promise settles once the
+   * request committed or was superseded.
+   */
+  function showProduct(): Promise<unknown> {
     const state = ctx.options;
     updateStateReadouts();
     if (state.product === 'ground') {
@@ -1046,44 +1055,77 @@ export async function createReliefVisualization(
         });
       }
       ctx.requestLayers();
-      return;
+      return Promise.resolve();
     }
     const source = SOURCES[state.product];
-    let build: ProductBuild | undefined;
-    try {
-      const key = registry.getFullKey(source.stage, state);
-      build = session.getBuild(state.product, key);
-      if (!build) {
-        const entry = registry.ensure(source.stage, state);
-        build = session.addBuild(
-          session.createBuild(
-            state.product,
-            entry.stage,
-            entry.builder.getBuffer(source.buffer),
-            source.format
-          ),
-          key
-        );
-      }
-      if (CLASSED_PRODUCTS.has(state.product)) {
-        if (!build.paintGraph) {
-          build.paintGraph = createValueClassPaintGraph(
-            resources,
-            device,
-            state.product,
-            {buffer: build.value.buffer, length: pixelCount},
-            classTableParameters,
-            session.colorsBuffer
-          );
-        }
-        // The grey multidirectional hillshade under the classes, computed once.
-        session.enableUnderlay();
-      }
-      ctx.setStatus('');
-    } catch (error) {
-      ctx.setStatus(`Cannot build ${state.product}: ${(error as Error).message}`);
-      return;
+    const key = registry.getFullKey(source.stage, state);
+    const existing = session.getBuild(state.product, key);
+    if (existing && preparedBuilds.has(existing)) {
+      activateBuild(existing, state);
+      return Promise.resolve();
     }
+    return showSwap
+      .request({
+        build: async () => {
+          const plan = existing ? null : await registry.plan(source.stage, state);
+          const stageEntry = plan?.require(source.stage);
+          const build =
+            existing ??
+            session.createBuild(
+              state.product,
+              stageEntry!.stage,
+              stageEntry!.builder.getBuffer(source.buffer),
+              source.format
+            );
+          try {
+            if (CLASSED_PRODUCTS.has(state.product)) {
+              if (!build.paintGraph) {
+                build.paintGraph = await createValueClassPaintGraph(
+                  resources,
+                  device,
+                  state.product,
+                  {buffer: build.value.buffer, length: pixelCount},
+                  classTableParameters,
+                  session.colorsBuffer
+                );
+              }
+              // The grey multidirectional hillshade under the classes, computed once.
+              await session.enableUnderlay();
+            } else {
+              await session.prepareBuild(build);
+            }
+          } catch (error) {
+            if (plan) {
+              registry.discard(plan);
+              session.discardBuild(build);
+            }
+            throw error;
+          }
+          return {plan, build};
+        },
+        commit: ({plan, build}) => {
+          if (plan) {
+            registry.commit(plan);
+            session.addBuild(build, key);
+          }
+          preparedBuilds.add(build);
+          // The options may have changed while building: show whatever is selected now.
+          void showProduct();
+        },
+        discard: ({plan, build}) => {
+          if (!plan) return;
+          registry.discard(plan);
+          session.discardBuild(build);
+        }
+      })
+      .catch(error => {
+        ctx.setStatus(`Cannot build ${state.product}: ${(error as Error).message}`);
+      });
+  }
+
+  /** Makes a built product the displayed one. */
+  function activateBuild(build: ProductBuild, state: ReliefOptions): void {
+    ctx.setStatus('');
     if (state.product in {hillshade: 1, mdow: 1, swing: 1, vat: 1}) {
       // The shared plain look follows the product (single light, multidirectional or swung).
       registry.markDirty(['look-plain']);
@@ -1438,7 +1480,7 @@ export async function createReliefVisualization(
   updateInfoReadouts();
   updateStateReadouts();
   updateLightDial();
-  showProduct();
+  await showProduct();
   updateFurniture();
   updateAnnotations(true);
   // The reference scale of the local relief step is ready before the step opens.
@@ -1459,10 +1501,12 @@ export async function createReliefVisualization(
     setOption(id) {
       const key = id as keyof ReliefOptions;
       if (key === 'product') {
-        showProduct();
-        updateFurniture();
-        updateAnnotations();
-        scheduleMeasure();
+        void showProduct().then(() => {
+          if (destroyed) return;
+          updateFurniture();
+          updateAnnotations();
+          scheduleMeasure();
+        });
         return;
       }
       if (key === 'reference') {
@@ -1478,10 +1522,12 @@ export async function createReliefVisualization(
         timers.push(
           setTimeout(() => {
             if (destroyed) return;
-            showProduct();
-            updateFurniture();
-            if (pinned && key.startsWith('horizon')) placeFan(pinned);
-            scheduleMeasure();
+            void showProduct().then(() => {
+              if (destroyed) return;
+              updateFurniture();
+              if (pinned && key.startsWith('horizon')) placeFan(pinned);
+              scheduleMeasure();
+            });
           }, REBUILD_DELAY_MILLISECONDS)
         );
         return;

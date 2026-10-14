@@ -75,7 +75,7 @@ export async function createFloodLab(
       stepsPerEncoding: STEPS_PER_FRAME
     })
   );
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
   const profileGraph = new GPUCommandGraph<void>(device, {id: 'flood-lab-profile'});
   profileGraph.add(
     new GPUColumnProfile({
@@ -99,7 +99,7 @@ export async function createFloodLab(
       }
     })
   );
-  const compiledProfile = resources.track(profileGraph.compile());
+  const compiledProfile = resources.track(await profileGraph.compileAsync());
   let simulatedSeconds = 0;
   let simulatedFrames = 0;
   let profileStale = true;

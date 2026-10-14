@@ -17,6 +17,7 @@
  * expensive part); the path graph also re-encodes when only the destination moved.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -26,6 +27,7 @@ import {
   type CompiledGPUCommandGraph
 } from '@luma.gl/gpgpu/gpu-core';
 import {
+  makeGPURasterMetadata,
   getGPUCostDistanceParameterValues,
   GPU_COST_DISTANCE_NONE,
   GPU_COST_DISTANCE_PARAMETER_LENGTH,
@@ -98,6 +100,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const cellCount = width * height;
+    const grid = makeGPURasterMetadata({width, height, cellSize});
     const projection = new LocalMetricProjection(terrain.origin);
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const resources = new SpatialAnalysisResources(device, 'cost-distance');
@@ -174,12 +177,19 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     costGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation,
-        settings: derivativesSettings.importToGraph(costGraph),
-        slope,
-        hillshade: importGraphBuffer(costGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount),
+        parameters: derivativesSettings.importToGraph(costGraph),
+        output: {
+          slope,
+          hillshade: importGraphBuffer(
+            costGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            cellCount
+          )
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -194,8 +204,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     costGraph.add(
       new GPUCostDistance({
         id: 'cost',
-        width,
-        height,
+        grid,
         friction: {
           id: 'friction',
           format: 'float32',
@@ -209,32 +218,44 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
           )
         },
         frictionParameters: frictionParameters.importToGraph(costGraph),
-        settings: costSettings.importToGraph(costGraph),
+        parameters: costSettings.importToGraph(costGraph),
         cellSizeMode: 'uniform',
         sources: sources.importToGraph(costGraph),
-        maxIterations: MAXIMUM_ITERATIONS,
-        costs: importGraphBuffer(costGraph, 'costs', costsBuffer, 'float32', cellCount),
-        backLinks: importGraphBuffer(costGraph, 'back-links', backLinksBuffer, 'uint32', cellCount),
-        bandThresholds: bandThresholds.importToGraph(costGraph),
-        bands: importGraphBuffer(costGraph, 'bands', bandsBuffer, 'uint32', cellCount),
-        bandCounts: importGraphBuffer(
-          costGraph,
-          'band-counts',
-          bandCountsBuffer,
-          'uint32',
-          BAND_COUNT
-        ),
-        converged: importGraphBuffer(costGraph, 'converged', convergedBuffer, 'uint32', 1),
-        iterationCount: importGraphBuffer(
-          costGraph,
-          'iteration-count',
-          iterationCountBuffer,
-          'uint32',
-          1
-        )
+        maximumIterations: MAXIMUM_ITERATIONS,
+        costBreaks: bandThresholds.importToGraph(costGraph),
+        output: {
+          costs: importGraphBuffer(costGraph, 'costs', costsBuffer, 'float32', cellCount),
+          backLinks: importGraphBuffer(
+            costGraph,
+            'back-links',
+            backLinksBuffer,
+            'uint32',
+            cellCount
+          ),
+          bands: importGraphBuffer(costGraph, 'bands', bandsBuffer, 'uint32', cellCount),
+          bandCounts: importGraphBuffer(
+            costGraph,
+            'band-counts',
+            bandCountsBuffer,
+            'uint32',
+            BAND_COUNT
+          ),
+          status: {
+            converged: importGraphBuffer(costGraph, 'converged', convergedBuffer, 'uint32', 1),
+            iterationCount: importGraphBuffer(
+              costGraph,
+              'iteration-count',
+              iterationCountBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
-    const compiledCost: CompiledGPUCommandGraph<void> = resources.track(costGraph.compile());
+    const compiledCost: CompiledGPUCommandGraph<void> = resources.track(
+      await costGraph.compileAsync()
+    );
 
     // --- Path graph: back-links to a cell list to line segments ---------------------------------
     const pathGraph = new GPUCommandGraph<void>(device, {id: 'cost-distance-path'});
@@ -249,29 +270,40 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
     pathGraph.add(
       new GPUCostDistancePath({
         id: 'path',
-        width,
-        height,
+        grid,
         backLinks: importGraphBuffer(pathGraph, 'back-links', backLinksBuffer, 'uint32', cellCount),
         target: target.importToGraph(pathGraph),
-        // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
-        iterationLimitReached: importGraphBuffer(
-          pathGraph,
-          'path-iteration-limit',
-          pathLimitBuffer,
-          'uint32',
-          1
-        ),
         output: {
-          ids: pathIds,
-          count: pathCount,
-          overflow: importGraphBuffer(pathGraph, 'path-overflow', pathOverflowBuffer, 'uint32', 1),
-          requiredCount: importGraphBuffer(
-            pathGraph,
-            'path-total-output',
-            pathTotalBuffer,
-            'uint32',
-            1
-          )
+          path: {
+            ids: pathIds,
+            status: {
+              count: pathCount,
+              overflow: importGraphBuffer(
+                pathGraph,
+                'path-overflow',
+                pathOverflowBuffer,
+                'uint32',
+                1
+              ),
+              requiredCount: importGraphBuffer(
+                pathGraph,
+                'path-total-output',
+                pathTotalBuffer,
+                'uint32',
+                1
+              )
+            }
+          },
+          // 1 when the cost phase hit its iteration limit: back-links are unresolved, path is empty.
+          status: {
+            iterationLimitReached: importGraphBuffer(
+              pathGraph,
+              'path-iteration-limit',
+              pathLimitBuffer,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
@@ -291,7 +323,9 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
         PATH_CAPACITY * 4
       )
     });
-    const compiledPath: CompiledGPUCommandGraph<void> = resources.track(pathGraph.compile());
+    const compiledPath: CompiledGPUCommandGraph<void> = resources.track(
+      await pathGraph.compileAsync()
+    );
 
     // --- State ---------------------------------------------------------------------------------
     let display: Display = 'cost';
@@ -356,7 +390,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       getLimit() === Infinity ? UNLIMITED_RANGE_KILOMETERS * 1000 : getLimit();
 
     const writeSettings = () => {
-      costSettings.write(getGPUCostDistanceParameterValues({cellSize, costLimit: getLimit()}));
+      costSettings.write(getGPUCostDistanceParameterValues({costLimit: getLimit()}, grid));
       bandThresholds.write(
         Float32Array.from({length: BAND_COUNT}, (_, band) => ((band + 1) * getRange()) / BAND_COUNT)
       );
@@ -374,11 +408,13 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       );
     };
     derivativesSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize,
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {
+          azimuthDegrees: SUN_AZIMUTH_DEGREES,
+          altitudeDegrees: SUN_ALTITUDE_DEGREES
+        },
+        grid
+      )
     );
     writeSettings();
     writeEndpoints();
@@ -521,7 +557,7 @@ export const costDistanceMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: summaryWordCount * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, summaryWordCount);
         const cost = new Float32Array(words.buffer, words.byteOffset, 1)[0];

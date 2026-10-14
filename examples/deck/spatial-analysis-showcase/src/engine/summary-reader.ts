@@ -20,6 +20,7 @@ export class SummaryReader {
   private stale = false;
   private destroyed = false;
   private readonly ring: GPUReadbackRing;
+  private readonly resources: SpatialAnalysisResources;
   private readonly sources: readonly {buffer: Buffer; size: number}[];
   private readonly byteLength: number;
   private readonly onResult: (bytes: ArrayBuffer) => void;
@@ -36,6 +37,7 @@ export class SummaryReader {
     this.sources = sources;
     this.byteLength = sources.reduce((total, source) => total + source.size, 0);
     this.onResult = onResult;
+    this.resources = resources;
     this.ring = resources.track(
       new GPUReadbackRing(resources.device, {id: `summary-${id}`, byteLength: this.byteLength})
     );
@@ -79,8 +81,11 @@ export class SummaryReader {
     ticket.markEncoded({byteOffset: 0, byteLength: this.byteLength});
     this.stale = false;
     this.pending = true;
-    void ticket
-      .read()
+    // `GPUReadbackRing` requires the encoder to be submitted before `read()` maps the slot. Scenes
+    // flush inside deck's frame, and deck submits that encoder synchronously before the frame
+    // callback returns, so the next task runs after the submit.
+    void new Promise<void>(resolve => setTimeout(resolve, 0))
+      .then(() => ticket.read())
       .then(bytes => {
         if (this.destroyed) return;
         try {
@@ -104,5 +109,14 @@ export class SummaryReader {
   /** Stops delivering results. */
   stop(): void {
     this.destroyed = true;
+  }
+
+  /**
+   * Stops delivering results and releases the readback ring early, for a reader whose graph was
+   * replaced. A read in flight then ends quietly.
+   */
+  release(): void {
+    this.stop();
+    this.resources.release(this.ring);
   }
 }

@@ -14,6 +14,7 @@
  * the CPU.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Viewport} from '@deck.gl/core';
 import type {Layer} from '@deck.gl/core';
 import type {CommandEncoder} from '@luma.gl/core';
@@ -202,15 +203,19 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
         budget: budgetBuffer.importToGraph(graph),
         output: {
           ids: importGraphBuffer(graph, 'drawn-ids', drawnIds, 'uint32', DRAWN_CAPACITY),
-          count: importGraphBuffer(graph, 'drawn-count', drawnCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'drawn-overflow', drawnOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'drawn-total', drawnTotal, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'drawn-count', drawnCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'drawn-overflow', drawnOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'drawn-total', drawnTotal, 'uint32', 1)
+          }
         },
         requests: {
           ids: importGraphBuffer(graph, 'request-ids', requestIds, 'uint32', REQUEST_CAPACITY),
-          count: importGraphBuffer(graph, 'request-count', requestCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'request-overflow', requestOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'request-total', requestTotal, 'uint32', 1),
+          status: {
+            count: importGraphBuffer(graph, 'request-count', requestCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'request-overflow', requestOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'request-total', requestTotal, 'uint32', 1)
+          },
           priorities: importGraphBuffer(
             graph,
             'request-priorities',
@@ -229,7 +234,7 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
         indirectDraw: {commands: drawCommands.importToGraph(graph)}
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'tile-lod-summary', byteLength: SUMMARY_WORD_COUNT * 4})
     );
@@ -380,7 +385,7 @@ export const tileLodMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORD_COUNT * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(
           bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)

@@ -19,6 +19,7 @@
  *   back to prove that the coarser dots are a bitwise prefix of the finer ones, per slot.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -147,7 +148,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
     );
 
     const importPolygons = <Parameters>(graph: GPUCommandGraph<Parameters>) => ({
-      polygonPositions: importGraphBuffer(
+      positions: importGraphBuffer(
         graph,
         'polygon-positions',
         polygonPositions,
@@ -207,9 +208,11 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
           ),
           dots: {
             ids: importGraphBuffer(dotGraph, 'dot-ids', dotIds, 'uint32', DOT_CAPACITY),
-            count: dotGraph.importGPUData('dot-count', dotDrawCommands.getInstanceCountData(0)),
-            overflow: importGraphBuffer(dotGraph, 'dot-overflow', dotOverflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
+            status: {
+              count: dotGraph.importGPUData('dot-count', dotDrawCommands.getInstanceCountData(0)),
+              overflow: importGraphBuffer(dotGraph, 'dot-overflow', dotOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
+            }
           },
           categories: importGraphBuffer(
             dotGraph,
@@ -218,13 +221,21 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
             'uint32',
             DOT_CAPACITY
           ),
-          failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1),
           slotCounts: importGraphBuffer(dotGraph, 'slot-counts', slotCounts, 'uint32', slotCount),
-          slotOffsets: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount)
+          slotOffsets: importGraphBuffer(
+            dotGraph,
+            'slot-offsets',
+            slotOffsets,
+            'uint32',
+            slotCount
+          ),
+          status: {
+            failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1)
+          }
         }
       })
     );
-    const compiledDots = resources.track(dotGraph.compile());
+    const compiledDots = resources.track(await dotGraph.compileAsync());
 
     const randomGraph = new GPUCommandGraph<void>(device, {id: 'random-points'});
     randomGraph.add(
@@ -250,17 +261,27 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
           ),
           dots: {
             ids: importGraphBuffer(randomGraph, 'random-ids', randomIds, 'uint32', randomCapacity),
-            count: randomGraph.importGPUData(
-              'random-count',
-              randomDrawCommands.getInstanceCountData(0)
-            ),
-            overflow: importGraphBuffer(randomGraph, 'random-overflow', randomOverflow, 'uint32', 1)
+            status: {
+              count: randomGraph.importGPUData(
+                'random-count',
+                randomDrawCommands.getInstanceCountData(0)
+              ),
+              overflow: importGraphBuffer(
+                randomGraph,
+                'random-overflow',
+                randomOverflow,
+                'uint32',
+                1
+              )
+            }
           },
-          failedCount: importGraphBuffer(randomGraph, 'random-failed', randomFailed, 'uint32', 1)
+          status: {
+            failedCount: importGraphBuffer(randomGraph, 'random-failed', randomFailed, 'uint32', 1)
+          }
         }
       })
     );
-    const compiledRandom = resources.track(randomGraph.compile());
+    const compiledRandom = resources.track(await randomGraph.compileAsync());
 
     // Summary: dot count, overflow, total, failed, random count, random failed, slot counts.
     const summaryWords = 6 + slotCount;
@@ -545,7 +566,7 @@ export const dotDensityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: summaryWords * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, summaryWords);
         const totals = [0, 0, 0];

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -12,10 +13,12 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {
   getGPUGeographicDistributionParameterValues,
+  getGPUKMeansParameterValues,
   getGPUSpatialClusteringParameterValues,
   GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH,
   GPU_GROUP_CONVEX_HULL_GROUP_OVERFLOW,
   GPU_GROUP_CONVEX_HULL_TOTAL_OVERFLOW,
+  GPU_KMEANS_PARAMETER_LENGTH,
   GPU_SPATIAL_CLUSTERING_NOISE,
   GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH,
   GPUGroupConvexHull,
@@ -171,8 +174,9 @@ type ClusterSet = {
   clusterCount: ClusterBuffer | null;
   clusterStoredCount: ClusterBuffer | null;
   clusterOverflow: ClusterBuffer | null;
-  /** K-means only: `[iterationsUsed, converged]`. */
-  convergence: ClusterBuffer | null;
+  /** K-means only: iterations that moved centers, and the converged flag (one word each). */
+  iterationCount: ClusterBuffer | null;
+  converged: ClusterBuffer | null;
   sizes: ClusterBuffer;
   centroids: ClusterBuffer;
   geometryCounts: ClusterBuffer;
@@ -310,7 +314,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
     });
 
     /** Compiles one DBSCAN graph; the dense-box shortcut is the only compile-time difference. */
-    const compileDbscan = (
+    const compileDbscan = async (
       resources: SpatialAnalysisResources,
       id: string,
       positionsBuffer: Buffer,
@@ -319,7 +323,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       outputs: DbscanOutputs,
       denseBoxShortcut: boolean,
       drawCommands?: DrawCommandBuffer
-    ): CompiledGPUCommandGraph<void> => {
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id});
       const clusterIds = resources.createBuffer('cluster-ids', CLUSTER_CAPACITY * 4);
       graph.add(
@@ -335,59 +339,63 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           parameters: parameters.importToGraph(graph),
           gridSize: GRID_SIZE,
           denseBoxShortcut,
-          labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pointCount),
-          coreFlags: importGraphBuffer(
-            graph,
-            'core-flags',
-            outputs.coreFlags,
-            'uint32',
-            pointCount
-          ),
-          clusterCount: importGraphBuffer(
-            graph,
-            'cluster-count',
-            outputs.clusterCount,
-            'uint32',
-            1
-          ),
-          clusters: {
-            ids: importGraphBuffer(graph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
-            count: importGraphBuffer(
+          output: {
+            labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', pointCount),
+            coreFlags: importGraphBuffer(
               graph,
-              'cluster-stored-count',
-              outputs.clusterStoredCount,
+              'core-flags',
+              outputs.coreFlags,
+              'uint32',
+              pointCount
+            ),
+            clusterCount: importGraphBuffer(
+              graph,
+              'cluster-count',
+              outputs.clusterCount,
               'uint32',
               1
             ),
-            overflow: importGraphBuffer(
+            clusters: {
+              ids: importGraphBuffer(graph, 'cluster-ids', clusterIds, 'uint32', CLUSTER_CAPACITY),
+              status: {
+                count: importGraphBuffer(
+                  graph,
+                  'cluster-stored-count',
+                  outputs.clusterStoredCount,
+                  'uint32',
+                  1
+                ),
+                overflow: importGraphBuffer(
+                  graph,
+                  'cluster-overflow',
+                  outputs.clusterOverflow,
+                  'uint32',
+                  1
+                )
+              }
+            },
+            // The clamped cluster count lands directly in the indirect draw record.
+            drawInstanceCount: drawCommands
+              ? graph.importGPUData('draw-instance-count', drawCommands.getInstanceCountData(0))
+              : undefined,
+            clusterSizes: importGraphBuffer(
               graph,
-              'cluster-overflow',
-              outputs.clusterOverflow,
+              'cluster-sizes',
+              outputs.clusterSizes,
               'uint32',
-              1
+              CLUSTER_CAPACITY
+            ),
+            clusterCentroids: importGraphBuffer(
+              graph,
+              'cluster-centroids',
+              outputs.clusterCentroids,
+              'float32x2',
+              CLUSTER_CAPACITY
             )
-          },
-          // The clamped cluster count lands directly in the indirect draw record.
-          drawInstanceCount: drawCommands
-            ? graph.importGPUData('draw-instance-count', drawCommands.getInstanceCountData(0))
-            : undefined,
-          clusterSizes: importGraphBuffer(
-            graph,
-            'cluster-sizes',
-            outputs.clusterSizes,
-            'uint32',
-            CLUSTER_CAPACITY
-          ),
-          clusterCentroids: importGraphBuffer(
-            graph,
-            'cluster-centroids',
-            outputs.clusterCentroids,
-            'float32x2',
-            CLUSTER_CAPACITY
-          )
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     const buildSet = async (setConfig: ClusterConfig): Promise<ClusterSet> => {
@@ -453,7 +461,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           commands: [{vertexCount: 6, instanceCount: isDbscan ? 0 : setConfig.k}]
         })
       );
-      let convergence: ClusterBuffer | null = null;
+      let iterationCount: ClusterBuffer | null = null;
+      let converged: ClusterBuffer | null = null;
       const groupCount = isDbscan ? CLUSTER_CAPACITY : setConfig.k;
       let labels: ClusterBuffer;
       let sizes: ClusterBuffer;
@@ -463,7 +472,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       if (isDbscan) {
         dbscan = createDbscanOutputs(resources, pointCount);
         ({labels, clusterSizes: sizes, clusterCentroids: centroids} = dbscan);
-        clusterGraph = compileDbscan(
+        clusterGraph = await compileDbscan(
           resources,
           `clusters-dbscan-${setSerial}`,
           positionsBuffer,
@@ -476,7 +485,15 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       } else {
         labels = resources.createBuffer('labels', pointCount * 4);
         sizes = resources.createBuffer('sizes', setConfig.k * 4);
-        convergence = resources.createBuffer('convergence', 8);
+        iterationCount = resources.createBuffer('iteration-count', 4);
+        converged = resources.createBuffer('converged', 4);
+        // Seed and tolerance are per-frame words; the seed control still rebuilds the set.
+        const kmeansParameters = resources.createParameterBuffer(
+          'kmeans-parameters',
+          'uint32',
+          GPU_KMEANS_PARAMETER_LENGTH,
+          getGPUKMeansParameterValues({seed: setConfig.seed, tolerance: kmeansTolerance})
+        );
         centroids = resources.createBuffer('centers', setConfig.k * 8);
         const graph = new GPUCommandGraph<void>(device, {id: `clusters-kmeans-${setSerial}`});
         graph.add(
@@ -490,17 +507,27 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
               pointCount
             ),
             k: setConfig.k,
-            iterations: KMEANS_ITERATIONS,
-            tolerance: kmeansTolerance,
-            convergence: importGraphBuffer(graph, 'convergence', convergence, 'uint32', 2),
+            maximumIterations: KMEANS_ITERATIONS,
+            parameters: kmeansParameters.importToGraph(graph),
             initialization: setConfig.initialization,
-            seed: setConfig.seed,
-            labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
-            centers: importGraphBuffer(graph, 'centers', centroids, 'float32x2', setConfig.k),
-            sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', setConfig.k)
+            output: {
+              labels: importGraphBuffer(graph, 'labels', labels, 'uint32', pointCount),
+              centers: importGraphBuffer(graph, 'centers', centroids, 'float32x2', setConfig.k),
+              sizes: importGraphBuffer(graph, 'sizes', sizes, 'uint32', setConfig.k),
+              status: {
+                iterationCount: importGraphBuffer(
+                  graph,
+                  'iteration-count',
+                  iterationCount,
+                  'uint32',
+                  1
+                ),
+                converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1)
+              }
+            }
           })
         );
-        clusterGraph = resources.track(graph.compile());
+        clusterGraph = resources.track(await graph.compileAsync());
       }
 
       // Description graph: geometry and hulls per label.
@@ -565,7 +592,15 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
             ),
             medoidIndices: importGraphBuffer(shapes, 'medoids', medoids, 'uint32', groupCount),
             ellipses: importGraphBuffer(shapes, 'ellipses', ellipses, 'float32', groupCount * 3),
-            overflow: importGraphBuffer(shapes, 'geometry-overflow', geometryOverflow, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(
+                shapes,
+                'geometry-overflow',
+                geometryOverflow,
+                'uint32',
+                1
+              )
+            }
           }
         })
       );
@@ -576,7 +611,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
           labels: shapeLabels,
           groupCount,
           maximumVerticesPerGroup: HULL_MAXIMUM_VERTICES,
-          totalCapacity: HULL_CAPACITY,
+          vertexCapacity: HULL_CAPACITY,
           output: {
             vertexIndices: importGraphBuffer(
               shapes,
@@ -600,11 +635,13 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
               groupCount + 1
             ),
             counts: importGraphBuffer(shapes, 'hull-counts', hullCounts, 'uint32', groupCount),
-            overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(shapes, 'hull-overflow', hullOverflow, 'uint32', 1)
+            }
           }
         })
       );
-      const shapeGraph = resources.track(shapes.compile());
+      const shapeGraph = resources.track(await shapes.compileAsync());
 
       // Summary: header words, then sizes, geometry counts, hull counts, mean and weighted centers
       // and medoids of every group.
@@ -633,7 +670,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         clusterCount: dbscan?.clusterCount ?? null,
         clusterStoredCount: dbscan?.clusterStoredCount ?? null,
         clusterOverflow: dbscan?.clusterOverflow ?? null,
-        convergence,
+        iterationCount,
+        converged,
         sizes,
         centroids,
         geometryCounts,
@@ -901,7 +939,8 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       copy(set.clusterOverflow, 4);
       copy(set.geometryOverflow, 4);
       copy(set.hullOverflow, 4);
-      copy(set.convergence, 8);
+      copy(set.iterationCount, 4);
+      copy(set.converged, 4);
       copy(set.sizes, groups * 4);
       copy(set.geometryCounts, groups * 4);
       copy(set.hullCounts, groups * 4);
@@ -913,7 +952,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
       const echoedEpsilon = epsilon;
       const echoedMinimumPoints = minimumPoints;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed || set.destroyed) return;
         const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         const words = new Uint32Array(buffer);
@@ -1039,7 +1078,7 @@ export const clustersMode: SpatialAnalysisModeDefinition = {
         const outputs = createDbscanOutputs(scratch, set.pointCount);
         const results: {milliseconds: number; label: string}[] = [];
         for (const denseBoxShortcut of [false, true]) {
-          const graph = compileDbscan(
+          const graph = await compileDbscan(
             scratch,
             `clusters-timing-${denseBoxShortcut ? 'dense' : 'plain'}`,
             set.positionsBuffer,

@@ -21,6 +21,7 @@
  * The only readback is the IDW surface every 20 frames, to count nodata cells exactly.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -51,6 +52,7 @@ import {
   type VariogramModel,
   type VariogramModelType
 } from '@luma.gl/experimental/gpu-dataframe';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {GPUTerrainContours} from '@luma.gl/experimental/gpu-terrain';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom, LocalMetricProjection} from '../spatial-analysis-data';
@@ -73,6 +75,21 @@ const SAMPLE_COUNT = 4000;
 const RASTER_WIDTH = 256;
 const RASTER_HEIGHT = 192;
 const CELL_COUNT = RASTER_WIDTH * RASTER_HEIGHT;
+
+/**
+ * The raster grid of the viewport bounds: rows advance north from the bounds' minimum corner, so
+ * row 0 is the southernmost row, as the map layers read it.
+ */
+function getViewGrid(bounds: readonly [number, number, number, number]) {
+  const [minX, minY, maxX, maxY] = bounds;
+  return makeGPURasterMetadata({
+    width: RASTER_WIDTH,
+    height: RASTER_HEIGHT,
+    cellSize: [(maxX - minX) / RASTER_WIDTH, (maxY - minY) / RASTER_HEIGHT],
+    origin: [minX, minY],
+    rowDirection: 'north'
+  });
+}
 /** Compile-time capacity of the nearest-k limit. */
 const MAXIMUM_NEIGHBOR_COUNT = 16;
 /** Compile-time cap on the focal window radius, in raster cells. */
@@ -232,8 +249,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         positions: positionsView,
         values: valuesView,
         parameters: idwParameters.importToGraph(graph),
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
+        grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
         indexGridSize: INDEX_GRID_SIZE,
         indexBounds: terrainBounds,
         maximumNeighborCount: MAXIMUM_NEIGHBOR_COUNT,
@@ -249,8 +265,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         positions: positionsView,
         values: valuesView,
         parameters: krigingParameters.importToGraph(graph),
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
+        grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
         indexGridSize: INDEX_GRID_SIZE,
         indexBounds: terrainBounds,
         maximumNeighborCount: MAXIMUM_NEIGHBOR_COUNT,
@@ -298,8 +313,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       new GPUFocalStatistics({
         id: 'focal',
         values: surfaceView,
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
+        grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
         maximumRadius: MAXIMUM_FOCAL_RADIUS,
         parameters: focalParameters.importToGraph(graph),
         output: {
@@ -313,7 +327,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
             'float32',
             CELL_COUNT
           ),
-          count: importGraphBuffer(graph, 'focal-count', focalCountBuffer, 'uint32', CELL_COUNT)
+          counts: importGraphBuffer(graph, 'focal-count', focalCountBuffer, 'uint32', CELL_COUNT)
         }
       })
     );
@@ -321,14 +335,17 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUTerrainContours({
         id: 'contours',
-        width: RASTER_WIDTH,
-        height: RASTER_HEIGHT,
+        grid: makeGPURasterMetadata({width: RASTER_WIDTH, height: RASTER_HEIGHT}),
         elevation: {
           id: 'smoothed',
           format: 'float32',
           storage: {kind: 'buffer', values: focalMean}
         },
-        overflow: importGraphBuffer(graph, 'contour-overflow', overflowBuffer, 'uint32', 1),
+        output: {
+          status: {
+            overflow: importGraphBuffer(graph, 'contour-overflow', overflowBuffer, 'uint32', 1)
+          }
+        },
         levels: Array.from({length: CONTOUR_LEVEL_COUNT}, (_, level) => ({
           level: graph.createDataView(levelsView.buffer, {
             format: 'float32',
@@ -342,17 +359,13 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
             'float32x2',
             CONTOUR_SEGMENT_CAPACITY * 2
           ),
-          segmentCount: importGraphBuffer(
-            graph,
-            `count-${level}`,
-            contourCounts[level],
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, `count-${level}`, contourCounts[level], 'uint32', 1)
+          }
         }))
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     // The empirical variogram of the samples runs in its own small graph, only when the samples
     // change; the CPU fits a model to its read-back bins.
@@ -371,39 +384,43 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
         parameters: variogramParameters.importToGraph(variogramGraph),
         gridSize: VARIOGRAM_GRID_SIZE,
         lagCount: LAG_COUNT,
-        semivariances: importGraphBuffer(
-          variogramGraph,
-          'semivariances',
-          semivarianceBuffer,
-          'float32',
-          LAG_COUNT
-        ),
-        pairCounts: importGraphBuffer(
-          variogramGraph,
-          'pair-counts',
-          pairCountBuffer,
-          'uint32',
-          LAG_COUNT
-        ),
-        meanDistances: importGraphBuffer(
-          variogramGraph,
-          'mean-distances',
-          meanDistanceBuffer,
-          'float32',
-          LAG_COUNT
-        ),
-        // 1 when a bin's pair count saturated: the fit would be distorted, so it is skipped.
-        overflow: importGraphBuffer(
-          variogramGraph,
-          'variogram-overflow',
-          variogramOverflowBuffer,
-          'uint32',
-          1
-        )
+        output: {
+          semivariances: importGraphBuffer(
+            variogramGraph,
+            'semivariances',
+            semivarianceBuffer,
+            'float32',
+            LAG_COUNT
+          ),
+          pairCounts: importGraphBuffer(
+            variogramGraph,
+            'pair-counts',
+            pairCountBuffer,
+            'uint32',
+            LAG_COUNT
+          ),
+          meanDistances: importGraphBuffer(
+            variogramGraph,
+            'mean-distances',
+            meanDistanceBuffer,
+            'float32',
+            LAG_COUNT
+          ),
+          // 1 when a bin's pair count saturated: the fit would be distorted, so it is skipped.
+          status: {
+            overflow: importGraphBuffer(
+              variogramGraph,
+              'variogram-overflow',
+              variogramOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
     const variogramCompiled: CompiledGPUCommandGraph<void> = resources.track(
-      variogramGraph.compile()
+      await variogramGraph.compileAsync()
     );
     const variogramMaximumDistance =
       VARIOGRAM_RANGE_FRACTION * (terrainBounds[2] - terrainBounds[0]);
@@ -442,13 +459,10 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
 
     function writeIdwParameters(): void {
       idwParameters.write(
-        getGPUInverseDistanceWeightingParameterValues({
-          extent: viewBounds,
-          searchRadius,
-          power,
-          neighborCount,
-          minimumNeighborCount
-        })
+        getGPUInverseDistanceWeightingParameterValues(
+          {searchRadius, power, neighborCount, minimumNeighborCount},
+          getViewGrid(viewBounds)
+        )
       );
     }
     function getSampleVariance(): number {
@@ -475,13 +489,15 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
     function writeKrigingParameters(): void {
       const {model, nugget, sill, range} = getKrigingVariogram();
       krigingParameters.write(
-        getGPUKrigingParameterValues({
-          extent: viewBounds,
-          searchRadius,
-          neighborCount: krigingNeighborCount,
-          minimumNeighborCount: Math.max(minimumNeighborCount, 3),
-          variogram: {model, nugget: Math.max(nugget, 1e-6), sill: Math.max(sill, 1e-6), range}
-        })
+        getGPUKrigingParameterValues(
+          {
+            searchRadius,
+            neighborCount: krigingNeighborCount,
+            minimumNeighborCount: Math.max(minimumNeighborCount, 3),
+            variogram: {model, nugget: Math.max(nugget, 1e-6), sill: Math.max(sill, 1e-6), range}
+          },
+          getViewGrid(viewBounds)
+        )
       );
     }
     function writeMethodParameters(): void {
@@ -777,7 +793,7 @@ export const interpolationMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: CELL_COUNT * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const surface = new Uint32Array(bytes.buffer, bytes.byteOffset, CELL_COUNT);
         let nodata = 0;

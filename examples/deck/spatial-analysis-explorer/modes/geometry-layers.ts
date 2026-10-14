@@ -17,7 +17,7 @@ import type {DrawCommandBuffer} from '@luma.gl/gpgpu/gpu-core';
 /**
  * Bespoke layers of the Geometry mode.
  *
- * - {@link PathOutputLayer} draws a contributor's flat `GPULinePathOutput` (vertex rows plus path
+ * - {@link PathOutputLayer} draws a contributor's flat `GPULineGeometryOutput` (vertex rows plus path
  *   offsets) directly: instance `v` is the segment from vertex `v` to `v + 1`, hidden when `v + 1`
  *   starts a new path. The path of a vertex comes from a binary search over `pathOffsets` in the
  *   vertex shader, so nothing is read back or repacked, and the vertex count is the GPU-written

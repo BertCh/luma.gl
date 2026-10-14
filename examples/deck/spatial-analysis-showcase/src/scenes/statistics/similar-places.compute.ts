@@ -17,6 +17,7 @@ import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPolygonLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
@@ -185,30 +186,32 @@ export async function createSimilarPlaces(
   let arcCount = 0;
   let selectionCount = 0;
 
-  const compileVariant = (standardization: GPUSimilarLocationsStandardization): Variant => {
+  const compileVariant = async (
+    standardization: GPUSimilarLocationsStandardization
+  ): Promise<Variant> => {
     const graph = new GPUCommandGraph<void>(device, {id: `similar-${standardization}`});
     const ranks = importGraphBuffer(graph, 'ranks', ranksBuffer, 'uint32', n);
     const selection = importGraphBuffer(graph, 'selection', selectionBuffer, 'uint32', n);
     graph.add(
       new GPUSimilarLocations({
         id: 'similar-locations',
-        attributes: importGraphBuffer(
+        values: importGraphBuffer(
           graph,
           'attributes',
           attributesBuffer,
           'float32',
           n * ATTRIBUTE_COUNT
         ),
-        attributeCount: ATTRIBUTE_COUNT,
-        selection,
+        columnCount: ATTRIBUTE_COUNT,
+        referenceMask: selection,
         parameters: similarityParameters.importToGraph(graph),
         standardization,
-        maximumResultCount: MAXIMUM_RESULT_COUNT,
+        resultCapacity: MAXIMUM_RESULT_COUNT,
         output: {
           ranks,
           distances: importGraphBuffer(graph, 'distances', distancesBuffer, 'float32', n),
           topIds: importGraphBuffer(graph, 'top-ids', topIdsBuffer, 'uint32', MAXIMUM_RESULT_COUNT),
-          count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1)
+          status: {count: importGraphBuffer(graph, 'count', countBuffer, 'uint32', 1)}
         }
       })
     );
@@ -244,19 +247,23 @@ export async function createSimilarPlaces(
   }
   bands[bandsOffset + index] = bandIndex;`
     });
-    return {compiled: resources.track(graph.compile())};
+    return {compiled: resources.track(await graph.compileAsync())};
   };
 
   const variants = new Map<GPUSimilarLocationsStandardization, Variant>();
-  const getVariant = (standardization: GPUSimilarLocationsStandardization): Variant => {
+  const getVariant = async (
+    standardization: GPUSimilarLocationsStandardization
+  ): Promise<Variant> => {
     let variant = variants.get(standardization);
     if (!variant) {
-      variant = compileVariant(standardization);
+      variant = await compileVariant(standardization);
       variants.set(standardization, variant);
     }
     return variant;
   };
-  let active = getVariant(ctx.options.standardization);
+  let active = await getVariant(ctx.options.standardization);
+  // Variants stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
 
   // ---------------------------------------------------------------------------------------------
   // References, selection and parameters
@@ -920,9 +927,16 @@ export async function createSimilarPlaces(
 
     setOption(id) {
       if (id === 'standardization') {
-        active = getVariant(ctx.options.standardization);
-        dirty = true;
-        reader.markStale();
+        // The previous variant keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => getVariant(ctx.options.standardization),
+          commit: variant => {
+            active = variant;
+            dirty = true;
+            reader.markStale();
+            ctx.requestLayers();
+          }
+        });
       } else if (id === 'preset') {
         setPreset();
         inspectedClick = -1;

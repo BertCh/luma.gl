@@ -5,10 +5,10 @@
 import type {Layer} from '@deck.gl/core';
 import {
   getGPUCalendarBucketsParameterValues,
-  getGPUTimeWindowWordParameterValues,
+  getGPUTimeWindowFilterWordParameterValues,
   GPU_CALENDAR_BUCKETS_MATRIX_LENGTH,
   GPU_CALENDAR_BUCKETS_PARAMETER_LENGTH,
-  GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH,
   GPUCalendarBuckets,
   GPUGroupStatistics,
   GPUTimeWindowFilter
@@ -25,6 +25,7 @@ import {
   SpatialAnalysisSegmentLayer,
   type SpatialAnalysisColor
 } from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {RampName} from '../../engine/ramps';
@@ -196,6 +197,7 @@ export async function createCalendarPatterns(
   }
 
   const resources = new SpatialAnalysisResources(device, 'calendar');
+  const graphSwap = resources.track(new GraphSwap());
   const positionsBuffer = resources.createBuffer('positions', events.positions);
   const timeWordsBuffer = resources.createBuffer('time-words', events.timeWords as Uint32Array);
   const offsetsBuffer = resources.createBuffer('utc-offsets', chicagoOffsets);
@@ -247,7 +249,7 @@ export async function createCalendarPatterns(
   const windowParameters = resources.createParameterBuffer(
     'window-parameters',
     'uint32',
-    GPU_TIME_WORD_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_WORD_PARAMETER_LENGTH
   );
   const calendarParameters = resources.createParameterBuffer(
     'calendar-parameters',
@@ -298,7 +300,10 @@ export async function createCalendarPatterns(
   let windowEvents = 0;
   const variants = new Map<string, Variant>();
 
-  function buildVariant(daylightSaving: boolean, variance: 'sample' | 'population'): Variant {
+  async function buildVariant(
+    daylightSaving: boolean,
+    variance: 'sample' | 'population'
+  ): Promise<Variant> {
     const key = `${daylightSaving ? 'dst' : 'fixed'}-${variance}`;
     const graph = new GPUCommandGraph<void>(device, {id: `calendar-${key}`});
     const v = createViewImporter(graph, key);
@@ -314,14 +319,16 @@ export async function createCalendarPatterns(
         ],
         output: {
           ids: v('ids', idsBuffer, 'uint32', eventCount),
-          count: v('window-count', countBuffer, 'uint32', 1),
-          overflow: v('overflow', overflowBuffer, 'uint32', 1)
-        },
-        outputMask: windowMask,
-        drawInstanceCount: graph.importGPUData(
-          `${key}-draw-count`,
-          drawCommands.getInstanceCountData(0)
-        )
+          status: {
+            count: v('window-count', countBuffer, 'uint32', 1),
+            overflow: v('overflow', overflowBuffer, 'uint32', 1)
+          },
+          outputMask: windowMask,
+          drawInstanceCount: graph.importGPUData(
+            `${key}-draw-count`,
+            drawCommands.getInstanceCountData(0)
+          )
+        }
       })
     );
     const hour = v('hour', hourBuffer, 'uint32', eventCount);
@@ -437,8 +444,10 @@ export async function createCalendarPatterns(
         output: {
           keys: v('group-keys', groupKeysBuffer, 'uint32', AREA_COUNT),
           counts: v('group-counts', groupCountsBuffer, 'uint32', AREA_COUNT),
-          count: v('group-count', groupCountBuffer, 'uint32', 1),
-          overflow: v('group-overflow', groupOverflowBuffer, 'uint32', 1)
+          status: {
+            count: v('group-count', groupCountBuffer, 'uint32', 1),
+            overflow: v('group-overflow', groupOverflowBuffer, 'uint32', 1)
+          }
         }
       })
     );
@@ -599,7 +608,7 @@ export async function createCalendarPatterns(
   }
   metric[metricOffset + index] = value;`
     });
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       key,
@@ -618,12 +627,12 @@ export async function createCalendarPatterns(
     return {key, compiled, reader};
   }
 
-  function getVariant(): Variant {
+  async function getVariant(): Promise<Variant> {
     const {daylightSaving, variance} = ctx.options;
     const key = `${daylightSaving ? 'dst' : 'fixed'}-${variance}`;
     let variant = variants.get(key);
     if (!variant) {
-      variant = buildVariant(daylightSaving, variance);
+      variant = await buildVariant(daylightSaving, variance);
       variants.set(key, variant);
     }
     return variant;
@@ -733,7 +742,7 @@ export async function createCalendarPatterns(
     }
     const start = YEAR_START_MS + startDay * 86400000;
     const end = YEAR_START_MS + endDay * 86400000 - 1;
-    windowParameters.write(getGPUTimeWindowWordParameterValues({start, end}));
+    windowParameters.write(getGPUTimeWindowFilterWordParameterValues({start, end}));
     ctx.setReadout(
       'windowDates',
       `${formatDate(startDay)} to ${formatDate(Math.max(startDay, endDay - 1))}`
@@ -791,8 +800,8 @@ export async function createCalendarPatterns(
     dirty = true;
   }
 
-  function adopt(): void {
-    current = getVariant();
+  function adopt(variant: Variant): void {
+    current = variant;
     writeWindow();
     writeCategory();
     writeCalendar();
@@ -801,14 +810,14 @@ export async function createCalendarPatterns(
     ctx.requestLayers();
   }
 
-  adopt();
+  adopt(await getVariant());
 
   return {
     getCompiledGraphs: () => (current ? [current.compiled as CompiledGPUCommandGraph<never>] : []),
 
     setOption(id) {
       if (id === 'daylightSaving' || id === 'variance') {
-        adopt();
+        void graphSwap.request({build: getVariant, commit: adopt});
       } else if (id === 'dateRange' || id === 'windowDays' || id === 'playWindow') {
         writeWindow();
       } else if (id === 'groupType') {

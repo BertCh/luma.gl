@@ -182,7 +182,7 @@ export async function createDotDensity(
   );
 
   const importPolygons = <Parameters>(graph: GPUCommandGraph<Parameters>) => ({
-    polygonPositions: importGraphBuffer(
+    positions: importGraphBuffer(
       graph,
       'polygon-positions',
       polygonPositions,
@@ -236,9 +236,11 @@ export async function createDotDensity(
         ),
         dots: {
           ids: importGraphBuffer(dotGraph, 'dot-ids', dotIds, 'uint32', DOT_CAPACITY),
-          count: dotGraph.importGPUData('dot-count', dotDrawCommands.getInstanceCountData(0)),
-          overflow: importGraphBuffer(dotGraph, 'dot-overflow', dotOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
+          status: {
+            count: dotGraph.importGPUData('dot-count', dotDrawCommands.getInstanceCountData(0)),
+            overflow: importGraphBuffer(dotGraph, 'dot-overflow', dotOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(dotGraph, 'dot-total', dotTotal, 'uint32', 1)
+          }
         },
         categories: importGraphBuffer(
           dotGraph,
@@ -247,13 +249,13 @@ export async function createDotDensity(
           'uint32',
           DOT_CAPACITY
         ),
-        failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1),
         slotCounts: importGraphBuffer(dotGraph, 'slot-counts', slotCounts, 'uint32', slotCount),
-        slotOffsets: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount)
+        slotOffsets: importGraphBuffer(dotGraph, 'slot-offsets', slotOffsets, 'uint32', slotCount),
+        status: {failedCount: importGraphBuffer(dotGraph, 'dot-failed', dotFailed, 'uint32', 1)}
       }
     })
   );
-  const compiledDots = resources.track(dotGraph.compile());
+  const compiledDots = resources.track(await dotGraph.compileAsync());
 
   const randomGraph = new GPUCommandGraph<void>(device, {id: 'random-points'});
   randomGraph.add(
@@ -279,17 +281,21 @@ export async function createDotDensity(
         ),
         dots: {
           ids: importGraphBuffer(randomGraph, 'random-ids', randomIds, 'uint32', DOT_CAPACITY),
-          count: randomGraph.importGPUData(
-            'random-count',
-            randomDrawCommands.getInstanceCountData(0)
-          ),
-          overflow: importGraphBuffer(randomGraph, 'random-overflow', randomOverflow, 'uint32', 1)
+          status: {
+            count: randomGraph.importGPUData(
+              'random-count',
+              randomDrawCommands.getInstanceCountData(0)
+            ),
+            overflow: importGraphBuffer(randomGraph, 'random-overflow', randomOverflow, 'uint32', 1)
+          }
         },
-        failedCount: importGraphBuffer(randomGraph, 'random-failed', randomFailed, 'uint32', 1)
+        status: {
+          failedCount: importGraphBuffer(randomGraph, 'random-failed', randomFailed, 'uint32', 1)
+        }
       }
     })
   );
-  const compiledRandom = resources.track(randomGraph.compile());
+  const compiledRandom = resources.track(await randomGraph.compileAsync());
 
   // --- State ----------------------------------------------------------------------------------
   let destroyed = false;

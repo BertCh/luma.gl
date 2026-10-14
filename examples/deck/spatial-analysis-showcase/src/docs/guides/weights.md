@@ -18,7 +18,7 @@ The stories use real data: the 3,109 counties of the contiguous United States wi
 
 | You want to know | Reach for | It gives you |
 | --- | --- | --- |
-| Which polygons touch | `GPUContiguityWeights` | Queen (shared vertex) or rook (shared edge) neighbours, exact |
+| Which polygons touch | `GPUContiguityWeights` | Queen (shared vertex) or rook (shared edge) neighbours, exact; one row per feature, so a multipart county is one row |
 | Neighbours that ignore borders | `GPUNeighborSearch` | k nearest or a distance band, binary, inverse-distance or kernel weights |
 | Neighbours on a raster | `GPULatticeWeights` | Rook or queen cells up to a radius, with a mask for holes |
 | A different weight scheme | `GPUSpatialWeightsTransform` | Row, binary, double, variance-stabilising, kernel, symmetrised |
@@ -41,7 +41,7 @@ All of these follow the compile-once pattern: shapes, statistics and tests are c
 - **Weights.** The rule (queen or rook, k nearest, band, lattice), `k`, the snap tolerance of contiguity, the lattice radius and criterion, and each transform are compile-time, so each is compiled the first time you use it and cached. The distance band, the weight function and its kernel, the power, the distance floor and row standardisation inside the search are parameter writes.
 - **Algebra.** The operation, the weight rule, the order and the cumulative flag are compile-time. The self weight is a per-row view and the subgraph mask a buffer, so both are writes.
 - **Global tests.** The set of statistics, the permutation statistic and its tail are compile-time. The number of permutations and the seed are writes; the same seed reproduces the same null distribution exactly. The correlogram's band count and band mode are compile-time; the maximum distance and the variance assumption are writes.
-- **Local tests.** The statistic (Gi*, Gi, local Moran), the gating (analytic, permutation, none), the tail, the neighbour limit and the false-discovery option are compile-time. Radius, significance level, permutations and seed are writes.
+- **Local tests.** The statistic (Gi*, Gi, local Moran), the gating (analytic, permutation, none), the tail, the neighbour limit and the false-discovery option are compile-time. Radius, significance level, permutation count and seed are writes; the hot-spot recipe packs them itself from its `settings` (`result.setSettings`).
 
 ## Pitfalls that matter for real data
 

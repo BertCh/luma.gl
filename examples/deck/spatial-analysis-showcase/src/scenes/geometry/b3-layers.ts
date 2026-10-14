@@ -23,7 +23,7 @@ import {B3_PALETTE} from './b3-palette';
  * Bespoke layers of the Geometry chapter. They draw contributor outputs straight from GPU storage
  * buffers (no readback, no repacking) and color through the shared ramp table of `engine/ramps.ts`.
  *
- * - {@link PathOutputLayer}: a flat `GPULinePathOutput` (vertices + path offsets + GPU-written count).
+ * - {@link PathOutputLayer}: a flat `GPULineGeometryOutput` (vertices + path offsets + GPU-written count).
  * - {@link PairSegmentLayer}: one segment per row between two position columns, or a tick along a
  *   unit direction column.
  * - {@link FeatureTriangleLayer}: a static triangle list (a triangulated polygon fill) colored by a

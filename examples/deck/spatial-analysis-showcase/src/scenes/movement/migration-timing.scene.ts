@@ -403,9 +403,9 @@ graph.add(new GPUTemporalReduction({
   cellIds, timestamps, values: speeds,
   parameters: bucketParameters.importToGraph(graph),
   cellCount: 3 * rowCount, bucketCount: 128,
-  output: {counts, min, max, first, last, occupiedSlots: {ids, count, overflow}}
+  output: {counts, minimums, maximums, first, last, occupiedSlots: {ids, status: {count, overflow}}}
 }));
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 // A bucket width is a buffer write: ${state.bucketDays} days = ${Math.ceil(366 / state.bucketDays)} buckets.
 bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketDays} * 86400));
 

@@ -143,20 +143,22 @@ export async function createVesselEncounters(
       positions: preparePositions,
       timestamps: prepareTimestamps,
       trackOffsets: prepareOffsets,
-      averageSpeeds: importGraphBuffer(
-        prepareGraph,
-        'average-speeds',
-        averageSpeeds,
-        'float32',
-        trackCount
-      ),
-      trackLengths: importGraphBuffer(
-        prepareGraph,
-        'track-lengths',
-        trackLengths,
-        'float32',
-        trackCount
-      )
+      output: {
+        averageSpeeds: importGraphBuffer(
+          prepareGraph,
+          'average-speeds',
+          averageSpeeds,
+          'float32',
+          trackCount
+        ),
+        trackLengths: importGraphBuffer(
+          prepareGraph,
+          'track-lengths',
+          trackLengths,
+          'float32',
+          trackCount
+        )
+      }
     })
   );
   prepareGraph.add(
@@ -167,16 +169,18 @@ export async function createVesselEncounters(
       trackOffsets: prepareOffsets,
       sampleCount: ROUTE_SAMPLES,
       spacing: 'arc-length',
-      samples: importGraphBuffer(
-        prepareGraph,
-        'routes',
-        routesBuffer,
-        'float32x2',
-        trackCount * ROUTE_SAMPLES
-      )
+      output: {
+        samples: importGraphBuffer(
+          prepareGraph,
+          'routes',
+          routesBuffer,
+          'float32x2',
+          trackCount * ROUTE_SAMPLES
+        )
+      }
     })
   );
-  const prepareCompiled = resources.track(prepareGraph.compile());
+  const prepareCompiled = resources.track(await prepareGraph.compileAsync());
 
   // ---- Graph 2: encounters + pair similarity (re-encoded on a clock/distance change) -----------
   const samplesBuffer = resources.createBuffer('samples', sampleCount * 8);
@@ -314,87 +318,108 @@ export async function createVesselEncounters(
     trackOffsets: encounterOffsets,
     clock: clockParameter.importToGraph(encounterGraph),
     bucketCount: BUCKET_COUNT,
-    samples: importGraphBuffer(encounterGraph, 'samples', samplesBuffer, 'float32x2', sampleCount),
     distance: distanceParameter.importToGraph(encounterGraph),
     cellSize: CELL_SIZE,
     bounds,
     hitCapacity: HIT_CAPACITY,
-    pairs: {
-      candidateOverflow: importGraphBuffer(
+    output: {
+      samples: importGraphBuffer(
         encounterGraph,
-        'pair-candidate-overflow',
-        pairCandidateOverflow,
-        'uint32',
-        1
+        'samples',
+        samplesBuffer,
+        'float32x2',
+        sampleCount
       ),
-      output: {
+      pairs: {
         ids: pairIdsView,
-        count: pairCountView,
-        overflow: importGraphBuffer(encounterGraph, 'pair-overflow', pairOverflow, 'uint32', 1)
+        status: {
+          count: pairCountView,
+          overflow: importGraphBuffer(encounterGraph, 'pair-overflow', pairOverflow, 'uint32', 1)
+        },
+        partners: pairPartnersView,
+        firstBuckets: importGraphBuffer(
+          encounterGraph,
+          'pair-first-buckets',
+          pairFirstBuckets,
+          'uint32',
+          PAIR_CAPACITY
+        ),
+        minimumDistances: importGraphBuffer(
+          encounterGraph,
+          'pair-minimum-distances',
+          pairMinimumDistances,
+          'float32',
+          PAIR_CAPACITY
+        ),
+        bucketCounts: importGraphBuffer(
+          encounterGraph,
+          'pair-bucket-counts',
+          pairBucketCounts,
+          'uint32',
+          PAIR_CAPACITY
+        )
       },
-      partners: pairPartnersView,
-      firstBuckets: importGraphBuffer(
-        encounterGraph,
-        'pair-first-buckets',
-        pairFirstBuckets,
-        'uint32',
-        PAIR_CAPACITY
-      ),
-      minimumDistances: importGraphBuffer(
-        encounterGraph,
-        'pair-minimum-distances',
-        pairMinimumDistances,
-        'float32',
-        PAIR_CAPACITY
-      ),
-      bucketCounts: importGraphBuffer(
-        encounterGraph,
-        'pair-bucket-counts',
-        pairBucketCounts,
-        'uint32',
-        PAIR_CAPACITY
-      )
+      status: {
+        candidateOverflow: importGraphBuffer(
+          encounterGraph,
+          'pair-candidate-overflow',
+          pairCandidateOverflow,
+          'uint32',
+          1
+        )
+      }
     }
   });
   encounterGraph.add(
     new GPUTrackSimilarity({
       id: 'pair-similarity',
-      positionsA: importGraphBuffer(
-        encounterGraph,
-        'routes',
-        routesBuffer,
-        'float32x2',
-        trackCount * ROUTE_SAMPLES
-      ),
-      offsetsA: importGraphBuffer(
-        encounterGraph,
-        'route-offsets',
-        routeOffsetsBuffer,
-        'uint32',
-        trackCount + 1
-      ),
       pairA: pairIdsView,
       pairB: pairPartnersView,
       activePairCount: pairCountView,
-      hausdorff: importGraphBuffer(
-        encounterGraph,
-        'pair-hausdorff',
-        pairHausdorff,
-        'float32',
-        PAIR_CAPACITY
-      ),
-      frechet: importGraphBuffer(
-        encounterGraph,
-        'pair-frechet',
-        pairFrechet,
-        'float32',
-        PAIR_CAPACITY
-      ),
-      status: importGraphBuffer(encounterGraph, 'pair-status', pairStatus, 'uint32', PAIR_CAPACITY),
-      maxFrechetVertices: ROUTE_SAMPLES
+      maximumFrechetVertexCount: ROUTE_SAMPLES,
+      output: {
+        hausdorff: importGraphBuffer(
+          encounterGraph,
+          'pair-hausdorff',
+          pairHausdorff,
+          'float32',
+          PAIR_CAPACITY
+        ),
+        frechet: importGraphBuffer(
+          encounterGraph,
+          'pair-frechet',
+          pairFrechet,
+          'float32',
+          PAIR_CAPACITY
+        ),
+        pairStatus: importGraphBuffer(
+          encounterGraph,
+          'pair-status',
+          pairStatus,
+          'uint32',
+          PAIR_CAPACITY
+        )
+      },
+      linesA: {
+        kind: 'lines',
+        positions: importGraphBuffer(
+          encounterGraph,
+          'routes',
+          routesBuffer,
+          'float32x2',
+          trackCount * ROUTE_SAMPLES
+        ),
+        lineOffsets: importGraphBuffer(
+          encounterGraph,
+          'route-offsets',
+          routeOffsetsBuffer,
+          'uint32',
+          trackCount + 1
+        )
+      }
     })
   );
-  const encounterCompiled = resources.track(encounterGraph.compile());
+  const encounterCompiled = resources.track(await encounterGraph.compileAsync());
 
   // ---- Graph 3: connectors and vessel positions at the chosen time (cheap kernels) -------------
   const connectors = resources.createBuffer('connectors', PAIR_CAPACITY * 16);
@@ -514,7 +539,7 @@ export async function createVesselEncounters(
   vehicles[vehiclesOffset + index * 2u] = samples[samplesOffset + source];
   vehicles[vehiclesOffset + index * 2u + 1u] = samples[samplesOffset + source + 1u];`
   });
-  const viewCompiled = resources.track(viewGraph.compile());
+  const viewCompiled = resources.track(await viewGraph.compileAsync());
 
   // ---- Graph 4: the selected vessel against every other route ----------------------------------
   const selectedPairA = resources.createBuffer('selected-pair-a', trackCount * 4);
@@ -562,47 +587,52 @@ export async function createVesselEncounters(
   selectionGraph.add(
     new GPUTrackSimilarity({
       id: 'selected-similarity',
-      positionsA: importGraphBuffer(
-        selectionGraph,
-        'routes',
-        routesBuffer,
-        'float32x2',
-        trackCount * ROUTE_SAMPLES
-      ),
-      offsetsA: importGraphBuffer(
-        selectionGraph,
-        'route-offsets',
-        routeOffsetsBuffer,
-        'uint32',
-        trackCount + 1
-      ),
       pairA: selectedAView,
       pairB: selectedBView,
-      hausdorff: importGraphBuffer(
-        selectionGraph,
-        'selected-hausdorff',
-        selectedHausdorff,
-        'float32',
-        trackCount
-      ),
-      frechet: importGraphBuffer(
-        selectionGraph,
-        'selected-frechet',
-        selectedFrechet,
-        'float32',
-        trackCount
-      ),
-      status: importGraphBuffer(
-        selectionGraph,
-        'selected-status',
-        selectedStatus,
-        'uint32',
-        trackCount
-      ),
-      maxFrechetVertices: ROUTE_SAMPLES
+      maximumFrechetVertexCount: ROUTE_SAMPLES,
+      output: {
+        hausdorff: importGraphBuffer(
+          selectionGraph,
+          'selected-hausdorff',
+          selectedHausdorff,
+          'float32',
+          trackCount
+        ),
+        frechet: importGraphBuffer(
+          selectionGraph,
+          'selected-frechet',
+          selectedFrechet,
+          'float32',
+          trackCount
+        ),
+        pairStatus: importGraphBuffer(
+          selectionGraph,
+          'selected-status',
+          selectedStatus,
+          'uint32',
+          trackCount
+        )
+      },
+      linesA: {
+        kind: 'lines',
+        positions: importGraphBuffer(
+          selectionGraph,
+          'routes',
+          routesBuffer,
+          'float32x2',
+          trackCount * ROUTE_SAMPLES
+        ),
+        lineOffsets: importGraphBuffer(
+          selectionGraph,
+          'route-offsets',
+          routeOffsetsBuffer,
+          'uint32',
+          trackCount + 1
+        )
+      }
     })
   );
-  const selectionCompiled = resources.track(selectionGraph.compile());
+  const selectionCompiled = resources.track(await selectionGraph.compileAsync());
 
   // ---- State -----------------------------------------------------------------------------------
   let selectedTrack = NO_TRACK;
@@ -772,8 +802,6 @@ export async function createVesselEncounters(
       const column = (index: number) => 3 + index * PAIR_CAPACITY;
       const count = Math.min(words[0], PAIR_CAPACITY);
       pairSnapshot = {
-        count,
-        overflow: words[1] !== 0,
         candidateOverflow: words[2] !== 0,
         ids: words.slice(column(0), column(1)),
         partners: words.slice(column(1), column(2)),
@@ -781,7 +809,9 @@ export async function createVesselEncounters(
         minimumDistances: floats.slice(column(3), column(4)),
         bucketCounts: words.slice(column(4), column(5)),
         hausdorff: floats.slice(column(5), column(6)),
-        frechet: floats.slice(column(6), column(7))
+        frechet: floats.slice(column(6), column(7)),
+        count,
+        overflow: words[1] !== 0
       };
       summarizePairs();
     }

@@ -28,9 +28,9 @@ Four stories use them, on two real landscapes: the 32 km central **Grand Canyon*
 
 - **Routing** is a compile-time choice: `d8` (steepest neighbour, thin crisp channels), `d-infinity` (Tarboton, flow split between two neighbours by angle) and the multiple-flow-direction family `mfd-freeman` and `mfd-quinn` (flow shared among all lower neighbours, spreading over benches). Pick D8 when you need a clean network and stream order; pick a spreading routing when you care about the distribution of wetness.
 - **Accumulation units** are cells or ground area in square metres. With area, the **stream threshold** is a real drainage area (a tenth of a square kilometre is a small gully in this canyon), and it is a per-frame parameter.
-- **Cell size mode** matters for Web Mercator tiles: a Terrarium pixel is 19.1 m on the sphere but 15.4 m on the ground at this latitude. Use `cellSizeMode: 'web-mercator'` with the north and south edges of the window and every contributor evaluates ground spacing per row.
+- **Cell size mode** matters for Web Mercator tiles: a Terrarium pixel is 19.1 m on the sphere but 15.4 m on the ground at this latitude. Use `cellSizeMode: 'web-mercator'` with a `grid` in EPSG:3857 meters (`makeGPURasterMetadata({width, height, cellSize, origin: [minX, maxY]})`) and every contributor reads the cell size and the latitude of each row from it.
 
-The relaxations are iterated by the GPU and stop when nothing changes. The *Converged* readout reports iterations used out of the compile-time limit; if it says no, raise `maxFillIterations` or `maxAccumulationIterations`.
+The relaxations are iterated by the GPU and stop when nothing changes. The *Converged* readout reports iterations used out of the compile-time limit; if it says no, raise `maximumFillIterations` or `maximumAccumulationIterations`.
 
 ## Products on the filled surface
 
@@ -60,7 +60,7 @@ When to use which: use **distance field** when only geometry matters (nearest hy
 - **Resolution and quantisation.** Terrarium is 0.5 m in elevation and often resampled; flats and spurious pits are normal. Fill and flat resolution exist for that reason; do not read single-cell features as real.
 - **Edges.** Water that leaves the window is not routed further, and watersheds touching the window edge are cut off.
 - **Models, not measurements.** Tobler’s function is symmetric here, cliffs are a slope threshold, HAND is not a hydraulic model and the wind field has no pressure. State the model when you show the map.
-- **Raster orientation.** Contributors that assume row 0 at the minimum y (distance field, isolines, particles) need the raster flipped or an extent with negated y; the stories show both patterns.
+- **Raster orientation.** The grid says which way rows run: `rowDirection: 'south'` (the default) for north-up rasters, `'north'` with a bottom-left origin for rasters flipped to row 0 at the minimum y (contours and terrain wind flip the DEM this way so the particles share the map's y-up frame). The distance field takes either direction, so its seeds are plain map coordinates.
 
 ## Next steps
 

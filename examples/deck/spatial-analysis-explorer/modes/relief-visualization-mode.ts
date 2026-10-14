@@ -73,7 +73,9 @@ import {
   type GPUTerrainHorizonAlgorithm,
   type GPUTerrainHorizonFormat
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisRasterLayer,
@@ -285,6 +287,13 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
     const pixelCount = width * height;
     const projection = new LocalMetricProjection(terrain.origin);
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
@@ -423,93 +432,126 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
     };
 
     const compiledGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
+    /** Compiles in flight, by key, so concurrent requests for one graph share one compile. */
+    const pendingGraphs = new Map<string, Promise<CompiledGPUCommandGraph<void>>>();
     /** Builds the graph for `key` the first time it is asked for. */
-    function getGraph(
+    async function getGraph(
       key: string,
       build: (graph: GPUCommandGraph<void>) => void
-    ): CompiledGPUCommandGraph<void> {
-      let compiled = compiledGraphs.get(key);
-      if (!compiled) {
+    ): Promise<CompiledGPUCommandGraph<void>> {
+      const compiled = compiledGraphs.get(key);
+      if (compiled) return compiled;
+      let pending = pendingGraphs.get(key);
+      if (!pending) {
         const graph = new GPUCommandGraph<void>(device, {id: `relief-visualization-${key}`});
         build(graph);
-        compiled = resources.track(graph.compile());
-        compiledGraphs.set(key, compiled);
+        pending = graph
+          .compileAsync()
+          .then(result => {
+            const tracked = resources.track(result);
+            compiledGraphs.set(key, tracked);
+            return tracked;
+          })
+          .finally(() => pendingGraphs.delete(key));
+        pendingGraphs.set(key, pending);
       }
-      return compiled;
+      return await pending;
     }
 
-    function getHorizonGraph(
+    /** The `compiledGraphs` key of a stage for the current options (see `getStageGraph`). */
+    function getStageKey(stage: Stage): string {
+      if (stage === 'horizon')
+        return `horizon-${horizonAlgorithm}-${horizonFormat}-r${horizonRadius}`;
+      if (stage === 'irradiance') return `irradiance-${horizonFormat}`;
+      return stage;
+    }
+
+    const stageSwap = resources.track(new GraphSwap());
+    /** Compiles the current product's missing stage graphs off the frame; `encode` waits for them. */
+    function requestStageGraphs(): void {
+      if (stageSwap.pending) return;
+      void stageSwap.request({
+        build: async () => {
+          for (const stage of PRODUCT_STAGES[product]) await getStageGraph(stage);
+        },
+        commit: () => context.updateLayers()
+      });
+    }
+
+    async function getHorizonGraph(
       algorithm: GPUTerrainHorizonAlgorithm,
       format: GPUTerrainHorizonFormat,
       radius: number = horizonRadius
     ) {
-      return getGraph(`horizon-${algorithm}-${format}-r${radius}`, graph => {
+      return await getGraph(`horizon-${algorithm}-${format}-r${radius}`, graph => {
         graph.add(
           new GPUTerrainHorizon({
             id: 'horizon',
-            width,
-            height,
+            grid,
             elevation: importElevation(graph),
-            settings: horizonSettings.importToGraph(graph),
+            parameters: horizonSettings.importToGraph(graph),
             directionCount: DIRECTION_COUNT,
             maximumRadius: radius,
             algorithm,
             horizonFormat: format,
             cellSizeMode: 'uniform',
             rowDirection: 'south',
-            horizon: importHorizon(graph, format),
-            skyViewFactor: importFloats(graph, 'sky-view', skyViewBuffer),
-            anisotropicSkyViewFactor: importFloats(graph, 'anisotropic', anisotropicBuffer),
-            positiveOpenness: importFloats(graph, 'positive-openness', positiveOpennessBuffer),
-            negativeOpenness: importFloats(graph, 'negative-openness', negativeOpennessBuffer)
+            output: {
+              horizon: importHorizon(graph, format),
+              skyViewFactor: importFloats(graph, 'sky-view', skyViewBuffer),
+              anisotropicSkyViewFactor: importFloats(graph, 'anisotropic', anisotropicBuffer),
+              positiveOpenness: importFloats(graph, 'positive-openness', positiveOpennessBuffer),
+              negativeOpenness: importFloats(graph, 'negative-openness', negativeOpennessBuffer)
+            }
           })
         );
       });
     }
 
-    function getStageGraph(stage: Stage): CompiledGPUCommandGraph<void> {
+    async function getStageGraph(stage: Stage): Promise<CompiledGPUCommandGraph<void>> {
       switch (stage) {
         case 'setup':
-          return getGraph('setup', graph => {
+          return await getGraph('setup', graph => {
             graph.add(
               new GPUTerrainDerivatives({
                 id: 'derivatives',
-                width,
-                height,
+                grid,
                 elevation: importElevation(graph),
-                settings: derivativesSettings.importToGraph(graph),
-                slope: importFloats(graph, 'slope', slopeBuffer),
-                aspect: importFloats(graph, 'aspect', aspectBuffer),
+                parameters: derivativesSettings.importToGraph(graph),
+                output: {
+                  slope: importFloats(graph, 'slope', slopeBuffer),
+                  aspect: importFloats(graph, 'aspect', aspectBuffer)
+                },
                 cellSizeMode: 'uniform',
                 rowDirection: 'south'
               })
             );
           });
         case 'horizon':
-          return getHorizonGraph(horizonAlgorithm, horizonFormat, horizonRadius);
+          return await getHorizonGraph(horizonAlgorithm, horizonFormat, horizonRadius);
         case 'shadow':
-          return getGraph('shadow', graph => {
+          return await getGraph('shadow', graph => {
             graph.add(
               new GPUTerrainCastShadow({
                 id: 'cast-shadow',
-                width,
-                height,
+                grid,
                 elevation: importElevation(graph),
-                settings: shadowSettings.importToGraph(graph),
+                parameters: shadowSettings.importToGraph(graph),
                 cellSizeMode: 'uniform',
                 rowDirection: 'south',
-                sunVisibility: importFloats(graph, 'sun-visibility', sunVisibilityBuffer),
-                horizonAngle: importFloats(graph, 'sun-horizon', sunHorizonBuffer)
+                output: {
+                  sunVisibility: importFloats(graph, 'sun-visibility', sunVisibilityBuffer),
+                  horizonAngle: importFloats(graph, 'sun-horizon', sunHorizonBuffer)
+                }
               })
             );
           });
         case 'irradiance':
-          return getGraph(`irradiance-${horizonFormat}`, graph => {
+          return await getGraph(`irradiance-${horizonFormat}`, graph => {
             graph.add(
               new GPUSolarIrradiance({
                 id: 'solar-irradiance',
-                width,
-                height,
+                grid,
                 directionCount: DIRECTION_COUNT,
                 horizonFormat,
                 horizon: importHorizon(graph, horizonFormat),
@@ -521,27 +563,28 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
                   SUN_TABLE_CAPACITY * GPU_SOLAR_IRRADIANCE_SUN_TABLE_STRIDE
                 ),
                 sampleCapacity: SUN_TABLE_CAPACITY,
-                settings: irradianceSettings.importToGraph(graph),
+                parameters: irradianceSettings.importToGraph(graph),
                 slope: importFloats(graph, 'slope', slopeBuffer),
                 aspect: importFloats(graph, 'aspect', aspectBuffer),
                 skyViewFactor: importFloats(graph, 'sky-view', skyViewBuffer),
-                sunHours: importFloats(graph, 'sun-hours', sunHoursBuffer),
-                insolation: importFloats(graph, 'insolation', insolationBuffer)
+                output: {
+                  sunHours: importFloats(graph, 'sun-hours', sunHoursBuffer),
+                  insolation: importFloats(graph, 'insolation', insolationBuffer)
+                }
               })
             );
           });
         case 'look':
-          return getGraph('look', graph => {
+          return await getGraph('look', graph => {
             const elevation = importElevation(graph);
             const curvature = importFloats(graph, 'ring-curvature', ringCurvatureBuffer);
             graph.add(
               new GPUTerrainCurvature({
                 id: 'ring-curvature',
-                width,
-                height,
+                grid,
                 elevation,
-                settings: curvatureSettings.importToGraph(graph),
-                ringCurvature: curvature,
+                parameters: curvatureSettings.importToGraph(graph),
+                output: {ringCurvature: curvature},
                 ringRadii: CURVATURE_RING_RADII,
                 ringSquash: 'pade-tanh',
                 cellSizeMode: 'uniform',
@@ -551,76 +594,73 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
             graph.add(
               new GPUReliefShading({
                 id: 'relief-shading',
-                width,
-                height,
+                grid,
                 elevation,
-                settings: reliefSettings.importToGraph(graph),
+                parameters: reliefSettings.importToGraph(graph),
                 skyViewFactor: importFloats(graph, 'sky-view', skyViewBuffer),
                 curvature,
                 imhofSwing: true,
                 cellSizeMode: 'uniform',
                 rowDirection: 'south',
-                hillshade: importFloats(graph, 'hillshade', hillshadeBuffer),
-                color: importGraphBuffer(
-                  graph,
-                  'relief-color',
-                  reliefColorBuffer,
-                  'uint32',
-                  pixelCount
-                )
+                output: {
+                  hillshade: importFloats(graph, 'hillshade', hillshadeBuffer),
+                  color: importGraphBuffer(
+                    graph,
+                    'relief-color',
+                    reliefColorBuffer,
+                    'uint32',
+                    pixelCount
+                  )
+                }
               })
             );
           });
         case 'rvt':
-          return getGraph('rvt', graph => {
+          return await getGraph('rvt', graph => {
             const elevation = importElevation(graph);
             graph.add(
               new GPUSimpleLocalRelief({
                 id: 'simple-local-relief',
-                width,
-                height,
+                grid,
                 elevation,
-                settings: simpleReliefSettings.importToGraph(graph),
-                radius: LOCAL_RELIEF_RADIUS,
-                relief: importFloats(graph, 'simple-local-relief', simpleReliefBuffer)
+                parameters: simpleReliefSettings.importToGraph(graph),
+                maximumRadius: LOCAL_RELIEF_RADIUS,
+                output: {relief: importFloats(graph, 'simple-local-relief', simpleReliefBuffer)}
               })
             );
             graph.add(
               new GPUMultiScaleRelief({
                 id: 'multi-scale-relief',
-                width,
-                height,
+                grid,
                 elevation,
-                settings: multiScaleSettings.importToGraph(graph),
+                parameters: multiScaleSettings.importToGraph(graph),
                 resolution: cellSize[0],
                 featureMinimum: MULTI_SCALE_FEATURE_MINIMUM_CELLS * cellSize[0],
                 featureMaximum: MULTI_SCALE_FEATURE_MAXIMUM_CELLS * cellSize[0],
                 scalingFactor: MULTI_SCALE_SCALING_FACTOR,
-                relief: importFloats(graph, 'multi-scale-relief', multiScaleBuffer)
+                output: {relief: importFloats(graph, 'multi-scale-relief', multiScaleBuffer)}
               })
             );
             graph.add(
               new GPULocalDominance({
                 id: 'local-dominance',
-                width,
-                height,
+                grid,
                 elevation,
-                settings: dominanceSettings.importToGraph(graph),
+                parameters: dominanceSettings.importToGraph(graph),
                 minimumRadius: DOMINANCE_MINIMUM_RADIUS,
                 maximumRadius: DOMINANCE_MAXIMUM_RADIUS,
                 radiusIncrement: DOMINANCE_RADIUS_INCREMENT,
                 angularResolution: DOMINANCE_ANGULAR_RESOLUTION,
-                dominance: importFloats(graph, 'local-dominance', dominanceBuffer)
+                output: {dominance: importFloats(graph, 'local-dominance', dominanceBuffer)}
               })
             );
           });
         case 'blend':
-          return getGraph('blend', graph => {
+          return await getGraph('blend', graph => {
             graph.add(
               new GPUReliefBlend({
                 id: 'relief-blend',
-                width,
-                height,
+                grid,
                 // Bottom to top, the VAT input order: hillshade, slope, positive openness, SVF.
                 layers: [
                   importFloats(graph, 'hillshade', hillshadeBuffer),
@@ -628,14 +668,16 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
                   importFloats(graph, 'positive-openness', positiveOpennessBuffer),
                   importFloats(graph, 'sky-view', skyViewBuffer)
                 ],
-                settings: blendSettings.importToGraph(graph),
-                color: importGraphBuffer(
-                  graph,
-                  'blend-color',
-                  blendColorBuffer,
-                  'uint32',
-                  pixelCount
-                )
+                parameters: blendSettings.importToGraph(graph),
+                output: {
+                  color: importGraphBuffer(
+                    graph,
+                    'blend-color',
+                    blendColorBuffer,
+                    'uint32',
+                    pixelCount
+                  )
+                }
               })
             );
           });
@@ -686,35 +728,35 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
 
     function writeDerivatives(): void {
       derivativesSettings.write(
-        getGPUTerrainDerivativesParameterValues({
-          cellSize,
-          azimuthDegrees: 315,
-          altitudeDegrees: 45
-        })
+        getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315, altitudeDegrees: 45}, grid)
       );
       curvatureSettings.write(
-        getGPUTerrainCurvatureParameterValues({cellSize, ringGains: [0.55, 0.45]})
+        getGPUTerrainCurvatureParameterValues({ringGains: [0.55, 0.45]}, grid)
       );
     }
     function writeHorizon(): void {
       horizonSettings.write(
-        getGPUTerrainHorizonParameterValues({
-          cellSize,
-          anisotropyAzimuthDegrees: anisotropyAzimuth,
-          anisotropyLevel,
-          anisotropyMinimumWeight
-        })
+        getGPUTerrainHorizonParameterValues(
+          {
+            anisotropyAzimuthDegrees: anisotropyAzimuth,
+            anisotropyLevel,
+            anisotropyMinimumWeight
+          },
+          grid
+        )
       );
       invalidate('horizon');
     }
     function writeShadow(): void {
       shadowSettings.write(
-        getGPUTerrainCastShadowParameterValues({
-          cellSize,
-          azimuthDegrees: sunAzimuth,
-          altitudeDegrees: sunAltitude,
-          angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * sunSoftness
-        })
+        getGPUTerrainCastShadowParameterValues(
+          {
+            azimuthDegrees: sunAzimuth,
+            altitudeDegrees: sunAltitude,
+            angularRadiusDegrees: GPU_SOLAR_DISK_ANGULAR_RADIUS_DEGREES * sunSoftness
+          },
+          grid
+        )
       );
       invalidate('shadow');
     }
@@ -754,21 +796,23 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
               lightWeighting: lightModel
             };
       reliefSettings.write(
-        getGPUReliefShadingParameterValues({
-          cellSize,
-          ...lightSettings,
-          imhofSwingDegrees: lightModel === 'imhof-swing' ? swingDegrees : 0,
-          curvatureStrength,
-          contrastLowElevation: 0,
-          contrastHighElevation,
-          contrastStrength,
-          hillshadeStrength: 1,
-          skyViewStrength: 1,
-          textureShadeStrength: 0,
-          exposure,
-          tintStrength: 0.35,
-          elevationStops: elevationTint ? ELEVATION_STOPS : []
-        })
+        getGPUReliefShadingParameterValues(
+          {
+            ...lightSettings,
+            imhofSwingDegrees: lightModel === 'imhof-swing' ? swingDegrees : 0,
+            curvatureStrength,
+            contrastLowElevation: 0,
+            contrastHighElevation,
+            contrastStrength,
+            hillshadeStrength: 1,
+            skyViewStrength: 1,
+            textureShadeStrength: 0,
+            exposure,
+            tintStrength: 0.35,
+            elevationStops: elevationTint ? ELEVATION_STOPS : []
+          },
+          grid
+        )
       );
       invalidate('look');
     }
@@ -1225,9 +1269,9 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
 
     const measureHorizon = async () => {
       const radius = horizonRadius;
-      const march = await timeGraph(getHorizonGraph('march', horizonFormat, radius));
+      const march = await timeGraph(await getHorizonGraph('march', horizonFormat, radius));
       marchReadout.setValue(formatCompiledGraphTiming(march));
-      const sweep = await timeGraph(getHorizonGraph('sweep', horizonFormat, radius));
+      const sweep = await timeGraph(await getHorizonGraph('sweep', horizonFormat, radius));
       sweepReadout.setValue(formatCompiledGraphTiming(sweep));
       const ratio = (sweep.milliseconds / march.milliseconds).toFixed(2);
       speedupReadout.setValue(`r${radius}: sweep takes ${ratio}× the march time`);
@@ -1238,7 +1282,7 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
       try {
         await measureHorizon();
         for (const stage of ['shadow', 'irradiance', 'look', 'rvt', 'blend'] as const) {
-          const timing: CompiledGraphTiming = await timeGraph(getStageGraph(stage));
+          const timing: CompiledGraphTiming = await timeGraph(await getStageGraph(stage));
           stageReadouts[stage]?.setValue(formatCompiledGraphTiming(timing));
         }
       } catch (error) {
@@ -1259,7 +1303,13 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
         const needed = PRODUCT_STAGES[product];
         for (const stage of STAGE_ORDER) {
           if (!needed.includes(stage) || !dirtyStages.has(stage)) continue;
-          getStageGraph(stage).encode(commandEncoder, {parameters: undefined});
+          const compiled = compiledGraphs.get(getStageKey(stage));
+          if (!compiled) {
+            // Later stages read this stage's outputs: wait until its graph has compiled.
+            requestStageGraphs();
+            break;
+          }
+          compiled.encode(commandEncoder, {parameters: undefined});
           dirtyStages.delete(stage);
           encodedOnce.add(stage);
         }
@@ -1320,7 +1370,7 @@ export const reliefVisualizationMode: SpatialAnalysisModeDefinition = {
     };
 
     // Build the product's graphs before the first frame, then time the horizon pair once.
-    for (const stage of PRODUCT_STAGES[product]) getStageGraph(stage);
+    for (const stage of PRODUCT_STAGES[product]) await getStageGraph(stage);
     setTimeout(() => {
       if (!destroyed) void measureHorizon().catch(() => {});
     }, 1500);

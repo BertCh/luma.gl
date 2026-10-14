@@ -101,7 +101,7 @@ function getLegends(
 function getSnippet(state: BixiTidesOptions): string {
   return `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
-import {getGPUTimeWindowParameterValues} from '@luma.gl/experimental/gpu-dataframe';
+import {getGPUTimeWindowFilterParameterValues} from '@luma.gl/experimental/gpu-dataframe';
 
 const graph = new GPUCommandGraph(device, {id: 'tides'});
 graph.add(
@@ -114,14 +114,16 @@ graph.add(
     excludeSelfFlows: ${state.excludeSelf},
     sumOrder: '${state.sumOrder}',
     pairCapacity: 131072,
-    output: {ids, count, overflow, requiredCount},   // top-512 pairs, heaviest first
-    flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
-    zoneOutWeights, zoneInWeights                 // per-station totals
+    output: {
+      ids, status: {count, overflow, requiredCount},         // top-512 pairs, heaviest first
+      flowOriginZoneIds, flowDestinationZoneIds, flowWeights,
+      zoneOutWeights, zoneInWeights                // per-station totals
+    }
   })
 );
-const compiled = graph.compile();                // once
+const compiled = await graph.compileAsync();     // once
 // the window is closed at both ends: one hour slot is [hour, hour + 0.5]
-windowParams.write(getGPUTimeWindowParameterValues({start: ${state.hour}, end: ${state.hour + 0.5}}));
+windowParams.write(getGPUTimeWindowFilterParameterValues({start: ${state.hour}, end: ${state.hour + 0.5}}));
 compiled.encode(commandEncoder, {parameters: undefined});
 
 // after the readback (a few KB), on the CPU:

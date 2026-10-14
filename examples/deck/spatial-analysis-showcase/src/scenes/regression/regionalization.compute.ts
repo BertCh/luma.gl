@@ -11,12 +11,16 @@ import {
   GPUSkaterRegions,
   GPUSpatialWeightsMinimumSpanningTree,
   GPU_REGION_PARTITION_EVALUATION_LAYOUT,
+  GPU_KMEANS_PARAMETER_LENGTH,
   GPU_SKATER_NO_CUT,
-  GPU_SKATER_PARAMETER_LENGTH
+  GPU_SKATER_REGIONS_PARAMETER_LENGTH,
+  getGPUKMeansParameterValues,
+  getGPUSkaterRegionsParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {REGION_PALETTE} from './b6-colors';
@@ -29,6 +33,7 @@ import {
   createFeatureLocator,
   formatInteger,
   formatNumber,
+  getFeaturePolygonOffsets,
   getLargestComponent,
   getMoments,
   getQuantile,
@@ -274,16 +279,18 @@ export async function createRegionalization(
   const stepCount = MAXIMUM_REGIONS - 1;
   const verticesBuffer = resources.createBuffer('vertices', geometry.vertices);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', geometry.ringOffsets);
-  const polygonOffsetsBuffer = resources.createBuffer(
-    'polygon-offsets',
-    geometry.featureRingOffsets
+  const featureOffsetsBuffer = resources.createBuffer(
+    'feature-offsets',
+    getFeaturePolygonOffsets(geometry)
   );
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', geometry.partRingOffsets);
   const valuesBuffer = resources.createBuffer('values', rowCount * COLUMN_COUNT * 4);
   const standardizedBuffer = resources.createBuffer('standardized', rowCount * COLUMN_COUNT * 4);
   const offsetsBuffer = resources.createBuffer('offsets', (rowCount + 1) * 4);
   const neighborsBuffer = resources.createBuffer('neighbors', capacity * 4);
   const weightValuesBuffer = resources.createBuffer('weight-values', capacity * 4);
   const overflowBuffer = resources.createBuffer('overflow', 4);
+  const candidateOverflowBuffer = resources.createBuffer('candidate-overflow', 4);
   const treeFlagsBuffer = resources.createBuffer('tree-flags', capacity * 4);
   const componentLabelsBuffer = resources.createBuffer('component-labels', rowCount * 4);
   const edgeIdsBuffer = resources.createBuffer('edge-ids', rowCount * 4);
@@ -303,13 +310,21 @@ export async function createRegionalization(
   const skaterParameters = resources.createParameterBuffer(
     'skater-parameters',
     'uint32',
-    GPU_SKATER_PARAMETER_LENGTH
+    GPU_SKATER_REGIONS_PARAMETER_LENGTH
   );
   const planeBuffer = resources.createBuffer('principal-plane', rowCount * 2 * 4);
   const kLabelsBuffer = resources.createBuffer('kmeans-labels', rowCount * 4);
   const kCentersBuffer = resources.createBuffer('kmeans-centers', MAXIMUM_KMEANS_CLUSTERS * 2 * 4);
   const kSizesBuffer = resources.createBuffer('kmeans-sizes', MAXIMUM_KMEANS_CLUSTERS * 4);
-  const kConvergenceBuffer = resources.createBuffer('kmeans-convergence', 8);
+  const kIterationCountBuffer = resources.createBuffer('kmeans-iteration-count', 4);
+  const kConvergedBuffer = resources.createBuffer('kmeans-converged', 4);
+  // The k-means seed is a per-frame parameter; this scene keeps it fixed.
+  const kParameters = resources.createParameterBuffer(
+    'kmeans-parameters',
+    'uint32',
+    GPU_KMEANS_PARAMETER_LENGTH,
+    getGPUKMeansParameterValues({seed: 7})
+  );
   const kSummaryBuffer = resources.createBuffer(
     'kmeans-summary',
     GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4
@@ -330,7 +345,7 @@ export async function createRegionalization(
 
   // ---- Variant graphs. ----
   const skaterGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
-  const getSkaterGraph = (criterion: 'queen' | 'rook', standardize: boolean) => {
+  const getSkaterGraph = async (criterion: 'queen' | 'rook', standardize: boolean) => {
     const key = `${criterion}:${standardize}`;
     let compiled = skaterGraphs.get(key);
     if (compiled) return compiled;
@@ -365,29 +380,50 @@ export async function createRegionalization(
       new GPUContiguityWeights({
         id: 'contiguity',
         criterion,
-        positions: importGraphBuffer(
-          graph,
-          'vertices',
-          verticesBuffer,
-          'float32x2',
-          geometry.vertices.length / 2
-        ),
-        ringOffsets: importGraphBuffer(
-          graph,
-          'ring-offsets',
-          ringOffsetsBuffer,
-          'uint32',
-          geometry.ringOffsets.length
-        ),
-        polygonOffsets: importGraphBuffer(
-          graph,
-          'polygon-offsets',
-          polygonOffsetsBuffer,
-          'uint32',
-          rowCount + 1
-        ),
-        weights,
-        overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1)
+        polygons: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
+            graph,
+            'vertices',
+            verticesBuffer,
+            'float32x2',
+            geometry.vertices.length / 2
+          ),
+          featureOffsets: importGraphBuffer(
+            graph,
+            'feature-offsets',
+            featureOffsetsBuffer,
+            'uint32',
+            geometry.featureCount + 1
+          ),
+          polygonOffsets: importGraphBuffer(
+            graph,
+            'polygon-offsets',
+            polygonOffsetsBuffer,
+            'uint32',
+            geometry.partRingOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'ring-offsets',
+            ringOffsetsBuffer,
+            'uint32',
+            geometry.ringOffsets.length
+          )
+        },
+        output: {
+          ...weights,
+          status: {
+            overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              candidateOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
     graph.add(
@@ -397,15 +433,25 @@ export async function createRegionalization(
         values,
         columnCount: COLUMN_COUNT,
         standardize,
-        treeEdgeFlags: treeFlags,
-        componentLabels,
-        standardizedValues: standardize ? standardized : undefined,
-        edges: {
-          ids: importGraphBuffer(graph, 'edge-ids', edgeIdsBuffer, 'uint32', rowCount),
-          count: importGraphBuffer(graph, 'edge-count', edgeCountBuffer, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowBuffer, 'uint32', 1)
-        },
-        edgeCosts: importGraphBuffer(graph, 'edge-costs', edgeCostsBuffer, 'float32', rowCount)
+        output: {
+          treeEdgeFlags: treeFlags,
+          componentLabels,
+          standardizedValues: standardize ? standardized : undefined,
+          edges: {
+            ids: importGraphBuffer(graph, 'edge-ids', edgeIdsBuffer, 'uint32', rowCount),
+            status: {
+              count: importGraphBuffer(graph, 'edge-count', edgeCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'edge-overflow', edgeOverflowBuffer, 'uint32', 1)
+            }
+          },
+          edgeDissimilarities: importGraphBuffer(
+            graph,
+            'edge-costs',
+            edgeCostsBuffer,
+            'float32',
+            rowCount
+          )
+        }
       })
     );
     // Without standardization the cuts and the evaluation use the raw table, as the tree does.
@@ -420,10 +466,12 @@ export async function createRegionalization(
         columnCount: COLUMN_COUNT,
         maximumRegionCount: MAXIMUM_REGIONS,
         parameters: skaterParameters.importToGraph(graph),
-        labels,
-        regionCount: importGraphBuffer(graph, 'region-count', regionCountBuffer, 'uint32', 1),
-        cutEdges: importGraphBuffer(graph, 'cut-edges', cutEdgesBuffer, 'uint32', stepCount),
-        cutGains: importGraphBuffer(graph, 'cut-gains', cutGainsBuffer, 'float32', stepCount)
+        output: {
+          labels,
+          regionCount: importGraphBuffer(graph, 'region-count', regionCountBuffer, 'uint32', 1),
+          cutEdges: importGraphBuffer(graph, 'cut-edges', cutEdgesBuffer, 'uint32', stepCount),
+          cutGains: importGraphBuffer(graph, 'cut-gains', cutGainsBuffer, 'float32', stepCount)
+        }
       })
     );
     graph.add(
@@ -433,30 +481,32 @@ export async function createRegionalization(
         columnCount: COLUMN_COUNT,
         labels,
         weights,
-        summary: importGraphBuffer(
-          graph,
-          'summary',
-          summaryBuffer,
-          'float32',
-          GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
-        ),
-        regionSizes: importGraphBuffer(
-          graph,
-          'region-sizes',
-          regionSizesBuffer,
-          'uint32',
-          rowCount
-        ),
-        regionWithinSsd: importGraphBuffer(
-          graph,
-          'region-within-ssd',
-          regionWithinBuffer,
-          'float32',
-          rowCount
-        )
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'summary',
+            summaryBuffer,
+            'float32',
+            GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
+          ),
+          regionSizes: importGraphBuffer(
+            graph,
+            'region-sizes',
+            regionSizesBuffer,
+            'uint32',
+            rowCount
+          ),
+          regionWithinSumOfSquares: importGraphBuffer(
+            graph,
+            'region-within-ssd',
+            regionWithinBuffer,
+            'float32',
+            rowCount
+          )
+        }
       })
     );
-    compiled = resources.track(graph.compile());
+    compiled = resources.track(await graph.compileAsync());
     skaterGraphs.set(key, compiled);
     return compiled;
   };
@@ -464,7 +514,7 @@ export async function createRegionalization(
   // The k-means evaluation scores with the standardized table; it is written by the MST graph, so
   // a raw-table scene scores both partitions on the raw metric by uploading the raw table once.
   const kmeansGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
-  const getKmeansGraph = (clusters: number, standardize: boolean) => {
+  const getKmeansGraph = async (clusters: number, standardize: boolean) => {
     const key = `${clusters}:${standardize}`;
     let compiled = kmeansGraphs.get(key);
     if (compiled) return compiled;
@@ -477,13 +527,30 @@ export async function createRegionalization(
         id: 'kmeans',
         positions: importGraphBuffer(graph, 'principal-plane', planeBuffer, 'float32x2', rowCount),
         k: clusters,
-        iterations: KMEANS_ITERATIONS,
+        maximumIterations: KMEANS_ITERATIONS,
         initialization: 'kmeans++',
-        seed: 7,
-        labels,
-        centers: importGraphBuffer(graph, 'kmeans-centers', kCentersBuffer, 'float32x2', clusters),
-        sizes: importGraphBuffer(graph, 'kmeans-sizes', kSizesBuffer, 'uint32', clusters),
-        convergence: importGraphBuffer(graph, 'kmeans-convergence', kConvergenceBuffer, 'uint32', 2)
+        parameters: kParameters.importToGraph(graph),
+        output: {
+          labels,
+          centers: importGraphBuffer(
+            graph,
+            'kmeans-centers',
+            kCentersBuffer,
+            'float32x2',
+            clusters
+          ),
+          sizes: importGraphBuffer(graph, 'kmeans-sizes', kSizesBuffer, 'uint32', clusters),
+          status: {
+            iterationCount: importGraphBuffer(
+              graph,
+              'kmeans-iteration-count',
+              kIterationCountBuffer,
+              'uint32',
+              1
+            ),
+            converged: importGraphBuffer(graph, 'kmeans-converged', kConvergedBuffer, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
@@ -500,30 +567,32 @@ export async function createRegionalization(
         labels,
         labelCapacity: MAXIMUM_KMEANS_CLUSTERS,
         weights: importWeights(graph),
-        summary: importGraphBuffer(
-          graph,
-          'kmeans-summary',
-          kSummaryBuffer,
-          'float32',
-          GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
-        ),
-        regionSizes: importGraphBuffer(
-          graph,
-          'kmeans-region-sizes',
-          kRegionSizesBuffer,
-          'uint32',
-          MAXIMUM_KMEANS_CLUSTERS
-        ),
-        regionWithinSsd: importGraphBuffer(
-          graph,
-          'kmeans-region-within',
-          kRegionWithinBuffer,
-          'float32',
-          MAXIMUM_KMEANS_CLUSTERS
-        )
+        output: {
+          summary: importGraphBuffer(
+            graph,
+            'kmeans-summary',
+            kSummaryBuffer,
+            'float32',
+            GPU_REGION_PARTITION_EVALUATION_LAYOUT.length
+          ),
+          regionSizes: importGraphBuffer(
+            graph,
+            'kmeans-region-sizes',
+            kRegionSizesBuffer,
+            'uint32',
+            MAXIMUM_KMEANS_CLUSTERS
+          ),
+          regionWithinSumOfSquares: importGraphBuffer(
+            graph,
+            'kmeans-region-within',
+            kRegionWithinBuffer,
+            'float32',
+            MAXIMUM_KMEANS_CLUSTERS
+          )
+        }
       })
     );
-    compiled = resources.track(graph.compile());
+    compiled = resources.track(await graph.compileAsync());
     kmeansGraphs.set(key, compiled);
     return compiled;
   };
@@ -560,12 +629,18 @@ export async function createRegionalization(
       standardizedBuffer.write(new Float32Array(rowCount * COLUMN_COUNT));
     const columns = enabled.flatMap((on, index) => (on ? [index] : []));
     planeBuffer.write(computePrincipalPlane(zTable, rowCount, columns));
-    skaterParameters.write(new Uint32Array([ctx.options.regions, ctx.options.minimumSize]));
+    skaterParameters.write(
+      getGPUSkaterRegionsParameterValues({
+        regionCount: ctx.options.regions,
+        minimumRegionSize: ctx.options.minimumSize
+      })
+    );
   };
   ctx.setReadout('rows', `${formatInteger(rowCount)} of ${formatInteger(featureCount)} tracts`);
   ctx.setStatus(`${formatInteger(rowCount)} Chicago tracts`);
-  getSkaterGraph(activeCriterion, activeStandardize);
-  getKmeansGraph(Number(activeClusters), activeStandardize);
+  await getSkaterGraph(activeCriterion, activeStandardize);
+  await getKmeansGraph(Number(activeClusters), activeStandardize);
+  const graphSwap = resources.track(new GraphSwap());
   writeInputs();
 
   const csrReader = createNamedReader(
@@ -622,8 +697,10 @@ export async function createRegionalization(
         bytes: GPU_REGION_PARTITION_EVALUATION_LAYOUT.length * 4
       },
       {name: 'kLabels', buffer: kLabelsBuffer, bytes: rowCount * 4},
-      {name: 'kConvergence', buffer: kConvergenceBuffer, bytes: 8},
-      {name: 'overflow', buffer: overflowBuffer, bytes: 4}
+      {name: 'kIterationCount', buffer: kIterationCountBuffer, bytes: 4},
+      {name: 'kConverged', buffer: kConvergedBuffer, bytes: 4},
+      {name: 'overflow', buffer: overflowBuffer, bytes: 4},
+      {name: 'candidateOverflow', buffer: candidateOverflowBuffer, bytes: 4}
     ],
     get => {
       const layout = GPU_REGION_PARTITION_EVALUATION_LAYOUT;
@@ -639,11 +716,12 @@ export async function createRegionalization(
       const components = new Set(get('componentLabels').u32).size;
       latestLabels = labels;
       latestKLabels = get('kLabels').u32;
-      const convergence = get('kConvergence').u32;
+      const kIterationCount = get('kIterationCount').u32[0];
+      const kConverged = get('kConverged').u32[0];
 
       const explained = (words: Float32Array) =>
-        words[layout.totalSsd] > 0
-          ? (100 * words[layout.betweenSsd]) / words[layout.totalSsd]
+        words[layout.totalSumOfSquares] > 0
+          ? (100 * words[layout.betweenSumOfSquares]) / words[layout.totalSumOfSquares]
           : Number.NaN;
       const target = ctx.options.regions;
       ctx.setReadout(
@@ -660,7 +738,7 @@ export async function createRegionalization(
       );
       ctx.setReadout(
         'within',
-        `SKATER ${formatNumber(summary[layout.withinSsd], 0)} vs k-means ${formatNumber(kSummary[layout.withinSsd], 0)} (of ${formatNumber(summary[layout.totalSsd], 0)})`
+        `SKATER ${formatNumber(summary[layout.withinSumOfSquares], 0)} vs k-means ${formatNumber(kSummary[layout.withinSumOfSquares], 0)} (of ${formatNumber(summary[layout.totalSumOfSquares], 0)})`
       );
       ctx.setReadout(
         'sizes',
@@ -684,7 +762,7 @@ export async function createRegionalization(
       );
       ctx.setReadout(
         'kmeans',
-        `${convergence[0]} iterations, ${convergence[1] ? 'converged' : 'not converged'}`
+        `${kIterationCount} iterations, ${kConverged ? 'converged' : 'not converged'}`
       );
       let applied = 0;
       const mask = new Uint32Array(capacity);
@@ -717,7 +795,12 @@ export async function createRegionalization(
         regionColorsBuffer.write(assignRegionColors(labels, adjacency));
         clusterColorsBuffer.write(assignRegionColors(latestKLabels, adjacency));
       }
-      ctx.setReadout('capacity', get('overflow').u32[0] ? 'overflow: raise slots per tract' : 'ok');
+      ctx.setReadout(
+        'capacity',
+        get('overflow').u32[0]
+          ? `overflow: raise slots per tract${get('candidateOverflow').u32[0] ? ' (pair list full)' : ''}`
+          : 'ok'
+      );
       ctx.requestLayers();
     }
   );
@@ -726,8 +809,8 @@ export async function createRegionalization(
 
   return {
     getCompiledGraphs: () => [
-      getSkaterGraph(activeCriterion, activeStandardize),
-      getKmeansGraph(Number(activeClusters), activeStandardize)
+      skaterGraphs.get(`${activeCriterion}:${activeStandardize}`)!,
+      kmeansGraphs.get(`${activeClusters}:${activeStandardize}`)!
     ],
 
     setOption(id) {
@@ -735,19 +818,26 @@ export async function createRegionalization(
         ctx.requestLayers();
         return;
       }
-      if (id === 'criterion') {
-        activeCriterion = ctx.options.criterion;
-        getSkaterGraph(activeCriterion, activeStandardize);
-        weightsChanged = true;
-      }
-      if (id === 'standardize') {
-        activeStandardize = ctx.options.standardize;
-        getSkaterGraph(activeCriterion, activeStandardize);
-        getKmeansGraph(Number(activeClusters), activeStandardize);
-      }
-      if (id === 'kmeansClusters') {
-        activeClusters = ctx.options.kmeansClusters;
-        getKmeansGraph(Number(activeClusters), activeStandardize);
+      if (id === 'criterion' || id === 'standardize' || id === 'kmeansClusters') {
+        // The previous graphs keep encoding until the new ones have compiled. Graphs stay cached
+        // (and owned by `resources`), so a superseded build needs no discard.
+        const {criterion, standardize, kmeansClusters} = ctx.options;
+        void graphSwap.request({
+          build: async () => {
+            await getSkaterGraph(criterion, standardize);
+            await getKmeansGraph(Number(kmeansClusters), standardize);
+          },
+          commit: () => {
+            if (criterion !== activeCriterion) weightsChanged = true;
+            activeCriterion = criterion;
+            activeStandardize = standardize;
+            activeClusters = kmeansClusters;
+            writeInputs();
+            dirty = true;
+            ctx.requestLayers();
+          }
+        });
+        return;
       }
       writeInputs();
       dirty = true;
@@ -759,10 +849,10 @@ export async function createRegionalization(
         weightsChanged = true;
       }
       if (dirty) {
-        getSkaterGraph(activeCriterion, activeStandardize).encode(commandEncoder, {
+        skaterGraphs.get(`${activeCriterion}:${activeStandardize}`)!.encode(commandEncoder, {
           parameters: undefined
         });
-        getKmeansGraph(Number(activeClusters), activeStandardize).encode(commandEncoder, {
+        kmeansGraphs.get(`${activeClusters}:${activeStandardize}`)!.encode(commandEncoder, {
           parameters: undefined
         });
         reader.request(commandEncoder);

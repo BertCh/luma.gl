@@ -9,6 +9,7 @@
  * any of them rewrites a buffer and re-encodes the same compiled graph.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   createTransientView,
@@ -143,22 +144,24 @@ export const reachabilityMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUNetworkReachability({
         id: 'reachability',
-        offsets: csrOffsets,
-        neighbors: csrNeighbors,
-        weights: csrWeights,
-        sources: sources.importToGraph(graph),
+        topology: {offsets: csrOffsets, neighbors: csrNeighbors, weights: csrWeights},
+        startNodes: sources.importToGraph(graph),
         costLimit: costLimit.importToGraph(graph),
-        bandThresholds: bandThresholds.importToGraph(graph),
-        maxIterations: MAXIMUM_ITERATIONS,
+        costBreaks: bandThresholds.importToGraph(graph),
+        maximumIterations: MAXIMUM_ITERATIONS,
         localIterations: LOCAL_ITERATIONS,
-        costs: importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount),
-        bands: importGraphBuffer(graph, 'bands', bands, 'uint32', nodeCount),
-        bandCounts: importGraphBuffer(graph, 'band-counts', bandCounts, 'uint32', BAND_COUNT),
-        converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
-        iterationCount: importGraphBuffer(graph, 'iteration-count', iterationCount, 'uint32', 1)
+        output: {
+          costs: importGraphBuffer(graph, 'costs', costs, 'float32', nodeCount),
+          bands: importGraphBuffer(graph, 'bands', bands, 'uint32', nodeCount),
+          bandCounts: importGraphBuffer(graph, 'band-counts', bandCounts, 'uint32', BAND_COUNT),
+          status: {
+            converged: importGraphBuffer(graph, 'converged', converged, 'uint32', 1),
+            iterationCount: importGraphBuffer(graph, 'iteration-count', iterationCount, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     const sourceReadout = context.controls.addReadout('Source node');
     const writeSource = (node: number) => {
@@ -260,7 +263,7 @@ export const reachabilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: (2 + BAND_COUNT) * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         convergedReadout.setValue(

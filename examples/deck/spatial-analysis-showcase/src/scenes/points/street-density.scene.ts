@@ -184,7 +184,7 @@ export default defineScene<StreetDensityOptions>({
       default: 'speed',
       expert: true,
       disabledWhen: state => state.view !== 'polygons' || state.metric !== 'meanAttribute',
-      help: "pathWeights multiplies each street's clipped length by a per-street value: speed limit in km/h (mean speed limit), 1 for a one-way street (share of one-way streets) or 1 for a major road (share of major roads). Dividing the weighted length by the length gives the mean. Rewriting the weights is a buffer write.",
+      help: "lineWeights multiplies each street's clipped length by a per-street value: speed limit in km/h (mean speed limit), 1 for a one-way street (share of one-way streets) or 1 for a major road (share of major roads). Dividing the weighted length by the length gives the mean. Rewriting the weights is a buffer write.",
       options: [
         {value: 'speed', label: 'Speed limit (km/h)'},
         {value: 'oneway', label: 'One-way street (share)'},
@@ -367,17 +367,17 @@ import {
   GPULineDensity, GPULineLengthPerPolygon, getGPULineDensityParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 
-// every street polyline is one path: positions sorted by path plus pathCount + 1 offsets
+// every street polyline is one line: positions sorted by line plus lineCount + 1 offsets
 const density = new GPUCommandGraph(device, {id: 'line-density'});
 density.add(new GPULineDensity({
-  positions, pathOffsets,                    // ${state.system === 'spherical' ? 'longitude / latitude degrees' : 'float32x2 meters'}
+  positions, lineOffsets,                    // ${state.system === 'spherical' ? 'longitude / latitude degrees' : 'float32x2 meters'}
   columns: 192, rows: 120,
   ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
-  maximumRecords: 4 * vertexCount,           // compile-time; \`overflow\` says if it was too small
+  recordCapacity: 4 * vertexCount,           // compile-time; \`overflow\` says if it was too small
   parameters: gridParameters.importToGraph(density),
-  output: {lengths, densities, overflow, totalRecords}
+  output: {lengths, densities, status: {overflow, requiredCount}}
 }));
-const compiledDensity = density.compile();   // once
+const compiledDensity = await density.compileAsync();  // once
 
 // pan, zoom and cell size are one four-number write; the grid follows the camera
 gridParameters.write(getGPULineDensityParameterValues({
@@ -392,11 +392,11 @@ new SpatialAnalysisRasterLayer({gridSize: [192, 120], bounds: gridBounds.buffer,
 // street length clipped into polygons
 const perPolygon = new GPUCommandGraph(device, {id: 'line-length'});
 perPolygon.add(new GPULineLengthPerPolygon({
-  positions, pathOffsets,
-  pathWeights: ${state.weight},                // optional per-street multiplier
+  positions, lineOffsets,
+  lineWeights: ${state.weight},                // optional per-street multiplier
   polygons: {kind: 'polygons', positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets},
   ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : PLANAR_CONTEXT_SNIPPET}
-  output: {lengths, weightedLengths, segmentCounts, overflow}
+  output: {lengths, weightedLengths, segmentCounts, status: {overflow}}
 }));`,
 
   about: {

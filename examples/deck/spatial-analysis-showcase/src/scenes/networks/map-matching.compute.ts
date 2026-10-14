@@ -5,7 +5,7 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  encodeGPUMapMatchingParameters,
+  getGPUMapMatchingParameterValues,
   GPUMapMatching,
   GPU_MAP_MATCHING_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-network';
@@ -13,6 +13,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
@@ -196,7 +197,7 @@ export async function createMapMatching(
     jitterParameters.write(Float32Array.of(extraNoise, noiseSeed));
     focusParameter.write(Uint32Array.of(trackFocus));
     matchingParameters.write(
-      encodeGPUMapMatchingParameters({
+      getGPUMapMatchingParameterValues({
         sigma,
         beta,
         searchRadius: Math.min(searchRadius, maxSearchRadius()),
@@ -419,12 +420,8 @@ export async function createMapMatching(
     return Math.min(entries, 40_000_000);
   }
 
-  function buildMatchGraph(): void {
-    if (build) {
-      build.reader.stop();
-      resources.release(build.compiled);
-      build = null;
-    }
+  /** Builds and compiles the matching graph; the running graph keeps encoding meanwhile. */
+  async function buildMatchGraph(): Promise<MatchBuild> {
     const cellSize = Math.max(
       Number(ctx.options.cellSize),
       Math.sqrt(((maxX - minX) * (maxY - minY)) / 2e6)
@@ -464,11 +461,13 @@ export async function createMapMatching(
     graph.add(
       new GPUMapMatching({
         id: 'matching',
-        points: noisyView,
+        positions: noisyView,
         trackOffsets: view('track-offsets', trackOffsetsBuffer, 'uint32', trackCount + 1),
-        nodePositions: view('node-positions', nodePositionsBuffer, 'float32x2', dense.nodeCount),
-        offsets: view('offsets', offsetsBuffer, 'uint32', dense.nodeCount + 1),
-        edgeTargets: view('targets', targetsBuffer, 'uint32', dense.rowCount),
+        topology: {
+          offsets: view('offsets', offsetsBuffer, 'uint32', dense.nodeCount + 1),
+          neighbors: view('targets', targetsBuffer, 'uint32', dense.rowCount),
+          nodePositions: view('node-positions', nodePositionsBuffer, 'float32x2', dense.nodeCount)
+        },
         parameters: matchingParameters.importToGraph(graph),
         candidateCount: Number(ctx.options.candidateCount),
         routeNodeBudget: Number(ctx.options.routeNodeBudget),
@@ -482,8 +481,10 @@ export async function createMapMatching(
           breaks: breaksView,
           matchedCount: view('matched-count', matchedCount, 'uint32', 1),
           breakCount: view('break-count', breakCount, 'uint32', 1),
-          overflow: view('overflow', overflow, 'uint32', 1),
-          routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
+          status: {
+            overflow: view('overflow', overflow, 'uint32', 1),
+            routeOverflow: view('route-overflow', routeOverflow, 'uint32', 1)
+          }
         }
       })
     );
@@ -644,7 +645,7 @@ const NONE: u32 = ${NONE}u;`,
   correctWeights[correctWeightsOffset + index] = select(0.0, 1.0, outcome == 1u);
   reverseWeights[reverseWeightsOffset + index] = select(0.0, 1.0, outcome == 2u);`
     });
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       'match',
@@ -664,9 +665,25 @@ const NONE: u32 = ${NONE}u;`,
         handleSummary(bytes, sweepTag);
       }
     );
-    build = {compiled, reader};
+    return {compiled, reader};
+  }
+
+  /** Releases a build that was superseded before it was swapped in. */
+  function releaseMatchBuild(target: MatchBuild): void {
+    target.reader.stop();
+    resources.release(target.compiled);
+  }
+
+  /** Swaps a build in, then releases the build it replaces. */
+  function commitMatchGraph(next: MatchBuild): void {
+    const previous = build;
+    previous?.reader.stop();
+    build = next;
+    if (previous) resources.release(previous.compiled);
     dirty = true;
   }
+
+  const graphSwap = resources.track(new GraphSwap());
 
   function handleSummary(bytes: ArrayBuffer, sweepTag: SweepTag | null): void {
     const words = new Uint32Array(bytes, 0, 3 + pointCount);
@@ -849,7 +866,7 @@ const NONE: u32 = ${NONE}u;`,
   void timestamps;
 
   writeParameters();
-  buildMatchGraph();
+  commitMatchGraph(await buildMatchGraph());
 
   const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
 
@@ -862,9 +879,15 @@ const NONE: u32 = ${NONE}u;`,
         case 'routeNodeBudget':
         case 'cellSize':
           // The search radius is capped at twice the cell size.
-          writeParameters();
-          buildMatchGraph();
-          startHmmNoiseSweep();
+          void graphSwap.request({
+            build: buildMatchGraph,
+            commit: next => {
+              writeParameters();
+              commitMatchGraph(next);
+              startHmmNoiseSweep();
+            },
+            discard: releaseMatchBuild
+          });
           break;
         case 'extraNoise':
         case 'noiseSeed':

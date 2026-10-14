@@ -5,8 +5,8 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
@@ -118,26 +118,30 @@ export async function createMigrationSeason(
       timestamps: view(playheadGraph, 'timestamps', timestampsBuffer, 'float32', vertexCount),
       trackOffsets: view(playheadGraph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: view(
-        playheadGraph,
-        'current-positions',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      status: view(playheadGraph, 'status', status, 'uint32', trackCount),
-      activeTracks: {
-        ids: view(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: view(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: view(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'marker-draw-count',
-        markerDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: view(
+          playheadGraph,
+          'current-positions',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        trackStatus: view(playheadGraph, 'status', status, 'uint32', trackCount),
+        activeTracks: {
+          ids: view(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: view(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: view(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'marker-draw-count',
+          markerDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   // ---- Trail (time window) graph ----------------------------------------------------------------
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
@@ -148,7 +152,7 @@ export async function createMigrationSeason(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -178,18 +182,20 @@ export async function createMigrationSeason(
       window: windowParameters.importToGraph(trailGraph),
       output: {
         ids: view(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: view(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: view(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: view(trailGraph, 'fade-weights', fadeWeights, 'float32', segmentCount),
-      clipFractions: view(trailGraph, 'clip-fractions', clipFractions, 'float32x2', segmentCount),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+        fadeWeights: view(trailGraph, 'fade-weights', fadeWeights, 'float32', segmentCount),
+        clipFractions: view(trailGraph, 'clip-fractions', clipFractions, 'float32x2', segmentCount),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        ),
+        status: {
+          count: view(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: view(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        }
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   // ---- Selected bird (CPU interpolation for the follow camera) ----------------------------------
   const selectedSegments = resources.createBuffer('selected-segments', tracks.longestTrack * 16);
@@ -430,14 +436,14 @@ export async function createMigrationSeason(
       playheadParameters.write(
         getGPUTrajectoryPlayheadParameterValues({
           playhead,
-          maxGap: options.maxGapHours * 3600
+          maximumGap: options.maxGapHours * 3600
         })
       );
       playheadCompiled.encode(commandEncoder, {parameters: undefined});
       if (options.showTrails) {
         const trailSeconds = options.trailDays * SECONDS_PER_DAY;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds * options.tailFade

@@ -474,36 +474,37 @@ import {
 // offsets / neighbors: directed CSR of the street graph, weights: seconds per edge (-1 = closed)
 const graph = new GPUCommandGraph(device, {id: 'routing'});
 graph.add(new GPUNetworkReachability({
-  offsets, neighbors, weights,
-  sources: origin.importToGraph(graph),          // one row: the origin node
+  topology: {offsets, neighbors, weights},
+  startNodes: origin.importToGraph(graph),       // one row: the origin node
   costLimit: budget.importToGraph(graph),        // seconds
-  maxIterations: 80,
+  maximumIterations: 80,
   localIterations: ${state.localIterations},                     // compile-time
-  costs, predecessors, converged, iterationCount
+  output: {costs, predecessors, status: {converged, iterationCount}}
 }));
 graph.add(new GPUNetworkPathExtraction({
   predecessors, costs,
   targets: destinations.importToGraph(graph),     // up to 6 rows, count: ${state.destinationCount}
   targetCount: destinationCount.importToGraph(graph),
-  maxPathLength: 2048,
-  output: {ids: pathNodes, count: pathNodeCount, overflow: pathNodeOverflow},
-  edges: {offsets, neighbors, weights, output: {ids: pathEdges, count: pathEdgeCount, overflow}}
+  predecessorsComplete: converged,                // no path from a search that stopped early
+  maximumPathLength: 2048,
+  output: {ids: pathNodes, status: {count: pathNodeCount, overflow: pathNodeOverflow}},
+  edges: {topology: {offsets, neighbors, weights}, output: {ids: pathEdges, status: {count: pathEdgeCount, overflow}}}
 }));
 graph.add(new GPUNetworkNeighborhood({
-  offsets, neighbors,
-  seeds: origin.importToGraph(graph),
+  topology: {offsets, neighbors},
+  startNodes: origin.importToGraph(graph),
   hops: hops.importToGraph(graph),               // k = ${state.hops}, per frame
-  maxHops: 24,
-  hopDistances, edgeMask
+  maximumHops: 24,
+  output: {hopDistances, edgeMask}
 }));${
     state.showTurnRoute
       ? `
 // Turn-aware: one line-graph node per directed edge, one arc per allowed turn.
 graph.add(new GPUNetworkLineGraph({
-  offsets, neighbors, weights, nodePositions,
+  topology: {offsets, neighbors, weights, nodePositions},
   parameters: turnParameters.importToGraph(graph),
   bannedTurns,                                   // optional (fromEdge, toEdge) pairs
-  lineOffsets, lineNeighbors, lineWeights, arcCount, overflow
+  output: {topology: {offsets: lineOffsets, neighbors: lineNeighbors, weights: lineWeights}, arcCount, status: {overflow}}
 }));
 turnParameters.write(getGPUNetworkLineGraphParameterValues({
   angleCost: ${state.angleCost}, leftTurnCost: ${state.leftTurnCost}, rightTurnCost: ${state.rightTurnCost},
@@ -513,7 +514,7 @@ turnParameters.write(getGPUNetworkLineGraphParameterValues({
 // seeded with the out-edges of the origin at their own weights.`
       : ''
   }
-const compiled = graph.compile();                // once
+const compiled = await graph.compileAsync();     // once
 // closing a road, moving the origin, changing a turn cost = a buffer write, then
 compiled.encode(commandEncoder, {parameters: undefined});`,
 

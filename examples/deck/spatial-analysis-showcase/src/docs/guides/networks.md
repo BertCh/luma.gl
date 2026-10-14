@@ -8,15 +8,15 @@ order: 11
 
 A street network is a graph: intersections are nodes, street segments are directed edges, and every edge has a *cost* (metres, seconds, anything non-negative). Almost every question about movement reduces to **shortest-path costs over that graph**: how long from A to B, what can I reach within 15 minutes, which station is nearest, how many jobs can a person reach without a car.
 
-The contributors in this family answer those questions on the GPU, over the whole Chicago drive network (about 30,000 intersections and 77,000 directed edges from OpenStreetMap), and they all share one data model: a **CSR** (compressed sparse row) adjacency made of `offsets`, `neighbors` and `weights`. The weights are an ordinary buffer. Closing a road, raising congestion or changing walking speed is a buffer write, not a rebuild.
+The contributors in this family answer those questions on the GPU, over the whole Chicago drive network (about 30,000 intersections and 77,000 directed edges from OpenStreetMap), and they all share one data model: **CSR** (compressed sparse row) adjacency, passed to every contributor as one `topology` object of `offsets`, `neighbors` and `weights` (plus optional `nodePositions`). The weights are an ordinary buffer. Closing a road, raising congestion or changing walking speed is a buffer write, not a rebuild.
 
 Three scenes show the family in order: [From the Loop to O’Hare](#/story/routing), [Who is within four minutes of a fire station?](#/story/isochrones) and [How many jobs can you reach without a car?](#/story/job-accessibility). The sibling guide on clustering, map matching and centrality covers the rest of the chapter.
 
 ## The search engine: reachability
 
-[`GPUNetworkReachability`](#/reference/GPUNetworkReachability) is the workhorse. From one or many sources it computes, for every node, the minimum cost and (optionally) the predecessor on a shortest path, isochrone band classes and a convergence flag. It is a frontier-based Bellman-Ford: only nodes whose cost just improved are relaxed, in a fixed number of unrolled rounds, and a round with an empty frontier dispatches nothing. Costs are the unique fixpoint of the float32 relaxations, so they are identical for every tuning.
+[`GPUNetworkReachability`](#/reference/GPUNetworkReachability) is the workhorse. From one or many start nodes it computes, for every node, the minimum cost and (optionally) the predecessor on a shortest path, isochrone band classes and a convergence flag. It is a frontier-based Bellman-Ford: only nodes whose cost just improved are relaxed, in a fixed number of unrolled rounds, and a round with an empty frontier dispatches nothing. Costs are the unique fixpoint of the float32 relaxations, so they are identical for every tuning.
 
-Two compile-time numbers tune it: `maxIterations` (rounds) and `localIterations` (hops chained inside one round). A network whose longest shortest path has `h` hops needs about `ceil(h / (0.7 * localIterations)) + 4` rounds; Chicago converges in 5 to 8 rounds at 32. The per-frame `costLimit` stops the search early, and `activeIterations` caps the rounds. Read the **Solver** readout in the routing scene to see the rounds used.
+Two compile-time numbers tune it: `maximumIterations` (rounds) and `localIterations` (hops chained inside one round). A network whose longest shortest path has `h` hops needs about `ceil(h / (0.7 * localIterations)) + 4` rounds; Chicago converges in 5 to 8 rounds at 32. The per-frame `costLimit` stops the search early, and `activeIterations` caps the rounds. Read the **Solver** readout in the routing scene to see the rounds used.
 
 Everything else builds on its output:
 

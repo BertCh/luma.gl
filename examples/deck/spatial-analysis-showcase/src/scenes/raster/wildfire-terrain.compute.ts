@@ -6,12 +6,13 @@ import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUDistanceFieldParameterValues,
-  getGPUPolygonRasterizationExtentValues,
+  getGPUPolygonRasterizationParameterValues,
   GPUDistanceField,
   GPUPolygonRasterization,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-  GPURasterZonalStatistics
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPURasterZonalStatistics,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
   getGPUTerrainDerivativesParameterValues,
@@ -19,6 +20,7 @@ import {
   GPUTerrainDerivatives
 } from '@luma.gl/experimental/gpu-terrain';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
@@ -112,9 +114,24 @@ export async function createWildfireTerrain(
   const {layout} = data;
   const resources = new SpatialAnalysisResources(device, 'wildfire-terrain');
   let destroyed = false;
-  const WORLD_METERS = 40075016.68557849;
-  const northEdge = 0.5 - boundsMercator[3] / WORLD_METERS;
-  const southEdge = 0.5 - boundsMercator[1] / WORLD_METERS;
+  // The DEM in EPSG:3857 meters, row 0 at the north edge: terrain derivatives and zonal statistics
+  // read the cell size and latitude band from it.
+  const mercatorGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize,
+    origin: [boundsMercator[0], boundsMercator[3]]
+  });
+  // The raster-space frame below (x east from the west edge, y south from the north edge) has y
+  // pointing down the rows, so its rows advance toward larger y: `rowDirection: 'north'` at the
+  // origin. Rasterization and the distance field work in this frame.
+  const rasterGrid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize,
+    origin: [0, 0],
+    rowDirection: 'north'
+  });
 
   // ---- Fire geometry in raster space: x east from the DEM west edge, y south from its north edge ----
   const rasterPositions = new Float32Array(layout.vertexCount * 2);
@@ -213,18 +230,14 @@ export async function createWildfireTerrain(
   const extentParameters = resources.createParameterBuffer(
     'extent',
     'float32',
-    GPU_POLYGON_RASTERIZATION_EXTENT_LENGTH,
-    getGPUPolygonRasterizationExtentValues(0, 0, cellSize, cellSize)
+    GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+    getGPUPolygonRasterizationParameterValues(rasterGrid)
   );
   const distanceSettings = resources.createParameterBuffer(
     'distance-settings',
     'float32',
     GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-    getGPUDistanceFieldParameterValues({
-      origin: [0, 0],
-      cellSize: [cellSize, cellSize],
-      maxDistance: 1e7
-    })
+    getGPUDistanceFieldParameterValues({maximumDistance: 1e7}, rasterGrid)
   );
   const terrainSettings = resources.createParameterBuffer(
     'terrain-settings',
@@ -265,14 +278,14 @@ export async function createWildfireTerrain(
   };
   const writeTerrainSettings = (options: WildfireTerrainOptions) => {
     terrainSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize: [cellSize, cellSize],
-        zFactor: options.zFactor,
-        azimuthDegrees: options.sunAzimuth,
-        altitudeDegrees: options.sunAltitude,
-        northEdge,
-        southEdge
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {
+          zFactor: options.zFactor,
+          azimuthDegrees: options.sunAzimuth,
+          altitudeDegrees: options.sunAltitude
+        },
+        mercatorGrid
+      )
     );
   };
   const visibleFires = new Uint8Array(fireCount);
@@ -296,30 +309,30 @@ export async function createWildfireTerrain(
 
   // ---- Graphs -----------------------------------------------------------------------------------------
   /** Polygon rasterization, seed mask and exact or jump-flood distance field. Encoded once per build. */
-  const buildRaster = (options: WildfireTerrainOptions): CompiledGPUCommandGraph<void> => {
+  const buildRaster = async (
+    options: WildfireTerrainOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'wildfire-raster'});
     const imp = createGraphImporter(graph);
     const zonesView = imp('zones', zones, 'uint32', cellCount);
     graph.add(
       new GPUPolygonRasterization({
         id: 'rasterize',
-        width,
-        height,
-        extent: extentParameters.importToGraph(graph),
-        polygonPositions: imp(
-          'polygon-positions',
-          polygonPositions,
-          'float32x2',
-          layout.vertexCount
-        ),
+        grid: rasterGrid,
+        parameters: extentParameters.importToGraph(graph),
+        positions: imp('polygon-positions', polygonPositions, 'float32x2', layout.vertexCount),
         featureOffsets: imp('feature-offsets', featureOffsets, 'uint32', fireCount + 1),
         polygonOffsets: imp('polygon-offsets', polygonOffsets, 'uint32', layout.partCount + 1),
         ringOffsets: imp('ring-offsets', ringOffsets, 'uint32', layout.ringCount + 1),
         crossingCapacity,
-        zones: zonesView,
-        boundary: imp('boundary', boundary, 'uint32', cellCount),
-        overflow: imp('raster-overflow', rasterOverflow, 'uint32', 1),
-        crossingCount: imp('raster-crossings', rasterCrossings, 'uint32', 1)
+        output: {
+          zones: zonesView,
+          boundary: imp('boundary', boundary, 'uint32', cellCount),
+          status: {
+            overflow: imp('raster-overflow', rasterOverflow, 'uint32', 1),
+            crossingCount: imp('raster-crossings', rasterCrossings, 'uint32', 1)
+          }
+        }
       })
     );
     const seedView = imp('seeds', seeds, 'uint32', cellCount);
@@ -337,51 +350,55 @@ export async function createWildfireTerrain(
     graph.add(
       new GPUDistanceField({
         id: 'ring-distance',
-        width,
-        height,
-        settings: distanceSettings.importToGraph(graph),
+        grid: rasterGrid,
+        parameters: distanceSettings.importToGraph(graph),
         seedMask: seedView,
         mode: options.distanceMode,
-        jumpFloodRefinementPasses: Number(options.refinement) as 0 | 1 | 2,
+        jumpFloodRefinementIterationCount: Number(options.refinement) as 0 | 1 | 2,
         output: {
           distances: imp('distances', distances, 'float32', cellCount),
           allocation: imp('allocation', allocation, 'uint32', cellCount)
         }
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
   /** Horn slope, aspect and hillshade. */
-  const buildTerrain = (options: WildfireTerrainOptions): CompiledGPUCommandGraph<void> => {
+  const buildTerrain = async (
+    options: WildfireTerrainOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'wildfire-derivatives'});
     const imp = createGraphImporter(graph);
     graph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid: mercatorGrid,
         elevation: {
           id: 'dem',
           format: 'float32',
           noDataValue: spec.noData,
           storage: {kind: 'buffer', values: imp('dem', demBuffer, 'float32', cellCount)}
         },
-        settings: terrainSettings.importToGraph(graph),
-        slope: imp('slope', slope, 'float32', cellCount),
-        aspect: imp('aspect', aspect, 'float32', cellCount),
-        hillshade: imp('hillshade', hillshade, 'float32', cellCount),
+        parameters: terrainSettings.importToGraph(graph),
+        output: {
+          slope: imp('slope', slope, 'float32', cellCount),
+          aspect: imp('aspect', aspect, 'float32', cellCount),
+          hillshade: imp('hillshade', hillshade, 'float32', cellCount)
+        },
         cellSizeMode: 'web-mercator',
         rowDirection: 'south',
         slopeUnits: 'degrees',
         borderMode: options.borderMode
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
   /** Inside and ring zone assignment, derived bands and five zonal statistics. */
-  const buildStats = (options: WildfireTerrainOptions): CompiledGPUCommandGraph<void> => {
+  const buildStats = async (
+    options: WildfireTerrainOptions
+  ): Promise<CompiledGPUCommandGraph<void>> => {
     const graph = new GPUCommandGraph<void>(device, {id: 'wildfire-zonal'});
     const imp = createGraphImporter(graph);
     const zonesView = imp('zones', zones, 'uint32', cellCount);
@@ -502,7 +519,7 @@ export async function createWildfireTerrain(
       ...(noDataValue === undefined ? {} : {noDataValue}),
       storage: {kind: 'buffer' as const, values}
     });
-    const common = {width, height, zoneCapacity, sumOrder: options.sumOrder};
+    const common = {grid: mercatorGrid, zoneCapacity, sumOrder: options.sumOrder};
     graph.add(
       new GPURasterZonalStatistics({
         id: 'zonal-slope',
@@ -556,8 +573,7 @@ export async function createWildfireTerrain(
     graph.add(
       new GPURasterZonalStatistics({
         id: 'zonal-rose',
-        width,
-        height,
+        grid: mercatorGrid,
         zoneCapacity: roseCapacity,
         sumOrder: options.sumOrder,
         zones: zoneRoseView,
@@ -567,12 +583,17 @@ export async function createWildfireTerrain(
         }
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   };
 
-  let rasterGraph = buildRaster(ctx.options);
-  let terrainGraph = buildTerrain(ctx.options);
-  let statsGraph = buildStats(ctx.options);
+  let rasterGraph = await buildRaster(ctx.options);
+  let terrainGraph = await buildTerrain(ctx.options);
+  let statsGraph = await buildStats(ctx.options);
+
+  // One swap per graph: a rebuild of one never supersedes a rebuild of another.
+  const rasterSwap = resources.track(new GraphSwap());
+  const terrainSwap = resources.track(new GraphSwap());
+  const statsSwap = resources.track(new GraphSwap());
 
   // ---- Readback and analysis --------------------------------------------------------------------------
   const zonalSources: {buffer: Buffer; size: number}[] = [
@@ -869,21 +890,45 @@ export async function createWildfireTerrain(
       switch (id) {
         case 'distanceMode':
         case 'refinement':
-          resources.release(rasterGraph);
-          rasterGraph = buildRaster(options);
-          dirty.raster = true;
-          dirty.stats = true;
+          void rasterSwap.request({
+            build: () => buildRaster(options),
+            commit: next => {
+              const previous = rasterGraph;
+              rasterGraph = next;
+              resources.release(previous);
+              dirty.raster = true;
+              dirty.stats = true;
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next)
+          });
           break;
         case 'borderMode':
-          resources.release(terrainGraph);
-          terrainGraph = buildTerrain(options);
-          dirty.terrain = true;
-          dirty.stats = true;
+          void terrainSwap.request({
+            build: () => buildTerrain(options),
+            commit: next => {
+              const previous = terrainGraph;
+              terrainGraph = next;
+              resources.release(previous);
+              dirty.terrain = true;
+              dirty.stats = true;
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next)
+          });
           break;
         case 'sumOrder':
-          resources.release(statsGraph);
-          statsGraph = buildStats(options);
-          dirty.stats = true;
+          void statsSwap.request({
+            build: () => buildStats(options),
+            commit: next => {
+              const previous = statsGraph;
+              statsGraph = next;
+              resources.release(previous);
+              dirty.stats = true;
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next)
+          });
           break;
         case 'sunAzimuth':
         case 'sunAltitude':

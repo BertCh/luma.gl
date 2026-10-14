@@ -254,14 +254,14 @@ export default defineScene<MapMatchingOptions>({
 
   snippet: state => `import {
   GPUMapMatching,
-  encodeGPUMapMatchingParameters
+  getGPUMapMatchingParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 // The CSR row is the edge id: list both directions of every two-way street.
 graph.add(new GPUMapMatching({
-  points,                       // float32x2 planar meters, tracks back to back
+  positions,                    // float32x2 planar meters, tracks back to back
   trackOffsets,                 // trackCount + 1
-  nodePositions, offsets, edgeTargets,
+  topology: {offsets, neighbors: edgeTargets, nodePositions},
   parameters,                   // per-frame, see below
   candidateCount: ${state.candidateCount},        // compile-time
   routeNodeBudget: ${state.routeNodeBudget},      // compile-time
@@ -271,7 +271,7 @@ graph.add(new GPUMapMatching({
 }));
 
 // Per frame: parameter writes only.
-parameters.write(encodeGPUMapMatchingParameters({
+parameters.write(getGPUMapMatchingParameterValues({
   sigma: ${state.sigma}, beta: ${state.beta}, searchRadius: ${state.searchRadius},
   routeFactor: ${state.routeFactor}, routeSlack: ${state.routeSlack}
 }));

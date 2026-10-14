@@ -19,13 +19,16 @@ import {
   addChangeOfSupportRecipe,
   addPointsInPolygonsChoroplethRecipe,
   addRateClusterMapRecipe,
-  getGPUPermutationParameterValues,
-  getGPUSpatialAutocorrelationParameterValues,
   GPU_EMPIRICAL_BAYES_SUMMARY,
-  GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH
+  GPU_PERMUTATION_PARAMETER_LENGTH,
+  GPU_RATE_CLUSTER_MAP_PALETTE_LENGTH,
+  GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import type {Buffer} from '@luma.gl/core';
-import {getGPUPolygonRasterizationExtentValues} from '@luma.gl/experimental/gpu-raster';
+import {
+  getGPUPolygonRasterizationParameterValues,
+  makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import type {SpatialAnalysisPointsOfInterest} from '../spatial-analysis-data';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import {formatCount} from '../spatial-analysis-resources';
@@ -82,7 +85,8 @@ function createDistrictScene(
 /** Uploads a district polygon set as recipe inputs. */
 function importPolygons(kit: RecipeKit, polygons: DistrictPolygons, name: string) {
   return {
-    polygonPositions: kit.input(
+    kind: 'polygons' as const,
+    positions: kit.input(
       `${name}-positions`,
       polygons.polygonPositions,
       'float32x2',
@@ -163,15 +167,16 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
     const eventsInput = kit.input('events', events, 'float32', featureCount);
     const populationsInput = kit.input('populations', populations, 'float32', featureCount);
     const geometry = importPolygons(kit, polygons, 'districts');
-    const autocorrelation = kit.parameter(
+    // The recipe fills both parameter buffers from `settings` and updates them in `setSettings`.
+    const autocorrelation = kit.parameterBuffer(
       'autocorrelation-parameters',
       'float32',
-      getGPUSpatialAutocorrelationParameterValues({significanceLevel})
+      GPU_SPATIAL_AUTOCORRELATION_PARAMETER_LENGTH
     );
-    const permutationParameters = kit.parameter(
+    const permutationParameters = kit.parameterBuffer(
       'permutation-parameters',
       'uint32',
-      getGPUPermutationParameterValues({seed: 5, permutations, significanceLevel})
+      GPU_PERMUTATION_PARAMETER_LENGTH
     );
     const palette = kit.input(
       'palette',
@@ -191,20 +196,19 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
     const recipe = addRateClusterMapRecipe(kit.graph, {
       events: eventsInput.view,
       populations: populationsInput.view,
-      positions: geometry.polygonPositions,
-      ringOffsets: geometry.ringOffsets,
-      polygonOffsets: geometry.polygonOffsets,
+      polygons: geometry,
       snapTolerance: 1,
       neighborCapacity,
       analyze,
-      parameters: autocorrelation.view,
+      parameters: autocorrelation,
       permutation: {
-        parameters: permutationParameters.view,
+        parameters: permutationParameters,
         maximumPermutations: 199
       },
+      settings: {significanceLevel, seed: 5, permutationCount: permutations},
       palette: palette.view,
       outputs: {
-        weightsOverflow: weightsOverflow.view,
+        status: {weightsOverflow: weightsOverflow.view},
         zScores: zScores.view,
         standardizedRates: analyze === 'standardized' ? rates.view : undefined,
         smoothedRates: analyze === 'smoothed' ? rates.view : undefined,
@@ -214,7 +218,7 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
       },
       scratch: {summary: summary.view}
     });
-    const compiled = kit.compile();
+    const compiled = await kit.compileAsync();
 
     const cellRows = kit.resources.createBuffer('cell-rows', district.cellRows);
     const outline = kit.resources.createBuffer('outline', polygons.outlineSegments);
@@ -249,12 +253,7 @@ export function createRateClusterScene(analyze: 'standardized' | 'smoothed'): Re
     );
     const encoder = new DirtyEncoder(compiled, reader);
     const writeSignificance = () => {
-      autocorrelation.parameters.write(
-        getGPUSpatialAutocorrelationParameterValues({significanceLevel})
-      );
-      permutationParameters.parameters.write(
-        getGPUPermutationParameterValues({seed: 5, permutations, significanceLevel})
-      );
+      recipe.setSettings({significanceLevel, seed: 5, permutationCount: permutations});
       encoder.markDirty();
     };
     const parameters: RecipeParameter[] = [
@@ -392,7 +391,7 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
       backend === 'group' ? kit.output('feature-values', 'float32', featureCount) : null;
     const recipe = addPointsInPolygonsChoroplethRecipe(kit.graph, {
       backend,
-      points: pointsInput.view,
+      points: {kind: 'points', positions: pointsInput.view},
       values: valuesInput?.view,
       statistic: backend === 'group' ? 'mean' : 'count',
       polygons: {
@@ -402,7 +401,7 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
       outputs: {
         counts: counts.view,
         featureValues: meanValues?.view,
-        overflow: overflow.view,
+        status: {overflow: overflow.view},
         color: {breaks: breaks.view, classCount: classes.view, colors: colors.view}
       },
       color: {
@@ -414,7 +413,7 @@ export function createChoroplethScene(backend: 'zonal' | 'group'): RecipeSceneBu
         maximumPaletteCount: CHOROPLETH_MAXIMUM_CLASSES
       }
     });
-    const compiled = kit.compile();
+    const compiled = await kit.compileAsync();
     const cellRows = kit.resources.createBuffer('cell-rows', district.cellRows);
     const outline = kit.resources.createBuffer('outline', polygons.outlineSegments);
 
@@ -591,9 +590,17 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
 
   const kit = new RecipeKit(context.device, 'recipe-change-of-support');
   const cellWeights = kit.input('cell-weights', weights, 'float32', cellCount);
-  const extent = kit.input(
-    'extent',
-    getGPUPolygonRasterizationExtentValues(bounds[0], bounds[1], cellWidth, cellHeight),
+  // Row 0 is the southern row and rows advance north, as the density raster above is filled.
+  const grid = makeGPURasterMetadata({
+    width: SUPPORT_RASTER_WIDTH,
+    height: SUPPORT_RASTER_HEIGHT,
+    cellSize: [cellWidth, cellHeight],
+    origin: [bounds[0], bounds[1]],
+    rowDirection: 'north'
+  });
+  const rasterParameters = kit.input(
+    'raster-parameters',
+    getGPUPolygonRasterizationParameterValues(grid),
     'float32',
     4
   );
@@ -605,9 +612,8 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
   const totalPairs = kit.output('total-pairs', 'uint32', 1);
   const invalidSources = kit.output('invalid-sources', 'uint32', 1);
   const recipe = addChangeOfSupportRecipe(kit.graph, {
-    width: SUPPORT_RASTER_WIDTH,
-    height: SUPPORT_RASTER_HEIGHT,
-    extent: extent.view,
+    grid,
+    parameters: rasterParameters.view,
     source: {...importPolygons(kit, source, 'source'), crossingCapacity: 65536},
     target: {...importPolygons(kit, target, 'target'), crossingCapacity: 65536},
     cellWeights: cellWeights.view,
@@ -616,13 +622,15 @@ export const buildChangeOfSupportScene: RecipeSceneBuilder = async host => {
     outputs: {
       extensiveValues: extensive.view,
       intensiveValues: intensiveValues.view,
-      overflow: overflow.view,
-      requiredCount: totalPairs.view,
-      invalidCount: invalidSources.view
+      status: {
+        overflow: overflow.view,
+        requiredCount: totalPairs.view,
+        invalidCount: invalidSources.view
+      }
     }
   });
   writeWeights();
-  const compiled = kit.compile();
+  const compiled = await kit.compileAsync();
   const targetOutline = kit.resources.createBuffer('target-outline', target.outlineSegments);
   const sourceOutline = kit.resources.createBuffer('source-outline', source.outlineSegments);
 

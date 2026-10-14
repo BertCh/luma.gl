@@ -21,6 +21,7 @@ import {
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -340,7 +341,7 @@ export async function createNearTransit(
   }
 
   /** Builds the compiled graph and buffers of one (points, features, sort) combination. */
-  function buildVariant(state: NearTransitOptions, forTiming = false): Variant {
+  async function buildVariant(state: NearTransitOptions, forTiming = false): Promise<Variant> {
     const source = pointSources[state.points];
     const key = getKey(state);
     const own = new SpatialAnalysisResources(device, `nt-${key}`);
@@ -377,26 +378,33 @@ export async function createNearTransit(
     graph.add(
       new GPUBufferSelection({
         id: 'near-transit',
-        points: importGraphBuffer(graph, 'points', source.buffer, 'float32x2', count),
+        points: {
+          kind: 'points',
+          positions: importGraphBuffer(graph, 'points', source.buffer, 'float32x2', count)
+        },
         features,
         distance: distanceParameter.importToGraph(graph),
         candidateCapacity: count * kind.candidatesPerPoint,
         spatialSort: state.spatialSort,
-        outputMask: importGraphBuffer(graph, 'mask', mask, 'uint32', count),
         output: {
-          ids: importGraphBuffer(graph, 'ids', ids, 'uint32', count),
-          count: importGraphBuffer(graph, 'count', outCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'output-overflow', outOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(graph, 'total', outTotal, 'uint32', 1)
-        },
-        // The clamped selected count lands directly in the indirect draw record.
-        drawInstanceCount: graph.importGPUData(
-          'draw-instance-count',
-          drawCommands.getInstanceCountData(0)
-        ),
-        distances: importGraphBuffer(graph, 'distances', distances, 'float32', count),
-        nearestFeatureIds: nearestView,
-        overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)
+          outputMask: importGraphBuffer(graph, 'mask', mask, 'uint32', count),
+          matches: {
+            ids: importGraphBuffer(graph, 'ids', ids, 'uint32', count),
+            status: {
+              count: importGraphBuffer(graph, 'count', outCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'output-overflow', outOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'total', outTotal, 'uint32', 1)
+            }
+          },
+          // The clamped selected count lands directly in the indirect draw record.
+          drawInstanceCount: graph.importGPUData(
+            'draw-instance-count',
+            drawCommands.getInstanceCountData(0)
+          ),
+          distances: importGraphBuffer(graph, 'distances', distances, 'float32', count),
+          nearestFeatureIds: nearestView,
+          status: {overflow: importGraphBuffer(graph, 'join-overflow', joinOverflow, 'uint32', 1)}
+        }
       })
     );
     // The L line of each point's nearest feature, for coloring by line.
@@ -490,7 +498,7 @@ export async function createNearTransit(
         );
       }
     );
-    const compiled = own.track(graph.compile());
+    const compiled = own.track(await graph.compileAsync());
     void forTiming;
     void kind;
     return {
@@ -507,9 +515,10 @@ export async function createNearTransit(
     };
   }
 
-  function replaceVariant(state: NearTransitOptions): void {
+  /** Makes a built variant the live one and retires the previous one. */
+  function commitVariant(next: Variant, state: NearTransitOptions): void {
     const previous = variant;
-    variant = buildVariant(state);
+    variant = next;
     dirty = true;
     if (previous) {
       previous.reader.stop();
@@ -517,6 +526,23 @@ export async function createNearTransit(
     }
     writeSubset(state);
     updateStatic(state);
+  }
+
+  const variantSwap = resources.track(new GraphSwap());
+  /** Builds the variant for `state` and swaps it in; the latest request wins. */
+  function requestVariant(state: NearTransitOptions): Promise<boolean> {
+    const wanted = {...state};
+    return variantSwap.request({
+      build: () => buildVariant(wanted),
+      commit: next => {
+        commitVariant(next, wanted);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
   }
 
   function updateStatic(state: NearTransitOptions): void {
@@ -534,7 +560,7 @@ export async function createNearTransit(
   }
 
   writeSubset(ctx.options);
-  variant = buildVariant(ctx.options);
+  variant = await buildVariant(ctx.options);
   updateStatic(ctx.options);
 
   /** Times the active selection graph and the other `spatialSort` choice outside the frame. */
@@ -546,7 +572,7 @@ export async function createNearTransit(
     const results: string[] = [];
     try {
       for (const spatialSort of [false, true]) {
-        const built = buildVariant({...state, spatialSort}, true);
+        const built = await buildVariant({...state, spatialSort}, true);
         try {
           const timing = await measureCompiledGraph(device, built.compiled, {
             parameters: undefined,
@@ -586,9 +612,13 @@ export async function createNearTransit(
         case 'points':
         case 'features':
         case 'spatialSort':
-          if (getKey(state) !== variant.key) replaceVariant(state);
-          else dirty = true;
-          if (id === 'features') writeSubset(state);
+          if (variantSwap.pending || getKey(state) !== variant.key) {
+            // The commit writes the subset and the readouts for the new variant.
+            void requestVariant(state);
+          } else {
+            dirty = true;
+            if (id === 'features') writeSubset(state);
+          }
           break;
         case 'line':
           writeSubset(state);

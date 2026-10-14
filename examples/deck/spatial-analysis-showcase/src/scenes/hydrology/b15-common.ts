@@ -11,11 +11,10 @@
 import type {GraphDataView, GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import type {LoadedDataset} from '../../data/catalog';
 import {decodeRasterImage, fetchBytes, getDataFileUrl} from '../../data/loaders';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
+import type {GPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {LocalMetricProjection} from '../../engine/projection';
-
-/** Equatorial circumference of the Web Mercator sphere in meters. */
-const WEB_MERCATOR_CIRCUMFERENCE = 2 * Math.PI * 6378137;
 
 /** A terrain raster plus everything needed to analyse it and to draw it in local meters. */
 export type TerrainGrid = {
@@ -27,13 +26,13 @@ export type TerrainGrid = {
   elevation: Float32Array;
   /** Optional land cover class per cell (ESA WorldCover codes), row 0 north. */
   landCover: Uint8Array | null;
-  /** How contributors read `cellSize`: equatorial Web Mercator meters or plain ground meters. */
+  /** How contributors read the grid's cell size: EPSG:3857 meters or plain ground meters. */
   cellSizeMode: 'uniform' | 'web-mercator';
-  /** `[x, y]` cell size in the units of `cellSizeMode`. */
-  cellSize: [number, number];
-  /** Normalized Web Mercator y of the north and south edge (0 when `uniform`). */
-  northEdge: number;
-  southEdge: number;
+  /**
+   * The raster grid contributors take: top-left origin and cell size in the units of `cellSizeMode`
+   * (EPSG:3857 meters for `web-mercator`, UTM meters for `uniform`), row 0 at the north edge.
+   */
+  rasterGrid: GPURasterMetadata;
   /** Nominal ground meters per cell (centre of the window). */
   groundCellSize: [number, number];
   /** `[longitude, latitude]` origin of the display frame. */
@@ -74,7 +73,7 @@ export function decimateRaster(
 
 /**
  * Grand Canyon grid. The Terrarium tiles are in Web Mercator, so contributors use
- * `cellSizeMode: 'web-mercator'` with the north and south edges of the window; ground spacing is
+ * `cellSizeMode: 'web-mercator'` with a grid in EPSG:3857 meters; ground spacing is
  * then evaluated per row (a 0.35 % effect over this window, but exact by construction).
  *
  * @param stride Block-average factor: 1 keeps the 15 m grid, 2 gives 31 m.
@@ -98,9 +97,8 @@ export function createCanyonGrid(dataset: LoadedDataset, stride: number): Terrai
   const [west, south, east, north] = raster.bounds;
   const [minX, minY] = projection.project(west, south);
   const [maxX, maxY] = projection.project(east, north);
-  // Row 0 is the north edge; normalized Web Mercator y grows southward from 0 at the top.
-  const northEdge = 0.5 - spec.boundsMercator[3] / WEB_MERCATOR_CIRCUMFERENCE;
-  const southEdge = 0.5 - spec.boundsMercator[1] / WEB_MERCATOR_CIRCUMFERENCE;
+  // Row 0 is the north edge, so the origin is the top-left corner in EPSG:3857 meters.
+  const mercatorCellSize = spec.cellSizeMercatorM * stride;
   return {
     id: 'grand-canyon-dem',
     width: reduced.width,
@@ -109,9 +107,12 @@ export function createCanyonGrid(dataset: LoadedDataset, stride: number): Terrai
     elevation: reduced.values,
     landCover: null,
     cellSizeMode: 'web-mercator',
-    cellSize: [spec.cellSizeMercatorM * stride, spec.cellSizeMercatorM * stride],
-    northEdge,
-    southEdge,
+    rasterGrid: makeGPURasterMetadata({
+      width: reduced.width,
+      height: reduced.height,
+      cellSize: mercatorCellSize,
+      origin: [spec.boundsMercator[0], spec.boundsMercator[3]]
+    }),
     groundCellSize: [spec.cellSizeGroundM * stride, spec.cellSizeGroundM * stride],
     origin,
     projection,
@@ -189,9 +190,12 @@ export async function createDixieGrid(
     elevation: raster.values as Float32Array,
     landCover: landCover.values as Uint8Array,
     cellSizeMode: 'uniform',
-    cellSize: [cellSize, cellSize],
-    northEdge: 0,
-    southEdge: 0,
+    rasterGrid: makeGPURasterMetadata({
+      width: raster.width,
+      height: raster.height,
+      cellSize,
+      origin: [minE, maxN]
+    }),
     groundCellSize: [cellSize, cellSize],
     origin,
     projection,
@@ -238,9 +242,20 @@ export function getCellLngLat(grid: TerrainGrid, cell: number): [number, number]
   return grid.projection.unproject(x, y);
 }
 
-/** Settings prefix `{cellSize, northEdge, southEdge}` every raster grid contributor reads. */
-export function getGridSettings(grid: TerrainGrid) {
-  return {cellSize: grid.cellSize, northEdge: grid.northEdge, southEdge: grid.southEdge};
+/**
+ * The same raster with row 0 at the south edge (rows advance north), for scenes that flip the
+ * elevation with {@link flipRows}. The origin is the bottom-left corner, so the packed edges are
+ * the old grid's north and south edges swapped.
+ */
+export function createSouthFirstRasterGrid(grid: TerrainGrid): GPURasterMetadata {
+  const {width, height, affine} = grid.rasterGrid;
+  return makeGPURasterMetadata({
+    width,
+    height,
+    cellSize: [affine[0], -affine[4]],
+    origin: [affine[2], affine[5] + affine[4] * height],
+    rowDirection: 'north'
+  });
 }
 
 /** Flips a north-first raster to south-first (row 0 at the minimum y). */

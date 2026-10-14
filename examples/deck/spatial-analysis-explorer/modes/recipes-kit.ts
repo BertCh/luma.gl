@@ -148,9 +148,21 @@ export class RecipeKit {
     return {parameters, view: parameters.importToGraph(this.graph) as GraphDataView<Format>};
   }
 
-  /** Compiles the graph and tracks it for release. */
-  compile(): CompiledGPUCommandGraph<void> {
-    return this.resources.track(this.graph.compile());
+  /**
+   * Creates a zero-filled caller-owned parameter buffer of `length` elements without importing it:
+   * a recipe that packs its own settings imports it and fills it from `settings`.
+   */
+  parameterBuffer<Format extends 'float32' | 'uint32' | 'sint32'>(
+    name: string,
+    format: Format,
+    length: number
+  ): GPUParameterBuffer<Format> {
+    return this.resources.createParameterBuffer(name, format, length);
+  }
+
+  /** Compiles the graph without blocking the page (`compileAsync`) and tracks it for release. */
+  async compileAsync(): Promise<CompiledGPUCommandGraph<void>> {
+    return this.resources.track(await this.graph.compileAsync());
   }
 }
 

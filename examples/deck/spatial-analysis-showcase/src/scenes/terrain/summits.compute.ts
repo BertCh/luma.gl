@@ -20,6 +20,7 @@ import {
   SpatialAnalysisPolygonLayer,
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {createSeededRandom} from '../../engine/projection';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -195,16 +196,23 @@ export async function createSummits(
   const sweepGraphs = new Map<string, CompiledGPUCommandGraph<void>>();
   let lastList: SummitList | null = null;
 
-  function getVariant(mode: 'reject' | 'ignore'): SummitVariant {
+  /** The compiled variant of a mode at the current search bound, if there is one. */
+  const findVariant = (mode: 'reject' | 'ignore'): SummitVariant | undefined =>
+    variants.get(`${getBound()}|${mode}`);
+
+  /**
+   * Compiles a variant the first time. Only `requestVariants` calls it, so builds never run
+   * concurrently and the cache (owned by `resources`) needs no promise cache.
+   */
+  async function ensureVariant(mode: 'reject' | 'ignore'): Promise<SummitVariant> {
     const bound = getBound();
     const key = `${bound}|${mode}`;
     const existing = variants.get(key);
     if (existing) return existing;
     const buffers = createSummitBuffers(resources, `variant-${key}`, SUMMIT_LIST_CAPACITY);
-    const compiled = compileSummitGraph(resources, {
+    const compiled = await compileSummitGraph(resources, {
       name: `summits-${mode}-${bound}`,
-      width,
-      height,
+      grid: coarse.grid,
       pixelCount,
       elevation: coarseElevation,
       validity: coarseValidity,
@@ -239,21 +247,53 @@ export async function createSummits(
     return variant;
   }
 
-  /** The variants a frame runs: the chosen one, plus `ignore` when `reject` needs a comparison. */
+  /**
+   * The compiled variants a frame runs: the chosen one, plus `ignore` when `reject` needs a
+   * comparison. A variant that is not compiled yet is left out until `requestVariants` is done.
+   */
   function getRunningVariants(): SummitVariant[] {
-    const chosen = getVariant(ctx.options.incompleteNeighborhood);
-    return chosen.mode === 'reject' ? [chosen, getVariant('ignore')] : [chosen];
+    const chosen = findVariant(ctx.options.incompleteNeighborhood);
+    const comparison = chosen?.mode === 'reject' ? findVariant('ignore') : undefined;
+    return [chosen, comparison].filter((variant): variant is SummitVariant => Boolean(variant));
   }
 
-  function getSweepGraph(): CompiledGPUCommandGraph<void> {
+  const variantSwap = resources.track(new GraphSwap());
+  const criticalSwap = resources.track(new GraphSwap());
+
+  /** True when a variant that a frame runs is not compiled yet. */
+  function isMissingVariants(): boolean {
+    const mode = ctx.options.incompleteNeighborhood;
+    return !findVariant(mode) || (mode === 'reject' && !findVariant('ignore'));
+  }
+
+  /** Compiles the variants the options run; the promise settles at the swap. */
+  function requestVariants(): Promise<unknown> {
+    return variantSwap
+      .request({
+        build: async () => {
+          const mode = ctx.options.incompleteNeighborhood;
+          await ensureVariant(mode);
+          if (mode === 'reject') await ensureVariant('ignore');
+        },
+        commit: () => {
+          writeSummitSettings();
+          refreshSummits();
+          ctx.requestLayers();
+        }
+      })
+      .catch((error: Error) => {
+        if (!destroyed) ctx.setStatus(`Cannot build the summits: ${error.message}`);
+      });
+  }
+
+  async function getSweepGraph(): Promise<CompiledGPUCommandGraph<void>> {
     const mode = ctx.options.incompleteNeighborhood;
     const key = `${getBound()}|${mode}`;
     let graph = sweepGraphs.get(key);
     if (!graph) {
-      graph = compileSummitGraph(resources, {
+      const compiled = await compileSummitGraph(resources, {
         name: `summits-sweep-${key}`,
-        width,
-        height,
+        grid: coarse.grid,
         pixelCount,
         elevation: coarseElevation,
         validity: coarseValidity,
@@ -263,14 +303,19 @@ export async function createSummits(
         buffers: sweepBuffers,
         capacity: 16
       });
-      sweepGraphs.set(key, graph);
+      graph = sweepGraphs.get(key);
+      if (graph) {
+        resources.release(compiled);
+      } else {
+        graph = compiled;
+        sweepGraphs.set(key, graph);
+      }
     }
     return graph;
   }
 
-  const snapCompiled = compileSnapGraph(resources, {
-    width,
-    height,
+  const snapCompiled = await compileSnapGraph(resources, {
+    grid: coarse.grid,
     pixelCount,
     elevation: coarseElevation,
     validity: coarseValidity,
@@ -278,9 +323,8 @@ export async function createSummits(
     buffers: snapBuffers
   });
   let criticalGraph: {key: string; compiled: CompiledGPUCommandGraph<void>} | null = null;
-  const contourCompiled = compileContourGraph(resources, {
-    width: full.width,
-    height: full.height,
+  const contourCompiled = await compileContourGraph(resources, {
+    grid: full.grid,
     pixelCount: full.pixelCount,
     elevation: fullElevation,
     validity: fullValidity,
@@ -325,11 +369,13 @@ export async function createSummits(
   function writeSummitSettings(): void {
     // Minimum drop 0: the drop test is applied on the read-back list (see the module comment).
     summitSettings.write(
-      getGPUTerrainSummitsParameterValues({
-        radius: ctx.options.summitRadius,
-        minimumDrop: 0,
-        ...coarse.mercatorCellSettings
-      })
+      getGPUTerrainSummitsParameterValues(
+        {
+          radius: ctx.options.summitRadius,
+          minimumDrop: 0
+        },
+        coarse.grid
+      )
     );
     for (const variant of variants.values()) variant.dirty = true;
     writeEdgeBand();
@@ -387,13 +433,15 @@ export async function createSummits(
   function writeSnapSettings(): void {
     const options = ctx.options;
     snapSettings.write(
-      getGPUTerrainPeakSnapParameterValues({
-        radius: options.snapRadius,
-        maximumMove: options.snapMaximumMove,
-        maximumHeightChange: options.snapMaximumHeightChange,
-        interior: options.snapInterior,
-        ...coarse.mercatorCellSettings
-      })
+      getGPUTerrainPeakSnapParameterValues(
+        {
+          radius: options.snapRadius,
+          maximumMove: options.snapMaximumMove,
+          maximumHeightChange: options.snapMaximumHeightChange,
+          interior: options.snapInterior
+        },
+        coarse.grid
+      )
     );
     snapDirty = true;
   }
@@ -433,15 +481,14 @@ export async function createSummits(
   // --- Summit lists -----------------------------------------------------------------------------
   function applySummits(variant: SummitVariant, bytes: ArrayBuffer): void {
     variant.list = parseSummitList(bytes, SUMMIT_LIST_CAPACITY, width, coarse.elevation);
-    const running = getRunningVariants();
-    if (running.includes(variant)) refreshSummits();
+    if (getRunningVariants().includes(variant)) refreshSummits();
   }
 
   /** Applies the drop threshold to the chosen run's list and rewrites everything drawn from it. */
   function refreshSummits(): void {
     const options = ctx.options;
-    const chosen = getVariant(options.incompleteNeighborhood);
-    const list = chosen.list ?? lastList;
+    const chosen = findVariant(options.incompleteNeighborhood);
+    const list = chosen?.list ?? lastList;
     if (!list) return;
     lastList = list;
     const split = applyDropThreshold(list.candidates, options.summitMinimumDrop);
@@ -502,10 +549,10 @@ export async function createSummits(
   /** Survivors that a window-edge Reject would remove, read off the data. */
   function getEdgeLoss(): number | null {
     const options = ctx.options;
-    const ignoreList = getVariant('ignore').list;
+    const ignoreList = findVariant('ignore')?.list;
     const minimumDrop = options.summitMinimumDrop;
     if (options.incompleteNeighborhood === 'reject') {
-      const rejectList = getVariant('reject').list;
+      const rejectList = findVariant('reject')?.list;
       if (!ignoreList || !rejectList) return null;
       return (
         applyDropThreshold(ignoreList.candidates, minimumDrop).survivors.length -
@@ -545,16 +592,19 @@ export async function createSummits(
   async function runSweep(): Promise<void> {
     const version = ++sweepVersion;
     const options = ctx.options;
-    const graph = getSweepGraph();
+    const graph = await getSweepGraph();
+    if (destroyed || version !== sweepVersion) return;
     const counts: number[] = [];
     try {
       for (const radius of RADIUS_LADDER_METERS) {
         sweepSettings.write(
-          getGPUTerrainSummitsParameterValues({
-            radius,
-            minimumDrop: options.summitMinimumDrop,
-            ...coarse.mercatorCellSettings
-          })
+          getGPUTerrainSummitsParameterValues(
+            {
+              radius,
+              minimumDrop: options.summitMinimumDrop
+            },
+            coarse.grid
+          )
         );
         const commandEncoder = device.createCommandEncoder({id: 'summits-sweep-encoder'});
         graph.encode(commandEncoder, {parameters: undefined});
@@ -704,15 +754,14 @@ export async function createSummits(
     ctx.requestLayers();
   }
 
-  function ensureCriticalGraph(): void {
-    const connectivity = ctx.options.connectivity;
-    if (criticalGraph?.key === connectivity) return;
-    if (criticalGraph) resources.release(criticalGraph.compiled);
-    criticalGraph = {
+  type CriticalGraph = {key: string; compiled: CompiledGPUCommandGraph<void>};
+
+  /** Compiles the critical-point graph for a connectivity; the live graph keeps encoding. */
+  async function buildCriticalGraph(connectivity: string): Promise<CriticalGraph> {
+    return {
       key: connectivity,
-      compiled: compileCriticalGraph(resources, {
-        width,
-        height,
+      compiled: await compileCriticalGraph(resources, {
+        grid: coarse.grid,
         pixelCount,
         elevation: coarseElevation,
         validity: coarseValidity,
@@ -722,7 +771,28 @@ export async function createSummits(
         counts: criticalCounts
       })
     };
+  }
+
+  /** Swaps a critical-point graph in, then releases the one it replaces. */
+  function installCriticalGraph(next: CriticalGraph): void {
+    const previous = criticalGraph;
+    criticalGraph = next;
+    if (previous) resources.release(previous.compiled);
     criticalDirty = true;
+    ctx.requestLayers();
+  }
+
+  /** Compiles the critical-point graph the options need; the promise settles at the swap. */
+  function requestCriticalGraph(): Promise<unknown> {
+    return criticalSwap
+      .request({
+        build: () => buildCriticalGraph(ctx.options.connectivity),
+        commit: installCriticalGraph,
+        discard: (next: CriticalGraph) => resources.release(next.compiled)
+      })
+      .catch((error: Error) => {
+        if (!destroyed) ctx.setStatus(`Cannot build the critical points: ${error.message}`);
+      });
   }
 
   // --- Contours ---------------------------------------------------------------------------------
@@ -864,11 +934,14 @@ export async function createSummits(
         });
         return `${label} ${formatCompiledGraphTiming(timing).replace(/ · .*/, '')}`;
       };
-      ensureCriticalGraph();
-      const chosen = getVariant(ctx.options.incompleteNeighborhood);
+      await Promise.all([requestVariants(), requestCriticalGraph()]);
+      const chosen = findVariant(ctx.options.incompleteNeighborhood);
+      if (!chosen || criticalGraph?.key !== ctx.options.connectivity) {
+        throw new Error('the graphs were rebuilt while measuring');
+      }
       const parts = [
         await run(chosen.compiled, chosen.buffers.count, 'summits'),
-        await run(criticalGraph!.compiled, criticalCounts, 'critical points'),
+        await run(criticalGraph.compiled, criticalCounts, 'critical points'),
         await run(snapCompiled, snapBuffers.status, 'snap'),
         await run(contourCompiled, contourBuffers.overflow, `${CONTOUR_LEVEL_COUNT} contour levels`)
       ];
@@ -917,7 +990,7 @@ export async function createSummits(
   writeCandidates();
   writeSnapSettings();
   writeContourLevels();
-  getRunningVariants();
+  await requestVariants();
   publishFurniture();
   scheduleSweep();
 
@@ -939,7 +1012,7 @@ export async function createSummits(
           break;
         case 'summitMaximumRadius':
         case 'incompleteNeighborhood':
-          getRunningVariants();
+          if (isMissingVariants()) void requestVariants();
           writeSummitSettings();
           scheduleSweep();
           break;
@@ -974,6 +1047,8 @@ export async function createSummits(
 
     encode(commandEncoder) {
       const options = ctx.options;
+      // A variant that is not compiled yet is skipped until the swap.
+      if (!variantSwap.pending && isMissingVariants()) void requestVariants();
       for (const variant of getRunningVariants()) {
         if (variant.dirty) {
           variant.compiled.encode(commandEncoder, {parameters: undefined});
@@ -989,8 +1064,11 @@ export async function createSummits(
       }
       snapReader.flush(commandEncoder);
       if (options.showCritical) {
-        ensureCriticalGraph();
-        if (criticalDirty && criticalGraph) {
+        const connectivity = options.connectivity;
+        if (criticalGraph?.key !== connectivity && !criticalSwap.pending) {
+          void requestCriticalGraph();
+        }
+        if (criticalDirty && criticalGraph?.key === connectivity) {
           criticalGraph.compiled.encode(commandEncoder, {parameters: undefined});
           criticalReader.request(commandEncoder);
           criticalDirty = false;

@@ -315,7 +315,7 @@ export default defineScene<SatelliteSwathOptions>({
 
 // positions: float32x2 [longitude, latitude]; one node per instrument (one distance per node)
 graph.add(new GPUOutlineGeometry({
-  positions, geometryType: 'lines', pathOffsets: trackOffsets,
+  positions, geometryType: 'lines', lineOffsets: trackOffsets,
   spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle', units: 'meters'},  // distances in meters; offsets use local east/north scale per vertex
   joinSegments: 16,
   parameters: distance.importToGraph(graph),

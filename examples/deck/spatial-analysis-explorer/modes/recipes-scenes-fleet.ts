@@ -114,74 +114,67 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
     const trackOverflow = kit.output('track-overflow', 'uint32', 1);
     const eventCapacityOverflow = kit.output('event-capacity-overflow', 'uint32', 1);
 
+    const trajectories = {
+      kind: 'trajectories' as const,
+      positions: positions.view,
+      timestamps: timestamps.view,
+      trackOffsets: trackOffsets.view
+    };
+    const zonePorts = {
+      kind: 'polygons' as const,
+      positions: kit.input(
+        'zones-positions',
+        polygons.polygonPositions,
+        'float32x2',
+        polygons.polygonPositions.length / 2
+      ).view,
+      featureOffsets: kit.input(
+        'zones-features',
+        polygons.featureOffsets,
+        'uint32',
+        polygons.featureOffsets.length
+      ).view,
+      polygonOffsets: kit.input(
+        'zones-polygons',
+        polygons.polygonOffsets,
+        'uint32',
+        polygons.polygonOffsets.length
+      ).view,
+      ringOffsets: kit.input(
+        'zones-rings',
+        polygons.ringOffsets,
+        'uint32',
+        polygons.ringOffsets.length
+      ).view
+    };
+
     let contributorCount = 0;
     if (variant === 'stops') {
       const recipe = addFleetDwellRecipe(kit.graph, {
-        positions: positions.view,
-        timestamps: timestamps.view,
-        trackOffsets: trackOffsets.view,
+        trajectories,
         parameters: stopParameters.view,
         stopCapacity: FLEET_STOP_CAPACITY,
-        zones: {
-          polygonPositions: kit.input(
-            'zones-positions',
-            polygons.polygonPositions,
-            'float32x2',
-            polygons.polygonPositions.length / 2
-          ).view,
-          featureOffsets: kit.input(
-            'zones-features',
-            polygons.featureOffsets,
-            'uint32',
-            polygons.featureOffsets.length
-          ).view,
-          polygonOffsets: kit.input(
-            'zones-polygons',
-            polygons.polygonOffsets,
-            'uint32',
-            polygons.polygonOffsets.length
-          ).view,
-          ringOffsets: kit.input(
-            'zones-rings',
-            polygons.ringOffsets,
-            'uint32',
-            polygons.ringOffsets.length
-          ).view,
-          candidateCapacity: FLEET_STOP_CAPACITY * 4
-        },
+        zones: {...zonePorts, candidateCapacity: FLEET_STOP_CAPACITY * 4},
         outputs: {
           stops: {
-            count: stopTotal.view,
-            overflow: stopOverflow.view,
+            status: {count: stopTotal.view, overflow: stopOverflow.view},
             centroids: stopCentroids.view,
             durations: stopDurations.view
           },
-          joinOverflow: joinOverflow.view,
+          status: {joinOverflow: joinOverflow.view},
           table
         }
       });
       contributorCount = recipe.contributors.length;
     } else {
-      const edgeCount = polygons.outlineSegments.length / 4;
-      const edgeStarts = new Float32Array(edgeCount * 2);
-      const edgeEnds = new Float32Array(edgeCount * 2);
-      for (let edge = 0; edge < edgeCount; edge++) {
-        edgeStarts.set(polygons.outlineSegments.subarray(edge * 4, edge * 4 + 2), edge * 2);
-        edgeEnds.set(polygons.outlineSegments.subarray(edge * 4 + 2, edge * 4 + 4), edge * 2);
-      }
       const recipe = addFleetDwellZoneEventsRecipe(kit.graph, {
-        positions: positions.view,
-        timestamps: timestamps.view,
-        trackOffsets: trackOffsets.view,
-        edgeStarts: kit.input('edge-starts', edgeStarts, 'float32x2', edgeCount).view,
-        edgeEnds: kit.input('edge-ends', edgeEnds, 'float32x2', edgeCount).view,
-        edgeZones: kit.input('edge-zones', polygons.outlineFeatureRows, 'uint32', edgeCount).view,
-        zoneCount,
+        trajectories,
+        zones: zonePorts,
         candidateCapacity: FLEET_CANDIDATE_CAPACITY,
-        maxEventsPerTrack: 64,
+        trackEventCapacity: 64,
         outputs: {
-          events: {output: {count: eventCount.view, overflow: eventOverflow.view}},
-          diagnostics: {
+          events: {status: {count: eventCount.view, overflow: eventOverflow.view}},
+          status: {
             candidateCount: candidateCount.view,
             candidateOverflow: candidateOverflow.view,
             trackOverflow: trackOverflow.view,
@@ -192,7 +185,7 @@ export function createFleetDwellScene(variant: 'stops' | 'zone-events'): RecipeS
       });
       contributorCount = recipe.contributors.length;
     }
-    const compiled = kit.compile();
+    const compiled = await kit.compileAsync();
 
     const cellRows = kit.resources.createBuffer(
       'cell-rows',

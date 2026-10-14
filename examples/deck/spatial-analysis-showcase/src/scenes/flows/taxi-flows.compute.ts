@@ -5,8 +5,8 @@
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-dataframe';
 import {GPUFlowAggregation} from '@luma.gl/experimental/gpu-network';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
@@ -27,6 +27,7 @@ import {
 } from '../../engine/layers';
 import {SpatialAnalysisFlowLayer} from '../../engine/flow-layer';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {measureCompiledGraph} from '../../engine/vector-timing';
@@ -195,7 +196,7 @@ export async function createTaxiFlows(
   const windowBuffer = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
 
   // Flow buffers, written from every readback: the designed arrows (heaviest last through
@@ -456,12 +457,12 @@ export async function createTaxiFlows(
   }
 
   /** Builds and compiles one flow graph; the caller owns the returned resources. */
-  function buildGraph(
+  async function buildGraph(
     prepared: PreparedSource,
     kind: TaxiFlowOptions['zones'],
     sumOrder: TaxiFlowOptions['sumOrder'],
     excludeSelf: boolean
-  ): FlowGraph {
+  ): Promise<FlowGraph> {
     const {source} = prepared;
     const id = ++serial;
     const graphResources = new SpatialAnalysisResources(device, `taxi-flows-${id}`);
@@ -572,48 +573,68 @@ export async function createTaxiFlows(
         excludeSelfFlows: excludeSelf,
         sumOrder,
         pairCapacity,
-        // rows * maxProbeCount must fit in a uint32; 128 probes is far above the expected chain length.
-        maxProbeCount: 128,
+        // rows * maximumProbeCount must fit in a uint32; 128 probes is far above the expected chain length.
+        maximumProbeCount: 128,
         output: {
           ids: importGraphBuffer(commandGraph, 'ids', ids, 'uint32', k),
-          count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
-          overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(commandGraph, 'total-count', requiredCount, 'uint32', 1)
-        },
-        flowOriginZoneIds: importGraphBuffer(commandGraph, 'flow-origin', originZones, 'uint32', k),
-        flowDestinationZoneIds: importGraphBuffer(
-          commandGraph,
-          'flow-destination',
-          destinationZones,
-          'uint32',
-          k
-        ),
-        flowWeights: importGraphBuffer(commandGraph, 'flow-weights', flowWeights, 'float32', k),
-        pairOverflow: importGraphBuffer(commandGraph, 'pair-overflow', pairOverflow, 'uint32', 1),
-        zoneOutWeights: importGraphBuffer(
-          commandGraph,
-          'zone-out-w',
-          zoneOutWeights,
-          'float32',
-          zoneCount
-        ),
-        zoneInWeights: importGraphBuffer(
-          commandGraph,
-          'zone-in-w',
-          zoneInWeights,
-          'float32',
-          zoneCount
-        ),
-        zoneOutCounts: importGraphBuffer(
-          commandGraph,
-          'zone-out-c',
-          zoneOutCounts,
-          'uint32',
-          zoneCount
-        )
+          status: {
+            pairOverflow: importGraphBuffer(
+              commandGraph,
+              'pair-overflow',
+              pairOverflow,
+              'uint32',
+              1
+            ),
+            count: importGraphBuffer(commandGraph, 'count', count, 'uint32', 1),
+            overflow: importGraphBuffer(commandGraph, 'overflow', overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(
+              commandGraph,
+              'total-count',
+              requiredCount,
+              'uint32',
+              1
+            )
+          },
+          flowOriginZoneIds: importGraphBuffer(
+            commandGraph,
+            'flow-origin',
+            originZones,
+            'uint32',
+            k
+          ),
+          flowDestinationZoneIds: importGraphBuffer(
+            commandGraph,
+            'flow-destination',
+            destinationZones,
+            'uint32',
+            k
+          ),
+          flowWeights: importGraphBuffer(commandGraph, 'flow-weights', flowWeights, 'float32', k),
+          zoneOutWeights: importGraphBuffer(
+            commandGraph,
+            'zone-out-w',
+            zoneOutWeights,
+            'float32',
+            zoneCount
+          ),
+          zoneInWeights: importGraphBuffer(
+            commandGraph,
+            'zone-in-w',
+            zoneInWeights,
+            'float32',
+            zoneCount
+          ),
+          zoneOutCounts: importGraphBuffer(
+            commandGraph,
+            'zone-out-c',
+            zoneOutCounts,
+            'uint32',
+            zoneCount
+          )
+        }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const built: FlowGraph = {
       resources: graphResources,
       compiled,
@@ -657,11 +678,17 @@ export async function createTaxiFlows(
     return built;
   }
 
-  function rebuild(): void {
+  /** Builds the graph for the current options without touching the running one. */
+  function buildCurrentGraph(): Promise<FlowGraph> {
     const {source, zones, excludeSelf, sumOrder} = ctx.options;
-    const prepared = prepare(source);
+    return buildGraph(prepare(source), zones, sumOrder, excludeSelf);
+  }
+
+  /** Swaps a finished build in; the replaced graph is retired and destroyed a few frames later. */
+  function commitGraph(next: FlowGraph): void {
+    const {prepared} = next;
     if (graph) retired.push({resources: graph.resources, frames: 0});
-    graph = buildGraph(prepared, zones, sumOrder, excludeSelf);
+    graph = next;
     snapshot = null;
     designedCount = 0;
     hotCount = 0;
@@ -678,6 +705,22 @@ export async function createTaxiFlows(
     ctx.setAnnotations('findings', null);
     ctx.setCost({records: prepared.source.rowCount});
     markChanged();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Rebuilds the flow graph for the current options; the latest request wins. */
+  function requestGraph(): Promise<boolean> {
+    return graphSwap.request({
+      build: buildCurrentGraph,
+      commit: next => {
+        commitGraph(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1215,7 +1258,14 @@ export async function createTaxiFlows(
     comparing = true;
     const main = graph;
     const otherOrder = main.sumOrder === 'sorted' ? 'atomic' : 'sorted';
-    const alt = buildGraph(main.prepared, main.kind, otherOrder, ctx.options.excludeSelf);
+    let alt: FlowGraph;
+    try {
+      alt = await buildGraph(main.prepared, main.kind, otherOrder, ctx.options.excludeSelf);
+    } catch (error) {
+      comparing = false;
+      if (!destroyed) ctx.setReadout('sumDifference', `comparison failed: ${String(error)}`);
+      return;
+    }
     try {
       const first = await measureCompiledGraph(device, main.compiled, {
         parameters: undefined,
@@ -1279,7 +1329,7 @@ export async function createTaxiFlows(
     for (let row = 0; row < taxi.rowCount; row++) trips += taxi.weights.trips[row];
     furniture.title.sample = `${formatCount(trips)} taxi trips, ${taxi.zoneCount} community areas, 2023`;
   }
-  rebuild();
+  commitGraph(await buildCurrentGraph());
 
   return {
     getCompiledGraphs: () => (graph ? [graph.compiled as CompiledGPUCommandGraph<never>] : []),
@@ -1290,8 +1340,7 @@ export async function createTaxiFlows(
         case 'zones':
         case 'excludeSelf':
         case 'sumOrder':
-          rebuild();
-          ctx.requestLayers();
+          void requestGraph();
           break;
         case 'taxiWeight':
         case 'commuteWeight':
@@ -1399,7 +1448,7 @@ export async function createTaxiFlows(
         }
         // The window test is closed at both ends (start <= t <= end) and pickup hours are whole
         // numbers, so [17, 20) is written as [17, 19.5] to keep the 20:00 hour out.
-        windowBuffer.write(getGPUTimeWindowParameterValues({start, end: end - 0.5}));
+        windowBuffer.write(getGPUTimeWindowFilterParameterValues({start, end: end - 0.5}));
         if (frame.frameIndex % 6 === 0) {
           ctx.setReadout('window', `${formatTaxiDayHour(start)} to ${formatTaxiDayHour(end)}`);
           updateHourlyChart(start, end);

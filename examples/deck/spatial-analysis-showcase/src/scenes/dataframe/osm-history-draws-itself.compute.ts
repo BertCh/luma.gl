@@ -6,9 +6,9 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUTemporalReductionParameterValues,
-  getGPUTimeWindowParameterValues,
+  getGPUTimeWindowFilterParameterValues,
   GPU_TEMPORAL_REDUCTION_PARAMETER_LENGTH,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTemporalReduction,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
@@ -21,6 +21,7 @@ import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engin
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -119,14 +120,14 @@ export async function createOsmDrawsItself(
     {range: [0, Math.floor(history.maxDay)], secondsPerLoop: 60, step: 7}
   );
 
-  function createWindowGraph(name: string) {
+  async function createWindowGraph(name: string) {
     const ids = resources.createBuffer(`${name}-ids`, count * 4);
     const countBuffer = resources.createBuffer(`${name}-count`, 4);
     const overflow = resources.createBuffer(`${name}-overflow`, 4);
     const parameters = resources.createParameterBuffer(
       `${name}-window`,
       'float32',
-      GPU_TIME_WINDOW_PARAMETER_LENGTH
+      GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
     );
     const draw = resources.track(
       new DrawCommandBuffer(device, {
@@ -144,16 +145,24 @@ export async function createOsmDrawsItself(
         window: parameters.importToGraph(graph),
         output: {
           ids: v('ids', ids, 'uint32', count),
-          count: v('count', countBuffer, 'uint32', 1),
-          overflow: v('overflow', overflow, 'uint32', 1)
-        },
-        drawInstanceCount: graph.importGPUData(`${name}-draw-count`, draw.getInstanceCountData(0))
+          status: {
+            count: v('count', countBuffer, 'uint32', 1),
+            overflow: v('overflow', overflow, 'uint32', 1)
+          },
+          drawInstanceCount: graph.importGPUData(`${name}-draw-count`, draw.getInstanceCountData(0))
+        }
       })
     );
-    return {ids, countBuffer, parameters, draw, compiled: resources.track(graph.compile())};
+    return {
+      ids,
+      countBuffer,
+      parameters,
+      draw,
+      compiled: resources.track(await graph.compileAsync())
+    };
   }
-  const ink = createWindowGraph('ink');
-  const glow = createWindowGraph('glow');
+  const ink = await createWindowGraph('ink');
+  const glow = await createWindowGraph('glow');
 
   // ---- Cell variant (compile-time cell size) ------------------------------------------------------
   let variant: CellVariant | null = null;
@@ -165,7 +174,7 @@ export async function createOsmDrawsItself(
   let peakText = '';
   let occupiedText = '';
 
-  function buildVariant(cellSize: number): CellVariant {
+  async function buildVariant(cellSize: number): Promise<CellVariant> {
     const [minX, minY, maxX, maxY] = history.bounds;
     const columns = Math.ceil((maxX - minX) / cellSize) + 1;
     const rows = Math.ceil((maxY - minY) / cellSize) + 1;
@@ -226,14 +235,16 @@ const ROWS: u32 = ${rows}u;`,
         bucketCount: BUCKET_COUNT,
         output: {
           counts: countsView,
-          min: r('slot-min', slotMin, 'float32', slotCount),
-          max: r('slot-max', slotMax, 'float32', slotCount),
+          minimums: r('slot-min', slotMin, 'float32', slotCount),
+          maximums: r('slot-max', slotMax, 'float32', slotCount),
           first: r('slot-first', slotFirst, 'float32', slotCount),
           last: r('slot-last', slotLast, 'float32', slotCount),
           occupiedSlots: {
             ids: r('occupied-ids', occupiedIds, 'uint32', Math.min(slotCount, count)),
-            count: r('occupied-count', occupiedCount, 'uint32', 1),
-            overflow: r('occupied-overflow', occupiedOverflow, 'uint32', 1)
+            status: {
+              count: r('occupied-count', occupiedCount, 'uint32', 1),
+              overflow: r('occupied-overflow', occupiedOverflow, 'uint32', 1)
+            }
           }
         }
       })
@@ -358,8 +369,8 @@ const BUCKETS: u32 = ${BUCKET_COUNT}u;`,
       cellCount,
       bounds: [minX, minY, minX + columns * cellSize, minY + rows * cellSize],
       cellValues,
-      reduce: resources.track(reduceGraph.compile()),
-      values: resources.track(valuesGraph.compile()),
+      reduce: resources.track(await reduceGraph.compileAsync()),
+      values: resources.track(await valuesGraph.compileAsync()),
       buffers: [
         cellIds,
         counts,
@@ -387,14 +398,25 @@ const BUCKETS: u32 = ${BUCKET_COUNT}u;`,
     for (const buffer of old.buffers) resources.release(buffer);
   }
 
-  function setVariant(cellSize: number): void {
+  /** Swaps a compiled variant in, then releases the one it replaces. */
+  function commitVariant(next: CellVariant): void {
     const old = variant;
-    variant = buildVariant(cellSize);
+    variant = next;
     if (old) disposeVariant(old);
     valuesDirty = true;
     windowsDirty = true;
-    ctx.setReadout('grid', `${variant.columns} x ${variant.rows} cells of ${cellSize} m`);
+    ctx.setReadout('grid', `${next.columns} x ${next.rows} cells of ${next.cellSize} m`);
     ctx.requestLayers();
+  }
+
+  // The previous variant keeps encoding until the new one has compiled.
+  const variantSwap = resources.track(new GraphSwap());
+  function setVariant(cellSize: number): Promise<boolean> {
+    return variantSwap.request({
+      build: () => buildVariant(cellSize),
+      commit: commitVariant,
+      discard: disposeVariant
+    });
   }
 
   function currentBucket(playhead: number): number {
@@ -424,7 +446,7 @@ const BUCKETS: u32 = ${BUCKET_COUNT}u;`,
   }
 
   ctx.setReadout('rows', `${formatCount(count)} of ${formatCount(history.full.fullCount)} nodes`);
-  setVariant(Number(ctx.options.cellSize));
+  await setVariant(Number(ctx.options.cellSize));
 
   return {
     getCompiledGraphs: () =>
@@ -433,7 +455,7 @@ const BUCKETS: u32 = ${BUCKET_COUNT}u;`,
     setOption(id, _value, state) {
       switch (id) {
         case 'cellSize':
-          setVariant(Number(state.cellSize));
+          void setVariant(Number(state.cellSize));
           break;
         case 'bucket':
           if (variant) variant.reduced = false;
@@ -494,15 +516,18 @@ const BUCKETS: u32 = ${BUCKET_COUNT}u;`,
       }
 
       if (clock.moved || windowsDirty) {
-        ink.parameters.write(getGPUTimeWindowParameterValues({start: -1, end: playhead}));
+        ink.parameters.write(getGPUTimeWindowFilterParameterValues({start: -1, end: playhead}));
         ink.compiled.encode(commandEncoder, {parameters: undefined});
         if (options.showGlow) {
           glow.parameters.write(
-            getGPUTimeWindowParameterValues({start: playhead - options.glowDays, end: playhead})
+            getGPUTimeWindowFilterParameterValues({
+              start: playhead - options.glowDays,
+              end: playhead
+            })
           );
           glow.compiled.encode(commandEncoder, {parameters: undefined});
         } else {
-          glow.parameters.write(getGPUTimeWindowParameterValues({start: 1e9, end: 1e9 + 1}));
+          glow.parameters.write(getGPUTimeWindowFilterParameterValues({start: 1e9, end: 1e9 + 1}));
           glow.compiled.encode(commandEncoder, {parameters: undefined});
         }
         windowsDirty = false;

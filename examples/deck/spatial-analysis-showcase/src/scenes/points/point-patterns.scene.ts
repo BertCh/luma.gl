@@ -537,7 +537,7 @@ export default defineScene<PointPatternOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   GPURipley, GPURipleyDistanceFunctions, GPUPointPatternIndices,
-  getGPURipleyParameterValues, getGPURipleyDistanceParameterValues,
+  getGPURipleyParameterValues, getGPURipleyDistanceFunctionsParameterValues,
   getGPUPointPatternIndicesParameterValues
 } from '@luma.gl/experimental/gpu-dataframe';
 
@@ -547,25 +547,25 @@ graph.add(new GPURipley({
   positions, mask,                       // mask: 1 for the selected group
   parameters: ripleyParameters.importToGraph(graph),
   gridSize: [96, 96], radiusCount: ${state.radiusCount},
-  k, l, lMinusR, radii
+  output: {k, l, lMinusR, radii}
 }));
 graph.add(new GPURipleyDistanceFunctions({
   positions, mask, parameters: distanceParameters.importToGraph(graph),
   gridSize: [96, 96], referenceGrid: [${state.referenceGrid}, ${state.referenceGrid}], radiusCount: ${state.radiusCount},
-  g, f, j
+  output: {g, f, j}
 }));
 graph.add(new GPUPointPatternIndices({
   positions, mask, parameters: indicesParameters.importToGraph(graph),
   gridSize: [96, 96], quadratGrid: [${state.quadratGrid}, ${state.quadratGrid}],
-  nearestNeighborDistances, clarkEvans, quadratCounts, quadratStatistics
+  output: {nearestNeighborDistances, clarkEvans, quadratCounts, quadratStatistics}
 }));
-const compiled = graph.compile();        // once
+const compiled = await graph.compileAsync();  // once
 
 // window, radii and edge correction are parameter writes
 ripleyParameters.write(getGPURipleyParameterValues({
   bounds, maximumDistance: ${state.maximumDistance}, edgeCorrection: '${state.ripleyCorrection}'
 }));
-distanceParameters.write(getGPURipleyDistanceParameterValues({
+distanceParameters.write(getGPURipleyDistanceFunctionsParameterValues({
   bounds, maximumDistance: ${state.maximumDistance}, edgeCorrection: '${state.distanceCorrection}'
 }));
 compiled.encode(commandEncoder, {parameters: undefined});

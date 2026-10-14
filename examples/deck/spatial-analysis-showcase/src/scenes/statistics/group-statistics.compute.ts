@@ -26,6 +26,7 @@ import {
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {ChartColor, ChartData} from '../chart-types';
@@ -333,7 +334,7 @@ export async function createGroupStatistics(
   type Variant = {key: string; compiled: CompiledGPUCommandGraph<void>};
   const variants = new Map<string, Variant>();
 
-  const compileVariant = (options: GroupStatisticsOptions): Variant => {
+  const compileVariant = async (options: GroupStatisticsOptions): Promise<Variant> => {
     const key = `${options.variance}|${options.joinKind}`;
     const graph = new GPUCommandGraph<void>(device, {id: `group-statistics-${key}`});
     // A graph rejects two imports of one buffer, so each buffer is imported once per graph.
@@ -430,8 +431,10 @@ export async function createGroupStatistics(
         output: {
           keys: bind.word(outputKeysBuffer, ZONE_COUNT),
           counts: slots.view(SLOT.counts, 'uint32', ZONE_COUNT),
-          count: bind.word(outputCountBuffer, 1),
-          overflow: bind.word(outputOverflowBuffer, 1)
+          status: {
+            count: bind.word(outputCountBuffer, 1),
+            overflow: bind.word(outputOverflowBuffer, 1)
+          }
         }
       })
     );
@@ -453,8 +456,10 @@ export async function createGroupStatistics(
         output: {
           keys: bind.word(introducedOutputKeysBuffer, ZONE_COUNT),
           counts: bind.word(introducedOutputCountsBuffer, ZONE_COUNT),
-          count: bind.word(introducedOutputCountBuffer, 1),
-          overflow: bind.word(introducedOutputOverflowBuffer, 1)
+          status: {
+            count: bind.word(introducedOutputCountBuffer, 1),
+            overflow: bind.word(introducedOutputOverflowBuffer, 1)
+          }
         }
       })
     );
@@ -601,27 +606,32 @@ export async function createGroupStatistics(
             ? {
                 rows: {
                   ids: bind.word(innerRowsBuffer, tractCount),
-                  count: bind.word(innerCountBuffer, 1),
-                  overflow: bind.word(innerOverflowBuffer, 1)
+                  status: {
+                    count: bind.word(innerCountBuffer, 1),
+                    overflow: bind.word(innerOverflowBuffer, 1)
+                  }
                 }
               }
             : {})
         }
       })
     );
-    return {key, compiled: resources.track(graph.compile())};
+    return {key, compiled: resources.track(await graph.compileAsync())};
   };
 
-  const getVariant = (options: GroupStatisticsOptions): Variant => {
+  /** Returns the compiled variant for `options`, compiling it on first use. */
+  const getVariant = async (options: GroupStatisticsOptions): Promise<Variant> => {
     const key = `${options.variance}|${options.joinKind}`;
     let variant = variants.get(key);
     if (!variant) {
-      variant = compileVariant(options);
+      variant = await compileVariant(options);
       variants.set(key, variant);
     }
     return variant;
   };
-  let active = getVariant(ctx.options);
+  let active = await getVariant(ctx.options);
+  // Variants stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
 
   // -------------------------------------------------------------------------------------------
   // State
@@ -1609,9 +1619,16 @@ export async function createGroupStatistics(
 
     setOption(id) {
       if (id === 'variance' || id === 'joinKind') {
-        active = getVariant(ctx.options);
-        dirty = true;
-        reader.markStale();
+        // The previous variant keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => getVariant(ctx.options),
+          commit: variant => {
+            active = variant;
+            dirty = true;
+            reader.markStale();
+            ctx.requestLayers();
+          }
+        });
       } else if (id === 'classification' || id === 'view') {
         legendHighlight = null;
         publishLegendData();

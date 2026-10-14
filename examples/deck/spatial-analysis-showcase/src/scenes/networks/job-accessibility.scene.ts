@@ -400,28 +400,28 @@ import {
   GPUNetworkSnapping,
   GPUNetworkCostMatrix,
   GPUNetworkAccessibility,
-  encodeGPUNetworkAccessibilityParameters
+  getGPUNetworkAccessibilityParameterValues
 } from '@luma.gl/experimental/gpu-network';
 
 // Graph 1: encoded only when the network or the opportunities change.
 const matrixGraph = new GPUCommandGraph(device, {id: 'access-matrix'});
 matrixGraph.add(new GPUNetworkSnapping({
-  points: opportunities,                       // float32x2, one job-rich tract each
-  nodePositions: roadNodes, edgeSources, edgeTargets, edgeCosts: walkSeconds,
-  maxSnapDistance: maxSnap.importToGraph(matrixGraph),   // ${state.maxSnapDistance} m, per frame${
+  positions: opportunities,                    // float32x2, one job-rich tract each
+  topology: {offsets: roadOffsets, neighbors: roadTargets, weights: walkSeconds, nodePositions: roadNodes},
+  maximumSnapDistance: maxSnap.importToGraph(matrixGraph),   // ${state.maxSnapDistance} m, per frame${
     state.snapSearch === 'bvh'
       ? '\n  candidateCapacity: 1 << 20, spatialSort: true,           // BVH instead of an exact scan'
       : ''
   }
-  seedDirection: '${state.seedDirection}',
-  snappedEdges, snappedPositions, seedNodes, seedCosts     // two seeds per point
+  startDirection: '${state.seedDirection}',
+  output: {snappedEdges, snappedPositions, startNodes, startCosts}   // two starts per point
 }));
 matrixGraph.add(new GPUNetworkCostMatrix({
-  offsets, neighbors, weights,                 // REVERSED walk + transit CSR: cost from each node TO the opportunity
-  seedNodes, seedCosts, seedsPerRow: 2,
+  topology: {offsets, neighbors, weights},     // REVERSED walk + transit CSR: cost from each node TO the opportunity
+  startNodes, startCosts, startsPerRow: 2,
   costLimit: limit.importToGraph(matrixGraph), // ${state.matrixLimitMinutes * 60} s
-  laneCount: ${state.laneCount}, maxIterations: 48, localIterations: 16,
-  costs: matrix, converged                      // [${state.opportunityRows} rows x nodes], row-major
+  laneCount: ${state.laneCount}, maximumIterations: 48, localIterations: 16,
+  output: {costs: matrix, status: {converged}}  // [${state.opportunityRows} rows x nodes], row-major
 }));
 
 // Graph 2: encoded whenever a scoring parameter changes. No search is re-run.
@@ -431,7 +431,7 @@ scoreGraph.add(new GPUNetworkAccessibility({
   cumulative, gravity,
   catchment: {demand: workers, output: twoStep, ratios}   // 2SFCA
 }));
-scoring.write(encodeGPUNetworkAccessibilityParameters(${
+scoring.write(getGPUNetworkAccessibilityParameterValues(${
     state.measure === 'gravity-exponential'
       ? `{threshold: ${state.thresholdMinutes * 60}, decay: 'exponential', beta: ${(state.beta / 600).toFixed(5)}}`
       : state.measure === 'gravity-power'

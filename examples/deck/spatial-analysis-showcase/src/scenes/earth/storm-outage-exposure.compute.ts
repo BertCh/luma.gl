@@ -4,8 +4,8 @@
 
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUGroupStatistics,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
@@ -29,6 +29,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {createPlaybackClock} from '../../engine/playback';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {ChoroplethFillLayer} from '../statistics/b5-choropleth-layer';
@@ -305,12 +306,12 @@ export async function createStormOutageExposure(
   const flashWindow = resources.createParameterBuffer(
     'flash-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const snapshotWindow = resources.createParameterBuffer(
     'snapshot-window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const clipLimit = resources.createParameterBuffer('clip-limit', 'float32', 4);
   const composeParameters = resources.createParameterBuffer('compose', 'float32', 4);
@@ -322,7 +323,7 @@ export async function createStormOutageExposure(
       id: 'flash-county',
       features: {
         kind: 'polygons',
-        polygonPositions: importGraphBuffer(
+        positions: importGraphBuffer(
           staticGraph,
           'county-aeqd',
           countyVerticesBuffer,
@@ -352,7 +353,7 @@ export async function createStormOutageExposure(
         ),
         candidateCapacity: flashCount * 4
       },
-      points: importGraphBuffer(
+      positions: importGraphBuffer(
         staticGraph,
         'flash-aeqd',
         flashAeqdBuffer,
@@ -368,7 +369,9 @@ export async function createStormOutageExposure(
           'uint32',
           flashCount
         ),
-        overflow: importGraphBuffer(staticGraph, 'zonal-overflow', zonalOverflow, 'uint32', 1)
+        status: {
+          overflow: importGraphBuffer(staticGraph, 'zonal-overflow', zonalOverflow, 'uint32', 1)
+        }
       }
     })
   );
@@ -414,8 +417,10 @@ export async function createStormOutageExposure(
       output: {
         keys: importGraphBuffer(staticGraph, 'peak-keys', peakKeys, 'uint32', countyCount),
         counts: importGraphBuffer(staticGraph, 'peak-counts', peakCounts, 'uint32', countyCount),
-        count: importGraphBuffer(staticGraph, 'peak-count', peakCount, 'uint32', 1),
-        overflow: importGraphBuffer(staticGraph, 'peak-overflow', peakOverflow, 'uint32', 1)
+        status: {
+          count: importGraphBuffer(staticGraph, 'peak-count', peakCount, 'uint32', 1),
+          overflow: importGraphBuffer(staticGraph, 'peak-overflow', peakOverflow, 'uint32', 1)
+        }
       }
     })
   );
@@ -430,14 +435,14 @@ export async function createStormOutageExposure(
         'float32x2',
         vertexCount
       ),
-      pathOffsets: importGraphBuffer(
+      lineOffsets: importGraphBuffer(
         staticGraph,
         'full-event-track-offsets',
         trackOffsetsBuffer,
         'uint32',
         trackCount + 1
       ),
-      maximumCandidatePairs: Math.max(1024, 64 * vertexCount),
+      pairCapacity: Math.max(1024, 64 * vertexCount),
       polygons: {
         kind: 'polygons',
         positions: importGraphBuffer(
@@ -477,22 +482,24 @@ export async function createStormOutageExposure(
           'float32',
           countyCount
         ),
-        overflow: importGraphBuffer(
-          staticGraph,
-          'full-event-line-overflow',
-          staticLineOverflow,
-          'uint32',
-          1
-        )
+        status: {
+          overflow: importGraphBuffer(
+            staticGraph,
+            'full-event-line-overflow',
+            staticLineOverflow,
+            'uint32',
+            1
+          )
+        }
       }
     })
   );
-  const staticCompiled = resources.track(staticGraph.compile());
+  const staticCompiled = resources.track(await staticGraph.compileAsync());
 
   // ---- Exposure graphs (the zonal sum order is compile-time) ----------------------------------
   const variants = new Map<string, ExposureVariant>();
 
-  function buildVariant(sumOrder: GPUZonalStatisticsSumOrder): ExposureVariant {
+  async function buildVariant(sumOrder: GPUZonalStatisticsSumOrder): Promise<ExposureVariant> {
     const existing = variants.get(sumOrder);
     if (existing) return existing;
     const graph = new GPUCommandGraph<void>(device, {id: `storm-outage-exposure-${sumOrder}`});
@@ -541,10 +548,12 @@ export async function createStormOutageExposure(
         window: flashWindow.importToGraph(graph),
         output: {
           ids: importGraphBuffer(graph, 'flash-ids', flashIds, 'uint32', flashCount),
-          count: importGraphBuffer(graph, 'flash-selected', flashSelected, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'flash-overflow', flashOverflow, 'uint32', 1)
-        },
-        fadeWeights: flashWeightsView
+          fadeWeights: flashWeightsView,
+          status: {
+            count: importGraphBuffer(graph, 'flash-selected', flashSelected, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'flash-overflow', flashOverflow, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
@@ -617,9 +626,9 @@ export async function createStormOutageExposure(
         id: 'track-length',
         spatialContext: GREAT_CIRCLE_METERS,
         positions: clippedView,
-        pathOffsets: trackOffsetsView,
-        maximumCandidatePairs: Math.max(1024, 64 * vertexCount),
-        pathWeights: importGraphBuffer(
+        lineOffsets: trackOffsetsView,
+        pairCapacity: Math.max(1024, 64 * vertexCount),
+        lineWeights: importGraphBuffer(
           graph,
           'track-peak-dbz',
           trackPeakBuffer,
@@ -660,7 +669,7 @@ export async function createStormOutageExposure(
         output: {
           lengths: trackLengthsView,
           weightedLengths: trackWeightedView,
-          overflow: importGraphBuffer(graph, 'line-overflow', lineOverflow, 'uint32', 1)
+          status: {overflow: importGraphBuffer(graph, 'line-overflow', lineOverflow, 'uint32', 1)}
         }
       })
     );
@@ -685,10 +694,12 @@ export async function createStormOutageExposure(
         window: snapshotWindow.importToGraph(graph),
         output: {
           ids: importGraphBuffer(graph, 'snapshot-ids', snapshotIds, 'uint32', snapshotCount),
-          count: importGraphBuffer(graph, 'snapshot-selected', snapshotSelected, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'snapshot-overflow', snapshotOverflow, 'uint32', 1)
-        },
-        outputMask: maskView
+          outputMask: maskView,
+          status: {
+            count: importGraphBuffer(graph, 'snapshot-selected', snapshotSelected, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'snapshot-overflow', snapshotOverflow, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
@@ -719,8 +730,10 @@ export async function createStormOutageExposure(
         output: {
           keys: importGraphBuffer(graph, 'now-keys', nowKeys, 'uint32', countyCount),
           counts: importGraphBuffer(graph, 'now-counts', nowCounts, 'uint32', countyCount),
-          count: importGraphBuffer(graph, 'now-count', nowCount, 'uint32', 1),
-          overflow: importGraphBuffer(graph, 'now-overflow', nowOverflow, 'uint32', 1)
+          status: {
+            count: importGraphBuffer(graph, 'now-count', nowCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'now-overflow', nowOverflow, 'uint32', 1)
+          }
         }
       })
     );
@@ -800,7 +813,7 @@ export async function createStormOutageExposure(
   }
   values[valuesOffset + index] = select(nan, value, inside);`
     });
-    const built = {compiled: resources.track(graph.compile())};
+    const built = {compiled: resources.track(await graph.compileAsync())};
     variants.set(sumOrder, built);
     return built;
   }
@@ -816,7 +829,8 @@ export async function createStormOutageExposure(
   let staticEncoded = false;
   let exposureDirty = true;
   let lastStep = -1;
-  let current = buildVariant(ctx.options.sumOrder);
+  let current = await buildVariant(ctx.options.sumOrder);
+  const graphSwap = resources.track(new GraphSwap());
   let peakPerThousand: Float32Array | null = null;
   let latest: {
     values: Float32Array;
@@ -863,10 +877,13 @@ export async function createStormOutageExposure(
     const options = ctx.options;
     const quantized = Math.floor(playhead / STATUS_STEP_SECONDS) * STATUS_STEP_SECONDS;
     const limit = options.exposureWindow === 'so-far' ? quantized : 1e9;
-    flashWindow.write(getGPUTimeWindowParameterValues({start: 0, end: Math.min(limit, 1e7)}));
+    flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: Math.min(limit, 1e7)}));
     clipLimit.write(Float32Array.of(Math.min(limit, 1e7), 0, 0, 0));
     snapshotWindow.write(
-      getGPUTimeWindowParameterValues({start: quantized - OUTAGE_WINDOW_SECONDS, end: quantized})
+      getGPUTimeWindowFilterParameterValues({
+        start: quantized - OUTAGE_WINDOW_SECONDS,
+        end: quantized
+      })
     );
   }
   writeComposeParameters();
@@ -1095,8 +1112,15 @@ export async function createStormOutageExposure(
           exposureDirty = true;
           break;
         case 'sumOrder':
-          current = buildVariant(ctx.options.sumOrder);
-          exposureDirty = true;
+          // The variant cache is destroyed with the resources, so a superseded build is kept.
+          void graphSwap.request({
+            build: () => buildVariant(ctx.options.sumOrder),
+            commit: next => {
+              current = next;
+              exposureDirty = true;
+              ctx.requestLayers();
+            }
+          });
           break;
         case 'exposureMeasure':
         case 'exposureThreshold':

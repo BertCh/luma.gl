@@ -150,7 +150,7 @@ export async function createOsmCrossfilter(
   // The controller is destroyed after the graph that was compiled from it.
   resources.track(filter);
   filter.addToGraph(graph);
-  const compiled = resources.track(graph.compile());
+  const compiled = resources.track(await graph.compileAsync());
 
   // ---- Brush state ----------------------------------------------------------------------------------
   let dirty = true;

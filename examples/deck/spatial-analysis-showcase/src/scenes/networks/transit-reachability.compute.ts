@@ -7,7 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {
   GPU_NETWORK_ISOCHRONES_PARAMETER_LENGTH,
   GPU_NETWORK_REACHABILITY_NONE,
-  getGPUNetworkIsochroneParameterValues,
+  getGPUNetworkIsochronesParameterValues,
   GPUNetworkCostMatrix,
   GPUNetworkIsochrones,
   GPUNetworkReachability
@@ -28,6 +28,7 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {createPolygonMeshBuffers} from '../../engine/polygon-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -286,36 +287,44 @@ export async function createTransitReachability(
   // ---- Graphs -----------------------------------------------------------------------------------
   let reach: ReachGraph | null = null;
 
-  function buildReachGraph(localIterations: number): ReachGraph {
-    if (reach) resources.release(reach.compiled);
+  /** Builds and compiles the reach graph; the running graph keeps encoding meanwhile. */
+  async function buildReachGraph(localIterations: number): Promise<ReachGraph> {
     const graph = new GPUCommandGraph<void>(device, {id: `reach-${localIterations}`});
     const view = createImporter(graph);
     const costs = view(costsBuffer, 'float32', nodeCount);
     graph.add(
       new GPUNetworkReachability({
         id: 'search',
-        offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-        neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-        weights: view(weightsBuffer, 'float32', edgeCount),
-        sources: originParameter.importToGraph(graph),
+        topology: {
+          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+          weights: view(weightsBuffer, 'float32', edgeCount)
+        },
+        startNodes: originParameter.importToGraph(graph),
         costLimit: costLimitParameter.importToGraph(graph),
-        maxIterations: MAXIMUM_ROUNDS,
+        maximumIterations: MAXIMUM_ROUNDS,
         localIterations,
-        costs,
-        predecessors: view(predecessorsBuffer, 'uint32', nodeCount),
-        converged: view(convergedBuffer, 'uint32', 1),
-        iterationCount: view(iterationsBuffer, 'uint32', 1)
+        output: {
+          costs,
+          predecessors: view(predecessorsBuffer, 'uint32', nodeCount),
+          status: {
+            converged: view(convergedBuffer, 'uint32', 1),
+            iterationCount: view(iterationsBuffer, 'uint32', 1)
+          }
+        }
       })
     );
     graph.add(
       new GPUNetworkIsochrones({
         id: 'bands',
-        offsets: view(selfOffsetsBuffer, 'uint32', nodeCount + 1),
-        neighbors: view(selfNeighborsBuffer, 'uint32', nodeCount),
-        weights: view(selfWeightsBuffer, 'float32', nodeCount),
-        nodePositions: view(nodePositionsBuffer, 'float32x2', nodeCount),
+        topology: {
+          offsets: view(selfOffsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: view(selfNeighborsBuffer, 'uint32', nodeCount),
+          weights: view(selfWeightsBuffer, 'float32', nodeCount),
+          nodePositions: view(nodePositionsBuffer, 'float32x2', nodeCount)
+        },
         costs,
-        breaks: breaksParameter.importToGraph(graph),
+        costBreaks: breaksParameter.importToGraph(graph),
         parameters: isochroneParameters.importToGraph(graph),
         raster: {
           width: RASTER_WIDTH,
@@ -326,16 +335,27 @@ export async function createTransitReachability(
           output: {
             triangles: view(triangles, 'float32x2', TRIANGLE_CAPACITY * 3),
             triangleBands: view(triangleBands, 'uint32', TRIANGLE_CAPACITY),
-            count: view(triangleCount, 'uint32', 1),
-            overflow: view(triangleOverflow, 'uint32', 1),
-            vertexCount: view(bandVertexCount, 'uint32', 1)
+            status: {
+              count: view(triangleCount, 'uint32', 1),
+              vertexCount: view(bandVertexCount, 'uint32', 1),
+              overflow: view(triangleOverflow, 'uint32', 1)
+            }
           }
         }
       })
     );
-    reach = {compiled: resources.track(graph.compile()), localIterations};
-    return reach;
+    return {compiled: resources.track(await graph.compileAsync()), localIterations};
   }
+
+  /** Swaps a reach graph in, then releases the one it replaces. */
+  function commitReachGraph(next: ReachGraph): void {
+    const previous = reach;
+    reach = next;
+    if (previous) resources.release(previous.compiled);
+    reachDirty = Math.max(reachDirty, 1);
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
 
   const matrixGraph = new GPUCommandGraph<void>(device, {id: 'reach-matrix'});
   {
@@ -343,19 +363,23 @@ export async function createTransitReachability(
     matrixGraph.add(
       new GPUNetworkCostMatrix({
         id: 'hub-matrix',
-        offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
-        neighbors: view(neighborsBuffer, 'uint32', edgeCount),
-        weights: view(weightsBuffer, 'float32', edgeCount),
-        seedNodes: view(hubNodesBuffer, 'uint32', Math.max(hubCount, 1)),
+        topology: {
+          offsets: view(offsetsBuffer, 'uint32', nodeCount + 1),
+          neighbors: view(neighborsBuffer, 'uint32', edgeCount),
+          weights: view(weightsBuffer, 'float32', edgeCount)
+        },
+        startNodes: view(hubNodesBuffer, 'uint32', Math.max(hubCount, 1)),
         laneCount: Math.max(hubCount, 1),
-        maxIterations: MATRIX_ROUNDS,
+        maximumIterations: MATRIX_ROUNDS,
         localIterations: 16,
-        costs: view(matrixBuffer, 'float32', Math.max(hubCount, 1) * nodeCount),
-        converged: view(matrixConverged, 'uint32', 1)
+        output: {
+          costs: view(matrixBuffer, 'float32', Math.max(hubCount, 1) * nodeCount),
+          status: {converged: view(matrixConverged, 'uint32', 1)}
+        }
       })
     );
   }
-  const matrixCompiled = resources.track(matrixGraph.compile());
+  const matrixCompiled = resources.track(await matrixGraph.compileAsync());
 
   // ---- State ------------------------------------------------------------------------------------
   let destroyed = false;
@@ -438,7 +462,7 @@ export async function createTransitReachability(
     const wanted = speed * options.lastMileMinutes * 60;
     const effective = Math.min(wanted, MAXIMUM_BUFFER_PIXELS * pixelSize);
     isochroneParameters.write(
-      getGPUNetworkIsochroneParameterValues({
+      getGPUNetworkIsochronesParameterValues({
         breakCount: REACH_BREAK_SECONDS.length,
         extent,
         bufferRadius: effective,
@@ -628,7 +652,7 @@ export async function createTransitReachability(
 
   // ---- Initial state ----------------------------------------------------------------------------
   originNode = originFromOptions(ctx.options.origin);
-  buildReachGraph(Number(ctx.options.localIterations));
+  commitReachGraph(await buildReachGraph(Number(ctx.options.localIterations)));
   writeWeights();
   writeBudget();
   writeOrigin();
@@ -680,9 +704,14 @@ export async function createTransitReachability(
           break;
         case 'localIterations':
           if (builtOptions.local !== state.localIterations) {
+            // Records the requested value, so changing back while a build runs requests again.
             builtOptions = {local: state.localIterations};
-            buildReachGraph(Number(state.localIterations));
-            reachDirty = Math.max(reachDirty, 1);
+            const localIterations = Number(state.localIterations);
+            void graphSwap.request({
+              build: () => buildReachGraph(localIterations),
+              commit: commitReachGraph,
+              discard: next => resources.release(next.compiled)
+            });
           }
           break;
         default:

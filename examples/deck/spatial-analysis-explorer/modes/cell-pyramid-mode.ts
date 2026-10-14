@@ -18,6 +18,7 @@
  * counts and fixed-point sums are integers, so the roll-up conserves them exactly.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   GPUCommandGraph,
@@ -189,19 +190,18 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       const parity = levelIndex & 1;
       const slabRow = (levelIndex >> 1) * capacity;
       return {
-        resolution: getLevelResolution(levelIndex),
-        output: {
-          cells: importSlice(cellsSlabs[parity], 'uint32x2', 8, slabRow, capacity),
-          counts: importSlice(countsSlabs[parity], 'uint32', 4, slabRow, capacity),
+        cells: importSlice(cellsSlabs[parity], 'uint32x2', 8, slabRow, capacity),
+        counts: importSlice(countsSlabs[parity], 'uint32', 4, slabRow, capacity),
+        status: {
           count: importSlice(tableCountBuffers[parity], 'uint32', 4, levelIndex, 1),
           overflow: importSlice(levelOverflowBuffers[parity], 'uint32', 4, levelIndex, 1),
           ...(levelIndex === 0
-            ? {
-                requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1),
-                sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)
-              }
+            ? {requiredCount: importSlice(levelTotalsBuffer, 'uint32', 4, 0, 1)}
             : {})
-        }
+        },
+        ...(levelIndex === 0
+          ? {sums: importSlice(finestSumsBuffer, 'uint32x2', 8, 0, capacity)}
+          : {})
       };
     });
     const pyramid = new GPUCellPyramid({
@@ -216,17 +216,22 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       ),
       mask: importGraphBuffer(pyramidGraph, 'mask', maskBuffer, 'uint32', pointCount),
       values: importGraphBuffer(pyramidGraph, 'values', valuesBuffer, 'float32', pointCount),
-      levels,
-      levelCounts: importGraphBuffer(
-        pyramidGraph,
-        'level-counts',
-        levelCountsBuffer,
-        'uint32',
-        LEVEL_COUNT
-      )
+      resolutions: Array.from({length: LEVEL_COUNT}, (_, levelIndex) =>
+        getLevelResolution(levelIndex)
+      ),
+      output: {
+        levels,
+        levelCounts: importGraphBuffer(
+          pyramidGraph,
+          'level-counts',
+          levelCountsBuffer,
+          'uint32',
+          LEVEL_COUNT
+        )
+      }
     });
     pyramidGraph.add(pyramid);
-    const compiledPyramid = resources.track(pyramidGraph.compile());
+    const compiledPyramid = resources.track(await pyramidGraph.compileAsync());
 
     // Selection graph: encoded every frame. It never touches the points or the tables.
     const selectionGraph = new GPUCommandGraph<void>(device, {id: 'cell-level-selection'});
@@ -246,11 +251,13 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         output: {
           // The record's firstInstance stays 0: the shell does not request the
           // indirect-first-instance device feature, so the layer adds the first row itself.
-          count: selectionGraph.createDataView(drawView.buffer, {
-            format: 'uint32',
-            length: 1,
-            byteOffset: Uint32Array.BYTES_PER_ELEMENT
-          }),
+          status: {
+            count: selectionGraph.createDataView(drawView.buffer, {
+              format: 'uint32',
+              length: 1,
+              byteOffset: Uint32Array.BYTES_PER_ELEMENT
+            })
+          },
           firstRow: importGraphBuffer(
             selectionGraph,
             'active-first-row',
@@ -261,12 +268,14 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const compiledSelection = resources.track(selectionGraph.compile());
+    const compiledSelection = resources.track(await selectionGraph.compileAsync());
 
     // Roll-up graphs, one per parent resolution (the resolution is a kernel constant). They are
     // compiled up front, so picking a resolution is only a choice of which graph to encode.
     const rollupGraphs = new Map<number, CompiledGPUCommandGraph<void>>();
-    const createRollupGraph = (parentResolution: number): CompiledGPUCommandGraph<void> => {
+    const createRollupGraph = async (
+      parentResolution: number
+    ): Promise<CompiledGPUCommandGraph<void>> => {
       const graph = new GPUCommandGraph<void>(device, {id: `cell-rollup-${parentResolution}`});
       const handles = new Map<Buffer, ReturnType<typeof graph.importBuffer>>();
       const view = <Format extends 'uint32' | 'uint32x2' | 'float32'>(
@@ -301,8 +310,10 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             cells: view(cellsSlabs[0], 'uint32x2', 8, capacity),
             counts: view(countsSlabs[0], 'uint32', 4, capacity),
             sums: view(finestSumsBuffer, 'uint32x2', 8, capacity),
-            count: view(tableCountBuffers[0], 'uint32', 4, 1),
-            overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+            status: {
+              count: view(tableCountBuffers[0], 'uint32', 4, 1),
+              overflow: view(levelOverflowBuffers[0], 'uint32', 4, 1)
+            }
           },
           sumScale: GPU_CELL_DEFAULT_SUM_SCALE,
           output: {
@@ -310,20 +321,22 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
             counts: view(rollupCountsBuffer, 'uint32', 4, capacity),
             sums: view(rollupSumsBuffer, 'uint32x2', 8, capacity),
             sumValues: view(rollupSumValuesBuffer, 'float32', 4, capacity),
-            // The record's instanceCount is the parent cell count (the clamped output count).
-            count: graph.createDataView(drawView.buffer, {
-              format: 'uint32',
-              length: 1,
-              byteOffset: Uint32Array.BYTES_PER_ELEMENT
-            }),
-            overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+            status: {
+              // The record's instanceCount is the parent cell count (the clamped output count).
+              count: graph.createDataView(drawView.buffer, {
+                format: 'uint32',
+                length: 1,
+                byteOffset: Uint32Array.BYTES_PER_ELEMENT
+              }),
+              overflow: view(rollupOverflowBuffer, 'uint32', 4, 1)
+            }
           }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
     for (const parentResolution of ROLLUP_RESOLUTIONS) {
-      rollupGraphs.set(parentResolution, createRollupGraph(parentResolution));
+      rollupGraphs.set(parentResolution, await createRollupGraph(parentResolution));
     }
 
     let rollupEnabled = false;
@@ -499,7 +512,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: readbackByteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         const counts = words.subarray(0, LEVEL_COUNT);
@@ -580,7 +593,7 @@ export const cellPyramidMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: totalsByteLength});
       totalsPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = bytes.slice();
         const header = new Uint32Array(copy.buffer, copy.byteOffset, 5);

@@ -26,6 +26,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisRasterLayer,
@@ -44,7 +45,6 @@ import {
   formatKilometers,
   getCellAt,
   getCellCenter,
-  getGridSettings,
   HIDDEN_VALUE,
   NAN_DECLARATIONS
 } from './b15-common';
@@ -237,8 +237,7 @@ export async function createWatersheds(
   setupGraph.add(
     new GPUTerrainDerivatives({
       id: 'derivatives',
-      width,
-      height,
+      grid: grid.rasterGrid,
       elevation: {
         id: 'elevation',
         format: 'float32' as const,
@@ -247,19 +246,23 @@ export async function createWatersheds(
           values: importGraphBuffer(setupGraph, 'elevation', elevationBuffer, 'float32', cellCount)
         }
       },
-      settings: derivativesSettings.importToGraph(setupGraph),
-      hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount),
+      parameters: derivativesSettings.importToGraph(setupGraph),
+      output: {
+        hillshade: importGraphBuffer(setupGraph, 'hillshade', hillshadeBuffer, 'float32', cellCount)
+      },
       cellSizeMode: grid.cellSizeMode,
       rowDirection: 'south'
     })
   );
-  const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(setupGraph.compile());
+  const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(
+    await setupGraph.compileAsync()
+  );
 
   /** Builds the drainage graph for one routing and flat-resolution choice (both compile-time). */
-  function compileDrainageGraph(
+  async function compileDrainageGraph(
     flowRouting: GPUTerrainFlowRouting,
     resolveFlats: boolean
-  ): CompiledGPUCommandGraph<void> {
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const graph = new GPUCommandGraph<void>(device, {id: 'watersheds'});
     const imported = new Map<string, GraphDataView<'float32' | 'uint32'>>();
     const view = <Format extends 'float32' | 'uint32'>(
@@ -295,90 +298,97 @@ export async function createWatersheds(
     graph.add(
       new GPUTerrainFlow({
         id: 'flow',
-        width,
-        height,
+        grid: grid.rasterGrid,
         elevation: {
           id: 'elevation',
           format: 'float32' as const,
           storage: {kind: 'buffer' as const, values: elevationView}
         },
-        settings: flowSettings.importToGraph(graph),
+        parameters: flowSettings.importToGraph(graph),
         cellSizeMode: grid.cellSizeMode,
         fillDepressions: true,
-        maxFillIterations: MAXIMUM_FILL_ITERATIONS,
+        maximumFillIterations: MAXIMUM_FILL_ITERATIONS,
         resolveFlats,
-        maxFlatIterations: MAXIMUM_FLAT_ITERATIONS,
+        maximumFlatIterations: MAXIMUM_FLAT_ITERATIONS,
         flowRouting,
-        maxAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
+        maximumAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
         accumulationUnits: 'area',
-        filledElevation: filled,
-        flowDirections: directions,
-        accumulation,
-        streams,
-        fillConverged: flag(0),
-        fillIterations: iterations(0),
-        ...(resolveFlats ? {flatsConverged: flag(1), flatsIterations: iterations(1)} : {}),
-        accumulationConverged: flag(2),
-        accumulationIterations: iterations(2)
+        output: {
+          filledElevation: filled,
+          flowDirections: directions,
+          accumulation,
+          streams,
+          status: {
+            fillConverged: flag(0),
+            fillIterationCount: iterations(0),
+            ...(resolveFlats ? {flatsConverged: flag(1), flatsIterationCount: iterations(1)} : {}),
+            accumulationConverged: flag(2),
+            accumulationIterationCount: iterations(2)
+          }
+        }
       })
     );
     graph.add(
       new GPUTerrainHeightAboveDrainage({
         id: 'hand',
-        width,
-        height,
+        grid: grid.rasterGrid,
         elevation: filledBand,
         flowDirections: directions,
         streams,
-        heightAboveDrainage: view('hand', handBuffer, 'float32'),
-        converged: flag(3)
+        output: {
+          heightAboveDrainage: view('hand', handBuffer, 'float32'),
+          status: {converged: flag(3)}
+        }
       })
     );
     graph.add(
       new GPUTerrainWatersheds({
         id: 'basins',
-        width,
-        height,
+        grid: grid.rasterGrid,
         flowDirections: directions,
-        labels: view('basin-labels', basinLabelsBuffer, 'uint32'),
-        converged: flag(4)
+        output: {
+          labels: view('basin-labels', basinLabelsBuffer, 'uint32'),
+          status: {converged: flag(4)}
+        }
       })
     );
     graph.add(
       new GPUTerrainWatersheds({
         id: 'watersheds',
-        width,
-        height,
+        grid: grid.rasterGrid,
         flowDirections: directions,
         pourPoints: pourPointBuffer.importToGraph(graph),
-        labels: view('watershed-labels', watershedLabelsBuffer, 'uint32'),
-        converged: flag(5)
+        output: {
+          labels: view('watershed-labels', watershedLabelsBuffer, 'uint32'),
+          status: {converged: flag(5)}
+        }
       })
     );
     graph.add(
       new GPUTerrainStreamOrder({
         id: 'order',
-        width,
-        height,
+        grid: grid.rasterGrid,
         flowDirections: directions,
         streams,
-        streamOrder,
-        converged: flag(6),
-        iterationCount: iterations(3)
+        output: {
+          streamOrder,
+          status: {converged: flag(6), iterationCount: iterations(3)}
+        }
       })
     );
     graph.add(
       new GPUTerrainHydrologicIndices({
         id: 'indices',
-        width,
-        height,
+        grid: grid.rasterGrid,
         elevation: filledBand,
         accumulation,
-        settings: indicesSettings.importToGraph(graph),
+        parameters: indicesSettings.importToGraph(graph),
         cellSizeMode: grid.cellSizeMode,
-        specificCatchmentArea: view('catchment', catchmentBuffer, 'float32'),
-        wetnessIndex: view('wetness', wetnessBuffer, 'float32'),
-        streamPowerIndex: view('power', powerBuffer, 'float32')
+        output: {
+          specificCatchmentArea: view('catchment', catchmentBuffer, 'float32'),
+          wetnessIndex: view('wetness', wetnessBuffer, 'float32'),
+          streamPowerIndex: view('power', powerBuffer, 'float32')
+        }
       })
     );
     // Display products ----------------------------------------------------------------------
@@ -463,13 +473,15 @@ export async function createWatersheds(
         domain: [0, POUR_POINT_CAPACITY]
       })
     );
-    return graph.compile();
+    return await graph.compileAsync();
   }
 
   // --- State --------------------------------------------------------------------------------
   let builtRouting = ctx.options.routing;
   let builtResolveFlats = ctx.options.resolveFlats;
-  let compiledDrainage = resources.track(compileDrainageGraph(builtRouting, builtResolveFlats));
+  let compiledDrainage = resources.track(
+    await compileDrainageGraph(builtRouting, builtResolveFlats)
+  );
   let drainageDirty = true;
   const pourPoints: number[] = [];
   let defaultsSeeded = false;
@@ -478,21 +490,23 @@ export async function createWatersheds(
   const getStreamThreshold = () => 10 ** ctx.options.streamArea * 1e6;
   const writeFlowSettings = () => {
     flowSettings.write(
-      getGPUTerrainFlowParameterValues({
-        ...getGridSettings(grid),
-        fillEpsilon: FILL_EPSILONS[ctx.options.fillEpsilon] ?? 0,
-        streamThreshold: getStreamThreshold(),
-        flowExponent: ctx.options.flowExponent
-      })
+      getGPUTerrainFlowParameterValues(
+        {
+          fillEpsilon: FILL_EPSILONS[ctx.options.fillEpsilon] ?? 0,
+          streamThreshold: getStreamThreshold(),
+          flowExponent: ctx.options.flowExponent
+        },
+        grid.rasterGrid
+      )
     );
     drainageDirty = true;
   };
   const writeIndicesSettings = () => {
     indicesSettings.write(
-      getGPUTerrainHydrologicIndicesParameterValues({
-        ...getGridSettings(grid),
-        minimumSlope: ctx.options.minimumSlope / 100
-      })
+      getGPUTerrainHydrologicIndicesParameterValues(
+        {minimumSlope: ctx.options.minimumSlope / 100},
+        grid.rasterGrid
+      )
     );
     drainageDirty = true;
   };
@@ -517,11 +531,10 @@ export async function createWatersheds(
     ctx.requestLayers();
   };
   derivativesSettings.write(
-    getGPUTerrainDerivativesParameterValues({
-      ...getGridSettings(grid),
-      azimuthDegrees: SUN_AZIMUTH_DEGREES,
-      altitudeDegrees: SUN_ALTITUDE_DEGREES
-    })
+    getGPUTerrainDerivativesParameterValues(
+      {azimuthDegrees: SUN_AZIMUTH_DEGREES, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+      grid.rasterGrid
+    )
   );
   writeFlowSettings();
   writeIndicesSettings();
@@ -665,14 +678,32 @@ export async function createWatersheds(
     }
   }
 
-  function rebuildDrainageGraph(): void {
-    const previous = compiledDrainage;
-    builtRouting = ctx.options.routing;
-    builtResolveFlats = ctx.options.resolveFlats;
-    compiledDrainage = resources.track(compileDrainageGraph(builtRouting, builtResolveFlats));
-    resources.release(previous);
-    drainageDirty = true;
-    ctx.requestLayers();
+  let requestedRouting = builtRouting;
+  let requestedResolveFlats = builtResolveFlats;
+  const drainageSwap = resources.track(new GraphSwap());
+
+  /** Recompiles the drainage graph; the old one keeps running until the new one is ready. */
+  function requestDrainageGraph(): void {
+    requestedRouting = ctx.options.routing;
+    requestedResolveFlats = ctx.options.resolveFlats;
+    void drainageSwap.request({
+      build: async () => {
+        const routing = ctx.options.routing;
+        const resolveFlats = ctx.options.resolveFlats;
+        const graph = resources.track(await compileDrainageGraph(routing, resolveFlats));
+        return {graph, routing, resolveFlats};
+      },
+      commit: next => {
+        const previous = compiledDrainage;
+        compiledDrainage = next.graph;
+        builtRouting = next.routing;
+        builtResolveFlats = next.resolveFlats;
+        resources.release(previous);
+        drainageDirty = true;
+        ctx.requestLayers();
+      },
+      discard: next => resources.release(next.graph)
+    });
   }
 
   return {
@@ -682,8 +713,8 @@ export async function createWatersheds(
       switch (id) {
         case 'routing':
         case 'resolveFlats':
-          if (state.routing !== builtRouting || state.resolveFlats !== builtResolveFlats) {
-            rebuildDrainageGraph();
+          if (state.routing !== requestedRouting || state.resolveFlats !== requestedResolveFlats) {
+            requestDrainageGraph();
           }
           break;
         case 'flowExponent':

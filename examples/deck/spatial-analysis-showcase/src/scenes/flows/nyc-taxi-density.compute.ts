@@ -16,6 +16,7 @@ import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {sampleRamp} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {getViewportMetricBounds, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipRow} from '../scene';
@@ -212,7 +213,10 @@ export async function createNycTaxiDensity(
   const getKey = (options: NycTaxiDensityOptions, spec: GraphSpec) =>
     `${options.binning}:${options.resolution}:${spec.side}:${spec.kind}`;
 
-  function buildGraph(options: NycTaxiDensityOptions, spec: GraphSpec): DensityGraph {
+  async function buildGraph(
+    options: NycTaxiDensityOptions,
+    spec: GraphSpec
+  ): Promise<DensityGraph> {
     const id = getKey(options, spec).replace(/:/g, '-');
     const gridSize =
       options.binning === 'grid'
@@ -264,7 +268,7 @@ export async function createNycTaxiDensity(
       })
     );
     const built: DensityGraph = {
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       gridSize,
       values,
       reader: undefined as unknown as SummaryReader
@@ -306,20 +310,29 @@ export async function createNycTaxiDensity(
     };
   }
 
-  function selectGraphs(): void {
+  /** Fetches (compiling on first use) the graphs the options need, without swapping them in. */
+  async function fetchGraphs(): Promise<{primary: DensityGraph; secondary: DensityGraph | null}> {
     const options = ctx.options;
     const specs = getSpecs(options);
-    const fetch = (spec: GraphSpec) => {
+    const fetch = async (spec: GraphSpec) => {
       const key = getKey(options, spec);
       let graph = graphs.get(key);
       if (!graph) {
-        graph = buildGraph(options, spec);
+        graph = await buildGraph(options, spec);
         graphs.set(key, graph);
       }
       return graph;
     };
-    primary = fetch(specs.primary);
-    secondary = specs.secondary ? fetch(specs.secondary) : null;
+    const nextPrimary = await fetch(specs.primary);
+    const nextSecondary = specs.secondary ? await fetch(specs.secondary) : null;
+    return {primary: nextPrimary, secondary: nextSecondary};
+  }
+
+  /** Makes the fetched graphs the live ones and refreshes what depends on the grid. */
+  function commitGraphs(next: {primary: DensityGraph; secondary: DensityGraph | null}): void {
+    const options = ctx.options;
+    primary = next.primary;
+    secondary = next.secondary;
     snapshots.primary = null;
     snapshots.secondary = null;
     ctx.setAnnotations('peaks', null);
@@ -331,6 +344,20 @@ export async function createNycTaxiDensity(
     gridDirty = true;
     publishCost();
     markChanged();
+  }
+
+  const graphSwap = resources.track(new GraphSwap());
+  /** Selects the graphs for the current options; the latest request wins. The cache owns them. */
+  function requestGraphs(): Promise<boolean> {
+    return graphSwap.request({
+      build: fetchGraphs,
+      commit: next => {
+        commitGraphs(next);
+        publishScale();
+        processFields();
+        ctx.requestLayers();
+      }
+    });
   }
 
   /** True when the single field on the map is the drop-offs. */
@@ -799,7 +826,7 @@ export async function createNycTaxiDensity(
   writeKernel();
   writeMasks();
   publishScale();
-  selectGraphs();
+  commitGraphs(await fetchGraphs());
 
   return {
     getCompiledGraphs: () =>
@@ -813,10 +840,7 @@ export async function createNycTaxiDensity(
         case 'show':
         case 'swipe':
           if (id === 'show') writeMasks();
-          selectGraphs();
-          publishScale();
-          processFields();
-          ctx.requestLayers();
+          void requestGraphs();
           break;
         case 'smoothing':
         case 'sigma':

@@ -51,9 +51,11 @@ import {
 import {
   getGPURasterProfileParameterValues,
   GPU_RASTER_PROFILE_PARAMETER_LENGTH,
-  GPURasterProfile
+  GPURasterProfile,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
@@ -155,6 +157,16 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     context.signal.throwIfAborted();
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
+    // The profile works in pixel index space: pixel (column, row) spans [column, column + 1] x
+    // [row, row + 1], so rows advance toward larger y.
+    const pixelGrid = makeGPURasterMetadata({width, height, rowDirection: 'north'});
     const pixelCount = width * height;
     const cell = Math.min(cellSize[0], cellSize[1]);
     const projection = new LocalMetricProjection(terrain.origin);
@@ -300,54 +312,53 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     prepGraph.add(
       new GPUTerrainRGBDecode({
         id: 'decode',
-        width,
-        height,
+        grid,
         encoding: 'terrarium',
         input: {
           texture: prepGraph.createTextureView(textureHandle, {
             mipLevelCount: 1
           }) as GraphTextureView<'rgba8unorm'>
         },
-        values: decodedValuesView,
-        validity: decodedValidityView
+        output: {values: decodedValuesView, outputValidity: decodedValidityView}
       })
     );
     const spikeRepair = resources.track(
       new GPUTerrainSpikeRepair({
         id: 'repair',
-        width,
-        height,
+        grid,
         elevation: {
           id: 'decoded',
           format: 'float32',
           storage: {kind: 'buffer', values: decodedValuesView},
           validity: decodedValidityView
         },
-        values: importGraphBuffer(
-          prepGraph,
-          'repaired-values',
-          repairedValues,
-          'float32',
-          pixelCount
-        ),
-        validity: importGraphBuffer(
-          prepGraph,
-          'repaired-validity',
-          repairedValidity,
-          'uint32',
-          pixelCount
-        ),
-        statistics: importGraphBuffer(
-          prepGraph,
-          'repair-statistics',
-          repairStatistics,
-          'uint32',
-          GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH
-        )
+        output: {
+          values: importGraphBuffer(
+            prepGraph,
+            'repaired-values',
+            repairedValues,
+            'float32',
+            pixelCount
+          ),
+          outputValidity: importGraphBuffer(
+            prepGraph,
+            'repaired-validity',
+            repairedValidity,
+            'uint32',
+            pixelCount
+          ),
+          statistics: importGraphBuffer(
+            prepGraph,
+            'repair-statistics',
+            repairStatistics,
+            'uint32',
+            GPU_TERRAIN_SPIKE_REPAIR_STATISTICS_LENGTH
+          )
+        }
       })
     );
     prepGraph.add(spikeRepair);
-    const compiledPrep = resources.track(prepGraph.compile());
+    const compiledPrep = resources.track(await prepGraph.compileAsync());
 
     // --- Helpers to build graphs over the shared work elevation ---------------------------------
     const getWorkElevation = (graph: GPUCommandGraph<void>, prefix: string) => ({
@@ -365,74 +376,81 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     baseGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation: getWorkElevation(baseGraph, 'base'),
-        settings: derivativesSettings.importToGraph(baseGraph),
-        hillshade: importGraphBuffer(
-          baseGraph,
-          'hillshade',
-          hillshadeBuffer,
-          'float32',
-          pixelCount
-        ),
+        parameters: derivativesSettings.importToGraph(baseGraph),
+        output: {
+          hillshade: importGraphBuffer(
+            baseGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            pixelCount
+          )
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
     );
-    const compiledBase = resources.track(baseGraph.compile());
+    const compiledBase = resources.track(await baseGraph.compileAsync());
 
     // Summits.
     const summitGraph = new GPUCommandGraph<void>(device, {id: 'terrain-features-summits'});
     summitGraph.add(
       new GPUTerrainSummits({
         id: 'summits',
-        width,
-        height,
+        grid,
         elevation: getWorkElevation(summitGraph, 'summits'),
         cellSizeMode: 'uniform',
         maximumRadiusPixels: MAXIMUM_RADIUS_PIXELS,
         incompleteNeighborhood: 'ignore',
-        settings: summitSettings.importToGraph(summitGraph),
+        parameters: summitSettings.importToGraph(summitGraph),
         output: {
-          ids: importGraphBuffer(summitGraph, 'ids', summitIds, 'uint32', SUMMIT_CAPACITY),
-          count: importGraphBuffer(summitGraph, 'count', summitCount, 'uint32', 1),
-          overflow: importGraphBuffer(summitGraph, 'overflow', summitOverflow, 'uint32', 1),
-          requiredCount: importGraphBuffer(summitGraph, 'total', summitTotal, 'uint32', 1)
-        },
-        outputDrop: importGraphBuffer(
-          summitGraph,
-          'drops',
-          summitDrops,
-          'float32',
-          SUMMIT_CAPACITY
-        ),
-        overflow: importGraphBuffer(summitGraph, 'clamped', summitClamped, 'uint32', 1)
+          summits: {
+            ids: importGraphBuffer(summitGraph, 'ids', summitIds, 'uint32', SUMMIT_CAPACITY),
+            status: {
+              count: importGraphBuffer(summitGraph, 'count', summitCount, 'uint32', 1),
+              overflow: importGraphBuffer(summitGraph, 'overflow', summitOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(summitGraph, 'total', summitTotal, 'uint32', 1)
+            }
+          },
+          summitDrop: importGraphBuffer(
+            summitGraph,
+            'drops',
+            summitDrops,
+            'float32',
+            SUMMIT_CAPACITY
+          ),
+          status: {
+            radiusClamped: importGraphBuffer(summitGraph, 'clamped', summitClamped, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiledSummits = resources.track(summitGraph.compile());
+    const compiledSummits = resources.track(await summitGraph.compileAsync());
 
     // Critical points (rebuilt when the ring connectivity changes).
-    const buildCriticalGraph = (ring: Ring) => {
+    const buildCriticalGraph = async (ring: Ring) => {
       const graph = new GPUCommandGraph<void>(device, {id: `terrain-features-critical-${ring}`});
       graph.add(
         new GPUTerrainCriticalPoints({
           id: `critical-${ring}`,
-          width,
-          height,
+          grid,
           elevation: getWorkElevation(graph, 'critical'),
           connectivity: ring === '8' ? 8 : 6,
-          classes: importGraphBuffer(graph, 'classes', criticalClasses, 'uint32', pixelCount),
-          counts: importGraphBuffer(
-            graph,
-            'counts',
-            criticalCounts,
-            'uint32',
-            GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
-          )
+          output: {
+            classes: importGraphBuffer(graph, 'classes', criticalClasses, 'uint32', pixelCount),
+            counts: importGraphBuffer(
+              graph,
+              'counts',
+              criticalCounts,
+              'uint32',
+              GPU_TERRAIN_CRITICAL_POINT_CLASS_COUNT
+            )
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // Peak snap.
@@ -440,8 +458,7 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     snapGraph.add(
       new GPUTerrainPeakSnap({
         id: 'snap',
-        width,
-        height,
+        grid,
         elevation: getWorkElevation(snapGraph, 'snap'),
         cellSizeMode: 'uniform',
         maximumRadiusPixels: MAXIMUM_RADIUS_PIXELS,
@@ -452,36 +469,46 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
           'float32x2',
           CANDIDATE_CAPACITY
         ),
-        settings: snapSettings.importToGraph(snapGraph),
-        positions: importGraphBuffer(
-          snapGraph,
-          'positions',
-          snapPositions,
-          'float32x2',
-          CANDIDATE_CAPACITY
-        ),
-        heights: importGraphBuffer(
-          snapGraph,
-          'heights',
-          snapHeights,
-          'float32',
-          CANDIDATE_CAPACITY
-        ),
-        status: importGraphBuffer(snapGraph, 'status', snapStatus, 'uint32', CANDIDATE_CAPACITY),
-        snapDistance: importGraphBuffer(
-          snapGraph,
-          'distance',
-          snapDistance,
-          'float32',
-          CANDIDATE_CAPACITY
-        ),
-        overflow: importGraphBuffer(snapGraph, 'overflow', snapOverflow, 'uint32', 1)
+        parameters: snapSettings.importToGraph(snapGraph),
+        output: {
+          positions: importGraphBuffer(
+            snapGraph,
+            'positions',
+            snapPositions,
+            'float32x2',
+            CANDIDATE_CAPACITY
+          ),
+          heights: importGraphBuffer(
+            snapGraph,
+            'heights',
+            snapHeights,
+            'float32',
+            CANDIDATE_CAPACITY
+          ),
+          snapStatus: importGraphBuffer(
+            snapGraph,
+            'status',
+            snapStatus,
+            'uint32',
+            CANDIDATE_CAPACITY
+          ),
+          snapDistance: importGraphBuffer(
+            snapGraph,
+            'distance',
+            snapDistance,
+            'float32',
+            CANDIDATE_CAPACITY
+          ),
+          status: {
+            radiusClamped: importGraphBuffer(snapGraph, 'overflow', snapOverflow, 'uint32', 1)
+          }
+        }
       })
     );
-    const compiledSnap = resources.track(snapGraph.compile());
+    const compiledSnap = resources.track(await snapGraph.compileAsync());
 
     // Profile and its peaks (rebuilt when the prominence window changes).
-    const buildProfileGraph = (window: number) => {
+    const buildProfileGraph = async (window: number) => {
       const graph = new GPUCommandGraph<void>(device, {id: `terrain-features-profile-${window}`});
       const sampleValues = importGraphBuffer(
         graph,
@@ -494,19 +521,20 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPURasterProfile({
           id: 'profile',
-          width,
-          height,
+          grid: pixelGrid,
           values: importGraphBuffer(graph, 'dem', workValues, 'float32', pixelCount),
           validity: importGraphBuffer(graph, 'dem-validity', workValidity, 'uint32', pixelCount),
-          pathPositions: importGraphBuffer(graph, 'path-positions', pathPositions, 'float32x2', 2),
-          pathOffsets: importGraphBuffer(graph, 'path-offsets', pathOffsets, 'uint32', 2),
+          positions: importGraphBuffer(graph, 'path-positions', pathPositions, 'float32x2', 2),
+          lineOffsets: importGraphBuffer(graph, 'path-offsets', pathOffsets, 'uint32', 2),
           sampleCapacity: PROFILE_CAPACITY,
           parameters: profileSettings.importToGraph(graph),
           output: {
-            count: importGraphBuffer(graph, 'count', profileCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'overflow', profileOverflow, 'uint32', 1),
+            status: {
+              count: importGraphBuffer(graph, 'count', profileCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'overflow', profileOverflow, 'uint32', 1)
+            },
             sampleValues,
-            pathSampleOffsets: sampleOffsets
+            lineSampleOffsets: sampleOffsets
           }
         })
       );
@@ -515,34 +543,38 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
           id: 'peaks',
           values: sampleValues,
           offsets: sampleOffsets,
-          settings: peakSettings.importToGraph(graph),
+          parameters: peakSettings.importToGraph(graph),
           window,
-          prominence: importGraphBuffer(
-            graph,
-            'prominence',
-            peakProminence,
-            'float32',
-            PROFILE_CAPACITY
-          ),
-          refinedIndex: importGraphBuffer(
-            graph,
-            'refined-index',
-            peakIndex,
-            'float32',
-            PROFILE_CAPACITY
-          ),
-          refinedValue: importGraphBuffer(
-            graph,
-            'refined-value',
-            peakValue,
-            'float32',
-            PROFILE_CAPACITY
-          ),
-          peakMask: importGraphBuffer(graph, 'mask', peakMask, 'uint32', PROFILE_CAPACITY),
-          converged: importGraphBuffer(graph, 'converged', peakConverged, 'uint32', 1)
+          output: {
+            prominence: importGraphBuffer(
+              graph,
+              'prominence',
+              peakProminence,
+              'float32',
+              PROFILE_CAPACITY
+            ),
+            refinedIndex: importGraphBuffer(
+              graph,
+              'refined-index',
+              peakIndex,
+              'float32',
+              PROFILE_CAPACITY
+            ),
+            refinedValue: importGraphBuffer(
+              graph,
+              'refined-value',
+              peakValue,
+              'float32',
+              PROFILE_CAPACITY
+            ),
+            peakMask: importGraphBuffer(graph, 'mask', peakMask, 'uint32', PROFILE_CAPACITY),
+            status: {
+              converged: importGraphBuffer(graph, 'converged', peakConverged, 'uint32', 1)
+            }
+          }
         })
       );
-      return resources.track(graph.compile());
+      return resources.track(await graph.compileAsync());
     };
 
     // --- State ----------------------------------------------------------------------------------
@@ -566,8 +598,11 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     let spikeSeed = 1;
     let destroyed = false;
     let preparing = false;
-    let compiledCritical = buildCriticalGraph(ring);
-    let compiledProfile = buildProfileGraph(Number(profileWindow));
+    let compiledCritical = await buildCriticalGraph(ring);
+    let compiledProfile = await buildProfileGraph(Number(profileWindow));
+    // Two independent rebuild channels: a ring change must not supersede a window change.
+    const criticalSwap = resources.track(new GraphSwap());
+    const profileSwap = resources.track(new GraphSwap());
     const dirty = {base: true, summits: true, critical: true, snap: true, profile: true};
     const markAllDirty = () => {
       dirty.base = dirty.summits = dirty.critical = dirty.snap = dirty.profile = true;
@@ -605,32 +640,29 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
 
     function writeDerivatives(): void {
       derivativesSettings.write(
-        getGPUTerrainDerivativesParameterValues({
-          cellSize,
-          azimuthDegrees: 315,
-          altitudeDegrees: 40
-        })
+        getGPUTerrainDerivativesParameterValues({azimuthDegrees: 315, altitudeDegrees: 40}, grid)
       );
     }
     function writeSummitSettings(): void {
       summitSettings.write(
-        getGPUTerrainSummitsParameterValues({
-          radius: summitRadius,
-          minimumDrop: summitMinimumDrop,
-          cellSize
-        })
+        getGPUTerrainSummitsParameterValues(
+          {radius: summitRadius, minimumDrop: summitMinimumDrop},
+          grid
+        )
       );
       dirty.summits = true;
     }
     function writeSnapSettings(): void {
       snapSettings.write(
-        getGPUTerrainPeakSnapParameterValues({
-          radius: snapRadius,
-          maximumMove: snapMaximumMove,
-          maximumHeightChange: snapMaximumHeightChange,
-          cellSize,
-          interior: snapInterior
-        })
+        getGPUTerrainPeakSnapParameterValues(
+          {
+            radius: snapRadius,
+            maximumMove: snapMaximumMove,
+            maximumHeightChange: snapMaximumHeightChange,
+            interior: snapInterior
+          },
+          grid
+        )
       );
       dirty.snap = true;
     }
@@ -666,15 +698,9 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
     }
     function writeProfileSettings(): void {
       profileSettings.write(
-        getGPURasterProfileParameterValues({
-          width,
-          height,
-          extent: [0, 0, width, height],
-          method: 'bilinear',
-          spacing: 1
-        })
+        getGPURasterProfileParameterValues({method: 'bilinear', spacing: 1}, pixelGrid)
       );
-      peakSettings.write(getGPUProfilePeaksParameterValues({minProminence: minimumProminence}));
+      peakSettings.write(getGPUProfilePeaksParameterValues({minimumProminence}));
       dirty.profile = true;
     }
 
@@ -1120,9 +1146,17 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
       value: ring,
       onChange: value => {
         ring = value;
-        resources.release(compiledCritical);
-        compiledCritical = buildCriticalGraph(ring);
-        dirty.critical = true;
+        // The current graph keeps encoding until the replacement has compiled.
+        void criticalSwap.request({
+          build: () => buildCriticalGraph(value),
+          commit: next => {
+            const previous = compiledCritical;
+            compiledCritical = next;
+            resources.release(previous);
+            dirty.critical = true;
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     controls.addSlider({
@@ -1190,9 +1224,17 @@ export const terrainFeaturesMode: SpatialAnalysisModeDefinition = {
       value: profileWindow,
       onChange: value => {
         profileWindow = value;
-        resources.release(compiledProfile);
-        compiledProfile = buildProfileGraph(Number(profileWindow));
-        dirty.profile = true;
+        // The current graph keeps encoding until the replacement has compiled.
+        void profileSwap.request({
+          build: () => buildProfileGraph(Number(value)),
+          commit: next => {
+            const previous = compiledProfile;
+            compiledProfile = next;
+            resources.release(previous);
+            dirty.profile = true;
+          },
+          discard: next => resources.release(next)
+        });
       }
     });
     controls.addSlider({

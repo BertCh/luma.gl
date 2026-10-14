@@ -14,6 +14,7 @@
  * into the instance-count word of a six-vertex `DrawCommandBuffer` record instead.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import {
   DrawCommandBuffer,
@@ -31,6 +32,7 @@ import {
   GPUTerrainDerivatives,
   GPUTerrainViewshed
 } from '@luma.gl/experimental/gpu-terrain';
+import {makeGPURasterMetadata} from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
@@ -124,6 +126,13 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
       new GPUReadbackRing(device, {id: 'terrain-overflow', byteLength: 4})
     );
 
+    const grid = makeGPURasterMetadata({
+      width,
+      height,
+      cellSize,
+      origin: [bounds[0], bounds[3]],
+      rowDirection: 'south'
+    });
     const graph = new GPUCommandGraph<void>(device, {id: 'terrain'});
     const elevation = {
       id: 'elevation',
@@ -140,13 +149,14 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation,
-        settings: derivativesView,
-        slope: importGraphBuffer(graph, 'slope', slopeBuffer, 'float32', pixelCount),
-        aspect: importGraphBuffer(graph, 'aspect', aspectBuffer, 'float32', pixelCount),
-        hillshade: importGraphBuffer(graph, 'hillshade', hillshadeBuffer, 'float32', pixelCount),
+        parameters: derivativesView,
+        output: {
+          slope: importGraphBuffer(graph, 'slope', slopeBuffer, 'float32', pixelCount),
+          aspect: importGraphBuffer(graph, 'aspect', aspectBuffer, 'float32', pixelCount),
+          hillshade: importGraphBuffer(graph, 'hillshade', hillshadeBuffer, 'float32', pixelCount)
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
@@ -154,10 +164,13 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
     graph.add(
       new GPUTerrainContours({
         id: 'contours',
-        width,
-        height,
+        grid,
         elevation,
-        overflow: importGraphBuffer(graph, 'contour-overflow', overflowBuffer, 'uint32', 1),
+        output: {
+          status: {
+            overflow: importGraphBuffer(graph, 'contour-overflow', overflowBuffer, 'uint32', 1)
+          }
+        },
         levels: Array.from({length: CONTOUR_LEVEL_COUNT}, (_, level) => ({
           level: graph.createDataView(levelsView.buffer, {
             format: 'float32',
@@ -171,27 +184,24 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
             'float32x2',
             CONTOUR_SEGMENT_CAPACITY * 2
           ),
-          segmentCount: importGraphBuffer(
-            graph,
-            `count-${level}`,
-            contourCounts[level],
-            'uint32',
-            1
-          )
+          status: {
+            count: importGraphBuffer(graph, `count-${level}`, contourCounts[level], 'uint32', 1)
+          }
         }))
       })
     );
     graph.add(
       new GPUTerrainViewshed({
         id: 'viewshed',
-        width,
-        height,
+        grid,
         elevation,
-        settings: viewshedView,
-        visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+        parameters: viewshedView,
+        output: {
+          visibility: importGraphBuffer(graph, 'visibility', visibilityBuffer, 'uint32', pixelCount)
+        }
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     // --- State ---------------------------------------------------------------------------------
     let display: Display = 'hillshade';
@@ -223,26 +233,27 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
     function writeObserver(): void {
       observerMarker.write(Float32Array.of(observer[0], observer[1]));
       viewshedSettings.write(
-        getGPUTerrainViewshedParameterValues({
-          // Pixel-center index space; row 0 is the north edge.
-          observer: [
-            (observer[0] - bounds[0]) / cellSize[0] - 0.5,
-            (bounds[3] - observer[1]) / cellSize[1] - 0.5
-          ],
-          observerHeight,
-          maxDistance: maximumDistance,
-          cellSize
-        })
+        getGPUTerrainViewshedParameterValues(
+          {
+            // Pixel-center index space; row 0 is the north edge.
+            observer: [
+              (observer[0] - bounds[0]) / cellSize[0] - 0.5,
+              (bounds[3] - observer[1]) / cellSize[1] - 0.5
+            ],
+            observerHeight,
+            maximumDistance
+          },
+          grid
+        )
       );
     }
 
     function writeSun(): void {
       derivativesSettings.write(
-        getGPUTerrainDerivativesParameterValues({
-          cellSize,
-          azimuthDegrees: sunAzimuth,
-          altitudeDegrees: SUN_ALTITUDE_DEGREES
-        })
+        getGPUTerrainDerivativesParameterValues(
+          {azimuthDegrees: sunAzimuth, altitudeDegrees: SUN_ALTITUDE_DEGREES},
+          grid
+        )
       );
     }
 
@@ -395,7 +406,7 @@ export const terrainMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         overflowFlag = new Uint32Array(bytes.buffer, bytes.byteOffset, 1)[0] !== 0;
         contourReadout.setValue(

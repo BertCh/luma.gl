@@ -184,10 +184,10 @@ function getSnippet(state: GlobalAutocorrelationOptions): string {
       : `graph.add(new GPUGlobalPermutationTest({
   weights, values${statistic === 'bivariateMoran' ? ', secondValues' : ''}, mask,
   statistic: '${statistic}', alternative: '${state.alternative}',
-  parameters,                       // seed + permutations: a buffer write
-  maximumPermutations: 999, results, histogram
+  parameters,                       // seed + permutationCount: a buffer write
+  maximumPermutations: 999, output: {summary, histogram}
 }));
-parameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutations: ${state.permutations}}));`;
+parameters.write(getGPUPermutationParameterValues({seed: ${state.seed}, permutationCount: ${state.permutations}}));`;
   return `import {
   GPUSpatialLag, GPUGlobalSpatialStatistics, GPUGlobalPermutationTest, getGPUPermutationParameterValues
 } from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -200,7 +200,7 @@ graph.add(new GPUSpatialLag({weights, values, mask, normalize: true, output: lag
 graph.add(new GPUGlobalSpatialStatistics({
   weights, values, secondValues, mask,
   statistics: ['moran', 'geary', 'getisOrdG', 'bivariateMoran'],   // or 'joinCount' on a 0/1 column
-  results                           // laid out by GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT
+  output: {summary, joinCounts}     // summary is laid out by GPU_GLOBAL_SPATIAL_STATISTICS_LAYOUT
 }));
 
 // Permutation reference distribution (esda p_sim, z_sim) and its histogram.
@@ -210,7 +210,7 @@ ${permutationLine}
 graph.add(new GPUSpatialCorrelogram({
   positions: centroids, values, mask, parameters: correlogramParameters,
   gridSize: [128, 128], bandCount: ${state.bandCount}, bandMode: '${state.bandMode}',
-  moransI, zScores, pValues, peakBands
+  output: {moransI, zScores, pValues, peakBands}
 }));
 correlogramParameters.write(getGPUSpatialCorrelogramParameterValues({
   bounds, maximumDistance: ${state.maxDistanceFactor} * medianSpacing,

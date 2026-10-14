@@ -49,12 +49,14 @@ import {
 } from '@luma.gl/experimental/gpu-terrain';
 import {
   getGPUParticleAdvectionParameterValues,
-  getGPUParticleAdvectionWordParameterValues,
+  getGPUParticleAdvectionUint32ParameterValues,
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
-  GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH,
-  GPUParticleAdvection
+  GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH,
+  GPUParticleAdvection,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {
   SpatialAnalysisPointLayer,
@@ -170,6 +172,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     const {device} = context;
     const {width, height, bounds, cellSize} = terrain;
     const cellCount = width * height;
+    const grid = makeGPURasterMetadata({width, height, cellSize});
     const origin: [number, number, number] = [terrain.origin[0], terrain.origin[1], 0];
     const projection = new LocalMetricProjection(terrain.origin);
     const resources = new SpatialAnalysisResources(device, 'drainage');
@@ -282,7 +285,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     const particleWords = resources.createParameterBuffer(
       'particle-words',
       'uint32',
-      GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
+      GPU_PARTICLE_ADVECTION_UINT32_PARAMETER_LENGTH
     );
 
     // --- Graphs --------------------------------------------------------------------------------
@@ -291,8 +294,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     setupGraph.add(
       new GPUTerrainDerivatives({
         id: 'derivatives',
-        width,
-        height,
+        grid,
         elevation: {
           id: 'elevation',
           format: 'float32' as const,
@@ -308,26 +310,29 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           },
           validity: importGraphBuffer(setupGraph, 'validity', validityBuffer, 'uint32', cellCount)
         },
-        settings: derivativesSettings.importToGraph(setupGraph),
-        hillshade: importGraphBuffer(
-          setupGraph,
-          'hillshade',
-          hillshadeBuffer,
-          'float32',
-          cellCount
-        ),
+        parameters: derivativesSettings.importToGraph(setupGraph),
+        output: {
+          hillshade: importGraphBuffer(
+            setupGraph,
+            'hillshade',
+            hillshadeBuffer,
+            'float32',
+            cellCount
+          )
+        },
         cellSizeMode: 'uniform',
         rowDirection: 'south'
       })
     );
-    const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(setupGraph.compile());
+    const compiledSetup: CompiledGPUCommandGraph<void> = resources.track(
+      await setupGraph.compileAsync()
+    );
 
     const windGraph = new GPUCommandGraph<void>(device, {id: 'drainage-wind'});
     windGraph.add(
       new GPUTerrainFlowField({
         id: 'wind-field',
-        width,
-        height,
+        grid,
         elevation: {
           id: 'wind-elevation',
           format: 'float32' as const,
@@ -349,12 +354,22 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
             cellCount
           )
         },
-        settings: windSettings.importToGraph(windGraph),
+        parameters: windSettings.importToGraph(windGraph),
         cellSizeMode: 'uniform',
-        velocities: importGraphBuffer(windGraph, 'velocity', velocityBuffer, 'float32x2', cellCount)
+        output: {
+          velocities: importGraphBuffer(
+            windGraph,
+            'velocity',
+            velocityBuffer,
+            'float32x2',
+            cellCount
+          )
+        }
       })
     );
-    const compiledWind: CompiledGPUCommandGraph<void> = resources.track(windGraph.compile());
+    const compiledWind: CompiledGPUCommandGraph<void> = resources.track(
+      await windGraph.compileAsync()
+    );
 
     const particleGraph = new GPUCommandGraph<void>(device, {id: 'drainage-particles'});
     particleGraph.add(
@@ -370,7 +385,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
         fieldWidth: width,
         fieldHeight: height,
         parameters: particleParameters.importToGraph(particleGraph),
-        wordParameters: particleWords.importToGraph(particleGraph),
+        uint32Parameters: particleWords.importToGraph(particleGraph),
         state: {
           positions: importGraphBuffer(
             particleGraph,
@@ -388,28 +403,36 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
             PARTICLE_COUNT
           )
         },
-        speeds: importGraphBuffer(particleGraph, 'speeds', speedBuffer, 'float32', PARTICLE_COUNT),
-        trails: {
-          positions: importGraphBuffer(
+        output: {
+          speeds: importGraphBuffer(
             particleGraph,
-            'trails',
-            trailBuffer,
-            'float32x2',
-            PARTICLE_COUNT * TRAIL_LENGTH
+            'speeds',
+            speedBuffer,
+            'float32',
+            PARTICLE_COUNT
           ),
-          length: TRAIL_LENGTH
+          trails: {
+            positions: importGraphBuffer(
+              particleGraph,
+              'trails',
+              trailBuffer,
+              'float32x2',
+              PARTICLE_COUNT * TRAIL_LENGTH
+            ),
+            length: TRAIL_LENGTH
+          }
         }
       })
     );
     const compiledParticles: CompiledGPUCommandGraph<void> = resources.track(
-      particleGraph.compile()
+      await particleGraph.compileAsync()
     );
 
     /** Builds the drainage graph for one routing and flat-resolution choice (both compile-time). */
-    function compileDrainageGraph(
+    async function compileDrainageGraph(
       flowRouting: GPUTerrainFlowRouting,
       resolveFlats: boolean
-    ): CompiledGPUCommandGraph<void> {
+    ): Promise<CompiledGPUCommandGraph<void>> {
       const graph = new GPUCommandGraph<void>(device, {id: 'drainage'});
       // A graph imports each buffer once; later uses of the same id reuse the view.
       const imported = new Map<string, GraphDataView<'float32' | 'uint32'>>();
@@ -446,92 +469,101 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       graph.add(
         new GPUTerrainFlow({
           id: 'flow',
-          width,
-          height,
+          grid,
           elevation: {
             id: 'elevation',
             format: 'float32' as const,
             storage: {kind: 'buffer' as const, values: elevationView},
             validity: view('validity', validityBuffer, 'uint32')
           },
-          settings: flowSettings.importToGraph(graph),
+          parameters: flowSettings.importToGraph(graph),
           cellSizeMode: 'uniform',
           fillDepressions: true,
-          maxFillIterations: MAXIMUM_FILL_ITERATIONS,
+          maximumFillIterations: MAXIMUM_FILL_ITERATIONS,
           resolveFlats,
-          maxFlatIterations: MAXIMUM_FLAT_ITERATIONS,
+          maximumFlatIterations: MAXIMUM_FLAT_ITERATIONS,
           flowRouting,
-          maxAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
+          maximumAccumulationIterations: MAXIMUM_ACCUMULATION_ITERATIONS,
           accumulationUnits: 'area',
-          filledElevation: filled,
-          flowDirections: directions,
-          cellClasses: view('classes', classesBuffer, 'uint32'),
-          accumulation,
-          streams,
-          fillConverged: flag(0),
-          fillIterations: iterations(0),
-          ...(resolveFlats ? {flatsConverged: flag(1), flatsIterations: iterations(1)} : {}),
-          accumulationConverged: flag(2),
-          accumulationIterations: iterations(2)
+          output: {
+            filledElevation: filled,
+            flowDirections: directions,
+            cellClasses: view('classes', classesBuffer, 'uint32'),
+            accumulation,
+            streams,
+            status: {
+              fillConverged: flag(0),
+              fillIterationCount: iterations(0),
+              ...(resolveFlats
+                ? {flatsConverged: flag(1), flatsIterationCount: iterations(1)}
+                : {}),
+              accumulationConverged: flag(2),
+              accumulationIterationCount: iterations(2)
+            }
+          }
         })
       );
       graph.add(
         new GPUTerrainHeightAboveDrainage({
           id: 'hand',
-          width,
-          height,
+          grid,
           elevation: filledBand,
           flowDirections: directions,
           streams,
-          heightAboveDrainage: view('hand', handBuffer, 'float32'),
-          converged: flag(3)
+          output: {
+            heightAboveDrainage: view('hand', handBuffer, 'float32'),
+            status: {converged: flag(3)}
+          }
         })
       );
       graph.add(
         new GPUTerrainWatersheds({
           id: 'basins',
-          width,
-          height,
+          grid,
           flowDirections: directions,
-          labels: view('basin-labels', basinLabelsBuffer, 'uint32'),
-          converged: flag(4)
+          output: {
+            labels: view('basin-labels', basinLabelsBuffer, 'uint32'),
+            status: {converged: flag(4)}
+          }
         })
       );
       graph.add(
         new GPUTerrainWatersheds({
           id: 'watersheds',
-          width,
-          height,
+          grid,
           flowDirections: directions,
           pourPoints: pourPointBuffer.importToGraph(graph),
-          labels: view('watershed-labels', watershedLabelsBuffer, 'uint32'),
-          converged: flag(5)
+          output: {
+            labels: view('watershed-labels', watershedLabelsBuffer, 'uint32'),
+            status: {converged: flag(5)}
+          }
         })
       );
       graph.add(
         new GPUTerrainStreamOrder({
           id: 'order',
-          width,
-          height,
+          grid,
           flowDirections: directions,
           streams,
-          streamOrder,
-          converged: flag(6),
-          iterationCount: iterations(3)
+          output: {
+            streamOrder,
+            status: {converged: flag(6), iterationCount: iterations(3)}
+          }
         })
       );
       graph.add(
         new GPUTerrainHydrologicIndices({
           id: 'indices',
-          width,
-          height,
+          grid,
           elevation: filledBand,
           accumulation,
-          settings: indicesSettings.importToGraph(graph),
+          parameters: indicesSettings.importToGraph(graph),
           cellSizeMode: 'uniform',
-          specificCatchmentArea: view('catchment', catchmentBuffer, 'float32'),
-          wetnessIndex: view('wetness', wetnessBuffer, 'float32'),
-          streamPowerIndex: view('power', powerBuffer, 'float32')
+          output: {
+            specificCatchmentArea: view('catchment', catchmentBuffer, 'float32'),
+            wetnessIndex: view('wetness', wetnessBuffer, 'float32'),
+            streamPowerIndex: view('power', powerBuffer, 'float32')
+          }
         })
       );
       graph.add(
@@ -582,13 +614,16 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
           view(`stream-width-${index}`, buffer, 'float32')
         )
       });
-      return graph.compile();
+      return await graph.compileAsync();
     }
 
     // --- State ---------------------------------------------------------------------------------
     let flowRouting: GPUTerrainFlowRouting = 'd8';
     let resolveFlats = true;
-    let compiledDrainage = resources.track(compileDrainageGraph(flowRouting, resolveFlats));
+    let requestedRouting: GPUTerrainFlowRouting = flowRouting;
+    let requestedFlats = resolveFlats;
+    const graphSwap = resources.track(new GraphSwap());
+    let compiledDrainage = resources.track(await compileDrainageGraph(flowRouting, resolveFlats));
     let product: Product = 'accumulation';
     let indexKind: IndexKind = 'wetness';
     let showStreams = true;
@@ -611,24 +646,28 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     const getThresholdCells = () => Math.round(10 ** thresholdExponent);
     const writeFlowSettings = () => {
       flowSettings.write(
-        getGPUTerrainFlowParameterValues({
-          cellSize,
-          fillEpsilon: FILL_EPSILONS[epsilonIndex],
-          streamThreshold: getThresholdCells() * cellAreaSquareMeters,
-          flowExponent
-        })
+        getGPUTerrainFlowParameterValues(
+          {
+            fillEpsilon: FILL_EPSILONS[epsilonIndex],
+            streamThreshold: getThresholdCells() * cellAreaSquareMeters,
+            flowExponent
+          },
+          grid
+        )
       );
       drainageDirty = true;
     };
     const writeWindSettings = () => {
       const bearing = (windBearingDegrees * Math.PI) / 180;
       windSettings.write(
-        getGPUTerrainFlowFieldParameterValues({
-          cellSize,
-          // The raster is south-first here, so +y is north: a bearing is clockwise from north.
-          wind: [windSpeed * Math.sin(bearing), windSpeed * Math.cos(bearing)],
-          verticalExaggeration
-        })
+        getGPUTerrainFlowFieldParameterValues(
+          {
+            // The raster is south-first here, so +y is north: a bearing is clockwise from north.
+            wind: [windSpeed * Math.sin(bearing), windSpeed * Math.cos(bearing)],
+            verticalExaggeration
+          },
+          grid
+        )
       );
       windDirty = true;
     };
@@ -645,13 +684,15 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       drainageDirty = true;
     };
     derivativesSettings.write(
-      getGPUTerrainDerivativesParameterValues({
-        cellSize,
-        azimuthDegrees: SUN_AZIMUTH_DEGREES,
-        altitudeDegrees: SUN_ALTITUDE_DEGREES
-      })
+      getGPUTerrainDerivativesParameterValues(
+        {
+          azimuthDegrees: SUN_AZIMUTH_DEGREES,
+          altitudeDegrees: SUN_ALTITUDE_DEGREES
+        },
+        grid
+      )
     );
-    indicesSettings.write(getGPUTerrainHydrologicIndicesParameterValues({cellSize}));
+    indicesSettings.write(getGPUTerrainHydrologicIndicesParameterValues({}, grid));
     writeFlowSettings();
     writeWindSettings();
 
@@ -719,7 +760,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       ],
       value: flowRouting,
       onChange: value => {
-        flowRouting = value;
+        requestedRouting = value;
         rebuildDrainageGraph();
       }
     });
@@ -727,7 +768,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
       label: 'Resolve flats (compile-time)',
       value: resolveFlats,
       onChange: value => {
-        resolveFlats = value;
+        requestedFlats = value;
         rebuildDrainageGraph();
       }
     });
@@ -903,14 +944,25 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
     };
     context.controls.addReadout('Data', terrain.attribution);
 
+    /** Recompiles for the requested choices; the current graph keeps running until it is ready. */
     function rebuildDrainageGraph(): void {
-      const previous = compiledDrainage;
-      compiledDrainage = resources.track(compileDrainageGraph(flowRouting, resolveFlats));
-      resources.release(previous);
-      rebuildCount++;
-      drainageDirty = true;
-      timingHandles.drainage.setValue(`rebuilt (${rebuildCount}x), measuring...`);
-      void measureDrainage();
+      const routing = requestedRouting;
+      const flats = requestedFlats;
+      void graphSwap.request({
+        build: () => compileDrainageGraph(routing, flats),
+        commit: next => {
+          const previous = compiledDrainage;
+          compiledDrainage = resources.track(next);
+          flowRouting = routing;
+          resolveFlats = flats;
+          resources.release(previous);
+          rebuildCount++;
+          drainageDirty = true;
+          timingHandles.drainage.setValue(`rebuilt (${rebuildCount}x), measuring...`);
+          void measureDrainage();
+        },
+        discard: next => next.destroy()
+      });
     }
 
     const measureDrainage = async () => {
@@ -1026,7 +1078,7 @@ export const drainageMode: SpatialAnalysisModeDefinition = {
             )
           );
           particleWords.write(
-            getGPUParticleAdvectionWordParameterValues({
+            getGPUParticleAdvectionUint32ParameterValues({
               seed: PARTICLE_SEED,
               frame: particleFrame,
               maximumAge: PARTICLE_MAXIMUM_AGE,

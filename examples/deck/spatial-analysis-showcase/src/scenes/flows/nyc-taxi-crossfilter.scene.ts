@@ -490,7 +490,7 @@ const filter = new GPUCrossfilter(graph, {
   ]
 });
 filter.addToGraph(graph);
-const compiled = graph.compile();   // once
+const compiled = await graph.compileAsync();  // once
 
 // a brush is a five-word write; then encode again and read the small outputs back
 filter.setRange('hour', [31, 34]);

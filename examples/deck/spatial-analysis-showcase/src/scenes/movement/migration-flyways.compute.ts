@@ -13,6 +13,7 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -131,7 +132,7 @@ export async function createMigrationFlyways(
   const variants = new Map<string, DensityVariant>();
   const emptyCells = new Float32Array(CELL_COUNT);
 
-  function getVariant(species: MigrationFlywaysOptions['species'], season: MigrationSeason) {
+  async function getVariant(species: MigrationFlywaysOptions['species'], season: MigrationSeason) {
     const key = `${species}|${season}`;
     let variant = variants.get(key);
     if (variant) return variant;
@@ -151,7 +152,7 @@ export async function createMigrationFlyways(
         new GPULineDensity({
           id: 'line-density',
           positions: view(graph, 'positions', variant.positions, 'float32x2', subset.vertexCount),
-          pathOffsets: view(graph, 'offsets', variant.offsets, 'uint32', subset.trackCount + 1),
+          lineOffsets: view(graph, 'offsets', variant.offsets, 'uint32', subset.trackCount + 1),
           columns: COLUMNS,
           rows: ROWS,
           spatialContext: {
@@ -159,17 +160,19 @@ export async function createMigrationFlyways(
             metric: 'great-circle',
             units: 'meters'
           },
-          maximumRecords: Math.max(1024, 6 * subset.vertexCount),
+          recordCapacity: Math.max(1024, 6 * subset.vertexCount),
           parameters: densityParameters.importToGraph(graph),
           output: {
             lengths: view(graph, 'lengths', lengths, 'float32', CELL_COUNT),
             densities: view(graph, 'densities', densities, 'float32', CELL_COUNT),
-            overflow: view(graph, 'overflow', densityOverflow, 'uint32', 1),
-            totalRecords: view(graph, 'total-records', totalRecords, 'uint32', 1)
+            status: {
+              overflow: view(graph, 'overflow', densityOverflow, 'uint32', 1),
+              requiredCount: view(graph, 'total-records', totalRecords, 'uint32', 1)
+            }
           }
         })
       );
-      variant.compiled = resources.track(graph.compile());
+      variant.compiled = resources.track(await graph.compileAsync());
     }
     variants.set(key, variant);
     return variant;
@@ -200,7 +203,9 @@ export async function createMigrationFlyways(
   const pairFrechet = resources.createBuffer('pair-frechet', pairCount * 4);
   const pairStatus = resources.createBuffer('pair-status', pairCount * 4);
 
-  function buildResample(spacing: 'arc-length' | 'time'): CompiledGPUCommandGraph<void> {
+  async function buildResample(
+    spacing: 'arc-length' | 'time'
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const graph = new GPUCommandGraph<void>(device, {id: `flyways-routes-${spacing}`});
     const routesView = view(
       graph,
@@ -222,12 +227,15 @@ export async function createMigrationFlyways(
         trackOffsets: view(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
         sampleCount: SIMILARITY_SAMPLES,
         spacing,
-        samples: routesView
+        output: {samples: routesView}
       })
     );
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   }
-  const resampleGraphs = {'arc-length': buildResample('arc-length'), time: buildResample('time')};
+  const resampleGraphs = {
+    'arc-length': await buildResample('arc-length'),
+    time: await buildResample('time')
+  };
   const similarityGraph = new GPUCommandGraph<void>(device, {id: 'flyways-similarity'});
   similarityGraph.add(
     new GPUTrackSimilarity({
@@ -237,29 +245,34 @@ export async function createMigrationFlyways(
         metric: 'great-circle',
         units: 'meters'
       },
-      positionsA: view(
-        similarityGraph,
-        'routes',
-        routesBuffer,
-        'float32x2',
-        trackCount * SIMILARITY_SAMPLES
-      ),
-      offsetsA: view(
-        similarityGraph,
-        'route-offsets',
-        routeOffsetsBuffer,
-        'uint32',
-        trackCount + 1
-      ),
       pairA: view(similarityGraph, 'pair-a', pairABuffer, 'uint32', pairCount),
       pairB: view(similarityGraph, 'pair-b', pairBBuffer, 'uint32', pairCount),
-      hausdorff: view(similarityGraph, 'pair-hausdorff', pairHausdorff, 'float32', pairCount),
-      frechet: view(similarityGraph, 'pair-frechet', pairFrechet, 'float32', pairCount),
-      status: view(similarityGraph, 'pair-status', pairStatus, 'uint32', pairCount),
-      maxFrechetVertices: SIMILARITY_SAMPLES
+      maximumFrechetVertexCount: SIMILARITY_SAMPLES,
+      output: {
+        hausdorff: view(similarityGraph, 'pair-hausdorff', pairHausdorff, 'float32', pairCount),
+        frechet: view(similarityGraph, 'pair-frechet', pairFrechet, 'float32', pairCount),
+        pairStatus: view(similarityGraph, 'pair-status', pairStatus, 'uint32', pairCount)
+      },
+      linesA: {
+        kind: 'lines',
+        positions: view(
+          similarityGraph,
+          'routes',
+          routesBuffer,
+          'float32x2',
+          trackCount * SIMILARITY_SAMPLES
+        ),
+        lineOffsets: view(
+          similarityGraph,
+          'route-offsets',
+          routeOffsetsBuffer,
+          'uint32',
+          trackCount + 1
+        )
+      }
     })
   );
-  const similarityCompiled = resources.track(similarityGraph.compile());
+  const similarityCompiled = resources.track(await similarityGraph.compileAsync());
 
   // ---- State ------------------------------------------------------------------------------------
   let destroyed = false;
@@ -268,7 +281,8 @@ export async function createMigrationFlyways(
   let settleStale = true;
   let lastChange = performance.now();
   let currentSpacing = ctx.options.routeSpacing;
-  let active = getVariant(ctx.options.species, ctx.options.season);
+  let active = await getVariant(ctx.options.species, ctx.options.season);
+  const variantSwap = resources.track(new GraphSwap());
   let densitySnapshot: DensitySnapshot | null = null;
   let densityRange = {density: 1, length: 1};
   let matrix: Float32Array | null = null;
@@ -649,11 +663,17 @@ export async function createMigrationFlyways(
       switch (id) {
         case 'species':
         case 'season':
-          active = getVariant(state.species, state.season);
-          densityDirty = true;
-          markChanged();
-          publishSamplingEvidence();
-          ctx.requestLayers();
+          // Variants are cached in `variants`, which `resources` owns: no discard.
+          void variantSwap.request({
+            build: () => getVariant(state.species, state.season),
+            commit: next => {
+              active = next;
+              densityDirty = true;
+              markChanged();
+              publishSamplingEvidence();
+              ctx.requestLayers();
+            }
+          });
           break;
         case 'cellSize':
           writeDensityParameters();

@@ -8,11 +8,14 @@ import {GPUGroupStatistics} from '@luma.gl/experimental/gpu-dataframe';
 import {
   getGPUDistanceFieldParameterValues,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  GPUDistanceField
+  GPUDistanceField,
+  makeGPURasterMetadata,
+  type GPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {SpatialAnalysisRasterLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {ChartSeries} from '../chart-types';
@@ -86,6 +89,17 @@ function formatNumber(value: number, digits = 2): string {
 /** A square grid of `GRID` cells per side: its corner and cell size, in the meters of one frame. */
 type Grid = {origin: [number, number]; cellSize: number};
 
+/** The distance field's raster: `GRID` cells per side, origin at the south-west corner, rows advancing north. */
+function getRasterGrid(grid: Grid): GPURasterMetadata {
+  return makeGPURasterMetadata({
+    width: GRID,
+    height: GRID,
+    cellSize: grid.cellSize,
+    origin: grid.origin,
+    rowDirection: 'north'
+  });
+}
+
 type DistanceVariant = {
   compiled: CompiledGPUCommandGraph<void>;
 };
@@ -140,6 +154,7 @@ export async function createQuakePlateBoundaries(
   const catalog = ctx.datasets.get('poopdeck-earthquakes');
   const boundaries = ctx.datasets.get('plate-boundaries');
   const resources = new SpatialAnalysisResources(device, 'quake-plates');
+  const graphSwap = resources.track(new GraphSwap());
 
   const distanceSettings = resources.createParameterBuffer(
     'distance-settings',
@@ -171,11 +186,11 @@ export async function createQuakePlateBoundaries(
     };
   }
 
-  function buildRegion(
+  async function buildRegion(
     key: string,
     region: QuakeRegionId,
     variance: 'sample' | 'population'
-  ): RegionVariant {
+  ): Promise<RegionVariant> {
     // The whole M4+ catalog of the window; the magnitude cut is a parameter.
     const events = readQuakeEvents(catalog, region, 4);
     const steps = readBoundarySteps(boundaries, events, region, 7);
@@ -218,8 +233,10 @@ export async function createQuakePlateBoundaries(
         views: {
           keys: s(`${name}-keys`, buffer(`${name}-keys`, rows * 4), 'uint32', rows),
           counts: s(`${name}-counts`, countsBuffer, 'uint32', rows),
-          count: s(`${name}-count`, buffer(`${name}-count`, 4), 'uint32', 1),
-          overflow: s(`${name}-overflow`, buffer(`${name}-overflow`, 4), 'uint32', 1)
+          status: {
+            count: s(`${name}-count`, buffer(`${name}-count`, 4), 'uint32', 1),
+            overflow: s(`${name}-overflow`, buffer(`${name}-overflow`, 4), 'uint32', 1)
+          }
         }
       };
     };
@@ -275,7 +292,7 @@ export async function createQuakePlateBoundaries(
         output: magnitudeTable.views
       })
     );
-    const statistics = resources.track(statisticsGraph.compile());
+    const statistics = resources.track(await statisticsGraph.compileAsync());
     const reader = new SummaryReader(
       resources,
       `${key}-statistics`,
@@ -325,7 +342,10 @@ export async function createQuakePlateBoundaries(
     };
   }
 
-  function buildDistanceVariant(variant: RegionVariant, algorithm: string): DistanceVariant {
+  async function buildDistanceVariant(
+    variant: RegionVariant,
+    algorithm: string
+  ): Promise<DistanceVariant> {
     const {events} = variant;
     const count = events.count;
     const graph = new GPUCommandGraph<void>(device, {
@@ -340,12 +360,11 @@ export async function createQuakePlateBoundaries(
     graph.add(
       new GPUDistanceField({
         id: `${variant.key}-${algorithm}-field`,
-        width: GRID,
-        height: GRID,
+        grid: getRasterGrid(variant.grid),
         mode,
-        jumpFloodRefinementPasses:
+        jumpFloodRefinementIterationCount:
           algorithm === 'jump-flood-0' ? 0 : algorithm === 'jump-flood-2' ? 2 : 1,
-        settings: settingsView,
+        parameters: settingsView,
         seedPositions: d('seed-positions', variant.seedPositions, 'float32x2', SEED_CAPACITY),
         seedIds: d('seed-ids', variant.seedIds, 'uint32', SEED_CAPACITY),
         seedCount: d('seed-count', variant.seedCount, 'uint32', 1),
@@ -503,25 +522,25 @@ export async function createQuakePlateBoundaries(
   linkSegments[linkSegmentsOffset + index * 4u + 3u] = parameters[parametersOffset + 9u] + (f32(nearest / width) + 0.5) * size;
   linkFade[linkFadeOffset + index] = 1.0;`
     });
-    return {compiled: resources.track(graph.compile())};
+    return {compiled: resources.track(await graph.compileAsync())};
   }
 
-  function getRegion(): RegionVariant {
+  async function getRegion(): Promise<RegionVariant> {
     const options = ctx.options;
     const key = `${options.region}|${options.variance}`;
     let variant = regionVariants.get(key);
     if (!variant) {
-      variant = buildRegion(key, options.region, options.variance);
+      variant = await buildRegion(key, options.region, options.variance);
       regionVariants.set(key, variant);
     }
     return variant;
   }
 
-  function getDistanceVariant(variant: RegionVariant): DistanceVariant {
+  async function getDistanceVariant(variant: RegionVariant): Promise<DistanceVariant> {
     const algorithm = ctx.options.algorithm;
     let result = variant.distanceVariants.get(algorithm);
     if (!result) {
-      result = buildDistanceVariant(variant, algorithm);
+      result = await buildDistanceVariant(variant, algorithm);
       variant.distanceVariants.set(algorithm, result);
     }
     return result;
@@ -572,11 +591,7 @@ export async function createQuakePlateBoundaries(
     const cap =
       options.maximumDistance >= NO_DISTANCE_CAP ? Infinity : options.maximumDistance * 1000;
     distanceSettings.write(
-      getGPUDistanceFieldParameterValues({
-        origin: grid.origin,
-        cellSize: [grid.cellSize, grid.cellSize],
-        maxDistance: cap
-      })
+      getGPUDistanceFieldParameterValues({maximumDistance: cap}, getRasterGrid(grid))
     );
     eventParameters.write(
       Float32Array.of(
@@ -798,9 +813,21 @@ export async function createQuakePlateBoundaries(
   /** Distance graph of the current region and algorithm, compiled when the choice changes. */
   let currentDistance: DistanceVariant | null = null;
 
-  function adopt(): void {
-    current = getRegion();
-    currentDistance = getDistanceVariant(current);
+  /** Region and distance graphs of the current options, compiled and cached. */
+  async function getVariants(): Promise<{region: RegionVariant; distance: DistanceVariant}> {
+    const region = await getRegion();
+    return {region, distance: await getDistanceVariant(region)};
+  }
+
+  /** Switches to the variants of the current options; a new region also resets its readouts. */
+  function adopt(next: {region: RegionVariant; distance: DistanceVariant}): void {
+    currentDistance = next.distance;
+    if (next.region === current) {
+      dirty = true;
+      ctx.requestLayers();
+      return;
+    }
+    current = next.region;
     magnitudeCounts = null;
     writeSeeds();
     writeParameters();
@@ -811,7 +838,7 @@ export async function createQuakePlateBoundaries(
     ctx.requestLayers();
   }
 
-  adopt();
+  adopt(await getVariants());
 
   return {
     getCompiledGraphs: () =>
@@ -821,7 +848,7 @@ export async function createQuakePlateBoundaries(
 
     setOption(id) {
       if (id === 'region' || id === 'variance') {
-        adopt();
+        void graphSwap.request({build: getVariants, commit: adopt});
         if (id === 'region') {
           const [west, south, east, north] = QUAKE_REGIONS[ctx.options.region].bbox;
           const view = ctx.getViewState();
@@ -838,8 +865,7 @@ export async function createQuakePlateBoundaries(
       } else if (id === 'completeness') {
         showGutenbergRichter();
       } else if (id === 'algorithm') {
-        if (current) currentDistance = getDistanceVariant(current);
-        dirty = true;
+        void graphSwap.request({build: getVariants, commit: adopt});
       } else {
         writeParameters();
       }

@@ -15,19 +15,20 @@ import {
   addSpaceTimeHotSpotsRecipe,
   type GPUInferenceMetadata,
   type GPUMultipleTestingMethod,
-  getGPUEmergingHotSpotParameterValues,
   getGPUNeighborSearchParameterValues,
-  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
   GPU_NEIGHBOR_SEARCH_PARAMETER_LENGTH,
   GPUEmergingHotSpots,
   GPUNeighborSearch,
-  type GPUSpatialWeights
+  type GPUSpaceTimeHotSpotsRecipeSettings,
+  type GPUSpatialWeightsOutput
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
 import {createPlaybackClock} from '../../engine/playback';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisRasterLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance} from '../scene';
@@ -141,7 +142,10 @@ type Variant = {
   coldSlices: Buffer;
   overflow: Buffer;
   occupiedCount: Buffer | null;
+  /** How the hot and cold bins are decided, refreshed by `applySettings`. */
   inference: GPUInferenceMetadata;
+  /** Packs the per-frame settings into the shared parameter buffer and returns the inference they imply. */
+  applySettings: (settings: GPUSpaceTimeHotSpotsRecipeSettings) => GPUInferenceMetadata;
   reader: SummaryReader;
 };
 
@@ -212,6 +216,7 @@ export async function createEmergingHotSpots(
   }
 
   const resources = new SpatialAnalysisResources(device, 'emerging');
+  const graphSwap = resources.track(new GraphSwap());
   const positionsBuffer = resources.createBuffer('positions', events.positions);
   const timeWordsBuffer = resources.createBuffer('time-words', events.timeWords as Uint32Array);
   const secondsBuffer = resources.createBuffer('seconds', events.seconds);
@@ -243,7 +248,7 @@ export async function createEmergingHotSpots(
   const hotSpotParameters = resources.createParameterBuffer(
     'hot-spot-parameters',
     'float32',
-    GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH
+    GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
   );
   const searchParameters = resources.createParameterBuffer(
     'search-parameters',
@@ -257,6 +262,8 @@ export async function createEmergingHotSpots(
   let activeCells = 0;
   let included = 0;
   let current: Variant | null = null;
+  /** A `cube` change waits for the next committed swap. */
+  let cubeChanged = false;
   let cpuCategory: Uint32Array | null = null;
   let cpuTrendZ: Float32Array | null = null;
   let cpuHot: Uint32Array | null = null;
@@ -274,11 +281,11 @@ export async function createEmergingHotSpots(
     length?: number
   ) => importGraphBuffer(graph, name, buffer, format, length);
 
-  function buildVariant(
+  async function buildVariant(
     cube: EmergingHotSpotsOptions['cube'],
     neighborhood: EmergingHotSpotsOptions['neighborhood'],
     multipleTesting: GPUMultipleTestingMethod
-  ): Variant {
+  ): Promise<Variant> {
     const spec = CUBES[cube];
     const sliceCount = spec.sliceCount;
     const binCount = cellCount * sliceCount;
@@ -311,13 +318,14 @@ export async function createEmergingHotSpots(
     };
 
     // Spatial neighborhood: a lattice radius, or a neighbor-search weights table over cell centers.
-    let weights: GPUSpatialWeights | undefined;
+    let weights: GPUSpatialWeightsOutput | undefined;
     if (neighborhood === 'weights') {
       weights = {
         offsets: v('offsets', offsetsBuffer, 'uint32', cellCount + 1),
         neighbors: v('neighbors', neighborsBuffer, 'uint32', slotCapacity),
         weights: v('weights', weightsBuffer, 'float32', slotCapacity),
-        distances: v('distances', distancesBuffer, 'float32', slotCapacity)
+        distances: v('distances', distancesBuffer, 'float32', slotCapacity),
+        status: {overflow: v('overflow', overflow, 'uint32', 1)}
       };
       graph.add(
         new GPUNeighborSearch({
@@ -327,14 +335,15 @@ export async function createEmergingHotSpots(
           mask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
           parameters: searchParameters.importToGraph(graph),
           gridSize: [64, 64],
-          weights,
-          overflow: v('overflow', overflow, 'uint32', 1)
+          output: weights
         })
       );
     }
 
     let occupiedCount: Buffer | null = null;
     let inference: GPUInferenceMetadata;
+    let applySettings: Variant['applySettings'];
+    const settings = getHotSpotSettings();
     if (cube === 'weeks') {
       const occupiedIds = buffer('occupied-ids', binCount * 4);
       occupiedCount = buffer('occupied-count', 4);
@@ -351,14 +360,16 @@ export async function createEmergingHotSpots(
           bucketCount: sliceCount,
           output: {
             counts: v('counts', counts, 'uint32', binCount),
-            min: v('min', buffer('min', binCount * 4), 'float32', binCount),
-            max: v('max', buffer('max', binCount * 4), 'float32', binCount),
+            minimums: v('min', buffer('min', binCount * 4), 'float32', binCount),
+            maximums: v('max', buffer('max', binCount * 4), 'float32', binCount),
             first: v('first', buffer('first', binCount * 4), 'float32', binCount),
             last: v('last', buffer('last', binCount * 4), 'float32', binCount),
             occupiedSlots: {
               ids: v('occupied-ids', occupiedIds, 'uint32', binCount),
-              count: v('occupied-count', occupiedCount, 'uint32', 1),
-              overflow: v('occupied-overflow', occupiedOverflow, 'uint32', 1)
+              status: {
+                count: v('occupied-count', occupiedCount, 'uint32', 1),
+                overflow: v('occupied-overflow', occupiedOverflow, 'uint32', 1)
+              }
             }
           }
         })
@@ -371,16 +382,22 @@ export async function createEmergingHotSpots(
         mask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
         parameters: hotSpotParameters.importToGraph(graph),
         multipleTesting,
-        giZScores: v('gi-z', giZ, 'float32', binCount),
-        trendZ: v('trend-z', trendZ, 'float32', cellCount),
-        trendP: v('trend-p', trendP, 'float32', cellCount),
-        trendS: v('trend-s', trendS, 'sint32', cellCount),
-        category: v('category', category, 'uint32', cellCount),
-        hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
-        coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
+        output: {
+          giZScores: v('gi-z', giZ, 'float32', binCount),
+          trendZ: v('trend-z', trendZ, 'float32', cellCount),
+          trendP: v('trend-p', trendP, 'float32', cellCount),
+          trendS: v('trend-s', trendS, 'sint32', cellCount),
+          category: v('category', category, 'uint32', cellCount),
+          hotSliceCount: v('hot-slices', hotSlices, 'uint32', cellCount),
+          coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
+        }
       });
       graph.add(emerging);
-      inference = emerging.getInferenceMetadata();
+      applySettings = nextSettings => {
+        hotSpotParameters.write(emerging.getParameterValues(nextSettings));
+        return emerging.getInferenceMetadata(nextSettings);
+      };
+      inference = applySettings(settings);
     } else {
       const recipe = addSpaceTimeHotSpotsRecipe(graph, {
         id: `${id}-recipe`,
@@ -406,7 +423,8 @@ export async function createEmergingHotSpots(
               maximumRadius: MAXIMUM_RADIUS_CELLS
             },
         cellMask: v('cell-mask', cellMaskBuffer, 'uint32', cellCount),
-        parameters: hotSpotParameters.importToGraph(graph),
+        settings,
+        parameters: hotSpotParameters,
         outputs: {
           cube: v('counts', counts, 'uint32', binCount),
           giZScores: v('gi-z', giZ, 'float32', binCount),
@@ -418,9 +436,13 @@ export async function createEmergingHotSpots(
           coldSliceCount: v('cold-slices', coldSlices, 'uint32', cellCount)
         }
       });
+      applySettings = nextSettings => {
+        recipe.setSettings(nextSettings);
+        return recipe.inference;
+      };
       inference = recipe.inference;
     }
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const reader = new SummaryReader(
       resources,
       id,
@@ -455,16 +477,17 @@ export async function createEmergingHotSpots(
       overflow,
       occupiedCount,
       inference,
+      applySettings,
       reader
     };
   }
 
-  function getVariant(): Variant {
+  async function getVariant(): Promise<Variant> {
     const {cube, neighborhood, multipleTesting} = ctx.options;
     const key = `${cube}-${neighborhood}-${multipleTesting}`;
     let variant = variants.get(key);
     if (!variant) {
-      variant = buildVariant(cube, neighborhood, multipleTesting);
+      variant = await buildVariant(cube, neighborhood, multipleTesting);
       variants.set(key, variant);
     }
     return variant;
@@ -520,19 +543,25 @@ export async function createEmergingHotSpots(
     ctx.setLegendData('inference', current?.inference);
   }
 
+  /** The per-frame hot spot settings of the current options; the correction is compile-time. */
+  function getHotSpotSettings(): GPUSpaceTimeHotSpotsRecipeSettings {
+    const options = ctx.options;
+    const confidenceLevel = Number(options.confidence);
+    return {
+      radius: options.radius,
+      temporalWindow: options.temporalWindow,
+      confidenceLevel,
+      trendSignificanceLevel: options.tieTrend ? 1 - confidenceLevel : options.trendLevel,
+      persistentFraction: options.persistentFraction
+    };
+  }
+
   function writeParameters(): void {
     const options = ctx.options;
-    const confidenceLevel = Number(options.confidence) as 0.9 | 0.95 | 0.99;
-    hotSpotParameters.write(
-      getGPUEmergingHotSpotParameterValues({
-        radius: options.radius,
-        temporalWindow: options.temporalWindow,
-        confidenceLevel,
-        multipleTesting: options.multipleTesting,
-        trendSignificanceLevel: options.tieTrend ? 1 - confidenceLevel : options.trendLevel,
-        persistentFraction: options.persistentFraction
-      })
-    );
+    if (current) {
+      current.inference = current.applySettings(getHotSpotSettings());
+      publishInference();
+    }
     searchParameters.write(
       getGPUNeighborSearchParameterValues({
         bounds: [
@@ -662,7 +691,7 @@ export async function createEmergingHotSpots(
   writeEventMask();
   writeCellMask();
   writeParameters();
-  current = getVariant();
+  current = await getVariant();
   publishInference();
   const playbackClock = createPlaybackClock(
     ctx,
@@ -678,19 +707,25 @@ export async function createEmergingHotSpots(
 
     setOption(id, _value, state) {
       if (id === 'cube' || id === 'neighborhood' || id === 'multipleTesting') {
-        current = getVariant();
-        playbackClock.setRange(1, current.sliceCount);
-        publishTestFamily();
-        publishInference();
-        if (id === 'multipleTesting') writeParameters();
-        if (id === 'cube') {
-          sliceTotals = null;
-          ctx.setChart('sliceTimeline', null);
-        }
-        writeSliceIndices(state.slice - 1);
-        cpuCategory = null;
-        dirty = true;
-        ctx.requestLayers();
+        if (id === 'cube') cubeChanged = true;
+        void graphSwap.request({
+          build: getVariant,
+          commit: variant => {
+            current = variant;
+            playbackClock.setRange(1, variant.sliceCount);
+            publishTestFamily();
+            writeParameters();
+            if (cubeChanged) {
+              cubeChanged = false;
+              sliceTotals = null;
+              ctx.setChart('sliceTimeline', null);
+            }
+            writeSliceIndices(ctx.options.slice - 1);
+            cpuCategory = null;
+            dirty = true;
+            ctx.requestLayers();
+          }
+        });
       } else if (id === 'groupType') {
         writeEventMask();
       } else if (id === 'minimumEvents') {

@@ -59,8 +59,11 @@ export type WeightsKitProps = {
   mask: Buffer;
   /** The weights the producer writes and every analysis reads. */
   csr: WeightsCsrBuffers;
-  /** Producer overflow flag and unclamped neighbor total, copied into the readback. */
-  producer: {overflow: Buffer; total: Buffer};
+  /**
+   * Producer `status.overflow`, `status.requiredCount` (unclamped neighbor total) and, for
+   * contiguity, `status.candidateOverflow`, copied into the readback.
+   */
+  producer: {overflow: Buffer; total: Buffer; candidateOverflow?: Buffer};
   /** Existing summary buffers of `csr` (12 and 24 bytes) when another graph already fills them. */
   summary?: {statistics: Buffer; counts: Buffer};
   /** Also build full-matrix link segments for the transpose and the union. */
@@ -87,12 +90,14 @@ export type WeightsKitSummary = {
   focus: Record<WeightsMatrixChoice, {degree: number; weightSum: number}>;
   producerOverflow: boolean;
   producerTotal: number;
+  /** The intermediate pair list overflowed, so `producerTotal` is only a lower bound. */
+  producerCandidateOverflow: boolean;
 };
 
 // statistics 3, counts (the layout's length: 6 with the empty-row count), asymmetric 1, lag extent 2,
-// union overflow and total 2, producer overflow and total 2, focus info 3 x 2.
+// union overflow and total 2, producer overflow, total and candidate overflow 3, focus info 3 x 2.
 const COUNTS_WORDS = GPU_SPATIAL_WEIGHTS_SUMMARY_LAYOUT.counts.length;
-const SUMMARY_WORDS = 3 + COUNTS_WORDS + 1 + 2 + 2 + 2 + 6;
+const SUMMARY_WORDS = 3 + COUNTS_WORDS + 1 + 2 + 2 + 3 + 6;
 
 /** Weights analysis kit for one source; see the module comment. */
 export type WeightsKit = {
@@ -176,7 +181,7 @@ const FOCUS_BODY = /* wgsl */ `
   neighborIds[neighborIdsOffset + index] = other;`;
 
 /** Builds the transform, transpose, union, summary, lag and focus graphs of one weights source. */
-export function createWeightsKit(props: WeightsKitProps): WeightsKit {
+export async function createWeightsKit(props: WeightsKitProps): Promise<WeightsKit> {
   const {device, resources, id, rowCount, slots, unionSlots, positions, values, csr} = props;
   const create = (name: string, data: number | Uint32Array) =>
     resources.createBuffer(`${id}-${name}`, data);
@@ -199,6 +204,8 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
   const asymmetricBuffer = create('transpose-asymmetric', 4);
   const unionOverflowBuffer = create('union-overflow', 4);
   const unionTotalBuffer = create('union-total', 4);
+  // Stands in for `producer.candidateOverflow` of sources that have no intermediate stage.
+  const candidateOverflowBuffer = props.producer.candidateOverflow ?? create('no-candidate', 4);
   const lagBuffer = create('lag', rowCount * 4);
   const lagExtentBuffer = create('lag-extent', 2 * 4);
   const focusRowBuffer = create('focus-row', new Uint32Array([0]));
@@ -245,12 +252,20 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       new GPUSpatialWeightsSummary({
         id: 'weights-summary',
         weights: importCsr(graph, 'a', csr, slots),
-        statistics: importGraphBuffer(graph, 'statistics', summaryStatistics, 'float32', 3),
-        counts: importGraphBuffer(graph, 'counts', summaryCounts, 'uint32', COUNTS_WORDS),
-        cardinality: importGraphBuffer(graph, 'cardinality', cardinalityBuffer!, 'uint32', rowCount)
+        output: {
+          statistics: importGraphBuffer(graph, 'statistics', summaryStatistics, 'float32', 3),
+          counts: importGraphBuffer(graph, 'counts', summaryCounts, 'uint32', COUNTS_WORDS),
+          cardinality: importGraphBuffer(
+            graph,
+            'cardinality',
+            cardinalityBuffer!,
+            'uint32',
+            rowCount
+          )
+        }
       })
     );
-    summaryCompiled = resources.track(graph.compile());
+    summaryCompiled = resources.track(await graph.compileAsync());
   }
 
   // W transpose and the symmetrised union W OR W'.
@@ -262,14 +277,16 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       new GPUSpatialWeightsTranspose({
         id: 'transpose',
         weights: source,
-        output: transposeView,
-        asymmetricSlots: importGraphBuffer(
-          transposeGraph,
-          'asymmetric',
-          asymmetricBuffer,
-          'uint32',
-          1
-        )
+        output: {
+          ...transposeView,
+          asymmetricSlots: importGraphBuffer(
+            transposeGraph,
+            'asymmetric',
+            asymmetricBuffer,
+            'uint32',
+            1
+          )
+        }
       })
     );
     transposeGraph.add(
@@ -278,25 +295,29 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         operation: 'union',
         left: source,
         right: transposeView,
-        output: importCsr(transposeGraph, 's', union, unionSlots),
-        overflow: importGraphBuffer(
-          transposeGraph,
-          'union-overflow',
-          unionOverflowBuffer,
-          'uint32',
-          1
-        ),
-        totalNeighbors: importGraphBuffer(
-          transposeGraph,
-          'union-total',
-          unionTotalBuffer,
-          'uint32',
-          1
-        )
+        output: {
+          ...importCsr(transposeGraph, 's', union, unionSlots),
+          status: {
+            overflow: importGraphBuffer(
+              transposeGraph,
+              'union-overflow',
+              unionOverflowBuffer,
+              'uint32',
+              1
+            ),
+            requiredCount: importGraphBuffer(
+              transposeGraph,
+              'union-total',
+              unionTotalBuffer,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
   }
-  const transposeCompiled = resources.track(transposeGraph.compile());
+  const transposeCompiled = resources.track(await transposeGraph.compileAsync());
 
   // Spatial lag of the value column, plain or normalized, and its extent for the color range.
   const lagVariants = new Map<boolean, CompiledGPUCommandGraph<void>>();
@@ -321,7 +342,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         operation: 'extent'
       })
     );
-    lagVariants.set(normalize, resources.track(graph.compile()));
+    lagVariants.set(normalize, resources.track(await graph.compileAsync()));
   }
 
   // Neighbor links of the focus row, one graph per matrix (all rows share the focus buffer).
@@ -371,7 +392,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       declarations: `const ROW_COUNT: u32 = ${rowCount}u;`,
       body: FOCUS_BODY
     });
-    focusGraphs[name] = resources.track(graph.compile());
+    focusGraphs[name] = resources.track(await graph.compileAsync());
   }
 
   // Optional full-matrix segments of the transpose and the union.
@@ -408,7 +429,7 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         declarations: `const ROW_COUNT: u32 = ${rowCount}u;`,
         body: SEGMENT_BODY
       });
-      const compiled = resources.track(graph.compile());
+      const compiled = resources.track(await graph.compileAsync());
       allGraphs.push(compiled);
       allGraphByMatrix[name] = compiled;
       allSegments[name] = {segments, fade, slots: count};
@@ -471,10 +492,13 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
       copy(unionTotalBuffer, 1);
       copy(props.producer.overflow, 1);
       copy(props.producer.total, 1);
+      copy(candidateOverflowBuffer, 1);
       copy(infoBuffers.weights, 2);
       copy(infoBuffers.transpose, 2);
       copy(infoBuffers.union, 2);
       ticket.markEncoded({byteOffset: 0, byteLength: SUMMARY_WORDS * 4});
+      // Deck submits this frame's encoder synchronously before the next task maps the slot.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
       const bytes = await ticket.read();
       const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
       const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
@@ -499,7 +523,8 @@ export function createWeightsKit(props: WeightsKitProps): WeightsKit {
         unionSlots: words[after + 4],
         producerOverflow: words[after + 5] !== 0,
         producerTotal: words[after + 6],
-        focus: {weights: info(after + 7), transpose: info(after + 9), union: info(after + 11)}
+        producerCandidateOverflow: words[after + 7] !== 0,
+        focus: {weights: info(after + 8), transpose: info(after + 10), union: info(after + 12)}
       };
     }
   };

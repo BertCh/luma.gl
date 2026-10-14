@@ -21,6 +21,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPUNetworkNoding} from '@luma.gl/experimental/gpu-network';
 import {ALBERS_CONUS_FRAME} from '../../engine/analysis-frame';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisPointLayer} from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
@@ -137,7 +138,7 @@ export async function createNodingAndCoverage(
     }
   };
 
-  const factories: Record<Options['view'], () => View> = {
+  const factories: Record<Options['view'], () => Promise<View>> = {
     crossings: () => createCrossingsView(env),
     noding: () => createNodingView(env),
     dissolve: () => createDissolveView(env),
@@ -145,22 +146,46 @@ export async function createNodingAndCoverage(
   };
   const views = new Map<Options['view'], View>();
   let destroyed = false;
-  const getView = () => {
-    const name = ctx.options.view;
-    let view = views.get(name);
-    if (!view) {
-      view = factories[name]();
-      views.set(name, view);
-    }
-    return view;
+  const graphSwap = new GraphSwap();
+  let active = await factories[ctx.options.view]();
+  views.set(ctx.options.view, active);
+  let activeName = ctx.options.view;
+  // Option changes that a view missed while it was inactive or still being built; replayed on commit.
+  const missed = new Map<Options['view'], Set<keyof Options>>();
+  const getView = () => active;
+  const showView = (name: Options['view']) => {
+    // The previous view keeps encoding until the new one has been created.
+    void graphSwap.request({
+      build: async () => views.get(name) ?? (await factories[name]()),
+      commit: view => {
+        views.set(name, view);
+        active = view;
+        activeName = name;
+        for (const id of missed.get(name) ?? []) view.setOption(id, ctx.options);
+        missed.delete(name);
+        ctx.requestLayers();
+      },
+      discard: view => {
+        if (views.get(name) !== view) view.destroy();
+      }
+    });
   };
-  getView();
+
+  const setActiveOption = (id: keyof Options, options: Options) => {
+    getView().setOption(id, options);
+    for (const name of Object.keys(factories) as Options['view'][]) {
+      if (name === activeName) continue;
+      const set = missed.get(name) ?? new Set<keyof Options>();
+      set.add(id);
+      missed.set(name, set);
+    }
+  };
 
   return {
     getCompiledGraphs: () => getView().getCompiledGraphs(),
     setOption(id, _value, options) {
-      if (id === 'view') getView();
-      else getView().setOption(id, options);
+      if (id === 'view') showView(options.view);
+      else setActiveOption(id, options);
       ctx.requestLayers();
     },
     onThemeChange: () => ctx.requestLayers(),
@@ -170,6 +195,7 @@ export async function createNodingAndCoverage(
     getLayers: () => getView().getLayers(),
     destroy() {
       destroyed = true;
+      graphSwap.destroy();
       for (const view of views.values()) view.destroy();
       views.clear();
     }
@@ -182,7 +208,7 @@ export async function createNodingAndCoverage(
 
 const PAIR_CAPACITY = 1 << 19;
 
-function createCrossingsView(env: Environment): View {
+async function createCrossingsView(env: Environment): Promise<View> {
   const {ctx} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'crossings');
@@ -219,7 +245,7 @@ function createCrossingsView(env: Environment): View {
   let active: Build | null = null;
   let dirty = true;
 
-  const build = (options: Options): Build => {
+  const build = async (options: Options): Promise<Build> => {
     const twoSided = options.crossMode === 'streets-rail';
     const sameFeature = !twoSided && options.sameFeatureOnly;
     const key = `${options.crossMode}|${sameFeature}|${options.crossSpatialSort}`;
@@ -256,16 +282,20 @@ function createCrossingsView(env: Environment): View {
           : {}),
         sameFeatureOnly: sameFeature,
         spatialSort: options.crossSpatialSort,
-        pairs: {
-          leftIds: imp('pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
-          rightIds: imp('pair-right', pairRight, 'uint32', PAIR_CAPACITY),
-          count: imp('count', count, 'uint32', 1),
-          overflow: imp('overflow', overflow, 'uint32', 1),
-          requiredCount: imp('total', total, 'uint32', 1)
-        },
-        kinds: kindsView,
-        points: imp('points', points, 'float32x2', PAIR_CAPACITY),
-        uncertainCount: imp('uncertain', uncertain, 'uint32', 1)
+        output: {
+          pairs: {
+            leftIds: imp('pair-left', pairLeft, 'uint32', PAIR_CAPACITY),
+            rightIds: imp('pair-right', pairRight, 'uint32', PAIR_CAPACITY),
+            status: {
+              count: imp('count', count, 'uint32', 1),
+              overflow: imp('overflow', overflow, 'uint32', 1),
+              requiredCount: imp('total', total, 'uint32', 1)
+            }
+          },
+          kinds: kindsView,
+          points: imp('points', points, 'float32x2', PAIR_CAPACITY),
+          status: {uncertainCount: imp('uncertain', uncertain, 'uint32', 1)}
+        }
       })
     );
     // Marker color index (kind - 1), or 0xffffffff when the kind is filtered out.
@@ -337,7 +367,7 @@ function createCrossingsView(env: Environment): View {
     );
     const entry: Build = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       kinds,
       points,
       shown,
@@ -358,19 +388,30 @@ function createCrossingsView(env: Environment): View {
     kindFilter.write(Float32Array.of(mask));
     dirty = true;
   };
-  const select = (options: Options) => {
-    active = build(options);
+  const select = (next: Build, options: Options) => {
+    active = next;
     writeFilter(options);
     dirty = true;
   };
-  select(ctx.options);
+  select(await build(ctx.options), ctx.options);
+  // Builds stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
 
   return {
     getCompiledGraphs: () =>
       [...builds.values()].map(entry => entry.compiled as CompiledGPUCommandGraph<never>),
     setOption(id, options) {
       if (id === 'crossKinds') writeFilter(options);
-      else select(options);
+      else {
+        // The previous build keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => build(options),
+          commit: next => {
+            select(next, options);
+            ctx.requestLayers();
+          }
+        });
+      }
     },
     encode(commandEncoder) {
       if (!active) return;
@@ -446,10 +487,10 @@ function createCrossingsView(env: Environment): View {
 // View: noding (GPULineSplit, GPULineMerge, GPUNetworkNoding)
 // ---------------------------------------------------------------------------------------------
 
-function createNodingView(env: Environment): View {
+async function createNodingView(env: Environment): Promise<View> {
   const {ctx} = env;
   const {device} = ctx;
-  let resources = new SpatialAnalysisResources(device, 'noding');
+  let currentResources = new SpatialAnalysisResources(device, 'noding');
   let current: {
     key: string;
     compiledA: CompiledGPUCommandGraph<void>;
@@ -462,18 +503,26 @@ function createNodingView(env: Environment): View {
   let dirty = true;
   let toleranceDirty = true;
 
-  const rebuild = (options: Options) => {
+  type NodingBuild = {
+    key: string;
+    resources: SpatialAnalysisResources;
+    compiledA: CompiledGPUCommandGraph<void>;
+    compiledB: CompiledGPUCommandGraph<void>;
+    readers: SummaryReader[];
+    toleranceWrite: (value: number) => void;
+    inputReadout: string;
+    encodeFor: (commandEncoder: Parameters<View['encode']>[0]) => void;
+    layersFor: () => Layer[];
+  };
+
+  /**
+   * Compiles the noding graphs into their own resources, or returns null when the live ones already
+   * match `options`. Changes no live state: the current graphs keep encoding until `commit`.
+   */
+  const rebuild = async (options: Options): Promise<NodingBuild | null> => {
     const key = `${options.nodingInput}|${options.nodingCapacity}|${options.nodingSpatialSort}`;
-    if (current?.key === key) return;
-    // Retire the old resources a moment later: Deck may still hold the last frame's layers.
-    const previous = resources;
-    const previousReaders = readers;
-    setTimeout(() => {
-      for (const reader of previousReaders) reader.stop();
-      previous.destroy();
-    }, 500);
-    resources = new SpatialAnalysisResources(device, `noding-${key}`);
-    readers = [];
+    if (current?.key === key) return null;
+    const resources = new SpatialAnalysisResources(device, `noding-${key}`);
     const lines = env.buildNoding(options.nodingInput);
     const lineCount = lines.pathCount;
     const vertexCount = lines.vertexCount;
@@ -529,16 +578,18 @@ function createNodingView(env: Environment): View {
           },
           intersectionCapacity,
           spatialSort: options.nodingSpatialSort,
-          uncertainCount: imp('split-uncertain', splitUncertain, 'uint32', 1),
-          pieces: {
-            geometry: {kind: 'lines', positions: positionsView, lineOffsets: offsetsView},
-            sourceIds: imp('split-line-ids', splitLineIds, 'uint32', pieceCapacity),
-            status: {
-              count: imp('split-count', splitCount, 'uint32', 1),
-              overflow: imp('split-overflow', splitOverflow, 'uint32', 1),
-              requiredCount: imp('split-total', splitTotal, 'uint32', 1)
+          output: {
+            pieces: {
+              geometry: {kind: 'lines', positions: positionsView, lineOffsets: offsetsView},
+              sourceIds: imp('split-line-ids', splitLineIds, 'uint32', pieceCapacity),
+              status: {
+                count: imp('split-count', splitCount, 'uint32', 1),
+                overflow: imp('split-overflow', splitOverflow, 'uint32', 1),
+                requiredCount: imp('split-total', splitTotal, 'uint32', 1),
+                vertexCount: imp('split-vertices', splitVertices, 'uint32', 1)
+              }
             },
-            vertexCount: imp('split-vertices', splitVertices, 'uint32', 1)
+            status: {uncertainCount: imp('split-uncertain', splitUncertain, 'uint32', 1)}
           }
         })
       );
@@ -552,7 +603,7 @@ function createNodingView(env: Environment): View {
           output: {
             chainOffsets: chainOffsetsView,
             positions: imp('chain-positions', chainPositions, 'float32x2', vertexCapacity),
-            count: chainCountView
+            status: {count: chainCountView}
           }
         })
       );
@@ -573,7 +624,7 @@ function createNodingView(env: Environment): View {
         body: /* wgsl */ `vertices[verticesOffset] = offsets[offsetsOffset + min(count[countOffset], ${pieceCapacity}u)];`
       });
     }
-    const compiledA = resources.track(graphA.compile());
+    const compiledA = resources.track(await graphA.compileAsync());
 
     // Graph B: network noding with a per-frame snap tolerance.
     const tolerance = resources.createParameterBuffer('tolerance', 'float32', 1);
@@ -625,38 +676,44 @@ function createNodingView(env: Environment): View {
           },
           intersectionCapacity,
           spatialSort: options.nodingSpatialSort,
-          uncertainCount: imp('net-uncertain', netUncertain, 'uint32', 1),
           tolerance: tolerance.importToGraph(graphB),
-          pieces: {
-            geometry: {
-              kind: 'lines',
-              positions: imp('net-positions', piecesPositions, 'float32x2', vertexCapacity),
-              lineOffsets: imp('net-offsets', piecesOffsets, 'uint32', pieceCapacity + 1)
+          output: {
+            pieces: {
+              geometry: {
+                kind: 'lines',
+                positions: imp('net-positions', piecesPositions, 'float32x2', vertexCapacity),
+                lineOffsets: imp('net-offsets', piecesOffsets, 'uint32', pieceCapacity + 1)
+              },
+              sourceIds: imp('net-line-ids', piecesLineIds, 'uint32', pieceCapacity),
+              status: {
+                count: imp('net-count', piecesCount, 'uint32', 1),
+                overflow: imp('net-piece-overflow', splitOverflow, 'uint32', 1),
+                requiredCount: imp('net-total', piecesTotal, 'uint32', 1),
+                vertexCount: imp('net-vertices', piecesVertices, 'uint32', 1)
+              }
             },
-            sourceIds: imp('net-line-ids', piecesLineIds, 'uint32', pieceCapacity),
+            nodes: {
+              positions: imp('node-positions', nodePositions, 'float32x2', nodeCapacity),
+              status: {
+                count: nodeCountView,
+                requiredCount: imp('node-total', nodeTotal, 'uint32', 1)
+              }
+            },
+            edges: {
+              fromNodes: imp('from-nodes', fromNodes, 'uint32', pieceCapacity),
+              toNodes: imp('to-nodes', toNodes, 'uint32', pieceCapacity),
+              lengths: imp('edge-lengths', edgeLengths, 'float32', pieceCapacity)
+            },
+            topology: {
+              offsets: csrOffsetsView,
+              neighbors: imp('csr-neighbors', csrNeighbors, 'uint32', pieceCapacity * 2),
+              weights: imp('csr-weights', csrWeights, 'float32', pieceCapacity * 2)
+            },
             status: {
-              count: imp('net-count', piecesCount, 'uint32', 1),
-              overflow: imp('net-piece-overflow', splitOverflow, 'uint32', 1),
-              requiredCount: imp('net-total', piecesTotal, 'uint32', 1)
-            },
-            vertexCount: imp('net-vertices', piecesVertices, 'uint32', 1)
-          },
-          nodes: {
-            positions: imp('node-positions', nodePositions, 'float32x2', nodeCapacity),
-            count: nodeCountView,
-            requiredCount: imp('node-total', nodeTotal, 'uint32', 1)
-          },
-          edges: {
-            fromNodes: imp('from-nodes', fromNodes, 'uint32', pieceCapacity),
-            toNodes: imp('to-nodes', toNodes, 'uint32', pieceCapacity),
-            lengths: imp('edge-lengths', edgeLengths, 'float32', pieceCapacity)
-          },
-          csr: {
-            offsets: csrOffsetsView,
-            neighbors: imp('csr-neighbors', csrNeighbors, 'uint32', pieceCapacity * 2),
-            weights: imp('csr-weights', csrWeights, 'float32', pieceCapacity * 2)
-          },
-          overflow: imp('net-overflow', netOverflow, 'uint32', 1)
+              uncertainCount: imp('net-uncertain', netUncertain, 'uint32', 1),
+              overflow: imp('net-overflow', netOverflow, 'uint32', 1)
+            }
+          }
         })
       );
       addKernelPass(graphB, {
@@ -680,12 +737,9 @@ function createNodingView(env: Environment): View {
   degrees[degreesOffset + index] = value;`
       });
     }
-    const compiledB = resources.track(graphB.compile());
+    const compiledB = resources.track(await graphB.compileAsync());
 
-    current = {key, compiledA, compiledB};
-    toleranceDirty = true;
-    dirty = true;
-    toleranceWrite = value => tolerance.write(Float32Array.of(value));
+    const nextToleranceWrite = (value: number) => tolerance.write(Float32Array.of(value));
 
     const readerA = new SummaryReader(
       resources,
@@ -732,13 +786,9 @@ function createNodingView(env: Environment): View {
         );
       }
     );
-    readers = [readerA, readerB];
-    ctx.setReadout(
-      'nodingInput',
-      `${formatCount(lineCount)} polylines (${lines.routeCount} routes${lines.duplicatesRemoved ? `, ${formatCount(lines.duplicatesRemoved)} exact duplicates removed` : ''}), ${formatCount(vertexCount)} vertices`
-    );
+    const inputReadout = `${formatCount(lineCount)} polylines (${lines.routeCount} routes${lines.duplicatesRemoved ? `, ${formatCount(lines.duplicatesRemoved)} exact duplicates removed` : ''}), ${formatCount(vertexCount)} vertices`;
 
-    encodeFor = commandEncoder => {
+    const nextEncodeFor = (commandEncoder: Parameters<View['encode']>[0]) => {
       const options = ctx.options;
       if (dirty) {
         compiledA.encode(commandEncoder, {parameters: undefined});
@@ -761,7 +811,7 @@ function createNodingView(env: Environment): View {
       readerB.flush(commandEncoder);
     };
 
-    layersFor = () => {
+    const nextLayersFor = () => {
       const options = ctx.options;
       const dark = ctx.theme() === 'dark';
       const layers: Layer[] = [];
@@ -844,17 +894,64 @@ function createNodingView(env: Environment): View {
       }
       return layers;
     };
+    return {
+      key,
+      resources,
+      compiledA,
+      compiledB,
+      readers: [readerA, readerB],
+      toleranceWrite: nextToleranceWrite,
+      inputReadout,
+      encodeFor: nextEncodeFor,
+      layersFor: nextLayersFor
+    };
   };
-  rebuild(ctx.options);
-  toleranceWrite?.(ctx.options.nodingTolerance);
+
+  /** Releases a build that was never committed. */
+  const discardBuild = (next: NodingBuild | null) => {
+    if (!next) return;
+    for (const reader of next.readers) reader.stop();
+    next.resources.destroy();
+  };
+
+  /** Swaps `next` in, then retires the replaced resources. */
+  const commitBuild = (next: NodingBuild | null) => {
+    if (!next) return;
+    // Retire the old resources a moment later: Deck may still hold the last frame's layers.
+    const previous = currentResources;
+    const previousReaders = readers;
+    setTimeout(() => {
+      for (const reader of previousReaders) reader.stop();
+      previous.destroy();
+    }, 500);
+    currentResources = next.resources;
+    readers = next.readers;
+    current = {key: next.key, compiledA: next.compiledA, compiledB: next.compiledB};
+    toleranceWrite = next.toleranceWrite;
+    encodeFor = next.encodeFor;
+    layersFor = next.layersFor;
+    toleranceDirty = true;
+    dirty = true;
+    ctx.setReadout('nodingInput', next.inputReadout);
+    toleranceWrite(ctx.options.nodingTolerance);
+  };
+  commitBuild(await rebuild(ctx.options));
+  const graphSwap = new GraphSwap();
 
   return {
     getCompiledGraphs: () =>
       current ? ([current.compiledA, current.compiledB] as CompiledGPUCommandGraph<never>[]) : [],
     setOption(id, options) {
       if (id === 'nodingInput' || id === 'nodingCapacity' || id === 'nodingSpatialSort') {
-        rebuild(options);
-        toleranceWrite?.(options.nodingTolerance);
+        // The previous graphs keep encoding until the new ones have compiled.
+        void graphSwap.request({
+          build: () => rebuild(options),
+          commit: next => {
+            commitBuild(next);
+            ctx.requestLayers();
+          },
+          discard: discardBuild
+        });
       } else if (id === 'nodingTolerance') {
         toleranceWrite?.(options.nodingTolerance);
         toleranceDirty = true;
@@ -865,8 +962,9 @@ function createNodingView(env: Environment): View {
     },
     getLayers: () => (layersFor ? layersFor() : []),
     destroy() {
+      graphSwap.destroy();
       for (const reader of readers) reader.stop();
-      resources.destroy();
+      currentResources.destroy();
     }
   };
 }
@@ -877,7 +975,7 @@ function createNodingView(env: Environment): View {
 
 const RING_CAPACITY = 8192;
 
-function createDissolveView(env: Environment): View {
+async function createDissolveView(env: Environment): Promise<View> {
   const {ctx} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'dissolve');
@@ -926,7 +1024,7 @@ function createDissolveView(env: Environment): View {
     dirty = true;
   };
 
-  const build = (options: Options): Build => {
+  const build = async (options: Options): Promise<Build> => {
     const key = [
       options.cancelOpposing,
       options.splitTouching,
@@ -975,11 +1073,13 @@ function createDissolveView(env: Environment): View {
           ringIsHole: holesView,
           ringGroups: groupsView,
           segmentFlags: imp('flags', flags, 'uint32', segmentCount),
-          count: countView,
-          overflow: imp('overflow', overflow, 'uint32', 1),
-          requiredCount: imp('total', total, 'uint32', 1),
-          openSegmentCount: imp('open', open, 'uint32', 1),
-          touchingSegmentCount: imp('touching', touching, 'uint32', 1)
+          status: {
+            count: countView,
+            overflow: imp('overflow', overflow, 'uint32', 1),
+            requiredCount: imp('total', total, 'uint32', 1),
+            openSegmentCount: imp('open', open, 'uint32', 1),
+            touchingSegmentCount: imp('touching', touching, 'uint32', 1)
+          }
         }
       })
     );
@@ -1071,7 +1171,7 @@ function createDissolveView(env: Environment): View {
     );
     const entry: Build = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       ringOffsets,
       positions,
       count,
@@ -1084,8 +1184,10 @@ function createDissolveView(env: Environment): View {
     builds.set(key, entry);
     return entry;
   };
-  active = build(ctx.options);
+  active = await build(ctx.options);
   writeGroups(ctx.options);
+  // Builds stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
 
   return {
     getCompiledGraphs: () =>
@@ -1099,8 +1201,15 @@ function createDissolveView(env: Environment): View {
         id === 'interiorSide' ||
         id === 'normalizeWinding'
       ) {
-        active = build(options);
-        dirty = true;
+        // The previous build keeps encoding until the new one has compiled.
+        void graphSwap.request({
+          build: () => build(options),
+          commit: next => {
+            active = next;
+            dirty = true;
+            ctx.requestLayers();
+          }
+        });
       }
     },
     encode(commandEncoder) {
@@ -1178,7 +1287,7 @@ function createDissolveView(env: Environment): View {
 // View: generalise (GPUCoverageSimplification against independent simplification)
 // ---------------------------------------------------------------------------------------------
 
-function createGeneraliseView(env: Environment): View {
+async function createGeneraliseView(env: Environment): Promise<View> {
   const {ctx} = env;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'generalise');
@@ -1190,6 +1299,7 @@ function createGeneraliseView(env: Environment): View {
   const positions = resources.createBuffer('positions', projectRows(layout.lngLat, projectAlbers));
   const ringOffsets = resources.createBuffer('ring-offsets', layout.ringOffsets);
   const polygonOffsets = resources.createBuffer('polygon-offsets', layout.polygonOffsets);
+  const featureOffsets = resources.createBuffer('feature-offsets', layout.featureOffsets);
   const vertexRings = new Uint32Array(vertexCount);
   for (let ring = 0; ring < ringCount; ring++) {
     for (let vertex = layout.ringOffsets[ring]; vertex < layout.ringOffsets[ring + 1]; vertex++)
@@ -1237,7 +1347,7 @@ function createGeneraliseView(env: Environment): View {
       encoded: boolean;
     }
   >();
-  const buildIndependent = (options: Options) => {
+  const buildIndependent = async (options: Options) => {
     const key = options.coverageRounds;
     let entry = independentGraphs.get(key);
     if (entry) return entry;
@@ -1248,7 +1358,7 @@ function createGeneraliseView(env: Environment): View {
         imp,
         base: {
           positions: imp('positions', positions, 'float32x2', vertexCount),
-          trackOffsets: imp('ring-offsets', ringOffsets, 'uint32', ringCount + 1),
+          lineOffsets: imp('ring-offsets', ringOffsets, 'uint32', ringCount + 1),
           importance: imp('importance', importance, 'float32', vertexCount)
         }
       };
@@ -1262,10 +1372,12 @@ function createGeneraliseView(env: Environment): View {
         new GPULineSimplification({
           id: 'independent-importance',
           ...base,
-          maximumRounds,
-          status: {
-            converged: imp('converged', importanceConverged, 'uint32', 1),
-            roundCount: imp('rounds', importanceRounds, 'uint32', 1)
+          maximumIterations: maximumRounds,
+          output: {
+            status: {
+              converged: imp('converged', importanceConverged, 'uint32', 1),
+              iterationCount: imp('rounds', importanceRounds, 'uint32', 1)
+            }
           }
         })
       );
@@ -1279,9 +1391,9 @@ function createGeneraliseView(env: Environment): View {
           ...base,
           computeImportance: false,
           parameters: parameters.importToGraph(selectionGraph),
-          selection: {
-            output: {
-              ids: imp('kept-ids', keptIds, 'uint32', vertexCount),
+          output: {
+            ids: imp('kept-ids', keptIds, 'uint32', vertexCount),
+            status: {
               count: imp('kept-count', keptCount, 'uint32', 1),
               overflow: imp('kept-overflow', keptOverflow, 'uint32', 1)
             }
@@ -1290,8 +1402,8 @@ function createGeneraliseView(env: Environment): View {
       );
     }
     entry = {
-      importance: resources.track(importanceGraph.compile()),
-      selection: resources.track(selectionGraph.compile()),
+      importance: resources.track(await importanceGraph.compileAsync()),
+      selection: resources.track(await selectionGraph.compileAsync()),
       encoded: false
     };
     independentGraphs.set(key, entry);
@@ -1311,7 +1423,7 @@ function createGeneraliseView(env: Environment): View {
     reader: SummaryReader;
   };
   const coverages = new Map<string, Coverage>();
-  const buildCoverage = (options: Options): Coverage => {
+  const buildCoverage = async (options: Options): Promise<Coverage> => {
     const key = `${options.topologyRounds}|${options.coverageSnap}|${options.coverageRounds}`;
     const cached = coverages.get(key);
     if (cached) return cached;
@@ -1330,19 +1442,22 @@ function createGeneraliseView(env: Environment): View {
       new GPUCoverageSimplification({
         id: 'coverage',
         positions: imp('positions', positions, 'float32x2', vertexCount),
-        ringOffsets: imp('ring-offsets', ringOffsets, 'uint32', ringCount + 1),
+        featureOffsets: imp('feature-offsets', featureOffsets, 'uint32', layout.featureCount + 1),
         polygonOffsets: imp('polygon-offsets', polygonOffsets, 'uint32', partCount + 1),
+        ringOffsets: imp('ring-offsets', ringOffsets, 'uint32', ringCount + 1),
         snapTolerance: Number(options.coverageSnap),
         parameters: parameters.importToGraph(graph),
-        maximumRounds: Number(options.coverageRounds),
-        topologyRounds: Number(options.topologyRounds),
-        converged: imp('converged', converged, 'uint32', 1),
+        maximumIterations: Number(options.coverageRounds),
+        topologyIterationCount: Number(options.topologyRounds),
         output: {
           positions: outPositionsView,
           ringOffsets: outRingsView,
-          keepMask: imp('keep-mask', keepMask, 'uint32', vertexCount),
-          overflow: imp('overflow', overflow, 'uint32', 1),
-          topologyStats: imp('topology', topology, 'uint32', 4)
+          outputMask: imp('keep-mask', keepMask, 'uint32', vertexCount),
+          topologyStatistics: imp('topology', topology, 'uint32', 4),
+          status: {
+            converged: imp('converged', converged, 'uint32', 1),
+            overflow: imp('overflow', overflow, 'uint32', 1)
+          }
         }
       })
     );
@@ -1398,7 +1513,7 @@ function createGeneraliseView(env: Environment): View {
     );
     const entry: Coverage = {
       key,
-      compiled: resources.track(graph.compile()),
+      compiled: resources.track(await graph.compileAsync()),
       outPositions,
       outRings,
       vertices,
@@ -1412,18 +1527,24 @@ function createGeneraliseView(env: Environment): View {
   };
 
   let active: Coverage | null = null;
-  let independent: ReturnType<typeof buildIndependent> | null = null;
+  let independent: Awaited<ReturnType<typeof buildIndependent>> | null = null;
   let appliedTolerance = Number.NaN;
   let needsRead = true;
   const parameterValues = new Float32Array(GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH);
 
-  const select = (options: Options) => {
-    active = buildCoverage(options);
-    independent = buildIndependent(options);
+  const prepare = async (options: Options) => ({
+    coverage: await buildCoverage(options),
+    independentEntry: await buildIndependent(options)
+  });
+  const select = (next: Awaited<ReturnType<typeof prepare>>) => {
+    active = next.coverage;
+    independent = next.independentEntry;
     appliedTolerance = Number.NaN;
     needsRead = true;
   };
-  select(ctx.options);
+  select(await prepare(ctx.options));
+  // Graphs stay cached (and owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
   ctx.setReadout(
     'coverageInput',
     `${formatCount(layout.featureCount)} counties, ${formatCount(ringCount)} rings, ${formatCount(vertexCount)} vertices`
@@ -1443,7 +1564,14 @@ function createGeneraliseView(env: Environment): View {
     },
     setOption(id, options) {
       if (id === 'topologyRounds' || id === 'coverageSnap' || id === 'coverageRounds')
-        select(options);
+        // The previous graphs keep encoding until the new ones have compiled.
+        void graphSwap.request({
+          build: () => prepare(options),
+          commit: next => {
+            select(next);
+            ctx.requestLayers();
+          }
+        });
     },
     encode(commandEncoder) {
       if (!active || !independent) return;

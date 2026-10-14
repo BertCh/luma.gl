@@ -29,7 +29,7 @@ export async function createGreatCircles(
   } catch (error) {
     if (ctx.signal.aborted) throw error;
   }
-  const view = createWorldView({ctx, flows, airportRows});
+  const view = await createWorldView({ctx, flows, airportRows});
   return {
     getCompiledGraphs: () => view.getCompiledGraphs(),
     setOption(id, _value, options) {

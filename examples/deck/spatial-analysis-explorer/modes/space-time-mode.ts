@@ -28,6 +28,7 @@
  * static and re-running it would only burn power. The rebuild counter stays 0.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -52,10 +53,10 @@ import {
   GPU_CHANGE_DETECTION_PARAMETER_LENGTH
 } from '@luma.gl/experimental/gpu-raster';
 import {
-  getGPUEmergingHotSpotParameterValues,
+  getGPUEmergingHotSpotsParameterValues,
   GPUEmergingHotSpots,
-  GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH,
-  GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
+  GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH,
+  GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
 import {SpatialAnalysisPointLayer} from '../spatial-analysis-layers';
@@ -293,7 +294,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     const coldSliceBuffer = resources.createBuffer('cold-slices', cellCount * 4);
     const globalStatisticsBuffer = resources.createBuffer(
       'global-statistics',
-      GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH * 4
+      GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH * 4
     );
     const categoryCountsBuffer = resources.createBuffer('category-counts', CATEGORY_COUNT * 4);
     const differenceBuffer = resources.createBuffer('difference', cellCount * 4);
@@ -320,7 +321,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     const hotSpotParameters = resources.createParameterBuffer(
       'hot-spot-parameters',
       'float32',
-      GPU_EMERGING_HOT_SPOT_PARAMETER_LENGTH
+      GPU_EMERGING_HOT_SPOTS_PARAMETER_LENGTH
     );
     const changeParameters = resources.createParameterBuffer(
       'change-parameters',
@@ -397,20 +398,22 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         bucketCount: SLICE_COUNT,
         output: {
           counts: countsView,
-          min: importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', binCount),
-          max: maximumView,
+          minimums: importGraphBuffer(graph, 'minimum', minimumBuffer, 'float32', binCount),
+          maximums: maximumView,
           first: importGraphBuffer(graph, 'first', firstBuffer, 'float32', binCount),
           last: importGraphBuffer(graph, 'last', lastBuffer, 'float32', binCount),
           occupiedSlots: {
             ids: importGraphBuffer(graph, 'occupied-ids', occupiedIdsBuffer, 'uint32', binCount),
-            count: importGraphBuffer(graph, 'occupied-count', occupiedCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(
-              graph,
-              'occupied-overflow',
-              occupiedOverflowBuffer,
-              'uint32',
-              1
-            )
+            status: {
+              count: importGraphBuffer(graph, 'occupied-count', occupiedCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(
+                graph,
+                'occupied-overflow',
+                occupiedOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
           }
         }
       })
@@ -425,26 +428,34 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         sliceCount: SLICE_COUNT,
         maximumRadius: MAXIMUM_RADIUS,
         parameters: hotSpotParameters.importToGraph(graph),
-        giZScores: importGraphBuffer(graph, 'gi-z-scores', giScoresBuffer, 'float32', binCount),
-        trendZ: importGraphBuffer(graph, 'trend-z', trendZBuffer, 'float32', cellCount),
-        trendP: importGraphBuffer(graph, 'trend-p', trendPBuffer, 'float32', cellCount),
-        trendS: importGraphBuffer(graph, 'trend-s', trendSBuffer, 'sint32', cellCount),
-        category: categoryView,
-        hotSliceCount: importGraphBuffer(graph, 'hot-slices', hotSliceBuffer, 'uint32', cellCount),
-        coldSliceCount: importGraphBuffer(
-          graph,
-          'cold-slices',
-          coldSliceBuffer,
-          'uint32',
-          cellCount
-        ),
-        globalStatistics: importGraphBuffer(
-          graph,
-          'global-statistics',
-          globalStatisticsBuffer,
-          'float32',
-          GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH
-        )
+        output: {
+          giZScores: importGraphBuffer(graph, 'gi-z-scores', giScoresBuffer, 'float32', binCount),
+          trendZ: importGraphBuffer(graph, 'trend-z', trendZBuffer, 'float32', cellCount),
+          trendP: importGraphBuffer(graph, 'trend-p', trendPBuffer, 'float32', cellCount),
+          trendS: importGraphBuffer(graph, 'trend-s', trendSBuffer, 'sint32', cellCount),
+          category: categoryView,
+          hotSliceCount: importGraphBuffer(
+            graph,
+            'hot-slices',
+            hotSliceBuffer,
+            'uint32',
+            cellCount
+          ),
+          coldSliceCount: importGraphBuffer(
+            graph,
+            'cold-slices',
+            coldSliceBuffer,
+            'uint32',
+            cellCount
+          ),
+          globalStatistics: importGraphBuffer(
+            graph,
+            'global-statistics',
+            globalStatisticsBuffer,
+            'float32',
+            GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH
+          )
+        }
       })
     );
     graph.add(
@@ -532,7 +543,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         edges: Array.from({length: SIGNIFICANCE_CLASS_COUNT + 1}, (_, index) => index)
       })
     );
-    const compiled: CompiledGPUCommandGraph<void> = resources.track(graph.compile());
+    const compiled: CompiledGPUCommandGraph<void> = resources.track(await graph.compileAsync());
 
     // Summary readback layout in 32-bit words.
     const MATRIX_WORD = 0;
@@ -540,7 +551,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
     const SIGNIFICANCE_WORD = CATEGORY_WORD + CATEGORY_COUNT;
     const CUBE_WORD = SIGNIFICANCE_WORD + SIGNIFICANCE_CLASS_COUNT; // occupied, overflow, selected
     const STATISTICS_WORD = CUBE_WORD + 3;
-    const SUMMARY_WORDS = STATISTICS_WORD + GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH;
+    const SUMMARY_WORDS = STATISTICS_WORD + GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH;
     const readbackRing = resources.track(
       new GPUReadbackRing(device, {id: 'space-time-summary', byteLength: SUMMARY_WORDS * 4})
     );
@@ -579,7 +590,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         getGPUTemporalReductionWordParameterValues(getClockStartMs(), getSliceWidthMs())
       );
       hotSpotParameters.write(
-        getGPUEmergingHotSpotParameterValues({radius, temporalWindow, confidenceLevel})
+        getGPUEmergingHotSpotsParameterValues({radius, temporalWindow, confidenceLevel})
       );
       changeParameters.write(getGPUChangeDetectionParameterValues({beforeSlice, afterSlice}));
       const indices = new Uint32Array(cellCount);
@@ -868,7 +879,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
         [occupiedCountBuffer, CUBE_WORD, 1],
         [occupiedOverflowBuffer, CUBE_WORD + 1, 1],
         [selectedCountBuffer, CUBE_WORD + 2, 1],
-        [globalStatisticsBuffer, STATISTICS_WORD, GPU_EMERGING_HOT_SPOT_STATISTICS_LENGTH]
+        [globalStatisticsBuffer, STATISTICS_WORD, GPU_EMERGING_HOT_SPOTS_STATISTICS_LENGTH]
       ];
       for (const [sourceBuffer, word, length] of copies) {
         commandEncoder.copyBufferToBuffer({
@@ -882,7 +893,7 @@ export const spaceTimeMode: SpatialAnalysisModeDefinition = {
       readbackPending = true;
       needsReadback = false;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);
         const floats = new Float32Array(bytes.buffer, bytes.byteOffset, SUMMARY_WORDS);

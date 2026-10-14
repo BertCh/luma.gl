@@ -496,21 +496,23 @@ graph.add(prepared);                          // built once, reused every run
     : ''
 }graph.add(
   new GPUPointInPolygonJoin({
-    points,                                   // float32x2 meters, uploaded once
-    polygonPositions, featureOffsets, polygonOffsets, ringOffsets,
-    candidateCapacity: points.length * ${8},
+    points: {kind: 'points', positions},      // float32x2 meters, uploaded once
+    polygons: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets},
+    candidateCapacity: positions.length * ${8},
     boundaryRule: '${state.boundaryRule}',${state.prepared ? '\n    prepared,' : `\n    spatialSort: ${state.spatialSort},`}
-    pointFeatureIds,                          // per observation: tract row or NO_FEATURE
-    featureCounts,                            // per tract: observations
-    overflow, candidateCount, uncertainCount
+    output: {
+      pointFeatureIds,                        // per observation: tract row or NO_FEATURE
+      featureCounts,                          // per tract: observations
+      status: {overflow, candidateCount, uncertainCount}
+    }
   })
 );
 ${
   state.display === 'classes'
     ? `addPointsInPolygonsChoroplethRecipe(graph, {
   backend: '${state.backend}',
-  points, ${state.statistic === 'count' || state.statistic === 'density' ? '' : 'values, '}statistic: '${state.statistic === 'density' ? 'count' : state.statistic}',
-  polygons: {polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
+  points: {kind: 'points', positions}, ${state.statistic === 'count' || state.statistic === 'density' ? '' : 'values, '}statistic: '${state.statistic === 'density' ? 'count' : state.statistic}',
+  polygons: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
   color: {
     classBreaksParameters, maximumClassCount: 7, methods: ['${state.classMethod}', /* ... */],
     colorScaleParameters, palette, maximumPaletteCount: 7, colors
@@ -518,16 +520,16 @@ ${
 });`
     : `graph.add(
   new GPUZonalStatistics({
-    features: {kind: 'polygons', polygonPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
-    points,${state.statistic === 'count' || state.statistic === 'density' ? '' : '\n    values,                                   // per-observation float: introduced, researchGrade, ...'}${state.statistic === 'density' && state.denominator === 'population' ? '\n    areas,                                    // population / 1000 per tract' : ''}
+    features: {kind: 'polygons', positions: tractPositions, featureOffsets, polygonOffsets, ringOffsets, candidateCapacity},
+    positions,${state.statistic === 'count' || state.statistic === 'density' ? '' : '\n    values,                                   // per-observation float: introduced, researchGrade, ...'}${state.statistic === 'density' && state.denominator === 'population' ? '\n    areas,                                    // population / 1000 per tract' : ''}
     sumOrder: '${state.sumOrder}',
     output: {
-      ${state.statistic === 'count' ? 'counts' : state.statistic === 'density' ? 'densities' : `${state.statistic === 'sum' ? 'sums' : state.statistic === 'mean' ? 'means' : state.statistic === 'minimum' ? 'minima' : 'maxima'}`}, extent, extentStatistic: '${state.statistic}', overflow
+      ${state.statistic === 'count' ? 'counts' : state.statistic === 'density' ? 'densities' : `${state.statistic === 'sum' ? 'sums' : state.statistic === 'mean' ? 'means' : state.statistic === 'minimum' ? 'minima' : 'maxima'}`}, extent, extentStatistic: '${state.statistic}', status: {overflow}
     }
   })
 );`
 }
-const compiled = graph.compile();             // once
+const compiled = await graph.compileAsync();  // once
 // when an option changes, or every frame in streaming mode:
 valuesBuffer.write(values);                   // parameter writes only
 compiled.encode(commandEncoder, {parameters: undefined});`,

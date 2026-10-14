@@ -354,12 +354,14 @@ graph.add(
     }${['intersects', 'contains', 'within', 'dwithin'].includes(state.predicate) ? `\n    engine: '${state.engine}',` : ''}${state.combo === 'tracts-self' ? '\n    excludeSameRow: true,' : ''}
     candidateCapacity,
     prepared,
-    pairs: {leftIds, rightIds, count, overflow, requiredCount},${state.matrix && state.predicate !== 'dwithin' ? '\n    relate: matrices,                         // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n    weights: {offsets, neighbors, weights},   // cross weights, CSR' : ''}
-    uncertainCount, candidateCount
+    output: {
+      pairs: {leftIds, rightIds, status: {count, overflow, requiredCount}},${state.matrix && state.predicate !== 'dwithin' ? '\n      relate: matrices,                       // formatGPUSpatialRelate(word)' : ''}${state.combo === 'tracts-self' ? '\n      weights: {offsets, neighbors, weights}, // cross weights, CSR (rows are features)' : ''}
+      status: {uncertainCount, candidateCount}
+    }
   })
 );
-graph.add(new GPUSpatialPredicateJoin({... how: 'anti', unmatched: {ids, count, overflow}}));
-const compiled = graph.compile();            // once
+graph.add(new GPUSpatialPredicateJoin({... how: 'anti', output: {unmatched: {ids, status: {count, overflow}}}}));
+const compiled = await graph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});`;
   },
 

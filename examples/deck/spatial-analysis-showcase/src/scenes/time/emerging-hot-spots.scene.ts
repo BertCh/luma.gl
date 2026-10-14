@@ -445,11 +445,14 @@ export default defineScene<EmergingHotSpotsOptions>({
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {
   addSpaceTimeHotSpotsRecipe,
-  getGPUEmergingHotSpotParameterValues,
   GPUEmergingHotSpots
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {GPUTemporalReduction} from '@luma.gl/experimental/gpu-dataframe';
 
+const hotSpotSettings = {
+  radius: ${state.radius}, temporalWindow: ${state.temporalWindow}, confidenceLevel: ${state.confidence},
+  persistentFraction: ${state.persistentFraction}${state.tieTrend ? '' : `, trendSignificanceLevel: ${state.trendLevel}`}
+};
 const graph = new GPUCommandGraph(device, {id: 'emerging'});
 ${
   state.cube === 'weeks'
@@ -458,16 +461,17 @@ graph.add(new GPUTemporalReduction({
   cellIds, timestamps: seconds, values: ones, mask: eventMask,
   parameters: bucketParameters,          // [origin, width] = [0, 7 * 86400]
   cellCount, bucketCount: 52,
-  output: {counts, min, max, first, last, occupiedSlots}
+  output: {counts, minimums, maximums, first, last, occupiedSlots}
 }));
-graph.add(new GPUEmergingHotSpots({
+const emerging = new GPUEmergingHotSpots({
   values: counts, ${state.neighborhood === 'lattice' ? 'gridWidth, gridHeight, maximumRadius: 4' : 'weights, selfWeight: 1'},
   sliceCount: 52, mask: cellMask, parameters: hotSpotParameters,
   multipleTesting: '${state.multipleTesting}',
-  giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount
-}));`
+  output: {giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount}
+});
+graph.add(emerging);`
     : `// calendar ${state.cube === 'months' ? 'months' : 'five-day periods'} of 2023 -> cube -> Gi* -> categories in one recipe
-addSpaceTimeHotSpotsRecipe(graph, {
+const recipe = addSpaceTimeHotSpotsRecipe(graph, {
   timestamps, mask: eventMask, calendarParameters,
   slices: ${
     state.cube === 'months'
@@ -480,17 +484,18 @@ addSpaceTimeHotSpotsRecipe(graph, {
       ? `{kind: 'lattice', positions, width, height, bounds, maximumRadius: 4}`
       : `{kind: 'ids', cellIds, cellCount, weights, selfWeight: 1}`
   },
-  cellMask, parameters: hotSpotParameters,
-  cube, giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount
+  cellMask, parameters: hotSpotParameters,     // a GPUParameterBuffer the recipe fills from settings
+  settings: hotSpotSettings,                    // also gives result.inference for the legend
+  outputs: {cube, giZScores, trendZ, trendP, trendS, category, hotSliceCount, coldSliceCount}
 });`
 }
-const compiled = graph.compile();            // once
-// per change: write parameters (no rebuild), then encode
-hotSpotParameters.write(getGPUEmergingHotSpotParameterValues({
-  radius: ${state.radius}, temporalWindow: ${state.temporalWindow}, confidenceLevel: ${state.confidence},
-  multipleTesting: '${state.multipleTesting}',
-  persistentFraction: ${state.persistentFraction}${state.tieTrend ? '' : `, trendSignificanceLevel: ${state.trendLevel}`}
-}));
+const compiled = await graph.compileAsync();  // once
+// per change: write the settings (no rebuild), then encode
+${
+  state.cube === 'weeks'
+    ? 'hotSpotParameters.write(emerging.getParameterValues(hotSpotSettings));'
+    : 'recipe.setSettings(hotSpotSettings);   // packs the parameters and updates recipe.inference'
+}
 compiled.encode(commandEncoder, {parameters: undefined});`,
 
   about: {

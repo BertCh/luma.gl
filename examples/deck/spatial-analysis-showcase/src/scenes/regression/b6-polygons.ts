@@ -106,6 +106,20 @@ export function subsetPolygonGeometry(
   };
 }
 
+/**
+ * Feature to part offsets (`featureCount + 1`): the `featureOffsets` of the four-level polygon
+ * port, next to `partRingOffsets` (`polygonOffsets`) and `ringOffsets`. Parts of a feature are
+ * contiguous, so every feature owns a contiguous part range.
+ */
+export function getFeaturePolygonOffsets(geometry: PolygonGeometry): Uint32Array {
+  const offsets = new Uint32Array(geometry.featureCount + 1);
+  for (const feature of geometry.partFeature) offsets[feature + 1]++;
+  for (let feature = 0; feature < geometry.featureCount; feature++) {
+    offsets[feature + 1] += offsets[feature];
+  }
+  return offsets;
+}
+
 function getFeatureParts(geometry: PolygonGeometry): number[][] {
   const parts: number[][] = Array.from({length: geometry.featureCount}, () => []);
   for (let part = 0; part < geometry.partFeature.length; part++) {

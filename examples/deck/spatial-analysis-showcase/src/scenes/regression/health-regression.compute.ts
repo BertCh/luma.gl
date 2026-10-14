@@ -10,7 +10,6 @@ import {
   getGPUNeighborSearchParameterValues,
   getGPUOrdinaryLeastSquaresModelResult,
   getGPUOrdinaryLeastSquaresParameterValues,
-  getGPUSpatialAutocorrelationParameterValues,
   getGPUSpatialErrorGMModelResult,
   getGPUSpatialTwoStageLeastSquaresDiagnostics,
   getGPUSpatialTwoStageLeastSquaresModelResult,
@@ -45,7 +44,8 @@ import {
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_ROBUST_LM_LAG,
   GPU_SPATIAL_REGRESSION_DIAGNOSTICS_TEST_STRIDE,
   GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH,
-  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE
+  GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_TABLE_STRIDE,
+  type GPUSpatialRegressionRecipeResult
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {
   GPUCommandGraph,
@@ -54,6 +54,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer} from '../../engine/layers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import type {SceneContext, SceneInstance} from '../scene';
 import {createNamedReader} from './b6-reader';
@@ -67,6 +68,7 @@ import {
   formatInteger,
   formatNumber,
   formatP,
+  getFeaturePolygonOffsets,
   getLargestComponent,
   getMoments,
   getQuantile,
@@ -141,6 +143,8 @@ type Variant = {
   predictorCount: number;
   names: string[];
   recipe: CompiledGPUCommandGraph<void>;
+  /** Repacks the significance level into the parameter buffer shared by every variant. */
+  setSettings: GPUSpatialRegressionRecipeResult['setSettings'];
   lag: Map<'1' | '2', CompiledGPUCommandGraph<void>>;
   error: CompiledGPUCommandGraph<void>;
   buffers: {
@@ -151,7 +155,7 @@ type Variant = {
     lagResiduals: Buffer;
     errorResiduals: Buffer;
   };
-  addLag: (order: '1' | '2') => CompiledGPUCommandGraph<void>;
+  addLag: (order: '1' | '2') => Promise<CompiledGPUCommandGraph<void>>;
   reader: ReturnType<typeof createNamedReader>;
 };
 
@@ -256,10 +260,11 @@ export async function createHealthRegression(
   const positionsBuffer = resources.createBuffer('positions', meters);
   const verticesBuffer = resources.createBuffer('vertices', geometry.vertices);
   const ringOffsetsBuffer = resources.createBuffer('ring-offsets', geometry.ringOffsets);
-  const polygonOffsetsBuffer = resources.createBuffer(
-    'polygon-offsets',
-    geometry.featureRingOffsets
+  const featureOffsetsBuffer = resources.createBuffer(
+    'feature-offsets',
+    getFeaturePolygonOffsets(geometry)
   );
+  const polygonOffsetsBuffer = resources.createBuffer('polygon-offsets', geometry.partRingOffsets);
   const responseBuffer = resources.createBuffer('response', getResponse(ctx.options.outcome));
   const capacity = rowCount * SLOTS_PER_ROW;
   const offsetsBuffer = resources.createBuffer('offsets', (rowCount + 1) * 4);
@@ -267,6 +272,7 @@ export async function createHealthRegression(
   const weightValuesBuffer = resources.createBuffer('weight-values', capacity * 4);
   const overflowBuffer = resources.createBuffer('overflow', 4);
   const totalNeighborsBuffer = resources.createBuffer('total-neighbors', 4);
+  const candidateOverflowBuffer = resources.createBuffer('candidate-overflow', 4);
   const searchParameters = resources.createParameterBuffer(
     'search-parameters',
     'float32',
@@ -307,48 +313,64 @@ export async function createHealthRegression(
     weights: importGraphBuffer(graph, 'weight-values', weightValuesBuffer, 'float32', capacity)
   });
   const weightsGraphs = new Map<WeightsKind, CompiledGPUCommandGraph<void>>();
-  const getWeightsGraph = (kind: WeightsKind): CompiledGPUCommandGraph<void> => {
+  const getWeightsGraph = async (kind: WeightsKind): Promise<CompiledGPUCommandGraph<void>> => {
     let compiled = weightsGraphs.get(kind);
     if (compiled) return compiled;
     const graph = new GPUCommandGraph<void>(device, {id: `health-weights-${kind}`});
     const weights = importWeights(graph);
-    const overflow = importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1);
-    const totalNeighbors = importGraphBuffer(
-      graph,
-      'total-neighbors',
-      totalNeighborsBuffer,
-      'uint32',
-      1
-    );
+    const status = {
+      overflow: importGraphBuffer(graph, 'overflow', overflowBuffer, 'uint32', 1),
+      requiredCount: importGraphBuffer(graph, 'total-neighbors', totalNeighborsBuffer, 'uint32', 1)
+    };
     if (kind === 'queen' || kind === 'rook') {
       graph.add(
         new GPUContiguityWeights({
           id: 'contiguity',
           criterion: kind,
-          positions: importGraphBuffer(
-            graph,
-            'vertices',
-            verticesBuffer,
-            'float32x2',
-            geometry.vertices.length / 2
-          ),
-          ringOffsets: importGraphBuffer(
-            graph,
-            'ring-offsets',
-            ringOffsetsBuffer,
-            'uint32',
-            geometry.ringOffsets.length
-          ),
-          polygonOffsets: importGraphBuffer(
-            graph,
-            'polygon-offsets',
-            polygonOffsetsBuffer,
-            'uint32',
-            rowCount + 1
-          ),
-          weights,
-          overflow,
-          totalNeighbors
+          polygons: {
+            kind: 'polygons',
+            positions: importGraphBuffer(
+              graph,
+              'vertices',
+              verticesBuffer,
+              'float32x2',
+              geometry.vertices.length / 2
+            ),
+            featureOffsets: importGraphBuffer(
+              graph,
+              'feature-offsets',
+              featureOffsetsBuffer,
+              'uint32',
+              geometry.featureCount + 1
+            ),
+            polygonOffsets: importGraphBuffer(
+              graph,
+              'polygon-offsets',
+              polygonOffsetsBuffer,
+              'uint32',
+              geometry.partRingOffsets.length
+            ),
+            ringOffsets: importGraphBuffer(
+              graph,
+              'ring-offsets',
+              ringOffsetsBuffer,
+              'uint32',
+              geometry.ringOffsets.length
+            )
+          },
+          output: {
+            ...weights,
+            status: {
+              ...status,
+              candidateOverflow: importGraphBuffer(
+                graph,
+                'candidate-overflow',
+                candidateOverflowBuffer,
+                'uint32',
+                1
+              )
+            }
+          }
         })
       );
       graph.add(new GPUSpatialWeightsTransform({id: 'row-standardize', operation: 'row', weights}));
@@ -361,13 +383,11 @@ export async function createHealthRegression(
           gridSize: GRID_SIZE,
           positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', rowCount),
           parameters: searchParameters.importToGraph(graph),
-          weights,
-          overflow,
-          totalNeighbors
+          output: {...weights, status}
         })
       );
     }
-    compiled = resources.track(graph.compile());
+    compiled = resources.track(await graph.compileAsync());
     weightsGraphs.set(kind, compiled);
     return compiled;
   };
@@ -382,7 +402,7 @@ export async function createHealthRegression(
 
   // ---- Model variants (compiled when first chosen). ----
   const variants = new Map<ModelId, Variant>();
-  const getVariant = (model: ModelId): Variant => {
+  const getVariant = async (model: ModelId): Promise<Variant> => {
     const existing = variants.get(model);
     if (existing) return existing;
     const ids = MODEL_PREDICTORS[model];
@@ -441,13 +461,14 @@ export async function createHealthRegression(
       view(graph, 'predictors', buffers.predictors, 'float32', rowCount * predictorCount);
     const responseView = (graph: GPUCommandGraph<void>) =>
       view(graph, 'response', responseBuffer, 'float32', rowCount);
-    addSpatialRegressionRecipe(recipeGraph, {
+    const recipeResult = addSpatialRegressionRecipe(recipeGraph, {
       id: 'health',
       predictors: predictorView(recipeGraph),
       response: responseView(recipeGraph),
       predictorCount,
       weights: importWeights(recipeGraph),
-      parameters: moranParameters.importToGraph(recipeGraph),
+      settings: {significanceLevel: ctx.options.significance},
+      parameters: moranParameters,
       olsParameters: olsParameters.importToGraph(recipeGraph),
       outputs: {
         ols: {
@@ -479,7 +500,7 @@ export async function createHealthRegression(
             'float32',
             GPU_ORDINARY_LEAST_SQUARES_SUMMARY_LENGTH
           ),
-          status: view(recipeGraph, 'ols-status', buffers.olsStatus, 'uint32', 1),
+          status: {code: view(recipeGraph, 'ols-status', buffers.olsStatus, 'uint32', 1)},
           residuals: view(recipeGraph, 'ols-residuals', buffers.olsResiduals, 'float32', rowCount),
           fitted: view(recipeGraph, 'fitted', buffers.fitted, 'float32', rowCount)
         },
@@ -498,7 +519,9 @@ export async function createHealthRegression(
             'float32',
             GPU_SPATIAL_REGRESSION_DIAGNOSTICS_SUMMARY_LENGTH
           ),
-          status: view(recipeGraph, 'diagnostics-status', buffers.diagnosticsStatus, 'uint32', 1)
+          status: {
+            code: view(recipeGraph, 'diagnostics-status', buffers.diagnosticsStatus, 'uint32', 1)
+          }
         },
         residualMoran: {
           zScores: view(recipeGraph, 'moran-z', buffers.zScores, 'float32', rowCount),
@@ -508,7 +531,7 @@ export async function createHealthRegression(
         }
       }
     });
-    const recipe = resources.track(recipeGraph.compile());
+    const recipe = resources.track(await recipeGraph.compileAsync());
 
     // Spatial error model graph.
     const errorGraph = new GPUCommandGraph<void>(device, {id: `health-error-${model}`});
@@ -534,7 +557,7 @@ export async function createHealthRegression(
             'float32',
             GPU_SPATIAL_ERROR_GM_SUMMARY_LENGTH
           ),
-          status: view(errorGraph, 'error-status', buffers.errorStatus, 'uint32', 1),
+          status: {code: view(errorGraph, 'error-status', buffers.errorStatus, 'uint32', 1)},
           residuals: view(
             errorGraph,
             'error-residuals',
@@ -545,10 +568,10 @@ export async function createHealthRegression(
         }
       })
     );
-    const error = resources.track(errorGraph.compile());
+    const error = resources.track(await errorGraph.compileAsync());
 
     const lag = new Map<'1' | '2', CompiledGPUCommandGraph<void>>();
-    const addLag = (order: '1' | '2') => {
+    const addLag = async (order: '1' | '2') => {
       let compiled = lag.get(order);
       if (compiled) return compiled;
       const lagGraph = new GPUCommandGraph<void>(device, {id: `health-lag-${model}-${order}`});
@@ -575,12 +598,12 @@ export async function createHealthRegression(
               'float32',
               GPU_SPATIAL_TWO_STAGE_LEAST_SQUARES_SUMMARY_LENGTH
             ),
-            status: view(lagGraph, 'lag-status', buffers.lagStatus, 'uint32', 1),
+            status: {code: view(lagGraph, 'lag-status', buffers.lagStatus, 'uint32', 1)},
             residuals: view(lagGraph, 'lag-residuals', buffers.lagResiduals, 'float32', rowCount)
           }
         })
       );
-      compiled = resources.track(lagGraph.compile());
+      compiled = resources.track(await lagGraph.compileAsync());
       lag.set(order, compiled);
       return compiled;
     };
@@ -633,6 +656,7 @@ export async function createHealthRegression(
         {name: 'errorStatus', buffer: buffers.errorStatus, bytes: 4},
         {name: 'overflow', buffer: overflowBuffer, bytes: 4},
         {name: 'totalNeighbors', buffer: totalNeighborsBuffer, bytes: 4},
+        {name: 'candidateOverflow', buffer: candidateOverflowBuffer, bytes: 4},
         {name: 'olsResiduals', buffer: buffers.olsResiduals, bytes: rowCount * 4},
         {name: 'fitted', buffer: buffers.fitted, bytes: rowCount * 4},
         {name: 'quadrants', buffer: buffers.quadrants, bytes: rowCount * 4},
@@ -645,6 +669,7 @@ export async function createHealthRegression(
       predictorCount,
       names: ['Intercept', ...ids.map(id => PREDICTORS.find(entry => entry.id === id)!.label)],
       recipe,
+      setSettings: recipeResult.setSettings,
       lag,
       error,
       buffers: {
@@ -715,10 +740,11 @@ export async function createHealthRegression(
 
     ctx.setReadout('rows', `${formatInteger(rowCount)} of ${formatInteger(featureCount)} tracts`);
     const overflow = get('overflow').u32[0];
+    const candidateOverflow = get('candidateOverflow').u32[0];
     const linkTotal = Math.min(get('totalNeighbors').u32[0], capacity);
     ctx.setReadout(
       'links',
-      `${formatInteger(linkTotal)} (mean ${(linkTotal / rowCount).toFixed(1)} per tract)${overflow ? ', OVERFLOW' : ''}`
+      `${formatInteger(linkTotal)} (mean ${(linkTotal / rowCount).toFixed(1)} per tract)${overflow ? ', OVERFLOW' : ''}${candidateOverflow ? ' (pair list full: lower bound)' : ''}`
     );
     ctx.setReadout(
       'fit',
@@ -866,33 +892,50 @@ export async function createHealthRegression(
   let activeOrder: '1' | '2' = ctx.options.instruments;
   const writeRidge = () => {
     const ridge = ctx.options.ridge;
-    olsParameters.write(getGPUOrdinaryLeastSquaresParameterValues(ridge <= -2 ? 0 : 10 ** ridge));
+    olsParameters.write(
+      getGPUOrdinaryLeastSquaresParameterValues({ridgeLambda: ridge <= -2 ? 0 : 10 ** ridge})
+    );
   };
   const writeSignificance = () => {
-    moranParameters.write(
-      getGPUSpatialAutocorrelationParameterValues({significanceLevel: ctx.options.significance})
-    );
+    // Every variant's recipe fills the same `moranParameters`, so the active one repacks for all.
+    variants.get(activeModel)?.setSettings({significanceLevel: ctx.options.significance});
   };
   writeRidge();
   writeSignificance();
   updateResponseRange();
-  const activate = () => {
-    activeWeights = ctx.options.weights;
-    activeModel = ctx.options.model;
-    activeOrder = ctx.options.instruments;
-    getWeightsGraph(activeWeights);
-    getVariant(activeModel).addLag(activeOrder);
+  /** The compiled variant of the active model; `commitSelection` only activates compiled ones. */
+  const getActiveVariant = (): Variant => variants.get(activeModel)!;
+
+  /** The weights, model and instrument order a build compiled. */
+  type Selection = {weights: WeightsKind; model: ModelId; order: '1' | '2'};
+
+  /** Compiles what the current options select; the active graphs keep running meanwhile. */
+  const compileSelection = async (): Promise<Selection> => {
+    const {weights, model, instruments: order} = ctx.options;
+    await getWeightsGraph(weights);
+    await (await getVariant(model)).addLag(order);
+    return {weights, model, order};
   };
-  activate();
+  const commitSelection = (next: Selection) => {
+    if (next.weights !== activeWeights) weightsDirty = true;
+    activeWeights = next.weights;
+    activeModel = next.model;
+    activeOrder = next.order;
+    modelDirty = true;
+    ctx.requestLayers();
+  };
+  // Graphs and variants stay cached (owned by `resources`), so a superseded build needs no discard.
+  const graphSwap = resources.track(new GraphSwap());
+  commitSelection(await compileSelection());
   ctx.setStatus(`${formatInteger(rowCount)} Chicago tracts`);
 
   const dark = () => ctx.theme() === 'dark';
 
   return {
     getCompiledGraphs: () => {
-      const variant = getVariant(activeModel);
+      const variant = getActiveVariant();
       return [
-        getWeightsGraph(activeWeights),
+        weightsGraphs.get(activeWeights)!,
         variant.recipe,
         variant.lag.get(activeOrder)!,
         variant.error
@@ -910,11 +953,9 @@ export async function createHealthRegression(
         responseBuffer.write(getResponse(ctx.options.outcome));
         updateResponseRange();
       }
-      if (id === 'weights') {
-        activate();
-        weightsDirty = true;
+      if (id === 'weights' || id === 'model' || id === 'instruments') {
+        void graphSwap.request({build: compileSelection, commit: commitSelection});
       }
-      if (id === 'model' || id === 'instruments') activate();
       modelDirty = true;
       ctx.requestLayers();
     },
@@ -924,9 +965,9 @@ export async function createHealthRegression(
         weightsDirty = true;
         modelDirty = true;
       }
-      const variant = getVariant(activeModel);
+      const variant = getActiveVariant();
       if (weightsDirty) {
-        getWeightsGraph(activeWeights).encode(commandEncoder, {parameters: undefined});
+        weightsGraphs.get(activeWeights)!.encode(commandEncoder, {parameters: undefined});
         weightsDirty = false;
         modelDirty = true;
       }
@@ -942,7 +983,7 @@ export async function createHealthRegression(
     },
 
     getLayers() {
-      const variant = getVariant(activeModel);
+      const variant = getActiveVariant();
       const map: MapKind = ctx.options.map;
       const layers: Layer[] = [];
       const isDark = dark();

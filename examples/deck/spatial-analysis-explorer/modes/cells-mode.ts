@@ -34,6 +34,7 @@
  * to lng/lat once on the CPU because the cell contributors key longitude/latitude.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -59,6 +60,7 @@ import {
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {COORDINATE_SYSTEM} from '@deck.gl/core';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import {SpatialAnalysisSegmentLayer} from '../spatial-analysis-layers';
 import type {
@@ -421,6 +423,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     let autoMeasured = false;
     let indexEncodes = 0;
     const retiring = new Set<Pipeline>();
+    const graphSwap = resources.track(new GraphSwap());
 
     const getResolution = (selectedFamily: GPUCellIndexFamily): number => {
       const settings = FAMILIES[selectedFamily];
@@ -430,15 +433,37 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       );
     };
 
-    const buildPipeline = (
+    const buildPipeline = async (
       selectedFamily: GPUCellIndexFamily,
       resolution: number,
       selectedContainment: GPUCellCoverContainment
-    ): Pipeline => {
-      const settings = FAMILIES[selectedFamily];
-      const {tabular, maximumVertexCount} = settings;
+    ): Promise<Pipeline> => {
       const pipelineSerial = ++serial;
       const owned = new SpatialAnalysisResources(device, `cells-${pipelineSerial}`);
+      try {
+        return await buildPipelineInto(
+          owned,
+          pipelineSerial,
+          selectedFamily,
+          resolution,
+          selectedContainment
+        );
+      } catch (error) {
+        owned.destroy();
+        throw error;
+      }
+    };
+
+    /** Builds a pipeline into `owned`; the caller destroys `owned` when this throws. */
+    const buildPipelineInto = async (
+      owned: SpatialAnalysisResources,
+      pipelineSerial: number,
+      selectedFamily: GPUCellIndexFamily,
+      resolution: number,
+      selectedContainment: GPUCellCoverContainment
+    ): Promise<Pipeline> => {
+      const settings = FAMILIES[selectedFamily];
+      const {tabular, maximumVertexCount} = settings;
       let byteLength = 0;
       const create = (name: string, size: number): Buffer => {
         byteLength += size;
@@ -512,9 +537,17 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             output: {
               cells: tableCellsView,
               counts: tableCountsView,
-              count: tableCountView,
-              overflow: importCellBuffer(indexGraph, 'table-overflow', tableOverflow, 'uint32', 1),
-              requiredCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
+              status: {
+                count: tableCountView,
+                overflow: importCellBuffer(
+                  indexGraph,
+                  'table-overflow',
+                  tableOverflow,
+                  'uint32',
+                  1
+                ),
+                requiredCount: importCellBuffer(indexGraph, 'table-total', tableTotal, 'uint32', 1)
+              }
             }
           })
         );
@@ -544,18 +577,18 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      const compiledIndex = owned.track(indexGraph.compile());
+      const compiledIndex = owned.track(await indexGraph.compileAsync());
 
       // Outline graphs (H3 and Quadbin), each compiled on its own; the ring assembly falls back to
       // plain segments if it does not compile on the device.
       const outlineGraphs: CompiledGPUCommandGraph<void>[] = [];
       const outlineErrors: string[] = [];
       if (tabular && tableCells && tableCounts && tableCount) {
-        const buildOutline = (
+        const buildOutline = async (
           name: string,
           grouped: boolean,
           withRings: boolean
-        ): OutlineBuffers | null => {
+        ): Promise<OutlineBuffers | null> => {
           try {
             const graph = new GPUCommandGraph<void>(device, {
               id: `cells-${name}-${pipelineSerial}`
@@ -619,9 +652,11 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
                 output: {
                   ringOffsets: ringOffsetsView,
                   positions: view('ring-positions', rings.positions, 'float32x2', OUTLINE_CAPACITY),
-                  count: view('ring-count', rings.count, 'uint32', 1),
-                  overflow: view('ring-overflow', rings.overflow, 'uint32', 1),
-                  openSegmentCount: view('ring-open', rings.openSegments, 'uint32', 1)
+                  status: {
+                    count: view('ring-count', rings.count, 'uint32', 1),
+                    overflow: view('ring-overflow', rings.overflow, 'uint32', 1),
+                    openSegmentCount: view('ring-open', rings.openSegments, 'uint32', 1)
+                  }
                 }
               };
               // Vertex count of every ring (offsets past the ring count repeat the last offset, so
@@ -670,12 +705,14 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
                   ),
                   endpoints: view('endpoints', endpoints, 'float32x4', OUTLINE_CAPACITY),
                   groups: groups ? view('groups', groups, 'uint32', OUTLINE_CAPACITY) : undefined,
-                  count: view('count', outlineCount, 'uint32', 1),
-                  overflow: view('overflow', outlineOverflow, 'uint32', 1)
+                  status: {
+                    count: view('count', outlineCount, 'uint32', 1),
+                    overflow: view('overflow', outlineOverflow, 'uint32', 1)
+                  }
                 }
               })
             );
-            const compiled = owned.track(graph.compile());
+            const compiled = owned.track(await graph.compileAsync());
             const drawCommands = owned.track(
               new DrawCommandBuffer(device, {
                 id: `cells-${pipelineSerial}-${name}-draw`,
@@ -699,9 +736,9 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             return null;
           }
         };
-        outline = buildOutline('outline', false, true);
-        if (!outline) outline = buildOutline('outline', false, false);
-        groupOutline = buildOutline('group-outline', true, false);
+        outline = await buildOutline('outline', false, true);
+        if (!outline) outline = await buildOutline('outline', false, false);
+        groupOutline = await buildOutline('group-outline', true, false);
       }
 
       let zonesGraph: CompiledGPUCommandGraph<void> | null = null;
@@ -746,7 +783,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             family: tabularFamily,
             resolution,
             containment: selectedContainment,
-            polygonPositions: importCellBuffer(
+            positions: importCellBuffer(
               graph,
               'zone-positions',
               polygonPositions,
@@ -785,16 +822,18 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
               ),
               core: importCellBuffer(graph, 'cover-core', coverCore, 'uint32', COVER_CAPACITY),
               cells: coverCellsView,
-              count: coverCountView,
-              overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
-              candidateOverflow: importCellBuffer(
-                graph,
-                'cover-candidate-overflow',
-                coverCandidateOverflow,
-                'uint32',
-                1
-              ),
-              requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1)
+              status: {
+                count: coverCountView,
+                requiredCount: importCellBuffer(graph, 'cover-total', coverTotal, 'uint32', 1),
+                overflow: importCellBuffer(graph, 'cover-overflow', coverOverflow, 'uint32', 1),
+                candidateOverflow: importCellBuffer(
+                  graph,
+                  'cover-candidate-overflow',
+                  coverCandidateOverflow,
+                  'uint32',
+                  1
+                )
+              }
             }
           })
         );
@@ -807,8 +846,10 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             count: coverCountView,
             output: {
               cells: compactCellsView,
-              count: importCellBuffer(graph, 'compact-count', compactCount, 'uint32', 1),
-              overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+              status: {
+                count: importCellBuffer(graph, 'compact-count', compactCount, 'uint32', 1),
+                overflow: importCellBuffer(graph, 'compact-overflow', compactOverflow, 'uint32', 1)
+              }
             }
           })
         );
@@ -841,7 +882,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             })
           );
         }
-        zonesGraph = owned.track(graph.compile());
+        zonesGraph = owned.track(await graph.compileAsync());
         cover = {
           ...coverGeometry,
           featureIds: coverFeatureIds,
@@ -934,7 +975,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
             }
           })
         );
-        selectionGraph = owned.track(selectionBuilder.compile());
+        selectionGraph = owned.track(await selectionBuilder.compileAsync());
         selection = {
           ...diskGeometry,
           distances: diskDistances,
@@ -1176,7 +1217,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
     const scheduleRebuild = () => {
       clearTimeout(rebuildTimer);
       rebuildTimer = setTimeout(() => {
-        if (!destroyed) rebuild();
+        if (!destroyed) void rebuild();
       }, REBUILD_DEBOUNCE_MILLISECONDS);
     };
 
@@ -1195,22 +1236,36 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       requestAnimationFrame(wait);
     };
 
-    const rebuild = () => {
-      const resolution = getResolution(family);
-      const effectiveContainment = family === 'h3' ? 'center' : containment;
-      if (family === 'h3' && containment !== 'center') {
+    /** Rebuilds the pipeline; the previous one keeps drawing until the replacement has compiled. */
+    const rebuild = (): Promise<boolean> => {
+      const requestedFamily = family;
+      const resolution = getResolution(requestedFamily);
+      const effectiveContainment = requestedFamily === 'h3' ? 'center' : containment;
+      if (requestedFamily === 'h3' && containment !== 'center') {
         containment = 'center';
         containmentControl.setValue('center');
       }
+      return graphSwap.request({
+        build: () => buildPipeline(requestedFamily, resolution, effectiveContainment),
+        commit: next => commitPipeline(next, requestedFamily, resolution),
+        discard: next => next.resources.destroy()
+      });
+    };
+
+    const commitPipeline = (
+      next: Pipeline,
+      requestedFamily: GPUCellIndexFamily,
+      resolution: number
+    ) => {
       const previous = pipeline;
-      pipeline = buildPipeline(family, resolution, effectiveContainment);
+      pipeline = next;
       retire(previous);
-      const settings = FAMILIES[family];
+      const settings = FAMILIES[requestedFamily];
       gridReadout.setValue(`${settings.label} ${resolution}`);
       exactnessReadout.setValue(settings.exactness);
-      containmentControl.setDisabled(family !== 'quadbin');
+      containmentControl.setDisabled(requestedFamily !== 'quadbin');
       sizeReadout.setValue(
-        `${(pipeline.byteLength / 1e6).toFixed(1)} MB (+ ${(
+        `${(next.byteLength / 1e6).toFixed(1)} MB (+ ${(
           (lngLat.byteLength + maskValues.byteLength) / 1e6
         ).toFixed(1)} MB points)`
       );
@@ -1295,7 +1350,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: active.summaryWords * 4});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed || active !== pipeline) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, active.summaryWords);
         if (active.tableCounts) {
@@ -1408,7 +1463,7 @@ export const cellsMode: SpatialAnalysisModeDefinition = {
       }
     };
 
-    rebuild();
+    await rebuild();
     updateResolutionLabel();
 
     const instance: SpatialAnalysisModeInstance = {

@@ -179,7 +179,7 @@ export default defineScene<ChangeOfSupportOptions>({
       step: 1,
       default: 3,
       format: value => `${ITERATION_LADDER[value]} iterations`,
-      help: 'Rounds of focal-mean smoothing with mass restoration. Compile-time, so each step is its own cached graph. 0 is the flat tract density.'
+      help: 'Maximum rounds of focal-mean smoothing with mass restoration (no tolerance is set, so all of them run). Compile-time, so each step is its own cached graph. 0 is the flat tract density.'
     },
     {
       kind: 'select',
@@ -342,7 +342,9 @@ export default defineScene<ChangeOfSupportOptions>({
   },
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
-import {GPUPolygonRasterization} from '@luma.gl/experimental/gpu-raster';
+import {
+  getGPUPolygonRasterizationParameterValues, makeGPURasterMetadata
+} from '@luma.gl/experimental/gpu-raster';
 import {
   addChangeOfSupportRecipe, GPUGridGenerator, GPUPycnophylactic
 } from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -357,10 +359,16 @@ ${
   output: {positions: cellVertices}
 }));`
 }
+// Local metres; row 0 is the southern row, so rows advance north.
+const grid = makeGPURasterMetadata({
+  width: 320, height: 384, cellSize, origin: [originX, originY], rowDirection: 'north'
+});
+rasterParameters.write(getGPUPolygonRasterizationParameterValues(grid));   // per-frame origin and cell size
+// Zone systems are polygon ports {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets}.
 const result = addChangeOfSupportRecipe(graph, {
-  width: 320, height: 384, extent: extent.importToGraph(graph),
-  source: {...tractPolygons, crossingCapacity: 1 << 18, raster: sourceZones},
-  target: {...${state.target === 'community' ? 'communityPolygons' : 'gridPolygons'}, crossingCapacity: 1 << 18, raster: targetZones},${
+  grid, parameters: rasterParameters.importToGraph(graph),
+  source: {...tractPolygons, crossingCapacity: 1 << 18},
+  target: {...${state.target === 'community' ? 'communityPolygons' : 'gridPolygons'}, crossingCapacity: 1 << 18},${
     state.ancillary === 'none'
       ? ''
       : `
@@ -369,14 +377,14 @@ const result = addChangeOfSupportRecipe(graph, {
   denominator: {extensive: '${state.denominator}', intensive: 'overlap'},  // rates are never diluted by uncovered area
   pairCapacity: 1 << 15,
   sourceValues, columnCount: 3,   // numerator, denominator, the tract's own rate
-  extensiveValues, intensiveValues,
-  categories: {sourceCategories, categoryCount: 5, output: shares}
+  categories: {sourceCategories, categoryCount: 5},
+  outputs: {extensiveValues, intensiveValues, categoryShares: shares}
 });
 graph.add(new GPUPycnophylactic({
   width: 320, height: 384, zones: sourceZones, zoneCount: 791, totals,
-  iterations: ${ITERATION_LADDER[state.iterations]}, kernel: '${state.kernel}', output: surface
+  maximumIterations: ${ITERATION_LADDER[state.iterations]}, kernel: '${state.kernel}', output: {mass: surface}
 }));
-const compiled = graph.compile();             // once
+const compiled = await graph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});
 // rule: extensive = rows of extensiveValues; rate = extensive[0] / extensive[1] * scale`,
 

@@ -93,23 +93,25 @@ export async function createFlightSpeedContrast(
         'uint32',
         trackCount + 1
       ),
-      stepSpeeds: importGraphBuffer(
-        metricsGraph,
-        'step-speeds',
-        stepSpeeds,
-        'float32',
-        vertexCount
-      ),
-      stepHeadings: importGraphBuffer(
-        metricsGraph,
-        'step-headings',
-        stepHeadings,
-        'float32',
-        vertexCount
-      )
+      output: {
+        stepSpeeds: importGraphBuffer(
+          metricsGraph,
+          'step-speeds',
+          stepSpeeds,
+          'float32',
+          vertexCount
+        ),
+        stepHeadings: importGraphBuffer(
+          metricsGraph,
+          'step-headings',
+          stepHeadings,
+          'float32',
+          vertexCount
+        )
+      }
     })
   );
-  const metricsCompiled = resources.track(metricsGraph.compile());
+  const metricsCompiled = resources.track(await metricsGraph.compileAsync());
 
   let destroyed = false;
   let snapshot: Snapshot | null = null;

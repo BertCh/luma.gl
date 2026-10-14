@@ -6,12 +6,12 @@ import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
   getGPUPointPatternIndicesParameterValues,
-  getGPURipleyDistanceParameterValues,
+  getGPURipleyDistanceFunctionsParameterValues,
   getGPURipleyParameterValues,
   GPU_CLARK_EVANS_LENGTH,
   GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,
   GPU_QUADRAT_STATISTICS_LENGTH,
-  GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH,
+  GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,
   GPU_RIPLEY_PARAMETER_LENGTH,
   GPUPointPatternIndices,
   GPURipley,
@@ -39,6 +39,7 @@ import {buildPolygonMesh, type PolygonMesh} from '../../cartography/polygon-mesh
 import type {ClassTable, LngLat, MapAnnotation} from '../../cartography/types';
 import {DENSE_POINT_RADIUS_STOPS} from '../../cartography/zoom';
 import {importGraphBuffer} from '../../engine/graph-buffers';
+import {GraphSwap} from '../../engine/graph-swap';
 import {
   SpatialAnalysisPointLayer,
   SpatialAnalysisPolygonLayer,
@@ -329,7 +330,7 @@ export async function createPointPatterns(
   const distanceParameters = resources.createParameterBuffer(
     'distance',
     'float32',
-    GPU_RIPLEY_DISTANCE_PARAMETER_LENGTH
+    GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH
   );
   const indicesParameters = resources.createParameterBuffer(
     'indices',
@@ -405,7 +406,7 @@ export async function createPointPatterns(
 
   // ---- graphs ------------------------------------------------------------------------------
 
-  function buildSet(options: PointPatternOptions): PatternSet {
+  async function buildSet(options: PointPatternOptions): Promise<PatternSet> {
     const key = getSetKey(options);
     const subject = subjectOf(options);
     const radiusCount = Number(options.radiusCount);
@@ -450,10 +451,12 @@ export async function createPointPatterns(
         parameters: ripleyParameters.importToGraph(graph),
         gridSize: SEARCH_GRID,
         radiusCount,
-        k: view('k', 'float32', radiusCount),
-        l: view('l', 'float32', radiusCount),
-        lMinusR: view('lMinusR', 'float32', radiusCount),
-        radii: view('radii', 'float32', radiusCount)
+        output: {
+          k: view('k', 'float32', radiusCount),
+          l: view('l', 'float32', radiusCount),
+          lMinusR: view('lMinusR', 'float32', radiusCount),
+          radii: view('radii', 'float32', radiusCount)
+        }
       })
     );
     graph.add(
@@ -465,9 +468,11 @@ export async function createPointPatterns(
         gridSize: SEARCH_GRID,
         referenceGrid,
         radiusCount,
-        g: view('g', 'float32', radiusCount),
-        f: view('f', 'float32', radiusCount),
-        j: view('j', 'float32', radiusCount)
+        output: {
+          g: view('g', 'float32', radiusCount),
+          f: view('f', 'float32', radiusCount),
+          j: view('j', 'float32', radiusCount)
+        }
       })
     );
     graph.add(
@@ -478,13 +483,15 @@ export async function createPointPatterns(
         parameters: indicesParameters.importToGraph(graph),
         gridSize: SEARCH_GRID,
         quadratGrid,
-        nearestNeighborDistances: view('nearest', 'float32', subject.count),
-        clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
-        quadratCounts: view('quadratCounts', 'uint32', quadratCells),
-        quadratStatistics: view('quadratStatistics', 'float32', GPU_QUADRAT_STATISTICS_LENGTH)
+        output: {
+          nearestNeighborDistances: view('nearest', 'float32', subject.count),
+          clarkEvans: view('clarkEvans', 'float32', GPU_CLARK_EVANS_LENGTH),
+          quadratCounts: view('quadratCounts', 'uint32', quadratCells),
+          quadratStatistics: view('quadratStatistics', 'float32', GPU_QUADRAT_STATISTICS_LENGTH)
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const set: PatternSet = {
       key,
       subject,
@@ -516,7 +523,7 @@ export async function createPointPatterns(
    * The envelope's graph: Ripley and the distance functions again, compiled once over their own
    * positions and mask buffers (the random pattern), sharing the observed graph's parameter buffers.
    */
-  function buildSimulation(options: PointPatternOptions): SimulationSet {
+  async function buildSimulation(options: PointPatternOptions): Promise<SimulationSet> {
     const key = getSimulationKey(options);
     const subject = subjectOf(options);
     const radiusCount = Number(options.radiusCount);
@@ -554,10 +561,12 @@ export async function createPointPatterns(
         parameters: ripleyParameters.importToGraph(graph),
         gridSize: SEARCH_GRID,
         radiusCount,
-        k: view('k'),
-        l: view('l'),
-        lMinusR: view('lMinusR'),
-        radii: view('radii')
+        output: {
+          k: view('k'),
+          l: view('l'),
+          lMinusR: view('lMinusR'),
+          radii: view('radii')
+        }
       })
     );
     graph.add(
@@ -569,12 +578,14 @@ export async function createPointPatterns(
         gridSize: SEARCH_GRID,
         referenceGrid,
         radiusCount,
-        g: view('g'),
-        f: view('f'),
-        j: view('j')
+        output: {
+          g: view('g'),
+          f: view('f'),
+          j: view('j')
+        }
       })
     );
-    const compiled = resources.track(graph.compile());
+    const compiled = resources.track(await graph.compileAsync());
     const simulation: SimulationSet = {
       key,
       subject,
@@ -599,26 +610,49 @@ export async function createPointPatterns(
     return simulation;
   }
 
-  function selectSet(): void {
-    const options = ctx.options;
-    const key = getSetKey(options);
-    if (!active || active.key !== key) {
-      let next = sets.get(key);
-      if (!next) {
-        next = buildSet(options);
-        sets.set(key, next);
+  const setSwap = resources.track(new GraphSwap());
+
+  /**
+   * Selects the pattern and simulation sets for the current options once they are compiled
+   * (cached in `sets` and `simulationSets`, which `resources` owns). The active sets keep
+   * encoding until then; `afterSelect` runs in the commit, after the swap.
+   */
+  function requestSet(afterSelect?: () => void): Promise<boolean> {
+    const options = {...ctx.options};
+    return setSwap.request({
+      build: async () => {
+        const key = getSetKey(options);
+        let nextSet = sets.get(key);
+        if (!nextSet) {
+          nextSet = await buildSet(options);
+          sets.set(key, nextSet);
+        }
+        const simulationKey = getSimulationKey(options);
+        let nextSimulation = simulationSets.get(simulationKey);
+        if (!nextSimulation) {
+          nextSimulation = await buildSimulation(options);
+          simulationSets.set(simulationKey, nextSimulation);
+        }
+        return {set: nextSet, simulation: nextSimulation};
+      },
+      commit: next => {
+        active = next.set;
+        activeSimulation = next.simulation;
+        afterSelect?.();
+        ctx.requestLayers();
       }
-      active = next;
-    }
-    const simulationKey = getSimulationKey(options);
-    if (!activeSimulation || activeSimulation.key !== simulationKey) {
-      let next = simulationSets.get(simulationKey);
-      if (!next) {
-        next = buildSimulation(options);
-        simulationSets.set(simulationKey, next);
-      }
-      activeSimulation = next;
-    }
+    });
+  }
+
+  /** Resets everything derived from the selected pattern set after a set swap. */
+  function applySelection(): void {
+    writeJitter(subjectOf(ctx.options), ctx.options.jitter);
+    writeMask();
+    observed = null;
+    for (const name of CORRECTIONS) delete edgeCurves[name];
+    markObservedChanged();
+    markEnvelopeChanged();
+    lastTickKey = '';
   }
 
   // ---- change tracking ---------------------------------------------------------------------
@@ -638,7 +672,8 @@ export async function createPointPatterns(
     envelopeRunning = false;
     envelopeDirty = true;
     derivedDirty = true;
-    envelope.reset(Number(ctx.options.radiusCount));
+    // The live simulation's count: a pending radiusCount swap applies its own reset at commit.
+    envelope.reset(activeSimulation?.radiusCount ?? Number(ctx.options.radiusCount));
     lastChangeTime = performance.now();
     ctx.setReadout('simulations', `0 of ${ENVELOPE_RUNS} random patterns`);
   }
@@ -1032,7 +1067,7 @@ export async function createPointPatterns(
       getGPURipleyParameterValues({bounds, maximumDistance, edgeCorrection: ripleyCorrection})
     );
     distanceParameters.write(
-      getGPURipleyDistanceParameterValues({
+      getGPURipleyDistanceFunctionsParameterValues({
         bounds,
         maximumDistance,
         edgeCorrection: options.distanceCorrection
@@ -1117,7 +1152,7 @@ export async function createPointPatterns(
   );
   writeJitter(subjects.places, ctx.options.subject === 'places' ? ctx.options.jitter : 0);
   writeWindowGeometry();
-  selectSet();
+  await requestSet();
   envelope.reset(Number(ctx.options.radiusCount));
   landDirty = true;
   derive();
@@ -1224,23 +1259,12 @@ export async function createPointPatterns(
         case 'groupCategory':
         case 'placeCategory':
           rememberCurve();
-          selectSet();
-          writeJitter(subjectOf(state), state.jitter);
-          writeMask();
-          observed = null;
-          for (const name of CORRECTIONS) delete edgeCurves[name];
-          markObservedChanged();
-          markEnvelopeChanged();
-          lastTickKey = '';
+          void requestSet(applySelection);
           break;
         case 'radiusCount':
         case 'quadratGrid':
         case 'referenceGrid':
-          selectSet();
-          observed = null;
-          for (const name of CORRECTIONS) delete edgeCurves[name];
-          markObservedChanged();
-          markEnvelopeChanged();
+          void requestSet(applySelection);
           break;
         case 'jitter':
           writeJitter(subjectOf(state), state.jitter);

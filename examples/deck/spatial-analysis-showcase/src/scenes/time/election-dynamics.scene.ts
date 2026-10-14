@@ -402,14 +402,14 @@ graph.add(new GPUClassBreaks({values, mask: pooledMask, parameters: breaksParame
   maximumClassCount: 5, methods: ['quantile', 'equal-interval', 'natural-breaks'],
   output: {breaks, classCount}}));
 graph.add(new GPUClassAssignment({values, breaks, classCount, mask: pooledMask, output: classes}));
-graph.add(new GPUTransitionMatrix({classes, rows, periods: ${state.through === '2024' ? 7 : 6},
+graph.add(new GPUTransitionMatrix({classes, periodCount: ${state.through === '2024' ? 7 : 6},
   periodLag: ${state.periodLag}, classCount: 5, mask: rowMask,
   output: {counts, probabilities, rowTotals, ignored}}));
-graph.add(new GPUSpatialMarkov({values, classes, classCount: 5, weights, periods: ${state.through === '2024' ? 7 : 6},
-  periodLag: ${state.periodLag}, lagMaximumClassCount: 3, lagParameters, lagMethods: ['equal-interval', 'quantile'],
+graph.add(new GPUSpatialMarkov({values, classes, classCount: 5, weights, periodCount: ${state.through === '2024' ? 7 : 6},
+  periodLag: ${state.periodLag}, maximumLagClassCount: 3, lagParameters, lagMethods: ['equal-interval', 'quantile'],
   mask: rowMask, output: {counts: spatialCounts, lagBreaks, lagClassCount, lagClasses,
     homogeneity, stateSparsity}}));   // Q and LR tests, sparse rows
-graph.add(new GPULISAMarkov({values, weights, periods: ${state.through === '2024' ? 7 : 6}, periodLag: ${state.periodLag},
+graph.add(new GPULISAMarkov({values, weights, periodCount: ${state.through === '2024' ? 7 : 6}, periodLag: ${state.periodLag},
   parameters: lisaParameters, gating: 'significance',   // the default 'none' has four states
   mask: rowMask, output: {counts: lisaCounts, quadrants}}));
 

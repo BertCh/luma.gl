@@ -125,9 +125,11 @@ import {GPUTrajectoryPlayhead} from '@luma.gl/experimental/gpu-spatial-analysis'
 const playheadGraph = new GPUCommandGraph(device);
 playheadGraph.add(new GPUTrajectoryPlayhead({
   positions, timestamps, trackOffsets, parameters: playhead.importToGraph(playheadGraph),
-  currentPositions, headings, speeds, status,
-  activeTracks: {ids: activeIds, count: activeCount, overflow: activeOverflow},
-  drawInstanceCount                                  // indirect draw count for the heads
+  output: {
+    currentPositions, headings, speeds, trackStatus: status,
+    activeTracks: {ids: activeIds, status: {count: activeCount, overflow: activeOverflow}},
+    drawInstanceCount                                // indirect draw count for the heads
+  }
 }));
 
 // route segments of the last ${state.trailMinutes} min, with fade weights and clip fractions
@@ -135,13 +137,16 @@ const trailGraph = new GPUCommandGraph(device);
 trailGraph.add(new GPUTimeWindowFilter({
   timestamps: segmentStartTimes, endTimestamps: segmentEndTimes,
   window: window.importToGraph(trailGraph),
-  output: {ids: trailIds, count: trailCount, overflow: trailOverflow},
-  fadeWeights, clipFractions, trackIds: segmentTracks, trackVisibleCounts, drawInstanceCount
+  trackIds: segmentTracks,
+  output: {
+    ids: trailIds, status: {count: trailCount, overflow: trailOverflow},
+    fadeWeights, clipFractions, trackVisibleCounts, drawInstanceCount
+  }
 }));
 
 // every frame: write the clock and the window (no recompile), then encode both
 playhead.write(getGPUTrajectoryPlayheadParameterValues({playhead: seconds}));
-window.write(getGPUTimeWindowParameterValues({
+window.write(getGPUTimeWindowFilterParameterValues({
   start: seconds - ${trailSeconds}, end: seconds, startFadeDuration: ${trailSeconds}   // weight 1 at the head, 0 at the tail
 }));
 playheadCompiled.encode(commandEncoder, {parameters: undefined});

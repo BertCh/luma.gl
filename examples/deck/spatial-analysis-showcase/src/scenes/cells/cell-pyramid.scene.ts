@@ -514,15 +514,18 @@ export default defineScene<CellPyramidOptions>({
 // One aggregation at res 17, then roll-ups to res 4, written into per-level slices of one slab.
 graph.add(new GPUCellPyramid({
   family: 'quadbin', positions, mask, values: researchGrade,
-  levels,   // [{resolution: 17, output: {cells, counts, sums, count, overflow}}, {resolution: 16, ...}, ...]
-  levelCounts
+  resolutions: [17, 16, /* ... */ 4],      // finest first, strictly decreasing
+  output: {
+    levels,       // one table per resolution: {cells, counts, sums, status: {count, overflow}}
+    levelCounts
+  }
 }));
 
 // A second tiny graph, every frame: the zoom is a one-word buffer.
 activeLevel.write(Uint32Array.of(17 - Math.round(zoom) - ${state.resolutionOffset}));
 graph.add(new GPUCellLevelSelection({
   levelCounts, activeLevel: activeLevel.importToGraph(graph), levelFirstRows,
-  output: {count: drawRecordInstanceCount, firstRow}   // indirect draw record read by the layer
+  output: {status: {count: drawRecordInstanceCount}, firstRow}   // indirect draw record read by the layer
 }));`;
     }
     if (state.view === 'rollup') {
@@ -532,9 +535,9 @@ graph.add(new GPUCellLevelSelection({
 // so the parent totals equal the child totals exactly.
 graph.add(new GPUCellRollup({
   family: 'quadbin', sourceResolution: 17, resolution: ${state.rollupResolution},
-  source: finestTable,                    // {cells, counts, sums, count, overflow}
+  source: finestTable,                    // {cells, counts, sums, status: {count, overflow}}
   sumScale: GPU_CELL_DEFAULT_SUM_SCALE,   // 65536 = 16 fractional bits
-  output: {cells, counts, sums, sumValues, count: drawRecordInstanceCount, overflow}
+  output: {cells, counts, sums, sumValues, status: {count: drawRecordInstanceCount, overflow}}
 }));`;
     }
     if (state.view === 'classes') {
@@ -564,11 +567,11 @@ const recipe = addPeriodComparisonRecipe(graph, {
   before: {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: firstHalf},
   after:  {positions${state.compareMeasure === 'sum' ? ', values: researchGrade' : ''}, mask: secondHalf},
   measure: '${state.compareMeasure}', zScore: '${state.zScoreKind}',
-  output: {cells, delta, ratio, percentChange, zScore, count, overflow},  // GPUCellTableCompare columns
+  outputs: {comparison: {cells, delta, ratio, percentChange, zScore, status: {count, overflow}}, colors},  // GPUCellTableCompare columns
   classify: 'delta',
   classBreaksParameters,   // custom edges [-4b, -b, b, 4b], or standard-deviation
   maximumClassCount: 5, methods: ['custom', 'standard-deviation'],
-  palette, colorScaleParameters, maximumPaletteCount: 5, colors
+  palette, colorScaleParameters, maximumPaletteCount: 5
 });`;
   },
 

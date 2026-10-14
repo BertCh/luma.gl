@@ -294,7 +294,7 @@ export default defineScene<OsmCrossfilterOptions>({
   ]
 });
 filter.addToGraph(graph);
-const compiled = graph.compile();
+const compiled = await graph.compileAsync();
 // a brush changes: write the control buffer, encode the same graph again
 filter.setRange('time', [yearToDay(2013.5), yearToDay(2014.5)]);
 compiled.encode(commandEncoder, {parameters: undefined});`,

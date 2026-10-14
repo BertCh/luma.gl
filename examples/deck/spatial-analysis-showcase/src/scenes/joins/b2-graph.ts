@@ -9,8 +9,10 @@
 
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUPolygonRasterizationExtentValues,
-  GPUPolygonRasterization
+  getGPUPolygonRasterizationParameterValues,
+  GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+  GPUPolygonRasterization,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {GPUCommandGraph, type GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {importGraphBuffer, submitGraph} from '../../engine/graph-buffers';
@@ -37,7 +39,7 @@ export type LineBuffers = {
   segmentRows: Buffer;
 };
 
-/** Geometry views of a polygon set inside one graph, as `GPUSpatialJoinPolygons` expects. */
+/** Geometry views of a polygon set inside one graph: a tagged four-level polygon port. */
 export type PolygonViews = {
   kind: 'polygons';
   positions: GraphDataView<'float32x2'>;
@@ -46,7 +48,7 @@ export type PolygonViews = {
   ringOffsets: GraphDataView<'uint32'>;
 };
 
-/** Geometry views of a line set inside one graph, as `GPUSpatialJoinLines` expects. */
+/** Geometry views of a line set inside one graph: a tagged line port. */
 export type LineViews = {
   kind: 'lines';
   positions: GraphDataView<'float32x2'>;
@@ -216,32 +218,43 @@ export async function createZoneRaster(
   const boundary = resources.createBuffer(`${name}-boundary`, cellCount * 4);
   const overflow = resources.createBuffer(`${name}-overflow`, 4);
   const crossingCount = resources.createBuffer(`${name}-crossings`, 4);
+  // Planar meters; row 0 is the southern row, so rows advance north from the bottom-left corner.
+  const grid = makeGPURasterMetadata({
+    width,
+    height,
+    cellSize,
+    origin: [minX, minY],
+    rowDirection: 'north'
+  });
   const extent = resources.createParameterBuffer(
     `${name}-extent`,
     'float32',
-    4,
-    getGPUPolygonRasterizationExtentValues(minX, minY, cellSize, cellSize)
+    GPU_POLYGON_RASTERIZATION_PARAMETER_LENGTH,
+    getGPUPolygonRasterizationParameterValues(grid)
   );
   const graph = new GPUCommandGraph<undefined>(resources.device, {id: `${name}-rasterize`});
   const views = importPolygons(graph, `${name}-polygons`, polygons);
   graph.add(
     new GPUPolygonRasterization({
       id: `${name}-rasterization`,
-      width,
-      height,
-      extent: extent.importToGraph(graph),
-      polygonPositions: views.positions,
+      grid,
+      parameters: extent.importToGraph(graph),
+      positions: views.positions,
       featureOffsets: views.featureOffsets,
       polygonOffsets: views.polygonOffsets,
       ringOffsets: views.ringOffsets,
       crossingCapacity,
-      zones: importGraphBuffer(graph, `${name}-zones`, zones, 'uint32', cellCount),
-      boundary: importGraphBuffer(graph, `${name}-boundary`, boundary, 'uint32', cellCount),
-      overflow: importGraphBuffer(graph, `${name}-overflow`, overflow, 'uint32', 1),
-      crossingCount: importGraphBuffer(graph, `${name}-crossings`, crossingCount, 'uint32', 1)
+      output: {
+        zones: importGraphBuffer(graph, `${name}-zones`, zones, 'uint32', cellCount),
+        boundary: importGraphBuffer(graph, `${name}-boundary`, boundary, 'uint32', cellCount),
+        status: {
+          overflow: importGraphBuffer(graph, `${name}-overflow`, overflow, 'uint32', 1),
+          crossingCount: importGraphBuffer(graph, `${name}-crossings`, crossingCount, 'uint32', 1)
+        }
+      }
     })
   );
-  const compiled = graph.compile();
+  const compiled = await graph.compileAsync();
   try {
     submitGraph(resources.device, compiled);
     const flags = new Uint32Array((await overflow.readAsync()).slice().buffer);

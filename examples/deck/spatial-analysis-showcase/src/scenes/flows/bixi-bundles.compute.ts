@@ -5,14 +5,14 @@
 import {COORDINATE_SYSTEM, type Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
-  getGPUTimeWindowParameterValues,
-  GPU_TIME_WINDOW_PARAMETER_LENGTH,
+  getGPUTimeWindowFilterParameterValues,
+  GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH,
   GPUTimeWindowFilter
 } from '@luma.gl/experimental/gpu-dataframe';
 import {
-  createGPUEdgeBundlingParameterValues,
+  getGPUEdgeBundlingParameterValues,
   GPUEdgeBundling,
-  type GPUEdgeBundlingParameterValues
+  type GPUEdgeBundlingSettings
 } from '@luma.gl/experimental/gpu-network';
 import {
   getGPUTrajectoryPlayheadParameterValues,
@@ -32,6 +32,7 @@ import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisPointLayer, SpatialAnalysisSegmentLayer} from '../../engine/layers';
 import {createPlaybackClock} from '../../engine/playback';
 import {directionFor} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {MapAnnotation, SceneContext, SceneInstance} from '../scene';
@@ -270,7 +271,7 @@ export async function createBixiBundles(
     lastChange = performance.now();
   }
 
-  function getParameters(): GPUEdgeBundlingParameterValues {
+  function getParameters(): GPUEdgeBundlingSettings {
     const {iterations, kernelRadius, decay, stiffness, stepScale} = ctx.options;
     return {
       activeIterations: iterations,
@@ -315,7 +316,7 @@ export async function createBixiBundles(
   }
 
   function writeParameters(): void {
-    parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    parameterBuffer.write(getGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
     ctx.setReadout('iteration', ctx.options.iterations);
     updateKernelGeometry();
     publishCost();
@@ -393,7 +394,7 @@ export async function createBixiBundles(
     markChanged();
   }
 
-  function buildBundling(): BundlingGraph {
+  async function buildBundling(): Promise<BundlingGraph> {
     const pointsPerEdge = Number(ctx.options.pointsPerEdge);
     const densityResolution = Number(ctx.options.densityResolution);
     const id = ++serial;
@@ -403,31 +404,33 @@ export async function createBixiBundles(
     commandGraph.add(
       new GPUEdgeBundling({
         id: 'bundling',
-        positions: importGraphBuffer(
+        nodePositions: importGraphBuffer(
           commandGraph,
           'positions',
           positions,
           'float32x2',
           stationCount
         ),
-        sourceVertices: importGraphBuffer(commandGraph, 'sources', sources, 'uint32', edgeCount),
-        targetVertices: importGraphBuffer(commandGraph, 'targets', targets, 'uint32', edgeCount),
+        sourceNodes: importGraphBuffer(commandGraph, 'sources', sources, 'uint32', edgeCount),
+        targetNodes: importGraphBuffer(commandGraph, 'targets', targets, 'uint32', edgeCount),
         edgeMask: importGraphBuffer(commandGraph, 'mask', mask, 'uint32', edgeCount),
         spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'none'},
         pointsPerEdge,
-        iterations: BUNDLE_MAXIMUM_ITERATIONS,
+        maximumIterations: BUNDLE_MAXIMUM_ITERATIONS,
         densityResolution,
         parameters: parameterBuffer.importToGraph(commandGraph),
-        paths: importGraphBuffer(
-          commandGraph,
-          'paths',
-          paths,
-          'float32x2',
-          edgeCount * pointsPerEdge
-        )
+        output: {
+          paths: importGraphBuffer(
+            commandGraph,
+            'paths',
+            paths,
+            'float32x2',
+            edgeCount * pointsPerEdge
+          )
+        }
       })
     );
-    const compiled = graphResources.track(commandGraph.compile());
+    const compiled = graphResources.track(await commandGraph.compileAsync());
     const built: BundlingGraph = {
       resources: graphResources,
       compiled,
@@ -446,12 +449,32 @@ export async function createBixiBundles(
     return built;
   }
 
-  function rebuildBundling(): void {
+  /** Swaps a finished build in; the replaced graph is retired and destroyed a few frames later. */
+  function commitBundling(next: BundlingGraph): void {
     if (bundling) retired.push({resources: bundling.resources, frames: 0});
-    bundling = buildBundling();
-    parameterBuffer.write(createGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
+    bundling = next;
+    parameterBuffer.write(getGPUEdgeBundlingParameterValues(getParameters(), 'uint32'));
     ctx.setReadout('iteration', ctx.options.iterations);
     writeMask();
+  }
+
+  /** Releases a build that a later request or `destroy()` superseded. */
+  function discardBundling(next: BundlingGraph): void {
+    next.reader.stop();
+    next.resources.destroy();
+  }
+
+  const bundlingSwap = resources.track(new GraphSwap());
+  /** Rebuilds the bundling graph for the current options; the latest request wins. */
+  function requestBundling(): Promise<boolean> {
+    return bundlingSwap.request({
+      build: buildBundling,
+      commit: next => {
+        commitBundling(next);
+        ctx.requestLayers();
+      },
+      discard: discardBundling
+    });
   }
 
   function getStreets(): StreetIndex {
@@ -582,26 +605,36 @@ export async function createBixiBundles(
         trackCount + 1
       ),
       parameters: playheadParameters.importToGraph(playheadGraph),
-      currentPositions: importGraphBuffer(
-        playheadGraph,
-        'current',
-        currentPositions,
-        'float32x2',
-        trackCount
-      ),
-      speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
-      activeTracks: {
-        ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
-        count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
-        overflow: importGraphBuffer(playheadGraph, 'active-overflow', activeOverflow, 'uint32', 1)
-      },
-      drawInstanceCount: playheadGraph.importGPUData(
-        'bike-draw-count',
-        bikeDraw.getInstanceCountData(0)
-      )
+      output: {
+        currentPositions: importGraphBuffer(
+          playheadGraph,
+          'current',
+          currentPositions,
+          'float32x2',
+          trackCount
+        ),
+        speeds: importGraphBuffer(playheadGraph, 'speeds', speeds, 'float32', trackCount),
+        activeTracks: {
+          ids: importGraphBuffer(playheadGraph, 'active-ids', activeIds, 'uint32', trackCount),
+          status: {
+            count: importGraphBuffer(playheadGraph, 'active-count', activeCount, 'uint32', 1),
+            overflow: importGraphBuffer(
+              playheadGraph,
+              'active-overflow',
+              activeOverflow,
+              'uint32',
+              1
+            )
+          }
+        },
+        drawInstanceCount: playheadGraph.importGPUData(
+          'bike-draw-count',
+          bikeDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const playheadCompiled = resources.track(playheadGraph.compile());
+  const playheadCompiled = resources.track(await playheadGraph.compileAsync());
 
   const trailIds = resources.createBuffer('trail-ids', segmentCount * 4);
   const trailCount = resources.createBuffer('trail-count', 4);
@@ -611,7 +644,7 @@ export async function createBixiBundles(
   const windowParameters = resources.createParameterBuffer(
     'window',
     'float32',
-    GPU_TIME_WINDOW_PARAMETER_LENGTH
+    GPU_TIME_WINDOW_FILTER_PARAMETER_LENGTH
   );
   const trailDraw = resources.track(
     new DrawCommandBuffer(device, {
@@ -641,30 +674,32 @@ export async function createBixiBundles(
       window: windowParameters.importToGraph(trailGraph),
       output: {
         ids: importGraphBuffer(trailGraph, 'trail-ids', trailIds, 'uint32', segmentCount),
-        count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
-        overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
-      },
-      fadeWeights: importGraphBuffer(
-        trailGraph,
-        'fade-weights',
-        fadeWeights,
-        'float32',
-        segmentCount
-      ),
-      clipFractions: importGraphBuffer(
-        trailGraph,
-        'clip-fractions',
-        clipFractions,
-        'float32x2',
-        segmentCount
-      ),
-      drawInstanceCount: trailGraph.importGPUData(
-        'trail-draw-count',
-        trailDraw.getInstanceCountData(0)
-      )
+        status: {
+          count: importGraphBuffer(trailGraph, 'trail-count', trailCount, 'uint32', 1),
+          overflow: importGraphBuffer(trailGraph, 'trail-overflow', trailOverflow, 'uint32', 1)
+        },
+        fadeWeights: importGraphBuffer(
+          trailGraph,
+          'fade-weights',
+          fadeWeights,
+          'float32',
+          segmentCount
+        ),
+        clipFractions: importGraphBuffer(
+          trailGraph,
+          'clip-fractions',
+          clipFractions,
+          'float32x2',
+          segmentCount
+        ),
+        drawInstanceCount: trailGraph.importGPUData(
+          'trail-draw-count',
+          trailDraw.getInstanceCountData(0)
+        )
+      }
     })
   );
-  const trailCompiled = resources.track(trailGraph.compile());
+  const trailCompiled = resources.track(await trailGraph.compileAsync());
 
   const statusReader = new SummaryReader(
     resources,
@@ -749,7 +784,7 @@ export async function createBixiBundles(
       sample: `${formatCount(edgeCount)} busiest station pairs of ${formatCount(allEdges.count)}, August 2024`
     }
   });
-  rebuildBundling();
+  commitBundling(await buildBundling());
 
   return {
     getCompiledGraphs: () => [
@@ -762,8 +797,7 @@ export async function createBixiBundles(
       switch (id) {
         case 'pointsPerEdge':
         case 'densityResolution':
-          rebuildBundling();
-          ctx.requestLayers();
+          void requestBundling();
           break;
         case 'edges':
         case 'minRides':
@@ -878,11 +912,13 @@ export async function createBixiBundles(
       ctx.setReadout('clock', formatRideClock(playhead));
       if (frame.frameIndex % 4 === 0) updateRideChart(playhead);
       if (options.showRides) {
-        playheadParameters.write(getGPUTrajectoryPlayheadParameterValues({playhead, maxGap: 0}));
+        playheadParameters.write(
+          getGPUTrajectoryPlayheadParameterValues({playhead, maximumGap: 0})
+        );
         playheadCompiled.encode(commandEncoder, {parameters: undefined});
         const trailSeconds = options.trailMinutes * 60;
         windowParameters.write(
-          getGPUTimeWindowParameterValues({
+          getGPUTimeWindowFilterParameterValues({
             start: playhead - trailSeconds,
             end: playhead,
             startFadeDuration: trailSeconds * options.tailFade

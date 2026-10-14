@@ -88,14 +88,14 @@ export type TablePaintInput = {
  * @param parameters The buffer {@link writeTablePaint} fills.
  * @param colors The packed output, one uint32 per cell, which the layer draws.
  */
-export function createTablePaintGraph(
+export async function createTablePaintGraph(
   resources: SpatialAnalysisResources,
   device: Device,
   id: string,
   input: TablePaintInput,
   parameters: GPUParameterBuffer<'float32'>,
   colors: Buffer
-): CompiledGPUCommandGraph<void> {
+): Promise<CompiledGPUCommandGraph<void>> {
   const length = input.width * input.height;
   const graph = new GPUCommandGraph<void>(device, {id: `${id}-paint`});
   const isFloat = input.format === 'float32';
@@ -187,5 +187,5 @@ fn tableColor(classIndex: u32) -> vec4<f32> {
   }
   colors[colorsOffset + index] = pack4x8unorm(color);`
   });
-  return resources.track(graph.compile());
+  return resources.track(await graph.compileAsync());
 }

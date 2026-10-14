@@ -178,7 +178,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
           'float32x2',
           vertexCount
         ),
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           densityGraph,
           'path-offsets',
           pathOffsetsBuffer,
@@ -187,17 +187,25 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         ),
         columns: COLUMNS,
         rows: ROWS,
-        maximumRecords,
+        recordCapacity: maximumRecords,
         parameters: densityParameters.importToGraph(densityGraph),
         output: {
           lengths: importGraphBuffer(densityGraph, 'lengths', lengths, 'float32', CELL_COUNT),
           densities: importGraphBuffer(densityGraph, 'densities', densities, 'float32', CELL_COUNT),
-          overflow: importGraphBuffer(densityGraph, 'overflow', overflow, 'uint32', 1),
-          totalRecords: importGraphBuffer(densityGraph, 'total-records', totalRecords, 'uint32', 1)
+          status: {
+            overflow: importGraphBuffer(densityGraph, 'overflow', overflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(
+              densityGraph,
+              'total-records',
+              totalRecords,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
-    const compiledDensity = resources.track(densityGraph.compile());
+    const compiledDensity = resources.track(await densityGraph.compileAsync());
 
     // Overlay graph: one generator per lattice type, plus edge passes that turn cell vertices
     // into drawable segments.
@@ -269,13 +277,13 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         overlayBuffers.set(gridType, {vertices, edges, edgeCount});
       }
     }
-    const compiledOverlay = resources.track(overlayGraph.compile());
+    const compiledOverlay = resources.track(await overlayGraph.compileAsync());
 
     // Polygon graphs: one compiled `GPULineLengthPerPolygon` per polygon set, both compiled now.
     // Switching the set or the metric only changes which buffers the layers read.
     const padding = 25;
     const polygonSets: Record<PolygonSetChoice, PolygonSetState> = {
-      districts: createPolygonSet(
+      districts: await createPolygonSet(
         createDistrictTiling(
           [roadMinX - padding, roadMinY - padding, roadMaxX + padding, roadMaxY + padding],
           14,
@@ -283,7 +291,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         ),
         true
       ),
-      zips: createPolygonSet(
+      zips: await createPolygonSet(
         createMovedZipSet(
           zips,
           [(roadMinX + roadMaxX) / 2, (roadMinY + roadMaxY) / 2],
@@ -294,7 +302,10 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         false
       )
     };
-    function createPolygonSet(set: LineDensityPolygonSet, partition: boolean): PolygonSetState {
+    async function createPolygonSet(
+      set: LineDensityPolygonSet,
+      partition: boolean
+    ): Promise<PolygonSetState> {
       const key = partition ? 'districts' : 'zips';
       const featureCount = set.featureOffsets.length - 1;
       const grid = rasterizeFeatureRows(set, CHOROPLETH_COLUMNS);
@@ -327,7 +338,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
             'float32x2',
             vertexCount
           ),
-          pathOffsets: importGraphBuffer(
+          lineOffsets: importGraphBuffer(
             graph,
             'path-offsets',
             pathOffsetsBuffer,
@@ -365,11 +376,13 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
               set.ringOffsets.length
             )
           },
-          maximumCandidatePairs: Math.max(1024, 3 * vertexCount),
+          pairCapacity: Math.max(1024, 3 * vertexCount),
           output: {
             lengths: lengthView,
             segmentCounts: importGraphBuffer(graph, 'counts', counts, 'uint32', featureCount),
-            overflow: importGraphBuffer(graph, 'overflow', polygonOverflow, 'uint32', 1)
+            status: {
+              overflow: importGraphBuffer(graph, 'overflow', polygonOverflow, 'uint32', 1)
+            }
           }
         })
       );
@@ -402,7 +415,7 @@ export const lineDensityMode: SpatialAnalysisModeDefinition = {
         cellRows: resources.createBuffer(`${key}-cell-rows`, grid.featureRows),
         lengths,
         perArea,
-        compiled: resources.track(graph.compile()),
+        compiled: resources.track(await graph.compileAsync()),
         partition,
         dirty: true,
         lengthValues: new Float32Array(featureCount),

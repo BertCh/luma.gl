@@ -8,7 +8,8 @@ import type {Buffer} from '@luma.gl/core';
 import {
   GPUDistanceField,
   GPU_DISTANCE_FIELD_PARAMETER_LENGTH,
-  getGPUDistanceFieldParameterValues
+  getGPUDistanceFieldParameterValues,
+  makeGPURasterMetadata
 } from '@luma.gl/experimental/gpu-raster';
 import {
   getGPULineDensityParameterValues,
@@ -25,6 +26,7 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
+import {GraphSwap} from '../../engine/graph-swap';
 import {formatCount, SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {SatelliteCellLayer} from './satellite-layers';
@@ -142,6 +144,15 @@ export async function createHurricaneLandfall(
   ];
   const cellWidth = (bounds[2] - bounds[0]) / COLUMNS;
   const cellHeight = (bounds[3] - bounds[1]) / ROWS;
+  // The coast distance field's grid in the storm frame (meters): origin at the south-west corner,
+  // rows advancing north, as the state raster and the readbacks below index it.
+  const coastGrid = makeGPURasterMetadata({
+    width: COLUMNS,
+    height: ROWS,
+    cellSize: [cellWidth, cellHeight],
+    origin: [bounds[0], bounds[1]],
+    rowDirection: 'north'
+  });
   // The line-density grid is a longitude/latitude grid over the same window (great-circle meters,
   // exact spherical cell areas); only the coast distance field and the state raster stay in the
   // Mercator frame that deck draws rasters in.
@@ -356,7 +367,7 @@ export async function createHurricaneLandfall(
           'float32x2',
           positions.length / 2
         ),
-        pathOffsets: importGraphBuffer(
+        lineOffsets: importGraphBuffer(
           densityGraph,
           `density-offsets-${variant}`,
           offsetBuffer,
@@ -365,25 +376,27 @@ export async function createHurricaneLandfall(
         ),
         columns: COLUMNS,
         rows: ROWS,
-        maximumRecords: Math.ceil(pieces * 1.1) + 1024,
+        recordCapacity: Math.ceil(pieces * 1.1) + 1024,
         parameters: densityParameterView,
         output: {
           lengths: lengthsView,
           densities: densitiesView,
-          overflow: importGraphBuffer(
-            densityGraph,
-            `density-overflow-${variant}`,
-            overflow,
-            'uint32',
-            1
-          ),
-          totalRecords: importGraphBuffer(
-            densityGraph,
-            `density-total-${variant}`,
-            total,
-            'uint32',
-            1
-          )
+          status: {
+            overflow: importGraphBuffer(
+              densityGraph,
+              `density-overflow-${variant}`,
+              overflow,
+              'uint32',
+              1
+            ),
+            requiredCount: importGraphBuffer(
+              densityGraph,
+              `density-total-${variant}`,
+              total,
+              'uint32',
+              1
+            )
+          }
         }
       })
     );
@@ -439,7 +452,7 @@ export async function createHurricaneLandfall(
     ],
     body: `total[totalOffset + index] = layer0[layer0Offset + index] + layer1[layer1Offset + index] + layer2[layer2Offset + index] + layer3[layer3Offset + index];`
   });
-  const densityCompiled = resources.track(densityGraph.compile());
+  const densityCompiled = resources.track(await densityGraph.compileAsync());
 
   // ---- Distance to the coast ---------------------------------------------------------------------
   const distanceSettings = resources.createParameterBuffer(
@@ -456,7 +469,9 @@ export async function createHurricaneLandfall(
   const coastCapKilometers = resources.createParameterBuffer('coast-cap', 'float32', 4);
   const distancesBuffer = resources.createBuffer('coast-distances', cellCount * 4);
   const coastKmBuffer = resources.createBuffer('coast-km', cellCount * 4);
-  function buildCoastGraph(mode: 'exact' | 'jump-flood'): CompiledGPUCommandGraph<void> {
+  async function buildCoastGraph(
+    mode: 'exact' | 'jump-flood'
+  ): Promise<CompiledGPUCommandGraph<void>> {
     const graph = new GPUCommandGraph<void>(device, {id: `hurricane-coast-${mode}`});
     const distancesView = importGraphBuffer(
       graph,
@@ -468,10 +483,9 @@ export async function createHurricaneLandfall(
     graph.add(
       new GPUDistanceField({
         id: `coast-${mode}`,
-        width: COLUMNS,
-        height: ROWS,
+        grid: coastGrid,
         mode,
-        settings: distanceSettings.importToGraph(graph),
+        parameters: distanceSettings.importToGraph(graph),
         seedPositions: importGraphBuffer(graph, 'coast-seeds', seedBuffer, 'float32x2', seedTotal),
         seedCount: seedCountParameter.importToGraph(graph),
         output: {distances: distancesView}
@@ -504,11 +518,11 @@ export async function createHurricaneLandfall(
   var infinityBits = 0x7f800000u;
   kilometers[kilometersOffset + index] = select(bitcast<f32>(infinityBits), ground, ground <= cap[capOffset]);`
     });
-    return resources.track(graph.compile());
+    return resources.track(await graph.compileAsync());
   }
   const coastGraphs = {
-    exact: buildCoastGraph('exact'),
-    'jump-flood': buildCoastGraph('jump-flood')
+    exact: await buildCoastGraph('exact'),
+    'jump-flood': await buildCoastGraph('jump-flood')
   };
 
   // ---- Landfall events ------------------------------------------------------------------------
@@ -525,89 +539,133 @@ export async function createHurricaneLandfall(
   const candidateOverflowBuffer = resources.createBuffer('candidate-overflow', 4);
   const trackOverflowBuffer = resources.createBuffer('track-overflow', 4);
   const eventListOverflowBuffer = resources.createBuffer('event-list-overflow', 4);
-  const edgeStartsBuffer = resources.createBuffer('edge-starts', zones.edgeStarts);
-  const edgeEndsBuffer = resources.createBuffer('edge-ends', zones.edgeEnds);
-  const edgeZonesBuffer = resources.createBuffer('edge-zones', zones.edgeZones);
+  const zonePositionsBuffer = resources.createBuffer('zone-positions', zones.polygonPositions);
+  const zoneFeatureOffsetsBuffer = resources.createBuffer(
+    'zone-feature-offsets',
+    zones.featureOffsets
+  );
+  const zonePolygonOffsetsBuffer = resources.createBuffer(
+    'zone-polygon-offsets',
+    zones.polygonOffsets
+  );
+  const zoneRingOffsetsBuffer = resources.createBuffer('zone-ring-offsets', zones.ringOffsets);
 
-  function buildEvents(eventsPerStorm: number): EventsVariant {
+  async function buildEvents(eventsPerStorm: number): Promise<EventsVariant> {
     const key = `events-${eventsPerStorm}`;
     const capacity = trackCount * eventsPerStorm;
     const graph = new GPUCommandGraph<void>(device, {id: `hurricane-${key}`});
     graph.add(
       new GPUZoneEvents({
         id: 'landfalls',
-        positions: importGraphBuffer(graph, 'positions', positionsBuffer, 'float32x2', vertexCount),
-        timestamps: importGraphBuffer(
-          graph,
-          'timestamps',
-          timestampsBuffer,
-          'float32',
-          vertexCount
-        ),
-        trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1),
-        edgeStarts: importGraphBuffer(
-          graph,
-          'edge-starts',
-          edgeStartsBuffer,
-          'float32x2',
-          edgeCount
-        ),
-        edgeEnds: importGraphBuffer(graph, 'edge-ends', edgeEndsBuffer, 'float32x2', edgeCount),
-        edgeZones: importGraphBuffer(graph, 'edge-zones', edgeZonesBuffer, 'uint32', edgeCount),
-        zoneCount,
         candidateCapacity: CANDIDATE_CAPACITY,
-        maxEventsPerTrack: eventsPerStorm,
-        events: {
-          output: {
-            ids: importGraphBuffer(graph, 'event-tracks', eventTracks, 'uint32', capacity),
-            count: importGraphBuffer(graph, 'event-count', eventCountBuffer, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'event-overflow', eventOverflowBuffer, 'uint32', 1)
-          },
-          eventZones: importGraphBuffer(graph, 'event-zones-out', eventZones, 'uint32', capacity),
-          eventTypes: importGraphBuffer(graph, 'event-types', eventTypes, 'uint32', capacity),
-          eventTimes: importGraphBuffer(graph, 'event-times', eventTimes, 'float32', capacity),
-          eventRows: importGraphBuffer(graph, 'event-rows', eventRows, 'uint32', capacity),
-          eventPositions: importGraphBuffer(
+        zones: {
+          kind: 'polygons',
+          positions: importGraphBuffer(
             graph,
-            'event-positions',
-            eventPositions,
+            'zone-positions',
+            zonePositionsBuffer,
             'float32x2',
-            capacity
+            edgeCount
+          ),
+          featureOffsets: importGraphBuffer(
+            graph,
+            'zone-feature-offsets',
+            zoneFeatureOffsetsBuffer,
+            'uint32',
+            zones.featureOffsets.length
+          ),
+          polygonOffsets: importGraphBuffer(
+            graph,
+            'zone-polygon-offsets',
+            zonePolygonOffsetsBuffer,
+            'uint32',
+            zones.polygonOffsets.length
+          ),
+          ringOffsets: importGraphBuffer(
+            graph,
+            'zone-ring-offsets',
+            zoneRingOffsetsBuffer,
+            'uint32',
+            zones.ringOffsets.length
           )
         },
-        diagnostics: {
-          candidateCount: importGraphBuffer(
+        output: {
+          events: {
+            ids: importGraphBuffer(graph, 'event-tracks', eventTracks, 'uint32', capacity),
+            eventZones: importGraphBuffer(graph, 'event-zones-out', eventZones, 'uint32', capacity),
+            eventTypes: importGraphBuffer(graph, 'event-types', eventTypes, 'uint32', capacity),
+            eventTimes: importGraphBuffer(graph, 'event-times', eventTimes, 'float32', capacity),
+            eventRows: importGraphBuffer(graph, 'event-rows', eventRows, 'uint32', capacity),
+            eventPositions: importGraphBuffer(
+              graph,
+              'event-positions',
+              eventPositions,
+              'float32x2',
+              capacity
+            ),
+            status: {
+              count: importGraphBuffer(graph, 'event-count', eventCountBuffer, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'event-overflow', eventOverflowBuffer, 'uint32', 1)
+            }
+          },
+          status: {
+            candidateCount: importGraphBuffer(
+              graph,
+              'candidate-count',
+              candidateCountBuffer,
+              'uint32',
+              1
+            ),
+            candidateOverflow: importGraphBuffer(
+              graph,
+              'candidate-overflow',
+              candidateOverflowBuffer,
+              'uint32',
+              1
+            ),
+            trackOverflow: importGraphBuffer(
+              graph,
+              'track-overflow',
+              trackOverflowBuffer,
+              'uint32',
+              1
+            ),
+            eventOverflow: importGraphBuffer(
+              graph,
+              'event-list-overflow',
+              eventListOverflowBuffer,
+              'uint32',
+              1
+            )
+          }
+        },
+        trackEventCapacity: eventsPerStorm,
+        tracks: {
+          kind: 'trajectories',
+          positions: importGraphBuffer(
             graph,
-            'candidate-count',
-            candidateCountBuffer,
-            'uint32',
-            1
+            'positions',
+            positionsBuffer,
+            'float32x2',
+            vertexCount
           ),
-          candidateOverflow: importGraphBuffer(
+          timestamps: importGraphBuffer(
             graph,
-            'candidate-overflow',
-            candidateOverflowBuffer,
-            'uint32',
-            1
+            'timestamps',
+            timestampsBuffer,
+            'float32',
+            vertexCount
           ),
-          trackOverflow: importGraphBuffer(
-            graph,
-            'track-overflow',
-            trackOverflowBuffer,
-            'uint32',
-            1
-          ),
-          eventOverflow: importGraphBuffer(
-            graph,
-            'event-list-overflow',
-            eventListOverflowBuffer,
-            'uint32',
-            1
-          )
+          trackOffsets: importGraphBuffer(graph, 'offsets', offsetsBuffer, 'uint32', trackCount + 1)
         }
       })
     );
-    return {key, eventsPerStorm, compiled: resources.track(graph.compile()), encoded: false};
+    return {
+      key,
+      eventsPerStorm,
+      compiled: resources.track(await graph.compileAsync()),
+      encoded: false
+    };
   }
 
   // ---- State ---------------------------------------------------------------------------------
@@ -643,12 +701,15 @@ export async function createHurricaneLandfall(
   const dotPositions = resources.createBuffer('landfall-positions', eventCapacity * 8);
   const dotCategories = resources.createBuffer('landfall-categories', eventCapacity * 4);
 
-  function replaceEvents(eventsPerStorm: number): void {
+  /** Swaps a compiled events variant in, then releases the one it replaces. */
+  function commitEvents(next: EventsVariant): void {
     const previous = eventsVariant;
-    eventsVariant = buildEvents(eventsPerStorm);
+    eventsVariant = next;
     if (previous) resources.release(previous.compiled);
     eventsDirty = true;
   }
+
+  const eventsSwap = resources.track(new GraphSwap());
 
   // ---- Readers -------------------------------------------------------------------------------
   const densityReader = new SummaryReader(
@@ -958,11 +1019,10 @@ export async function createHurricaneLandfall(
 
   function writeCoastSettings(): void {
     distanceSettings.write(
-      getGPUDistanceFieldParameterValues({
-        bounds,
-        gridSize: [COLUMNS, ROWS],
-        maxDistance: (ctx.options.coastSearchKm * 1000) / minimumRowScale
-      })
+      getGPUDistanceFieldParameterValues(
+        {maximumDistance: (ctx.options.coastSearchKm * 1000) / minimumRowScale},
+        coastGrid
+      )
     );
     coastCapKilometers.write(Float32Array.of(ctx.options.coastSearchKm, 0, 0, 0));
     coastDirty = true;
@@ -974,7 +1034,7 @@ export async function createHurricaneLandfall(
     `${COLUMNS} x ${ROWS} cells of ${densityCellWidth.toFixed(2)}° x ${densityCellHeight.toFixed(2)}° (density), ${(cellWidth / 1000).toFixed(0)} km at 28° N (coast); ${formatCount(seedTotal)} coast seeds`
   );
   writeCoastSettings();
-  replaceEvents(Number(ctx.options.eventsPerStorm));
+  commitEvents(await buildEvents(Number(ctx.options.eventsPerStorm)));
   describeSelectedState();
 
   // ---- Instance -------------------------------------------------------------------------------
@@ -999,7 +1059,14 @@ export async function createHurricaneLandfall(
           coastDirty = true;
           break;
         case 'eventsPerStorm':
-          replaceEvents(Number(state.eventsPerStorm));
+          void eventsSwap.request({
+            build: () => buildEvents(Number(state.eventsPerStorm)),
+            commit: next => {
+              commitEvents(next);
+              ctx.requestLayers();
+            },
+            discard: next => resources.release(next.compiled)
+          });
           break;
         case 'stateMetric':
         case 'landfallCounting':

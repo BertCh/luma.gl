@@ -229,45 +229,50 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
       trackOffsets,
       clock: clockParameter.importToGraph(encountersGraph),
       bucketCount: BUCKET_COUNT,
-      samples: importGraphBuffer(
-        encountersGraph,
-        'samples',
-        samplesBuffer,
-        'float32x2',
-        sampleCount
-      ),
       distance: distanceParameter.importToGraph(encountersGraph),
       cellSize: CELL_SIZE,
       bounds,
       hitCapacity: HIT_CAPACITY,
-      pairs: {
-        candidateOverflow: pairView('pair-candidate-overflow', pairCandidateOverflow, 'uint32', 1),
-        output: {
+      output: {
+        samples: importGraphBuffer(
+          encountersGraph,
+          'samples',
+          samplesBuffer,
+          'float32x2',
+          sampleCount
+        ),
+        pairs: {
           ids: pairIdsView,
-          count: pairCountView,
-          overflow: pairView('pair-overflow', pairOverflow, 'uint32', 1)
+          partners: pairPartnersView,
+          firstBuckets: pairView('pair-first-buckets', pairFirstBuckets, 'uint32'),
+          minimumDistances: pairView('pair-minimum-distances', pairMinimumDistances, 'float32'),
+          bucketCounts: pairView('pair-bucket-counts', pairBucketCounts, 'uint32'),
+          status: {
+            count: pairCountView,
+            overflow: pairView('pair-overflow', pairOverflow, 'uint32', 1)
+          }
         },
-        partners: pairPartnersView,
-        firstBuckets: pairView('pair-first-buckets', pairFirstBuckets, 'uint32'),
-        minimumDistances: pairView('pair-minimum-distances', pairMinimumDistances, 'float32'),
-        bucketCounts: pairView('pair-bucket-counts', pairBucketCounts, 'uint32')
+        status: {
+          candidateOverflow: pairView('pair-candidate-overflow', pairCandidateOverflow, 'uint32', 1)
+        }
       }
     });
     encountersGraph.add(
       new GPUTrackSimilarity({
         id: 'encounters-pair-similarity',
-        positionsA: trackPositions,
-        offsetsA: trackOffsets,
+        linesA: {kind: 'lines', positions: trackPositions, lineOffsets: trackOffsets},
         pairA: pairIdsView,
         pairB: pairPartnersView,
         activePairCount: pairCountView,
-        hausdorff: pairView('pair-hausdorff', pairHausdorff, 'float32'),
-        frechet: pairView('pair-frechet', pairFrechet, 'float32'),
-        status: pairView('pair-status', pairStatus, 'uint32'),
-        maxFrechetVertices: MAXIMUM_FRECHET_VERTICES
+        output: {
+          hausdorff: pairView('pair-hausdorff', pairHausdorff, 'float32'),
+          frechet: pairView('pair-frechet', pairFrechet, 'float32'),
+          pairStatus: pairView('pair-status', pairStatus, 'uint32')
+        },
+        maximumFrechetVertexCount: MAXIMUM_FRECHET_VERTICES
       })
     );
-    const encountersCompiled = resources.track(encountersGraph.compile());
+    const encountersCompiled = resources.track(await encountersGraph.compileAsync());
 
     // Connector segments and vehicle positions gathered from the dense table.
     const viewGraph = new GPUCommandGraph<void>(device, {id: 'encounters-view'});
@@ -356,7 +361,7 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
   vehicles[vehiclesOffset + index * 2u] = samples[samplesOffset + source];
   vehicles[vehiclesOffset + index * 2u + 1u] = samples[samplesOffset + source + 1u];`
     });
-    const viewCompiled = resources.track(viewGraph.compile());
+    const viewCompiled = resources.track(await viewGraph.compileAsync());
 
     // The clicked trip against every trip.
     const selectionGraph = new GPUCommandGraph<void>(device, {id: 'encounters-selection'});
@@ -386,29 +391,34 @@ export const encountersMode: SpatialAnalysisModeDefinition = {
     selectionGraph.add(
       new GPUTrackSimilarity({
         id: 'encounters-selected-similarity',
-        positionsA: importGraphBuffer(
-          selectionGraph,
-          'positions',
-          positionsBuffer,
-          'float32x2',
-          rowCount
-        ),
-        offsetsA: importGraphBuffer(
-          selectionGraph,
-          'offsets',
-          offsetsBuffer,
-          'uint32',
-          trackCount + 1
-        ),
+        linesA: {
+          kind: 'lines',
+          positions: importGraphBuffer(
+            selectionGraph,
+            'positions',
+            positionsBuffer,
+            'float32x2',
+            rowCount
+          ),
+          lineOffsets: importGraphBuffer(
+            selectionGraph,
+            'offsets',
+            offsetsBuffer,
+            'uint32',
+            trackCount + 1
+          )
+        },
         pairA: selectedPairAView,
         pairB: selectedPairBView,
-        hausdorff: selectionView('selected-hausdorff', selectedHausdorff, 'float32'),
-        frechet: selectionView('selected-frechet', selectedFrechet, 'float32'),
-        status: selectionView('selected-status', selectedStatus, 'uint32'),
-        maxFrechetVertices: MAXIMUM_FRECHET_VERTICES
+        output: {
+          hausdorff: selectionView('selected-hausdorff', selectedHausdorff, 'float32'),
+          frechet: selectionView('selected-frechet', selectedFrechet, 'float32'),
+          pairStatus: selectionView('selected-status', selectedStatus, 'uint32')
+        },
+        maximumFrechetVertexCount: MAXIMUM_FRECHET_VERTICES
       })
     );
-    const selectionCompiled = resources.track(selectionGraph.compile());
+    const selectionCompiled = resources.track(await selectionGraph.compileAsync());
 
     // --- Controls ------------------------------------------------------------------------------
     const writeView = () => {

@@ -369,7 +369,7 @@ graph.add(new GPUChangeDetection({
     significance                                         // 0 none, 1 increase, 2 decrease
   }
 }));
-const compiled = graph.compile();                         // once
+const compiled = await graph.compileAsync();              // once
 
 // per frame, no recompile
 parameters.write(getGPUChangeDetectionParameterValues({

@@ -618,14 +618,14 @@ graph.add(new GPURasterArithmetic({id: 'dnbr', cellCount, a: nbrBefore, b: nbrAf
   parameters: changeParameters, output: {values: dnbr}}));
 // Cloud screen and the burned condition
 graph.add(new GPURasterConditional({id: 'cloud', cellCount, conditionValues: scl,
-  parameters: cloudParameters, output: {values: cloudFlag, mask: cloudMask}}));
+  parameters: cloudParameters, output: {values: cloudFlag, outputMask: cloudMask}}));
 graph.add(new GPURasterConditional({id: 'clean', cellCount, mask: cloudMask, b: dnbr,
   parameters: cleanParameters, output: {values: cleanDnbr}}));
 graph.add(new GPURasterConditional({id: 'burned', cellCount, conditionValues: cleanDnbr,
-  parameters: burnedParameters, output: {values: burnedFlag, mask: burnedMask}}));
+  parameters: burnedParameters, output: {values: burnedFlag, outputMask: burnedMask}}));
 graph.add(new GPURasterReclassify({id: 'severity', values: cleanDnbr, breaks, parameters: reclassifyParameters,
   output: {classes, classCounts}}));
-const compiled = graph.compile();                         // once
+const compiled = await graph.compileAsync();              // once
 
 // per frame, no recompile
 indexParameters.write(getGPURasterArithmeticParameterValues({

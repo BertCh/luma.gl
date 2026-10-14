@@ -319,24 +319,26 @@ import {
 
 // Whole routes as 64 arc-length samples, once (input of the similarity measures)
 routeGraph.add(new GPUTrajectoryResample({
-  positions, timestamps, trackOffsets, sampleCount: 64, spacing: 'arc-length', samples: routes
+  positions, timestamps, trackOffsets, sampleCount: 64, spacing: 'arc-length',
+  output: {samples: routes}
 }));
 
 const graph = new GPUCommandGraph(device, {id: 'encounters'});
-const pairs = {output: {ids, count, overflow}, partners, firstBuckets, minimumDistances, bucketCounts};
+const pairs = {ids, status: {count, overflow}, partners, firstBuckets, minimumDistances, bucketCounts};
 addClockEncounters(graph, {
   positions: maskedPositions, timestamps, trackOffsets, // fixes of vessels slower than ${state.minSpeedKnots} kn set to NaN by a kernel
   clock: clock.importToGraph(graph), bucketCount: 720,  // shared instants start + k * step
   distance: distance.importToGraph(graph),              // per frame, <= cellSize
   cellSize: 400, bounds, hitCapacity: ${1 << 21},       // compile-time lattice
-  pairs
+  output: {pairs, status: {candidateOverflow}}
 });
 graph.add(new GPUTrackSimilarity({
-  positionsA: routes, offsetsA: routeOffsets,
-  pairA: pairs.output.ids, pairB: pairs.partners, activePairCount: pairs.output.count,
-  hausdorff, frechet, maxFrechetVertices: 64            // one pass, both measures
+  linesA: {kind: 'lines', positions: routes, lineOffsets: routeOffsets},
+  pairA: pairs.ids, pairB: pairs.partners, activePairCount: pairs.status.count,
+  maximumFrechetVertexCount: 64,
+  output: {hausdorff, frechet}                                 // one pass, both measures
 }));
-const compiled = graph.compile();                       // once
+const compiled = await graph.compileAsync();            // once
 
 // the sliders are buffer writes
 distance.write(Float32Array.of(${state.distance}));

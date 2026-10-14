@@ -47,7 +47,7 @@ Options that matter:
 - **Denominator** (`'zone'` or `'overlap'`, set per kind): whether mass that falls outside the other system is lost (tobler) or conserved over the shared extent. The library default is `'zone'` for extensive variables and `'overlap'` for intensive ones, so a rate or mean is never diluted where a target is only partly covered. Per-source diagnostics report how much of each source reached the targets.
 - **Target grid**: `GPUGridGenerator` makes hexagons, squares or triangles; the cell width and offset are per-frame parameters. Shift the grid and the numbers change though the data did not: the modifiable areal unit problem.
 
-`GPUPycnophylactic` is the other route: instead of zones it builds a smooth density surface that preserves every source total (Tobler 1979). The number of iterations and the smoothing kernel are compile-time.
+`GPUPycnophylactic` is the other route: instead of zones it builds a smooth density surface that preserves every source total (Tobler 1979). The maximum number of iterations and the smoothing kernel are compile-time.
 
 Accuracy is bounded by the raster. Cell centres decide membership, so a boundary is accurate to about one cell, and slivers smaller than a cell can be missed. Choose a raster whose cells are small against the smallest zone of either system, and read the Resolution readout in the story.
 

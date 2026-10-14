@@ -39,7 +39,7 @@ The line-of-sight contributor adds a number: the **clearance**, the metres by wh
 
 ### Pitfall: Web Mercator is not metres
 
-The planar contributors take one ground cell size. A Web Mercator raster does not have one: the pixel is 9.6 m on the page but 6.6 m of ground at 46 degrees north. These stories pass the ground size of the central row (the cosine of latitude changes by 0.1 percent across a 13.6 km window). For larger windows resample to a projected raster, or use a contributor with a Web Mercator model: the skyline contributors take a `'web-mercator'` projection and `worldPixelSize`, and the grid contributors take `cellSizeMode: 'web-mercator'` with the normalized y of the north and south edges.
+The planar contributors take one ground cell size. A Web Mercator raster does not have one: the pixel is 9.6 m on the page but 6.6 m of ground at 46 degrees north. These stories pass the ground size of the central row (the cosine of latitude changes by 0.1 percent across a 13.6 km window). For larger windows resample to a projected raster, or use a contributor with a Web Mercator model: the skyline contributors take a `'web-mercator'` projection and a grid in EPSG:3857 meters (the packer derives the world size and the top edge from its cell size and origin), and the grid contributors take `cellSizeMode: 'web-mercator'` with the same grid.
 
 ## The min-max pyramid: faster, never different
 

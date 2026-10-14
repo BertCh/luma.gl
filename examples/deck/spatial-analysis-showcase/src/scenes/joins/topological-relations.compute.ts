@@ -16,6 +16,7 @@ import {GPUCommandGraph, type CompiledGPUCommandGraph} from '@luma.gl/gpgpu/gpu-
 import {importGraphBuffer} from '../../engine/graph-buffers';
 import {SpatialAnalysisSegmentLayer, type SpatialAnalysisColormap} from '../../engine/layers';
 import type {RampName} from '../../engine/ramps';
+import {GraphSwap} from '../../engine/graph-swap';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import {formatCompiledGraphTiming, measureCompiledGraph} from '../../engine/vector-timing';
@@ -219,11 +220,11 @@ export async function createTopologicalRelations(
     (RELATE_PATTERNS[state.pattern] ?? RELATE_PATTERNS.rook).patterns;
 
   /** Builds one compiled configuration. `engineOverride` is used by the timing comparison only. */
-  function buildVariant(
+  async function buildVariant(
     state: TopologicalOptions,
     engineOverride?: 'fast' | 'relate',
     idSuffix = ''
-  ): Variant {
+  ): Promise<Variant> {
     const key = `${getKey(state)}${idSuffix}`;
     const own = new SpatialAnalysisResources(device, `tr-${key}`);
     const graph = new GPUCommandGraph<void>(device, {id: `tr-${key}`});
@@ -276,43 +277,65 @@ export async function createTopologicalRelations(
     const innerJoin = new GPUSpatialPredicateJoin({
       ...common,
       id: 'inner',
-      pairs: {
-        leftIds: importGraphBuffer(graph, 'left-ids', leftIds, 'uint32', pairCapacity),
-        rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
-        count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-        requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
-      },
-      ...(hasMatrix
-        ? {relate: importGraphBuffer(graph, 'relate', relateBuffer, 'uint32', pairCapacity)}
-        : {}),
-      ...(self
-        ? {
-            weights: {
-              offsets: importGraphBuffer(graph, 'csr-offsets', csrOffsets, 'uint32', leftCount + 1),
-              neighbors: importGraphBuffer(
-                graph,
-                'csr-neighbors',
-                csrNeighbors,
-                'uint32',
-                pairCapacity
-              ),
-              weights: importGraphBuffer(graph, 'csr-weights', csrWeights, 'float32', pairCapacity)
-            }
+      output: {
+        pairs: {
+          leftIds: importGraphBuffer(graph, 'left-ids', leftIds, 'uint32', pairCapacity),
+          rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
+          status: {
+            count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+            requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
           }
-        : {}),
-      uncertainCount: importGraphBuffer(graph, 'uncertain', uncertain, 'uint32', 1),
-      candidateCount: importGraphBuffer(graph, 'candidates', candidates, 'uint32', 1)
+        },
+        ...(hasMatrix
+          ? {relate: importGraphBuffer(graph, 'relate', relateBuffer, 'uint32', pairCapacity)}
+          : {}),
+        ...(self
+          ? {
+              weights: {
+                offsets: importGraphBuffer(
+                  graph,
+                  'csr-offsets',
+                  csrOffsets,
+                  'uint32',
+                  leftCount + 1
+                ),
+                neighbors: importGraphBuffer(
+                  graph,
+                  'csr-neighbors',
+                  csrNeighbors,
+                  'uint32',
+                  pairCapacity
+                ),
+                weights: importGraphBuffer(
+                  graph,
+                  'csr-weights',
+                  csrWeights,
+                  'float32',
+                  pairCapacity
+                )
+              }
+            }
+          : {}),
+        status: {
+          uncertainCount: importGraphBuffer(graph, 'uncertain', uncertain, 'uint32', 1),
+          candidateCount: importGraphBuffer(graph, 'candidates', candidates, 'uint32', 1)
+        }
+      }
     });
     graph.add(innerJoin);
     const antiJoin = new GPUSpatialPredicateJoin({
       ...common,
       id: 'anti',
       how: 'anti',
-      unmatched: {
-        ids: importGraphBuffer(graph, 'anti-ids', antiIds, 'uint32', leftCount),
-        count: importGraphBuffer(graph, 'anti-count', antiCount, 'uint32', 1),
-        overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1)
+      output: {
+        unmatched: {
+          ids: importGraphBuffer(graph, 'anti-ids', antiIds, 'uint32', leftCount),
+          status: {
+            count: importGraphBuffer(graph, 'anti-count', antiCount, 'uint32', 1),
+            overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1)
+          }
+        }
       }
     });
     graph.add(antiJoin);
@@ -348,12 +371,19 @@ export async function createTopologicalRelations(
       frames: 0,
       predicate
     };
-    result.reader = new SummaryReader(own, `summary-${key}`, sources, bytes => {
-      if (destroyed || variant !== result) return;
-      handleSummary(result, bytes);
-    });
-    result.compiled = own.track(graph.compile());
+    // The handle is destroyed once, by `own`, after the compiled graph that imports it.
     own.track({destroy: () => prepared.destroy()});
+    try {
+      result.reader = new SummaryReader(own, `summary-${key}`, sources, bytes => {
+        if (destroyed || variant !== result) return;
+        handleSummary(result, bytes);
+      });
+      result.compiled = own.track(await graph.compileAsync());
+    } catch (error) {
+      result.reader?.stop();
+      own.destroy();
+      throw error;
+    }
     return result;
   }
 
@@ -530,13 +560,14 @@ export async function createTopologicalRelations(
     );
   }
 
-  function replaceVariant(state: TopologicalOptions): void {
+  /** Makes a built variant the live one, clears the selection and retires the previous one. */
+  function commitVariant(next: Variant): void {
     const previous = variant;
     selected = -1;
     pairs = [];
     leftCounts = new Float32Array(maximumLeft);
     antiFlags = new Uint8Array(maximumLeft);
-    variant = buildVariant(state);
+    variant = next;
     dirty = true;
     if (previous) {
       previous.reader.stop();
@@ -544,12 +575,29 @@ export async function createTopologicalRelations(
     }
   }
 
+  const variantSwap = resources.track(new GraphSwap());
+  /** Builds the variant for `state` and swaps it in; the latest request wins. */
+  function requestVariant(state: TopologicalOptions): Promise<boolean> {
+    const wanted = {...state};
+    return variantSwap.request({
+      build: () => buildVariant(wanted),
+      commit: next => {
+        commitVariant(next);
+        ctx.requestLayers();
+      },
+      discard: next => {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+    });
+  }
+
   function writePatterns(state: TopologicalOptions): void {
     patternParameters.write(packGPUSpatialRelatePattern(getPatterns(state), PATTERN_SLOTS));
   }
 
   writePatterns(ctx.options);
-  variant = buildVariant(ctx.options);
+  variant = await buildVariant(ctx.options);
 
   /** Times the fast and the relate engine on the current predicate, outside the frame. */
   async function measureEngines(): Promise<void> {
@@ -564,7 +612,7 @@ export async function createTopologicalRelations(
     const results: string[] = [];
     try {
       for (const engine of ['fast', 'relate'] as const) {
-        const built = buildVariant({...state, matrix: false}, engine, `-time-${engine}`);
+        const built = await buildVariant({...state, matrix: false}, engine, `-time-${engine}`);
         try {
           const timing = await measureCompiledGraph(device, built.compiled, {
             parameters: undefined,
@@ -573,7 +621,6 @@ export async function createTopologicalRelations(
           });
           results.push(`${engine} ${formatCompiledGraphTiming(timing).split(' · ')[0]}`);
         } finally {
-          built.compiled.destroy();
           built.reader.stop();
           built.resources.destroy();
         }
@@ -596,7 +643,7 @@ export async function createTopologicalRelations(
         case 'predicate':
         case 'engine':
         case 'matrix':
-          if (getKey(state) !== variant.key) replaceVariant(state);
+          if (variantSwap.pending || getKey(state) !== variant.key) void requestVariant(state);
           break;
         case 'pattern':
           writePatterns(state);

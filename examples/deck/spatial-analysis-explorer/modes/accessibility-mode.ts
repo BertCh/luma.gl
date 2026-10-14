@@ -9,7 +9,7 @@
  * by how often its inputs change:
  *
  * - The matrix graph runs `GPUNetworkSnapping` (each opportunity snaps to its nearest street edge
- *   and becomes two seeds) and `GPUNetworkCostMatrix` (one bounded shortest-path search per
+ *   and becomes two start nodes) and `GPUNetworkCostMatrix` (one bounded shortest-path search per
  *   opportunity over the street graph, lane-batched). It is iterative and expensive, so it is
  *   encoded only when the opportunity set changes ("Resample opportunities"), never for a slider.
  * - The score graph runs `GPUNetworkAccessibility` over the retained matrix: cumulative
@@ -21,6 +21,7 @@
  * CSR that the opportunity-side matrix needs.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer} from '@luma.gl/core';
 import {
@@ -33,8 +34,8 @@ import {
   GPUNetworkAccessibility,
   GPUNetworkCostMatrix,
   GPUNetworkSnapping,
-  encodeGPUNetworkAccessibilityParameters,
-  type GPUNetworkAccessibilityParameters
+  getGPUNetworkAccessibilityParameterValues,
+  type GPUNetworkAccessibilitySettings
 } from '@luma.gl/experimental/gpu-network';
 import {importGraphBuffer} from '../graph-buffers';
 import {createSeededRandom} from '../spatial-analysis-data';
@@ -142,7 +143,6 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
 
     // --- Buffers -------------------------------------------------------------------------------
     const nodePositions = resources.createBuffer('node-positions', roads.nodePositions);
-    const edgeSources = resources.createBuffer('edge-sources', edges.sources);
     const edgeTargets = resources.createBuffer('edge-targets', edges.targets);
     const edgeCosts = resources.createBuffer('edge-costs', edgeSeconds);
     const offsetsBuffer = resources.createBuffer('csr-offsets', csrOffsets);
@@ -151,8 +151,8 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
     const snappedEdges = resources.createBuffer('snapped-edges', rowCount * 4);
     const snapDistances = resources.createBuffer('snap-distances', rowCount * 4);
     const snappedPositions = resources.createBuffer('snapped-positions', rowCount * 8);
-    const seedNodes = resources.createBuffer('seed-nodes', rowCount * 8);
-    const seedCosts = resources.createBuffer('seed-costs', rowCount * 8);
+    const startNodes = resources.createBuffer('start-nodes', rowCount * 8);
+    const startCosts = resources.createBuffer('start-costs', rowCount * 8);
     // Facility point then snapped point per opportunity: x0, y0, x1, y1 rows for the segment layer.
     const snapSegments = resources.createBuffer('snap-segments', rowCount * 16);
     const matrix = resources.createBuffer('matrix', matrixLength * 4);
@@ -195,95 +195,104 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       'float32',
       edgeCount
     );
-    const seedNodesView = importGraphBuffer(
+    const startNodesView = importGraphBuffer(
       matrixGraph,
-      'seed-nodes',
-      seedNodes,
+      'start-nodes',
+      startNodes,
       'uint32',
       rowCount * 2
     );
-    const seedCostsView = importGraphBuffer(
+    const startCostsView = importGraphBuffer(
       matrixGraph,
-      'seed-costs',
-      seedCosts,
+      'start-costs',
+      startCosts,
       'float32',
       rowCount * 2
     );
+    const topology = {
+      offsets: importGraphBuffer(
+        matrixGraph,
+        'csr-offsets',
+        offsetsBuffer,
+        'uint32',
+        nodeCount + 1
+      ),
+      neighbors: edgeTargetsView,
+      weights: edgeCostsView,
+      nodePositions: importGraphBuffer(
+        matrixGraph,
+        'node-positions',
+        nodePositions,
+        'float32x2',
+        nodeCount
+      )
+    };
     matrixGraph.add(
       new GPUNetworkSnapping({
         id: 'snapping',
-        points: importGraphBuffer(
+        positions: importGraphBuffer(
           matrixGraph,
           'facilities',
           facilityPositions,
           'float32x2',
           rowCount
         ),
-        nodePositions: importGraphBuffer(
-          matrixGraph,
-          'node-positions',
-          nodePositions,
-          'float32x2',
-          nodeCount
-        ),
-        edgeSources: importGraphBuffer(
-          matrixGraph,
-          'edge-sources',
-          edgeSources,
-          'uint32',
-          edgeCount
-        ),
-        edgeTargets: edgeTargetsView,
-        edgeCosts: edgeCostsView,
-        seedDirection: 'both',
-        snappedEdges: importGraphBuffer(
-          matrixGraph,
-          'snapped-edges',
-          snappedEdges,
-          'uint32',
-          rowCount
-        ),
-        snapDistances: importGraphBuffer(
-          matrixGraph,
-          'snap-distances',
-          snapDistances,
-          'float32',
-          rowCount
-        ),
-        snappedPositions: importGraphBuffer(
-          matrixGraph,
-          'snapped-positions',
-          snappedPositions,
-          'float32x2',
-          rowCount
-        ),
-        seedNodes: seedNodesView,
-        seedCosts: seedCostsView
+        topology,
+        startDirection: 'both',
+        output: {
+          snappedEdges: importGraphBuffer(
+            matrixGraph,
+            'snapped-edges',
+            snappedEdges,
+            'uint32',
+            rowCount
+          ),
+          snapDistances: importGraphBuffer(
+            matrixGraph,
+            'snap-distances',
+            snapDistances,
+            'float32',
+            rowCount
+          ),
+          snappedPositions: importGraphBuffer(
+            matrixGraph,
+            'snapped-positions',
+            snappedPositions,
+            'float32x2',
+            rowCount
+          ),
+          startNodes: startNodesView,
+          startCosts: startCostsView
+        }
       })
     );
     matrixGraph.add(
       new GPUNetworkCostMatrix({
         id: 'cost-matrix',
-        offsets: importGraphBuffer(
-          matrixGraph,
-          'csr-offsets',
-          offsetsBuffer,
-          'uint32',
-          nodeCount + 1
-        ),
-        neighbors: edgeTargetsView,
-        weights: edgeCostsView,
-        seedNodes: seedNodesView,
-        seedCosts: seedCostsView,
-        seedsPerRow: 2,
+        topology,
+        startNodes: startNodesView,
+        startCosts: startCostsView,
+        startsPerRow: 2,
         costLimit: costLimit.importToGraph(matrixGraph),
         laneCount: Math.min(LANE_COUNT, rowCount),
-        maxIterations: MAXIMUM_ITERATIONS,
-        costs: importGraphBuffer(matrixGraph, 'matrix', matrix, 'float32', matrixLength),
-        converged: importGraphBuffer(matrixGraph, 'matrix-converged', matrixConverged, 'uint32', 1)
+        maximumIterations: MAXIMUM_ITERATIONS,
+        output: {
+          costs: importGraphBuffer(matrixGraph, 'matrix', matrix, 'float32', matrixLength),
+          status: {
+            converged: importGraphBuffer(
+              matrixGraph,
+              'matrix-converged',
+              matrixConverged,
+              'uint32',
+              1
+            )
+          }
+        }
       })
     );
-    const compiledMatrix: CompiledGPUCommandGraph<void> = resources.track(matrixGraph.compile());
+    const compiledMatrix: CompiledGPUCommandGraph<void> = resources.track(
+      await matrixGraph.compileAsync()
+    );
 
     // --- Score graph: all three measures every encoding; the layer picks one -------------------
     const scoreGraph = new GPUCommandGraph<void>(device, {id: 'accessibility-score'});
@@ -314,28 +323,30 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
         }
       })
     );
-    const compiledScore: CompiledGPUCommandGraph<void> = resources.track(scoreGraph.compile());
+    const compiledScore: CompiledGPUCommandGraph<void> = resources.track(
+      await scoreGraph.compileAsync()
+    );
 
     // --- Controls ------------------------------------------------------------------------------
     const getScoreBuffer = (): Buffer =>
       measure === 'cumulative' ? cumulative : measure === 'two-step' ? twoStep : gravity;
 
     const writeScoring = () => {
-      const parameters: GPUNetworkAccessibilityParameters = {
+      const settings: GPUNetworkAccessibilitySettings = {
         threshold: thresholdMinutes * 60,
         decay: 'none'
       };
       if (measure === 'gravity-exponential') {
         // Exponent per 10 minutes of walking, converted to per second.
-        Object.assign(parameters, {decay: 'exponential', beta: betaValue / 600});
+        Object.assign(settings, {decay: 'exponential', beta: betaValue / 600});
       } else if (measure === 'gravity-power') {
-        Object.assign(parameters, {
+        Object.assign(settings, {
           decay: 'power',
           beta: betaValue,
           minimumCost: POWER_MINIMUM_COST_SECONDS
         });
       }
-      scoring.write(encodeGPUNetworkAccessibilityParameters(parameters));
+      scoring.write(getGPUNetworkAccessibilityParameterValues(settings));
       scoreDirty = true;
       scoreReadbackWanted = true;
       scheduleTiming();
@@ -519,7 +530,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: snapSummaryBytes});
       matrixReadbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const words = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4);
         const distances = new Float32Array(
@@ -565,7 +576,7 @@ export const accessibilityMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: nodeCount * 4});
       scoreReadbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const scores = Float32Array.from(
           new Float32Array(bytes.buffer, bytes.byteOffset, nodeCount)

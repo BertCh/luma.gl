@@ -433,41 +433,47 @@ export default defineScene<NearestFacilityOptions>({
 
 graph.add(
   new GPUNearestFeatureJoin({
-    points: places,                          // float32x2 meters, 105,808 rows
+    queries: {kind: 'points', positions: places},  // float32x2 meters, 105,808 rows
     features: ${state.featureSet === 'rail-lines' ? "{kind: 'segments', starts, ends}" : "{kind: 'points', positions: facilities}"},
     radius: radius.importToGraph(graph),     // one float32, rewritten per frame
     candidateCapacity: places.length * 32,
     spatialSort: ${state.spatialSort},
-    nearestFeatureIds, nearestDistances,     // per place
-    featureCounts,                           // per feature: catchment size
-    overflow
+    output: {
+      nearestFeatureIds, nearestDistances,   // per place
+      featureCounts,                         // per feature: catchment size
+      status: {overflow, candidateCount}
+    }
   })
 );`
         : state.mode === 'neighbors'
           ? `graph.add(
   new GPUNearestFeatureJoin({
-    points: places,
+    queries: {kind: 'points', positions: places},
     features: ${state.featureSet === 'rail-lines' ? "{kind: 'lines', positions, lineOffsets}" : "{kind: 'points', positions: facilities}"},
     k: 8, neighborCapacity: ${state.ties === 'all' ? 16 : 8}, ties: '${state.ties}',
-    maxDistance: maxDistance.importToGraph(graph),  // per frame
+    radius: maxDistance.importToGraph(graph),  // per frame
     spatialSort: ${state.spatialSort},
-    neighborIds, neighborCounts,             // ordered by (distance, feature row)
-    neighborDistances, neighborFootPoints,   // nearest point on each feature
-    overflow
+    output: {
+      neighborIds, neighborCounts,           // ordered by (distance, feature row)
+      neighborDistances, neighborFootPoints, // nearest point on each feature
+      status: {overflow}
+    }
   })
 );
 // draw the first ${state.kShown} slots of every place: no recompile`
           : state.mode === 'weights'
-            ? `graph.add(new GPUNearestFeatureJoin({points: facilities, features: {kind: 'points', positions: facilities},
-  k: ${state.weightK + 1}, neighborIds, neighborCounts, neighborDistances, overflow}));
+            ? `graph.add(new GPUNearestFeatureJoin({
+  queries: {kind: 'points', positions: facilities}, features: {kind: 'points', positions: facilities},
+  k: ${state.weightK + 1},
+  output: {neighborIds, neighborCounts, neighborDistances, status: {overflow}}
+}));
 graph.add(
   new GPUNearestFeatureWeights({
     neighborIds, neighborCounts, neighborDistances,
     slotCapacity: ${state.weightK + 1}, k: ${state.weightK},
     excludeSelf: true,                       // libpysal KNN never lists a row as its own neighbour
     weightType: '${state.weightType}'${state.weightType === 'inverse-distance' ? `, power: ${state.weightPower}` : ''},
-    weights: {offsets, neighbors, weights, distances},   // CSR
-    overflow
+    output: {offsets, neighbors, weights, distances, status: {overflow}}   // CSR
   })
 );`
             : `import {GPUSpatialJoinCandidates} from '@luma.gl/experimental/gpu-spatial-analysis';
@@ -477,11 +483,11 @@ graph.add(
     left: {kind: 'points', positions: facilities},
     right: {kind: 'polygons', positions, featureOffsets, polygonOffsets, ringOffsets},
     distance: candidateDistance.importToGraph(graph),        // one-row float32, read per frame
-    pairs: {leftIds, rightIds, count, overflow, requiredCount}  // sorted by (left, right)
+    output: {leftIds, rightIds, status: {count, overflow, requiredCount}}  // sorted by (left, right)
   })
 );`;
     return `${join}
-const compiled = graph.compile();            // once
+const compiled = await graph.compileAsync();  // once
 compiled.encode(commandEncoder, {parameters: undefined});`;
   },
 

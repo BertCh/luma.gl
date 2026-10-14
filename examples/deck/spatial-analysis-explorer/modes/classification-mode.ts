@@ -15,6 +15,7 @@
  * and profile come back through one small `GPUReadbackRing` read.
  */
 
+import {scheduleReadback} from '../readback-scheduling';
 import type {Layer} from '@deck.gl/core';
 import type {Buffer, CommandEncoder} from '@luma.gl/core';
 import {
@@ -56,6 +57,7 @@ import {
   GPUPointDensity
 } from '@luma.gl/experimental/gpu-spatial-analysis';
 import {importGraphBuffer} from '../graph-buffers';
+import {GraphSwap} from '../graph-swap';
 import {LocalMetricProjection} from '../spatial-analysis-data';
 import type {
   SpatialAnalysisModeDefinition,
@@ -398,11 +400,17 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
     let bivariateGraph: CompiledGPUCommandGraph<void> | null = null;
     let profileGraph: CompiledGPUCommandGraph<void> | null = null;
     let fitGraph: CompiledGPUCommandGraph<void> | null = null;
+    const graphSwap = resources.track(new GraphSwap());
 
-    function buildGraphs(): void {
-      for (const graph of [main, bivariateGraph, profileGraph, fitGraph]) {
-        if (graph) resources.release(graph);
-      }
+    type GraphSet = {
+      main: CompiledGPUCommandGraph<void>;
+      bivariateGraph: CompiledGPUCommandGraph<void>;
+      profileGraph: CompiledGPUCommandGraph<void>;
+      fitGraph: CompiledGPUCommandGraph<void>;
+    };
+
+    /** Compiles the four graphs for one binning without touching the live graphs. */
+    async function buildGraphs(binning: Binning): Promise<GraphSet> {
       const gridSize = binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE;
       const cellCount = gridSize[0] * gridSize[1];
       // A graph rejects two imports that resolve to one physical buffer, so each graph imports a
@@ -469,7 +477,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           output: {
             quantiles: bind.float(quantiles, QUANTILE_PROBABILITIES.length),
             validCount: bind.word(validCount, 1),
-            filterMask: filter,
+            outputMask: filter,
             filterBounds: bind.float(filterBounds, 2)
           }
         })
@@ -547,7 +555,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      main = resources.track(graph.compile());
+      const builtMain = resources.track(await graph.compileAsync());
 
       // Bivariate graph: count by mean speed, encoded only while the toggle is on.
       const biGraph = new GPUCommandGraph<void>(device, {
@@ -595,7 +603,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      bivariateGraph = resources.track(biGraph.compile());
+      const builtBivariate = resources.track(await biGraph.compileAsync());
 
       // Profile graph: dataset statistics of the filtered columns.
       const profile = new GPUCommandGraph<void>(device, {id: `classification-profile-${binning}`});
@@ -622,7 +630,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      profileGraph = resources.track(profile.compile());
+      const builtProfile = resources.track(await profile.compileAsync());
 
       // Fit graph: assigns every filtered cell to its class of the chosen breaks (independent of
       // the display scale) and scores the classification. The fit is compiled for the maximum
@@ -656,7 +664,29 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
           }
         })
       );
-      fitGraph = resources.track(fit.compile());
+      const builtFit = resources.track(await fit.compileAsync());
+      return {
+        main: builtMain,
+        bivariateGraph: builtBivariate,
+        profileGraph: builtProfile,
+        fitGraph: builtFit
+      };
+    }
+
+    function releaseGraphSet(set: GraphSet): void {
+      for (const graph of [set.main, set.bivariateGraph, set.profileGraph, set.fitGraph]) {
+        resources.release(graph);
+      }
+    }
+
+    /** Swaps a compiled graph set in, then releases the one it replaces. */
+    function commitGraphs(next: GraphSet): void {
+      const previous = [main, bivariateGraph, profileGraph, fitGraph];
+      ({main, bivariateGraph, profileGraph, fitGraph} = next);
+      for (const graph of previous) {
+        if (graph) resources.release(graph);
+      }
+      const gridSize = binning === 'grid' ? GRID_SIZE : HEXAGON_GRID_SIZE;
       gridReadout?.setValue(
         `${gridSize[0]} × ${gridSize[1]} ${binning === 'grid' ? 'cells' : 'hexagons'}`
       );
@@ -753,13 +783,20 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       ],
       value: binning,
       onChange: value => {
-        binning = value;
-        latestSummary = null;
-        // Rewrites the bounds and the hexagon radius on the next frame.
-        lastBoundsKey = '';
-        buildGraphs();
-        writeParameters();
-        context.updateLayers();
+        // The current graphs and binning stay live until the replacements have compiled.
+        void graphSwap.request({
+          build: () => buildGraphs(value),
+          commit: next => {
+            binning = value;
+            latestSummary = null;
+            // Rewrites the bounds and the hexagon radius on the next frame.
+            lastBoundsKey = '';
+            commitGraphs(next);
+            writeParameters();
+            context.updateLayers();
+          },
+          discard: releaseGraphSet
+        });
       }
     });
     context.controls.addSelect<GPUClassBreaksMethod>({
@@ -891,7 +928,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
 
     // The palette depends on the requested count until the first readback reports the real one.
     writePalette(requestedClassCount);
-    buildGraphs();
+    commitGraphs(await buildGraphs(binning));
     writeParameters();
 
     function renderLegend(summary: Summary): void {
@@ -1037,7 +1074,7 @@ export const classificationMode: SpatialAnalysisModeDefinition = {
       ticket.markEncoded({byteOffset: 0, byteLength: readbackByteLength});
       readbackPending = true;
       try {
-        const bytes = await ticket.read();
+        const bytes = await scheduleReadback(() => ticket.read());
         if (destroyed) return;
         const copy = new ArrayBuffer(bytes.byteLength);
         new Uint8Array(copy).set(bytes);

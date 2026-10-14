@@ -422,7 +422,7 @@ graph.add(
     output: {values, counts, extent}
   })
 );
-const compiled = graph.compile();      // once per lattice, resolution, side and statistic
+const compiled = await graph.compileAsync();  // once per lattice, resolution, side and statistic
 // every frame: write the small parameter buffers, then
 compiled.encode(commandEncoder, {parameters: undefined});
 
