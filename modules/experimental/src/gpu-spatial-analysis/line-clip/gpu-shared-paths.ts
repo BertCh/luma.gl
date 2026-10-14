@@ -366,6 +366,8 @@ fn follows(first: u32, second: u32) -> bool {
         ],
         invocationCount: pairCapacity,
         declarations: `${spanAccessWGSL}
+// In-kernel lower bound on data-dependent keys; GPUGallopingSearch is a batch node and would
+// add a pass and a buffer.
 fn lowerBound(value: u32) -> u32 {
   var low = 0u;
   var high = pairCount[pairCountOffset];

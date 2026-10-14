@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUSegmentedReduction,
   GPUSort,
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -12,7 +13,35 @@ import {
 import {createWGSLKernelNode} from './wgsl-kernel-nodes';
 import {getSortedSegmentOffsetNodes} from './sorted-segment-offsets';
 
-const SEGMENT_WORKGROUP_SIZE = 256;
+/** Threads per segment-sum workgroup; shared with kernels that reuse the tree reduction. @internal */
+export const SEGMENT_WORKGROUP_SIZE = 256;
+
+/**
+ * Largest segment count that {@link createSegmentSumNode} hands to upstream `GPUSegmentedReduction`.
+ * Upstream dispatches one workgroup per segment along x with no 3D bounding, so it is limited by
+ * `maxComputeWorkgroupsPerDimension` (65535 under the WebGPU core limits).
+ */
+const MAXIMUM_UPSTREAM_SEGMENT_COUNT = 65535;
+
+/** Module-scope WGSL declarations for the workgroup partial sums used by {@link getSegmentTreeSumWGSL}. @internal */
+export const SEGMENT_PARTIAL_SUMS_WGSL = `var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`;
+
+/**
+ * WGSL statements that store `partialSum`, then reduce `partialSums` with the fixed binary tree
+ * (strides 128 to 1). Shared by the segment-sum kernels so they stay bit-identical. Every
+ * invocation of the workgroup must reach it (it contains barriers); the total is left in
+ * `partialSums[0]`. @internal
+ */
+export function getSegmentTreeSumWGSL(): string {
+  return `partialSums[localInvocationIndex] = partialSum;
+  workgroupBarrier();
+  for (var stride = ${SEGMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
+    if (localInvocationIndex < stride) {
+      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }`;
+}
 
 /** Returns the number of key bits that hold values in `[0, maximumKey]` (at least one). @internal */
 export function getSortKeyBits(maximumKey: number): number {
@@ -159,7 +188,9 @@ export function getSortedSegmentSumNodes<Parameters>(
         segmentCount,
         input: sortedContributions,
         segmentOffsets,
-        output: reduction.output
+        output: reduction.output,
+        // Offsets are lower bounds in sorted keys, so they never exceed `pointCount`.
+        offsetsWithinInput: true
       })
     );
   }
@@ -169,8 +200,21 @@ export function getSortedSegmentSumNodes<Parameters>(
 /**
  * Sums each segment of `input` with one 256-thread workgroup: a strided per-thread partial sum
  * followed by a fixed binary tree. The order depends only on the segment bounds, so the result is
- * bitwise reproducible. Segments are workgroups of a bounded 3D dispatch, so the segment count is
- * not limited by `maxComputeWorkgroupsPerDimension`.
+ * bitwise reproducible.
+ *
+ * Implementation choice, made at graph build time. Upstream `GPUSegmentedReduction` (`sum`) has
+ * the same lane-strided accumulation and tree order, hence bit-identical f32 results (empty
+ * segments give 0, NaN propagates), and is used when all of these hold:
+ * - `offsetsWithinInput` is set: the caller guarantees every offset is at most `input.length`,
+ *   because upstream does not clamp `end` the way this kernel does;
+ * - `0 < segmentCount <= 65535`, the x-dimension workgroup limit of upstream's unbounded dispatch;
+ * - `segmentOffsets.length == segmentCount + 1` and `output.length == segmentCount`;
+ * - all three views are packed, uint32-aligned, and `output` has its own buffer.
+ *
+ * Otherwise (including any caller whose offsets are not known to be within the input, such as
+ * GPU-computed block offsets) the local kernel runs: segments are workgroups of a bounded 3D
+ * dispatch, so the count is not limited, and `end` is clamped to `input.length`. The segment count
+ * is always a build-time number here; there is no indirect (GPU-only count) variant.
  *
  * @internal
  */
@@ -179,6 +223,60 @@ export function createSegmentSumNode<Parameters>(
   props: {
     id: string;
     /** Operation name reported in workload estimates. */
+    operation: string;
+    segmentCount: number;
+    input: GraphDataView<'float32'>;
+    segmentOffsets: GraphDataView<'uint32'>;
+    output: GraphDataView<'float32'>;
+    /** True when the caller guarantees every offset is at most `input.length`. Enables upstream. */
+    offsetsWithinInput?: boolean;
+    /** Force an implementation; `'auto'` (default) follows the rules above. For tests. */
+    implementation?: 'auto' | 'kernel';
+  }
+): GPUCommandNode<Parameters> {
+  if (props.implementation !== 'kernel' && canUseUpstreamSegmentSum(props)) {
+    const [node] = new GPUSegmentedReduction({
+      id: props.id,
+      input: props.input,
+      segmentOffsets: props.segmentOffsets,
+      output: props.output,
+      operation: 'sum'
+    }).getCommandNodes(graph);
+    return node as GPUCommandNode<Parameters>;
+  }
+  return createSegmentSumKernelNode(graph, props);
+}
+
+function isPackedAlignedView(view: GraphDataView): boolean {
+  return view.byteStride === 4 && view.rowByteLength === 4 && view.byteOffset % 4 === 0;
+}
+
+function canUseUpstreamSegmentSum(props: {
+  segmentCount: number;
+  input: GraphDataView<'float32'>;
+  segmentOffsets: GraphDataView<'uint32'>;
+  output: GraphDataView<'float32'>;
+  offsetsWithinInput?: boolean;
+}): boolean {
+  const {segmentCount, input, segmentOffsets, output} = props;
+  return (
+    props.offsetsWithinInput === true &&
+    segmentCount > 0 &&
+    segmentCount <= MAXIMUM_UPSTREAM_SEGMENT_COUNT &&
+    segmentOffsets.length === segmentCount + 1 &&
+    output.length === segmentCount &&
+    isPackedAlignedView(input) &&
+    isPackedAlignedView(segmentOffsets) &&
+    isPackedAlignedView(output) &&
+    output.buffer !== input.buffer &&
+    output.buffer !== segmentOffsets.buffer
+  );
+}
+
+function createSegmentSumKernelNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  props: {
+    id: string;
     operation: string;
     segmentCount: number;
     input: GraphDataView<'float32'>;
@@ -199,28 +297,19 @@ export function createSegmentSumNode<Parameters>(
     invocationCount: props.segmentCount * SEGMENT_WORKGROUP_SIZE,
     guardIndex: false,
     declarations: `const INPUT_COUNT: u32 = ${props.input.length}u;
-var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`,
+${SEGMENT_PARTIAL_SUMS_WGSL}`,
     // No early return: every invocation of a workgroup must reach the barriers.
     body: `let segment = index / ${SEGMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
   var partialSum = 0.0;
-  var begin = 0u;
-  var end = 0u;
   if (isInRange) {
-    begin = segmentOffsets[segmentOffsetsOffset + segment];
-    end = min(segmentOffsets[segmentOffsetsOffset + segment + 1u], INPUT_COUNT);
+    let begin = segmentOffsets[segmentOffsetsOffset + segment];
+    let end = min(segmentOffsets[segmentOffsetsOffset + segment + 1u], INPUT_COUNT);
     for (var row = begin + localInvocationIndex; row < end; row += ${SEGMENT_WORKGROUP_SIZE}u) {
       partialSum += segmentInput[segmentInputOffset + row];
     }
   }
-  partialSums[localInvocationIndex] = partialSum;
-  workgroupBarrier();
-  for (var stride = ${SEGMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
-    if (localInvocationIndex < stride) {
-      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
-    }
-    workgroupBarrier();
-  }
+  ${getSegmentTreeSumWGSL()}
   if (isInRange && localInvocationIndex == 0u) {
     segmentOutput[segmentOutputOffset + segment] = partialSums[0];
   }`

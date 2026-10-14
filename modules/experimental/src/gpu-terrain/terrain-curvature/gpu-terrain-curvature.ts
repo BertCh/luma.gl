@@ -223,6 +223,7 @@ type OutputSlot =
   | {kind: 'ring'; view: GraphDataView<'float32'>}
   | {kind: 'validity'; view: GraphDataView<'uint32'>};
 
+// Not GPURasterConvolution/GPURasterNeighborhood: curvature needs per-row cell-size modes and edge extrapolation that they lack.
 /**
  * Computes second-order terrain curvatures (profile, plan, tangential, mean, Gaussian, principal,
  * excess, and more) and the multi-radius ring curvature from an elevation raster.

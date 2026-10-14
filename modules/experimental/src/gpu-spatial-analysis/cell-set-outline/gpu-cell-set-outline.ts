@@ -401,6 +401,8 @@ const OUTPUT_CAPACITY: u32 = ${capacity}u;`,
       : [];
     return [
       classify,
+      // Why not `GPUFlagOffsets`: it yields exclusive offsets, while the write kernel indexes the
+      // inclusive scan as `accepted[index - 1]`, and `flags` here are counts, not 0/1.
       ...new GPUScan({
         id: `${id}-scan`,
         input: flags,

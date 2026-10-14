@@ -366,7 +366,8 @@ fn geometryGetVertex(key: vec2u, vertex: u32) -> vec2f {
 const S2_GEOMETRY_WGSL = /* wgsl */ `
 // dggs_s2_xyz_to_lnglat calls atan2 with a zero argument at the S2 face centers: atan2(0, 0) at the
 // poles (faces 2 and 5) is undefined in WGSL, and on Metal atan2(1, 0) returned -pi/2 for the face
-// 1 center (x = -u = -0). Exact zeros are therefore handled without atan2.
+// 1 center (x = -u = -0). Exact zeros are therefore handled without atan2. Upstream
+// dggs_s2_xyz_to_lnglat (a plain atan2) is not used: it changes the values on the axes.
 fn geometryS2XyzToLngLat(xyz: vec3f) -> vec2f {
   let horizontal = length(xyz.xy);
   var longitude = 0.0;

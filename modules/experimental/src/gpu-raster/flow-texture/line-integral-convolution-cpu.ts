@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {sampleFieldOnCPU, type FieldRaster} from './flow-texture-field';
-import {getPhilox4x32, getPhiloxUnitFloat} from './flow-texture-random';
+import {sampleFieldOnCPU, type FieldRaster} from '../vector-field-common/vector-field-sampling';
+import {getPhilox4x32, getPhiloxUnitFloat} from '../vector-field-common/philox-random';
 
 /** Philox key word 1 of the LIC white-noise stream. */
 export const LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE = 1;

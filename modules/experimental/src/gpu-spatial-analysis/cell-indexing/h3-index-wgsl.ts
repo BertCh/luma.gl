@@ -145,7 +145,8 @@ fn cellIndexH3Hex2dToIjk(point: vec2f) -> vec3i {
   return dggs_h3_ijk_normalize(vec3i(i, j, 0));
 }
 
-// H3 _upAp7: Class III child to Class II parent (counter-clockwise aperture 7).
+// H3 _upAp7: Class III child to Class II parent (counter-clockwise aperture 7). Upstream dggs
+// only has dggs_h3_up_ap7r (clockwise, (2i+j)/7); this one is (3i-j)/7, so it is not a duplicate.
 fn cellIndexH3UpAp7(coord: vec3i) -> vec3i {
   let i = coord.x - coord.z;
   let j = coord.y - coord.z;

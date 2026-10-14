@@ -307,7 +307,8 @@ fn reduceSum(value: f32, lane: u32) -> f32 {
   return scratch[0];
 }
 
-// First position in sortedClassKeys whose key is at least bound.
+// First position in sortedClassKeys whose key is at least bound. In-kernel on purpose:
+// GPUGallopingSearch is a batch node and would add a pass and a buffer.
 fn lowerBound(bound: u32) -> u32 {
   var low = 0u;
   var high = ROWS;

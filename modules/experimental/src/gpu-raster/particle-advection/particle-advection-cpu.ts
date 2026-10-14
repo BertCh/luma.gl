@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {sampleFieldOnCPU, type FieldRaster} from './particle-advection-field';
-import {getPhilox4x32, getPhiloxUnitFloat} from './particle-advection-random';
+import {sampleFieldOnCPU, type FieldRaster} from '../vector-field-common/vector-field-sampling';
+import {getPhilox4x32, getPhiloxUnitFloat} from '../vector-field-common/philox-random';
 
 /** Philox key word 1 of the respawn position and staggered-age stream. */
 export const PARTICLE_ADVECTION_SPAWN_PURPOSE = 1;

@@ -16,6 +16,10 @@ import {createWGSLKernelNode} from './wgsl-kernel-nodes';
  * few segments own most rows) and no scan passes. Work is `O(segments * log rows)` reads, depth is
  * one dispatch, and the result is deterministic.
  *
+ * Upstream `GPUGallopingSearch` is not used: it needs a `0..segmentCount` query ramp, a segment
+ * record and a validation word (extra passes and buffers), while this is one dispatch with no
+ * inputs beyond the keys; it also takes only `uint32` or `float32` keys.
+ *
  * @internal
  */
 export function createSortedSegmentOffsetsNode<Parameters>(

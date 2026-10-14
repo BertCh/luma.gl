@@ -6,6 +6,7 @@ import {
   createTransientView,
   GPUScan,
   GPUSort,
+  GPUUint32Gather,
   GraphVectorView,
   validatePackedUint32View,
   validatePackedView,
@@ -168,6 +169,14 @@ export type CellTableNodesProps = {
 /** Rows folded per workgroup by the accumulation passes of {@link getCellTableNodes}. */
 const ACCUMULATE_TILE_SIZE = 256;
 
+/*
+ * Per-cell float extremes use the tile run-folding kernel (`accumulate-extremes`) rather than
+ * upstream `GPUGroupAggregation` min/max: one fused pass for both extremes and one atomic per run
+ * of equal cells per tile. The upstream path (gather + two passes, one atomic per row) gave
+ * identical bits but measured 4.6-5.2 ms vs 3.1-3.3 ms per frame at 1M rows with a 70% hot cell,
+ * and was slower on uniform data too (2026-10-13).
+ */
+
 /** Returns whether compact keys at this layout need a high word. @internal */
 export function hasCellKeyHighWord(layout: CellKeyLayout): boolean {
   return layout.width + 1 > 32;
@@ -229,18 +238,13 @@ export function getCellTableNodes<Parameters>(
     if (twoWords && props.keyHigh) {
       const highByFirst = u32('high-by-low-order', rowCount);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        // `firstRows` holds the row ids of a sort permutation, so no index is out of range.
+        ...new GPUUint32Gather({
           id: `${id}-gather-high`,
-          operation,
-          variant: 'gather-high',
-          bindings: [
-            read('rows', firstRows),
-            read('keyHigh', props.keyHigh),
-            write('gathered', highByFirst)
-          ],
-          invocationCount: rowCount,
-          body: `gathered[gatheredOffset + index] = keyHigh[keyHighOffset + rows[rowsOffset + index]];`
-        })
+          source: props.keyHigh,
+          indices: firstRows,
+          output: highByFirst
+        }).getCommandNodes(graph)
       );
       sortedHigh = u32('sorted-high', rowCount);
       permutation = u32('permutation', rowCount);
@@ -256,18 +260,12 @@ export function getCellTableNodes<Parameters>(
       );
       sortedLow = u32('sorted-low', rowCount);
       nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
+        ...new GPUUint32Gather({
           id: `${id}-gather-low`,
-          operation,
-          variant: 'gather-low',
-          bindings: [
-            read('rows', permutation),
-            read('keyLow', props.keyLow),
-            write('gathered', sortedLow)
-          ],
-          invocationCount: rowCount,
-          body: `gathered[gatheredOffset + index] = keyLow[keyLowOffset + rows[rowsOffset + index]];`
-        })
+          source: props.keyLow,
+          indices: permutation,
+          output: sortedLow
+        }).getCommandNodes(graph)
       );
     } else {
       sortedLow = firstKeys;
@@ -641,8 +639,8 @@ ${maximumKeys ? `var<workgroup> tileMaximums: array<u32, ${ACCUMULATE_TILE_SIZE}
           ...(minimumKeys ? [read('minimumKeys', minimumKeys)] : []),
           ...(maximumKeys ? [read('maximumKeys', maximumKeys)] : []),
           ...(output.sumValues ? [write('sumValuesOut', output.sumValues, 'f32')] : []),
-          ...(output.minimums ? [write('minimumsOut', output.minimums, 'f32')] : []),
-          ...(output.maximums ? [write('maximumsOut', output.maximums, 'f32')] : [])
+          ...(output.minimums && minimumKeys ? [write('minimumsOut', output.minimums, 'f32')] : []),
+          ...(output.maximums && maximumKeys ? [write('maximumsOut', output.maximums, 'f32')] : [])
         ],
         invocationCount: capacity,
         declarations: `${offsetsDeclarations}
@@ -657,12 +655,12 @@ ${getFixedPointWGSL(props.sumScale)}`,
       : ''
   }
   ${
-    output.minimums
+    output.minimums && minimumKeys
       ? 'minimumsOut[minimumsOutOffset + index] = select(nan, decodeOrderedKey(minimumKeys[minimumKeysOffset + index]), isOccupied);'
       : ''
   }
   ${
-    output.maximums
+    output.maximums && maximumKeys
       ? 'maximumsOut[maximumsOutOffset + index] = select(nan, decodeOrderedKey(maximumKeys[maximumKeysOffset + index]), isOccupied);'
       : ''
   }`
@@ -720,6 +718,7 @@ export function getFixedPointWGSL(sumScale: number): string {
 const SUM_SCALE: f32 = ${getWGSLFloatLiteral(sumScale)};
 const MAXIMUM_SCALED_VALUE: f32 = ${getWGSLFloatLiteral(CELL_MAXIMUM_SCALED_VALUE)};
 
+// Not dggs_u64_add and friends: pulling in the dggs module costs compile time (see cell-keys.ts).
 fn cellAddI64(left: vec2u, right: vec2u) -> vec2u {
   let low = left.y + right.y;
   return vec2u(left.x + right.x + select(0u, 1u, low < left.y), low);

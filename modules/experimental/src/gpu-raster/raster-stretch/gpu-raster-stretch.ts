@@ -278,7 +278,8 @@ fn readStatisticsValue(index: u32, value: ptr<function, f32>) -> bool {
   return isFiniteValue(sample);
 }`;
 
-    // 1. Minimum and maximum keys plus the included-cell count.
+    // 1. Minimum and maximum keys plus the included-cell count. Not GPURasterStatistics: it has no
+    // window or region mask, no explicit-domain bypass, and returns [0, 0] (not NaN) when empty.
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-clear-keys`,
@@ -388,6 +389,8 @@ fn decodeOrderedKey(key: u32) -> f32 {
   state[stateOffset + 7u] = f32(count);`
       }),
       // 3. Histogram (cleared every encoding, transient buffers are not zero-initialised).
+      // Not GPUHistogram: it needs a materialized calibrated view (this reads the raw band with the
+      // window and mask), moves boundary bins by rounding, and is slower above 256 bins.
       createFillNode<Parameters>(graph, {
         id: `${id}-clear-histogram`,
         operation: OPERATION,

@@ -12,7 +12,7 @@ import {
   GPUParticleAdvection,
   type GPUParticleAdvectionProps
 } from '../../../src/gpu-raster/particle-advection';
-import {getPhilox4x32} from '../../../src/gpu-raster/particle-advection/particle-advection-random';
+import {getPhilox4x32} from '../../../src/gpu-raster/vector-field-common/philox-random';
 import {createNullWebGPUDevice} from '../../utils/gpu-contributor-test-utils';
 
 let serial = 0;

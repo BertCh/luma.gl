@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /**
- * Private vector-field sampling shared by the particle-advection WGSL and its CPU oracle.
+ * Private vector-field sampling shared by the flow-texture and particle-advection WGSL and CPU oracles.
  *
  * A field is a packed row-major `(u, v)` raster of `width * height` cells placed by
  * `[originX, originY, cellWidth, cellHeight]`; row 0 has the smallest y. Sampling is manual

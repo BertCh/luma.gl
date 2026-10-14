@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {Binding, BindingDeclaration} from '@luma.gl/core';
-import {Computation} from '@luma.gl/engine';
+import {Kernel} from '@luma.gl/engine';
 import {
   createGPUComputeCommandNode,
   getViewBinding,
@@ -369,7 +369,8 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
           {name: 'outputValuesBuffer', type: 'storage', group: 0, location: 1},
           {name: 'outputValidityBuffer', type: 'storage', group: 0, location: 2}
         ];
-        const computation = new Computation(device, {
+        // Direct Kernel: createWGSLKernelNode binds buffers only, and this node also reads a texture.
+        const kernel = new Kernel(device, {
           id: `${id}-decode`,
           source,
           shaderLayout: {bindings: bindingDeclarations}
@@ -381,10 +382,13 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
               outputValuesBuffer: getViewBinding(props.values, getBuffer),
               outputValidityBuffer: getViewBinding(props.validity, getBuffer)
             };
-            computation.setBindings(resolvedBindings);
-            computation.dispatch(computePass, horizontalCount, verticalCount);
+            kernel.dispatch(computePass, {
+              bindings: resolvedBindings,
+              x: horizontalCount,
+              y: verticalCount
+            });
           },
-          destroy: () => computation.destroy()
+          destroy: () => kernel.destroy()
         };
       }
     });

@@ -1100,6 +1100,24 @@ only what is specific to that contributor.
   `GPUPointDensity`'s masked-copy pass (one pass and N × 8 bytes).
 - Bridge `GPUTileLODSelection` to the residency arena: map its per-tile drawn mask to arena slots so
   that `GPUResidentRowSelection` `tileMask` comes from the GPU instead of the caller.
+- Upstream reuse pass (2026-10-13, against luma alpha.4). Moved onto upstream:
+  - `createSegmentSumNode` runs `GPUSegmentedReduction` when `offsetsWithinInput` holds and there
+    are at most 65,535 segments (bit-identical, timed at parity).
+  - Cell-table and areal-interpolation gathers use `GPUGather` / `GPUUint32Gather`.
+  - Terrain RGB decode runs on engine `Kernel` instead of `Computation`.
+
+  Kept local, with a measured reason:
+  - Cell-table extremes: run-folding beats `GPUGroupAggregation` min/max by 30–60% at 1M rows.
+
+  Kept local, with a reason in code:
+  - Raster-stretch statistics (`GPURasterStatistics` has no window, mask or NaN-when-empty).
+  - `GPUKeyJoin` (64-bit keys).
+  - `GPUGroupStatistics` (exact sums).
+  - Our k-means++ `GPUKMeans`, which is a 2D clusterer, not the gpu-vector-search embedding one.
+
+  Still to do:
+  - Nine hand-built-offset segment-sum callers stay on the local kernel until each proves its
+    offsets stay within the input.
 
 #### gpu-network
 

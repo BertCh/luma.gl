@@ -19,13 +19,13 @@ import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
 } from '../../utils/gpu-contributor-utils';
-import {getFieldSamplingWGSL} from './flow-texture-field';
+import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
 import {LINE_INTEGRAL_CONVOLUTION_NOISE_PURPOSE} from './line-integral-convolution-cpu';
 import {
   GPU_LINE_INTEGRAL_CONVOLUTION_PARAMETER_LENGTH,
   GPU_LINE_INTEGRAL_CONVOLUTION_WORD_PARAMETER_LENGTH
 } from './line-integral-convolution-parameters';
-import {PHILOX_WGSL} from './flow-texture-random';
+import {PHILOX_WGSL} from '../vector-field-common/philox-random';
 
 const OPERATION = 'GPULineIntegralConvolution';
 const MAXIMUM_STEP_COUNT = 256;

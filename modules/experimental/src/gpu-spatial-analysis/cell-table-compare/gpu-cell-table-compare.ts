@@ -294,6 +294,7 @@ fn isKeyLess(left: vec2u, right: vec2u) -> bool {
           write('bounds', bounds)
         ],
         invocationCount: capacityBefore + 1,
+        // In-kernel lower bound over two-word (high, low) keys; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `${keyDeclarations}
 ${searchFunction('lowerBoundAfter', 'After')}`,
         body: `let countBefore = min(beforeCount[beforeCountOffset], CAPACITY_BEFORE);
@@ -338,6 +339,7 @@ ${searchFunction('lowerBoundAfter', 'After')}`,
           write('total', total)
         ],
         invocationCount: capacityBefore + capacityAfter,
+        // In-kernel lower bound over two-word (high, low) keys; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `${keyDeclarations}
 ${searchFunction('lowerBoundBefore', 'Before')}`,
         body: `let countBefore = bounds[boundsOffset + CAPACITY_BEFORE + 1u];

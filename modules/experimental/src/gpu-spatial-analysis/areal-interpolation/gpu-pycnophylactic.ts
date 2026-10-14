@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUGather,
   GPUScan,
   GPUSort,
   validatePackedUint32View,
@@ -228,18 +229,13 @@ fn getTotal(zone: u32) -> f32 {
   return select(0.0, total, isFinite && total > 0.0);
 }`;
     const getSumNodes = (label: string, values: GraphDataView<'float32'>) => [
-      createWGSLKernelNode<Parameters>(graph, {
+      // `sortedIndices` is a permutation of the cells, so no index is out of range.
+      ...new GPUGather({
         id: `${id}-${label}-gather`,
-        operation: OPERATION,
-        variant: 'gather',
-        bindings: [
-          {name: 'sortedIndices', view: sortedIndices, type: 'u32', access: 'read'},
-          {name: 'values', view: values, type: 'f32', access: 'read'},
-          {name: 'sortedValues', view: sortedValues, type: 'f32', access: 'read_write'}
-        ],
-        invocationCount: cellCount,
-        body: 'sortedValues[sortedValuesOffset + index] = values[valuesOffset + sortedIndices[sortedIndicesOffset + index]];'
-      }),
+        source: values,
+        indices: sortedIndices,
+        output: sortedValues
+      }).getCommandNodes(graph),
       createSegmentSumNode<Parameters>(graph, {
         id: `${id}-${label}-sum`,
         operation: OPERATION,

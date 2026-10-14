@@ -26,8 +26,8 @@ import {
   createRasterIterationState,
   getRasterIterationCondition
 } from '../cost-distance/raster-relaxation';
-import {getFieldSamplingWGSL} from './flow-texture-field';
-import {PHILOX_WGSL} from './flow-texture-random';
+import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
+import {PHILOX_WGSL} from '../vector-field-common/philox-random';
 import {STREAMLINES_SEED_PURPOSE} from './streamlines-cpu';
 import {
   GPU_STREAMLINES_PARAMETER_LENGTH,

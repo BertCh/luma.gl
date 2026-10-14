@@ -20,6 +20,7 @@ import {
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {getBoundsReductionNodes} from './bounds-reduction';
 
+// Upstream has no Hilbert curve index (the radix sort of the keys is already `GPUSort`).
 const OPERATION = 'GPUHilbertKeys';
 
 /** Largest Hilbert curve order (bits per axis): the key is a `uint32` of `2 * order` bits. */

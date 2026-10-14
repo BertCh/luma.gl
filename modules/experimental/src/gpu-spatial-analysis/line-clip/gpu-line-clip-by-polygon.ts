@@ -303,6 +303,7 @@ fn otherOf(p: vec2f, d: vec2f) -> f32 {
           {name: 'segmentTable', view: segmentTable, type: 'u32', access: 'read_write'}
         ],
         invocationCount: vertexCount,
+        // In-kernel lower bound on data-dependent keys inside a fused kernel; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `${lineLookupWGSL}
 fn lowerBound(value: u32) -> u32 {
   var low = 0u;
@@ -485,6 +486,7 @@ ${eventAccessWGSL}`,
           {name: 'eventTable', view: eventTable, type: 'u32', access: 'read_write'}
         ],
         invocationCount: eventCount,
+        // In-kernel lower bound on data-dependent keys inside a fused kernel; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `const EVENT_COUNT: u32 = ${eventCount}u;
 fn lowerBoundSegment(value: u32) -> u32 {
   var low = 0u;
@@ -527,6 +529,7 @@ fn lowerBoundSegment(value: u32) -> u32 {
           {name: 'subCounts', view: subCounts, type: 'u32', access: 'read_write'}
         ],
         invocationCount: vertexCount,
+        // In-kernel lower bound on data-dependent keys inside a fused kernel; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `const EVENT_COUNT: u32 = ${eventCount}u;
 fn lowerBoundSegment(value: u32) -> u32 {
   var low = 0u;

@@ -53,6 +53,9 @@ export function getCellKeyLayout(family: GPUCellFamily, resolution: number): Cel
 }
 
 /**
+ * Why not the `dggs_u64_*` helpers of `@luma.gl/shadertools`: the behavior is identical, but `dggs`
+ * is about 2.3k lines of WGSL, included today only for H3, and these are about 8 tiny functions.
+ *
  * Two-word (`vec2u(high, low)`) helpers shared by the cell kernels: shifts, masks, compact key
  * extraction and key reconstruction. Storage rows use little-endian `(low, high)` words like Arrow
  * `Uint64` columns and the gpu-dggs projections.

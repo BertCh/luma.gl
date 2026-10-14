@@ -107,6 +107,11 @@ export type GPUKMeansProps = {
 /**
  * Deterministic k-means (Lloyd's algorithm) of planar points.
  *
+ * See also the upstream `GPUKMeans` in `@luma.gl/gpgpu/gpu-vector-search`, which clusters
+ * N-dimensional embedding vectors with evenly spaced seeding. This class is a different contract:
+ * 2D points, optional `k-means++` seeding, a convergence tolerance, a noise label for invalid
+ * points and a per-point squared distance (inertia) output.
+ *
  * Every choice that could vary between runs is fixed:
  * - Initial centers are the first `k` valid points (lowest index first) or `k-means++` with a
  *   seeded integer hash: each round samples the next center with probability proportional to the

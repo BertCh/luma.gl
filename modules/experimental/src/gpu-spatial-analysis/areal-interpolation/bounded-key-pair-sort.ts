@@ -5,6 +5,7 @@
 import {
   createTransientView,
   GPUSort,
+  GPUUint32Gather,
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -61,18 +62,14 @@ export function getBoundedKeyPairSortNodes<Parameters>(
       outputValues: lowOrder,
       keyBits: lowBits
     }).getCommandNodes(graph),
-    createWGSLKernelNode<Parameters>(graph, {
+    // Every `lowOrder` entry is a row index of the sort permutation, so none is out of range and
+    // the gather's zero-row behavior for invalid indices never applies.
+    ...new GPUUint32Gather({
       id: `${id}-gather-high`,
-      operation,
-      variant: 'gather-high',
-      bindings: [
-        {name: 'keyHigh', view: keyHigh, type: 'u32', access: 'read'},
-        {name: 'lowOrder', view: lowOrder, type: 'u32', access: 'read'},
-        {name: 'gatheredHigh', view: gatheredHigh, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: count,
-      body: 'gatheredHigh[gatheredHighOffset + index] = keyHigh[keyHighOffset + lowOrder[lowOrderOffset + index]];'
-    }),
+      source: keyHigh,
+      indices: lowOrder,
+      output: gatheredHigh
+    }).getCommandNodes(graph),
     ...new GPUSort({
       id: `${id}-sort-high`,
       keys: gatheredHigh,

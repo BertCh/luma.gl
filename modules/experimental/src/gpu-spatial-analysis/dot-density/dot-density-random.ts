@@ -5,6 +5,9 @@
 /**
  * Private Philox 4x32-10 counter-based random number generator (Salmon et al. 2011, Random123).
  *
+ * Why not the upstream `random` module: it is `fract(sin(dot))`, low quality and not reproducible
+ * across drivers, and it would change the pinned draw sequences.
+ *
  * Not exported from the public barrel. The WGSL and CPU versions produce bit-identical words, so
  * every random decision is a pure function of `(key, counter)` and replays exactly. WGSL has no
  * 32x32->64 multiply, so the high word is assembled from 16-bit partial products; the CPU mirror

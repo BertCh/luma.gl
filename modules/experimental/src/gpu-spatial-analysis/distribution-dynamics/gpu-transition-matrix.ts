@@ -236,6 +236,9 @@ const CELLS: u32 = ${cellCount}u;`;
           ]
         : [])
     ];
+    // Why not `GPUGroupAggregation` (count) or `GPUHistogram`: both need a separate key-compute
+    // pass, a `CELLS + 1` transient output and a copy-out to `counts` and `ignored`, for the same
+    // pass count and the same workgroup-tile path. The key is computed in this kernel instead.
     const createPrivateCountNode = () =>
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-count`,

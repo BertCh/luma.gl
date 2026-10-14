@@ -15,6 +15,10 @@ export const GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS = 6378137;
 export const GPU_GEODESIC_WGS84_FLATTENING = 1 / 298.257223563;
 
 /**
+ * Why not `GPUHaversineDistance` and the pairwise geospatial ops: they are standalone nodes over
+ * position rows (more passes and buffers), export no WGSL, and cannot do azimuth, destination,
+ * slerp or Vincenty.
+ *
  * Shared f32 spherical geodesy helpers for the geometry contributors (`line-segmentize`,
  * `geometry-measures`, `linear-referencing`). Positions are `vec2<f32>(longitude, latitude)` in
  * degrees; angles returned in radians unless the name says degrees.

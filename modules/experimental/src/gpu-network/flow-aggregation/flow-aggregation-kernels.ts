@@ -10,6 +10,11 @@ import type {
 } from '@luma.gl/gpgpu/gpu-core';
 import {getGraphViewChunks} from '../../utils/gpu-contributor-utils';
 import {
+  getSegmentTreeSumWGSL,
+  SEGMENT_PARTIAL_SUMS_WGSL,
+  SEGMENT_WORKGROUP_SIZE
+} from '../../utils/sorted-segment-sums';
+import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
   type WGSLKernelBinding
@@ -17,7 +22,6 @@ import {
 import {GPU_POINT_DENSITY_HEXAGON_WGSL} from '../../gpu-spatial-analysis/point-density/point-density-hexagon';
 
 const OPERATION = 'GPUFlowAggregation';
-const SEGMENT_WORKGROUP_SIZE = 256;
 
 /** Bounds resolved to either a literal or one GPU `float32x4` row. @internal */
 export type FlowResolvedBounds =
@@ -752,7 +756,7 @@ export function createFlowPairSumNode<Parameters>(
     invocationCount: props.tableKeys.length * SEGMENT_WORKGROUP_SIZE,
     guardIndex: false,
     declarations: `const INPUT_COUNT: u32 = ${props.sortedContributions.length}u;
-var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`,
+${SEGMENT_PARTIAL_SUMS_WGSL}`,
     // No early return: every invocation of a workgroup must reach the barriers.
     body: `let slot = index / ${SEGMENT_WORKGROUP_SIZE}u;
   let isInRange = index < INVOCATION_COUNT;
@@ -768,14 +772,7 @@ var<workgroup> partialSums: array<f32, ${SEGMENT_WORKGROUP_SIZE}>;`,
       partialSum += sortedContributions[sortedContributionsOffset + position];
     }
   }
-  partialSums[localInvocationIndex] = partialSum;
-  workgroupBarrier();
-  for (var stride = ${SEGMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride = stride / 2u) {
-    if (localInvocationIndex < stride) {
-      partialSums[localInvocationIndex] += partialSums[localInvocationIndex + stride];
-    }
-    workgroupBarrier();
-  }
+  ${getSegmentTreeSumWGSL()}
   if (isStored && localInvocationIndex == 0u) {
     rowWeights[rowWeightsOffset + row] = partialSums[0];
   }`

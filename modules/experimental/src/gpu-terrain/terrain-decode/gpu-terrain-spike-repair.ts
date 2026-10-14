@@ -125,6 +125,7 @@ function getHundredths(value: number | undefined, fallback: number): number | un
   return Math.abs((value ?? fallback) * 100 - hundredths) < 1e-9 ? hundredths : undefined;
 }
 
+// Component sizing uses run-flushed atomics, not GPUGroupAggregation/GPUReduction: labels are pixel indices (N groups) and the lowest-label tie rule needs it.
 /**
  * Repairs +/-1 errors in the high byte of a Terrarium-style elevation encoding, an opt-in port of
  * mt-image `validateTile` without its out-of-range fill.

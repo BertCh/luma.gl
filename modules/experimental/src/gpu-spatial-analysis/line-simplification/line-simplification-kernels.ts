@@ -742,6 +742,8 @@ export function createLineKeptRangesNode<Parameters>(
     invocationCount: lineCount,
     declarations: `const COMPACT_CAPACITY: u32 = ${props.compactRows.length}u;
 
+// In-kernel lower bound on data-dependent keys; GPUGallopingSearch is a batch node and would
+// add a pass and a buffer.
 fn lowerBoundKeptRow(row: u32, count: u32) -> u32 {
   var low = 0u;
   var high = count;

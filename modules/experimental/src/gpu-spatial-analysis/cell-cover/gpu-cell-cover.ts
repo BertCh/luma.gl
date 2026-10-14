@@ -435,6 +435,8 @@ export class GPUCellCover implements GPUCommandNodeProducer {
         slabEntries: slabViews?.slabEntries,
         nextVertex: slabViews?.nextVertex
       }),
+      // Why not `GPUFlagOffsets`: it yields exclusive offsets, while the write kernels index the
+      // inclusive scan as `accepted[index - 1]`, and `finalize` fuses the overflow flag with the total.
       ...new GPUScan({
         id: `${id}-accept-scan`,
         input: flags,

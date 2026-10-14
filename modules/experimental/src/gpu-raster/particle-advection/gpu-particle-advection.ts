@@ -19,12 +19,12 @@ import {
   PARTICLE_ADVECTION_DROP_PURPOSE,
   PARTICLE_ADVECTION_SPAWN_PURPOSE
 } from './particle-advection-cpu';
-import {getFieldSamplingWGSL} from './particle-advection-field';
+import {getFieldSamplingWGSL} from '../vector-field-common/vector-field-sampling';
 import {
   GPU_PARTICLE_ADVECTION_PARAMETER_LENGTH,
   GPU_PARTICLE_ADVECTION_WORD_PARAMETER_LENGTH
 } from './particle-advection-parameters';
-import {PHILOX_WGSL} from './particle-advection-random';
+import {PHILOX_WGSL} from '../vector-field-common/philox-random';
 
 const OPERATION = 'GPUParticleAdvection';
 

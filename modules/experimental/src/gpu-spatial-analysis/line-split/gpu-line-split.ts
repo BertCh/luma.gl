@@ -466,6 +466,7 @@ fn eventSame(first: u32, second: u32) -> bool {
           {name: 'pieceCounts', view: pieceCounts, type: 'u32', access: 'read_write'}
         ],
         invocationCount: lineCount,
+        // In-kernel lower bound on data-dependent keys inside a fused kernel; upstream GPUGallopingSearch is a batch node (extra pass and buffer) and takes only uint32/float32 keys.
         declarations: `const EVENT_COUNT: u32 = ${eventCount}u;
 fn lowerBound(value: u32) -> u32 {
   var low = 0u;

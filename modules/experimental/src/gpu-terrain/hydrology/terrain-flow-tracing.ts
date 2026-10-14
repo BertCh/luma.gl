@@ -87,6 +87,7 @@ function getStopRuleSource(stops: TerrainFlowStopRule): {
   }
 }
 
+// No upstream list-ranking or tree-accumulation primitive exists (gpu-graph has none), so pointer jumping stays local.
 /**
  * Returns the pointer-jumping nodes: initialization, loop reset, `maxIterations` gated doubling
  * rounds, and the optional converged-flag publication.

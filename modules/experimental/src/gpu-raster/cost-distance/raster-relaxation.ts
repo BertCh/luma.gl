@@ -22,6 +22,7 @@ export const GPU_RASTER_MAXIMUM_ITERATIONS = 1024;
 /** Edge length of one square relaxation tile; one 256-invocation workgroup owns one tile. @internal */
 export const RASTER_RELAXATION_TILE_SIZE = 16;
 
+// Grid-implicit relaxation, not GPUGraphSingleSourceShortestPath: that needs explicit CSR (8N edges) and has no anisotropic cell-size, tie or tile-wise rules.
 const WORKGROUP_SIZE = 256;
 
 /** Throws unless `iterations` is an integer in `[1, GPU_RASTER_MAXIMUM_ITERATIONS]`. @internal */

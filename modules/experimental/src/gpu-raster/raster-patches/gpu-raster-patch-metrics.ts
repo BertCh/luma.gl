@@ -85,6 +85,7 @@ export type GPURasterPatchMetricsProps = GPURasterPatchLabels & {
   output: GPURasterPatchMetricsOutput;
 };
 
+// Not GPURasterRegionMeasurements: it takes dense component labels with convergence/overflow gating and yields no bbox or perimeter faces (count/area only).
 /**
  * Per-patch metrics of a dense label raster: area, perimeter and bounding box
  * (the `r.clump` / FRAGSTATS companions to `GPURasterConnectedComponents`).

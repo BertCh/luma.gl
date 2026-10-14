@@ -230,6 +230,7 @@ function validateViewLength(id: string, name: string, view: GraphDataView, lengt
   }
 }
 
+// Not GPURasterOverview (mean/mode only) or GPUReduction extent (single global extent): neither yields a min/max pyramid.
 /**
  * Builds a min/max pyramid ("maximum mipmap", Tevs, Ihrke and Seidel 2008) of a raster band.
  *

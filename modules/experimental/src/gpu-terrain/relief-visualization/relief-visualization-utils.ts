@@ -78,6 +78,7 @@ export type ReliefMeanFilterProps = {
   validityOutput?: GraphDataView<'uint32'>;
 };
 
+// Not GPURasterNeighborhood/GPURasterBoxBlur: their radius is capped at 8 and they average in absolute float32, losing centimetre relief.
 /**
  * Builds the two kernels of a separable, edge-clamped, nodata-aware mean filter that returns the
  * deviation `z - mean(z)` of every valid pixel from its `(2r + 1)^2` window mean.
