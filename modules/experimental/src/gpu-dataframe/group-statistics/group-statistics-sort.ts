@@ -27,8 +27,13 @@ export type GroupStructure = {
   twoWords: boolean;
   /** Source row of each sorted position (stable, so ties keep ascending row order). */
   permutation: GraphDataView<'uint32'>;
-  /** Low key word per source row; invalid rows hold `0xffffffff`. */
+  /**
+   * Low key word per source row. Invalid rows hold `0xffffffff`, or `keyCount` in dense mode so
+   * the low word fits in {@link lowKeyBits}.
+   */
   keyLow: GraphDataView<'uint32'>;
+  /** Significant bits of {@link keyLow}: 32, or enough for `keyCount` in dense mode. */
+  lowKeyBits: number;
   /** High key word per source row (64-bit keys only). */
   keyHigh?: GraphDataView<'uint32'>;
   /** Row indices `0..rowCount-1`. */
@@ -61,10 +66,14 @@ export function getKeyOrderNodes<Parameters>(
     keyHigh?: GraphDataView<'uint32'>;
     rowIds: GraphDataView<'uint32'>;
     initialRows?: GraphDataView<'uint32'>;
+    /** Significant bits of `keyLow`. Fewer bits mean fewer radix passes. Default 32. */
+    lowKeyBits?: number;
   }
 ): {
   nodes: GPUCommandNode<Parameters>[];
   permutation: GraphDataView<'uint32'>;
+  /** `keyLow` in sorted order when there is no `keyHigh` and no `initialRows`. */
+  sortedKeyLow?: GraphDataView<'uint32'>;
 } {
   const {id, operation, keyLow, keyHigh, rowIds} = props;
   const rowCount = keyLow.length;
@@ -86,14 +95,15 @@ export function getKeyOrderNodes<Parameters>(
     );
   }
   const afterLow = u32('rows-by-low');
+  const sortedLowKeys = u32('sorted-low-scratch');
   nodes.push(
     ...new GPUSort({
       id: `${id}-sort-low`,
       keys: lowKeys,
       values: rows,
-      outputKeys: u32('sorted-low-scratch'),
+      outputKeys: sortedLowKeys,
       outputValues: afterLow,
-      keyBits: 32
+      keyBits: props.lowKeyBits ?? 32
     }).getCommandNodes(graph)
   );
   rows = afterLow;
@@ -121,7 +131,10 @@ export function getKeyOrderNodes<Parameters>(
     );
     rows = afterHigh;
   }
-  return {nodes, permutation: rows};
+  // Without a high word or a starting order, the low sort's key output already equals
+  // `keyLow` gathered by the final permutation.
+  const sortedKeyLow = keyHigh || props.initialRows ? undefined : sortedLowKeys;
+  return {nodes, permutation: rows, sortedKeyLow};
 }
 
 /**
@@ -154,11 +167,16 @@ export function getGroupStructureNodes<Parameters>(
   const twoWords = props.keys.format === 'uint32x2';
   const keyCount = props.keyCount;
   const dense = keyCount !== undefined;
+  // Dense keys are below `keyCount`, so invalid rows can sort last with the key `keyCount` and
+  // every key sort covers only the significant bits instead of all 32.
+  const invalidLowKey = dense ? keyCount : 0xffffffff;
+  const lowKeyBits = dense ? Math.max(1, 32 - Math.clz32(keyCount)) : 32;
   const u32 = (name: string, length: number) =>
     createTransientView(graph, `${id}-${name}`, 'uint32', length);
   const nodes: GPUCommandNode<Parameters>[] = [];
 
-  // 1. Key words and row ids. Invalid rows get the all-ones key so they sort last.
+  // 1. Key words and row ids. Invalid rows get the largest key (all ones, or `keyCount` in dense
+  // mode) so they sort last.
   const keyLow = u32('key-low', rowCount);
   const keyHigh = twoWords ? u32('key-high', rowCount) : undefined;
   const rowIds = u32('row-ids', rowCount);
@@ -186,7 +204,7 @@ export function getGroupStructureNodes<Parameters>(
   ${props.mask ? 'if (mask[maskOffset + index] == 0u) {\n    isValid = false;\n  }' : ''}
   ${dense ? `if (low >= ${keyCount}u) {\n    isValid = false;\n  }` : ''}
   if (!isValid) {
-    low = 0xffffffffu;
+    low = ${invalidLowKey}u;
     ${twoWords ? 'high = 0xffffffffu;' : ''}
   }
   keyLow[keyLowOffset + index] = low;
@@ -201,21 +219,25 @@ export function getGroupStructureNodes<Parameters>(
     operation,
     keyLow,
     keyHigh,
-    rowIds
+    rowIds,
+    lowKeyBits
   });
   nodes.push(...order.nodes);
   const permutation = order.permutation;
-  const sortedLow = u32('sorted-low', rowCount);
+  let sortedLow = order.sortedKeyLow;
+  if (!sortedLow) {
+    sortedLow = u32('sorted-low', rowCount);
+    nodes.push(
+      createGatherNode(graph, {
+        id: `${id}-gather-sorted-low`,
+        operation,
+        indices: permutation,
+        source: keyLow,
+        target: sortedLow
+      })
+    );
+  }
   const sortedHigh = twoWords ? u32('sorted-high', rowCount) : undefined;
-  nodes.push(
-    createGatherNode(graph, {
-      id: `${id}-gather-sorted-low`,
-      operation,
-      indices: permutation,
-      source: keyLow,
-      target: sortedLow
-    })
-  );
   if (sortedHigh && keyHigh) {
     nodes.push(
       createGatherNode(graph, {
@@ -237,7 +259,7 @@ export function getGroupStructureNodes<Parameters>(
       : `vec2u(0u, sortedLow[sortedLowOffset + ${row}])`;
   const keyDeclarations = `const TWO_WORDS: bool = ${twoWords};
 fn isInvalidKey(key: vec2u) -> bool {
-  return key.y == 0xffffffffu && (!TWO_WORDS || key.x == 0xffffffffu);
+  return key.y == ${invalidLowKey}u && (!TWO_WORDS || key.x == 0xffffffffu);
 }`;
 
   // 3. Group heads and the number of valid rows (a prefix of the sorted order).
@@ -458,6 +480,7 @@ const GROUP_NONE: u32 = ${GROUP_NONE}u;`,
       twoWords,
       permutation,
       keyLow,
+      lowKeyBits,
       keyHigh,
       rowIds,
       offsets,

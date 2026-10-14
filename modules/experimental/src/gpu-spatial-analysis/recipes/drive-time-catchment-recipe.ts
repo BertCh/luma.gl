@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import {GPUNetworkSnapping} from '../../gpu-network/network-accessibility/index';
 import {GPUNetworkServiceAreas} from '../../gpu-network/network-analysis/index';
@@ -196,6 +200,36 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
   );
   assertRecipe(ID, bandCount >= 1, 'bandBreaks must not be empty');
 
+  // Edge source node per CSR edge, built once and shared by both snappings (each would otherwise
+  // expand `offsets` itself) and by the demand-time adapter (instead of a binary search).
+  const edgeCount = network.neighbors.length;
+  const edgeSources = createTransientView(
+    graph,
+    `${id}-edge-sources`,
+    'uint32',
+    Math.max(edgeCount, 1)
+  );
+  graph.add(
+    createWGSLKernelNode<Parameters>(graph, {
+      id: `${id}-edge-sources-kernel`,
+      operation: 'GPURecipeDriveTimeCatchment',
+      variant: 'edge-sources',
+      bindings: [
+        {name: 'offsets', view: network.offsets, type: 'u32', access: 'read'},
+        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read_write'}
+      ],
+      invocationCount: nodeCount,
+      declarations: `const EDGE_COUNT: u32 = ${edgeCount}u;`,
+      body: `let end = min(offsets[offsetsOffset + index + 1u], EDGE_COUNT);
+  for (var edge = offsets[offsetsOffset + index]; edge < end; edge++) {
+    edgeSources[edgeSourcesOffset + edge] = index;
+  }`
+    })
+  );
+
+  // Snapping requires `edgeSources.length === edgeCount`; an edgeless network keeps `offsets`.
+  const snappingEdges = edgeCount > 0 ? {edgeSources} : {offsets: network.offsets};
+
   const seedNodes = getOrCreateView(
     graph,
     `${id}-seed-nodes`,
@@ -215,7 +249,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       id: `${id}-snap-facilities`,
       points: props.facilities,
       nodePositions: network.nodePositions,
-      offsets: network.offsets,
+      ...snappingEdges,
       edgeTargets: network.neighbors,
       edgeCosts: network.weights,
       maxSnapDistance: props.maxSnapDistance,
@@ -366,7 +400,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
       id: `${id}-snap-demand`,
       points: props.demand,
       nodePositions: network.nodePositions,
-      offsets: network.offsets,
+      ...snappingEdges,
       edgeTargets: network.neighbors,
       edgeCosts: network.weights,
       maxSnapDistance: props.maxSnapDistance,
@@ -394,7 +428,7 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
         {name: 'snappedEdges', view: snappedEdges, type: 'u32', access: 'read'},
         {name: 'sourceCosts', view: sourceCosts, type: 'f32', access: 'read'},
         {name: 'targetCosts', view: targetCosts, type: 'f32', access: 'read'},
-        {name: 'offsets', view: network.offsets, type: 'u32', access: 'read'},
+        {name: 'edgeSources', view: edgeSources, type: 'u32', access: 'read'},
         {name: 'neighbors', view: network.neighbors, type: 'u32', access: 'read'},
         {name: 'nodeCosts', view: nodeCosts, type: 'f32', access: 'read'},
         {name: 'times', view: demandTimes, type: 'f32', access: 'read_write'}
@@ -405,18 +439,12 @@ const UNREACHED: f32 = 3.0e38;`,
       body: `let edge = snappedEdges[snappedEdgesOffset + index];
   var best = UNREACHED;
   if (edge != 0xffffffffu) {
-    var lo = 0u;
-    var hi = NODE_COUNT;
-    while (lo + 1u < hi) {
-      let mid = (lo + hi) / 2u;
-      if (offsets[offsetsOffset + mid] <= edge) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
-    }
+    let sourceNode = edgeSources[edgeSourcesOffset + edge];
     let targetNode = neighbors[neighborsOffset + edge];
-    let viaSource = nodeCosts[nodeCostsOffset + lo] + sourceCosts[sourceCostsOffset + index];
+    var viaSource = UNREACHED;
+    if (sourceNode < NODE_COUNT) {
+      viaSource = nodeCosts[nodeCostsOffset + sourceNode] + sourceCosts[sourceCostsOffset + index];
+    }
     var viaTarget = UNREACHED;
     if (targetNode < NODE_COUNT) {
       viaTarget = nodeCosts[nodeCostsOffset + targetNode] + targetCosts[targetCostsOffset + index];

@@ -116,7 +116,8 @@ export function getColumnOrderNodes<Parameters>(
     keyLow: structure.keyLow,
     keyHigh: structure.keyHigh,
     rowIds: structure.rowIds,
-    initialRows: byValue
+    initialRows: byValue,
+    lowKeyBits: structure.lowKeyBits
   });
   nodes.push(...order.nodes);
   const sortedKeys = u32('sorted-keys');

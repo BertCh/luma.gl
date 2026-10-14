@@ -19,6 +19,9 @@ import {
 
 const OPERATION = 'GPULocationAllocation';
 
+/** Workgroup size of the single-workgroup choose and finalize reductions. */
+const CHOOSE_WORKGROUP_SIZE = 256;
+
 /** Location-allocation objective implemented by {@link GPULocationAllocation}. */
 export type GPULocationAllocationOperation = 'p-median' | 'maximum-coverage' | 'set-covering';
 
@@ -283,6 +286,16 @@ fn isInvalid(value: f32) -> bool { return value != value || value < 0.0; }`;
     ];
 
     for (let step = 0; step < props.maximumFacilityCount; step++) {
+      // Coverage modes stop choosing once no facility improves the objective, so later steps skip
+      // the full demand-by-facility scan. p-median only stops on invalid input, which the status
+      // check already covers.
+      const gateOnPrevious = step > 0 && needsCoverage;
+      const previousChosenBinding: WGSLKernelBinding[] = gateOnPrevious
+        ? [{name: 'previousChosen', view: chosenFacility, type: 'u32', access: 'read'}]
+        : [];
+      const stoppedCondition = gateOnPrevious
+        ? ' || previousChosen[previousChosenOffset] == NONE'
+        : '';
       nodes.push(
         createWGSLKernelNode(graph, {
           id: `${id}-score-${step}`,
@@ -296,12 +309,13 @@ fn isInvalid(value: f32) -> bool { return value != value || value < 0.0; }`;
             {name: 'scores', view: facilityScores, type: 'f32', access: 'read_write'},
             {name: 'status', view: output.status, type: 'u32', access: 'read'},
             ...weightBinding,
-            ...coverageBinding
+            ...coverageBinding,
+            ...previousChosenBinding
           ],
           declarations,
           body: `let facility = index;
   let unavailableScore = select(-1.0, LARGE_COST, MODE == 0u);
-  if (status[statusOffset + 3u] != 0u || selected[selectedOffset + facility] != 0u) {
+  if (status[statusOffset + 3u] != 0u || selected[selectedOffset + facility] != 0u${stoppedCondition}) {
     scores[scoresOffset + facility] = unavailableScore;
     return;
   }
@@ -322,34 +336,61 @@ fn isInvalid(value: f32) -> bool { return value != value || value < 0.0; }`;
           id: `${id}-choose-${step}`,
           operation: OPERATION,
           variant: `${props.operation}-choose`,
-          invocationCount: 1,
+          invocationCount: CHOOSE_WORKGROUP_SIZE,
+          workgroupSize: CHOOSE_WORKGROUP_SIZE,
+          guardIndex: false,
           bindings: [
             {name: 'selected', view: output.selectedFacilities, type: 'u32', access: 'read_write'},
             {name: 'scores', view: facilityScores, type: 'f32', access: 'read'},
             {name: 'chosen', view: chosenFacility, type: 'u32', access: 'read_write'},
             {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
           ],
-          declarations,
+          declarations: `${declarations}
+const CHOOSE_WORKGROUP_SIZE: u32 = ${CHOOSE_WORKGROUP_SIZE}u;
+var<workgroup> sharedScore: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;
+var<workgroup> sharedFacility: array<u32, ${CHOOSE_WORKGROUP_SIZE}>;
+fn isBetterCandidate(score: f32, facility: u32, bestScore: f32, bestFacility: u32) -> bool {
+  let improves = select(score > bestScore, score < bestScore, MODE == 0u);
+  return improves || (score == bestScore && facility < bestFacility);
+}`,
+          // One workgroup scans the facilities with a strided loop, then tree-reduces. The
+          // (score, facility) order is total, so the lowest-facility tie rule is unchanged.
+          // No early return: every invocation must reach the barriers.
           body: `var bestFacility = NONE;
   var bestScore = select(-1.0, LARGE_COST, MODE == 0u);
   if (status[statusOffset + 3u] == 0u) {
-    for (var facility = 0u; facility < FACILITY_COUNT; facility++) {
+    for (var facility = localInvocationIndex; facility < FACILITY_COUNT; facility += CHOOSE_WORKGROUP_SIZE) {
       if (selected[selectedOffset + facility] != 0u) { continue; }
       let score = scores[scoresOffset + facility];
-      let improves = select(score > bestScore, score < bestScore, MODE == 0u);
-      if (improves || (score == bestScore && facility < bestFacility)) {
+      if (isBetterCandidate(score, facility, bestScore, bestFacility)) {
         bestFacility = facility;
         bestScore = score;
       }
     }
   }
-  if (bestFacility != NONE && (MODE == 0u || bestScore > 0.0)) {
-    selected[selectedOffset + bestFacility] = 1u;
-    status[statusOffset] += 1u;
-  } else {
-    bestFacility = NONE;
+  sharedScore[localInvocationIndex] = bestScore;
+  sharedFacility[localInvocationIndex] = bestFacility;
+  workgroupBarrier();
+  for (var stride = CHOOSE_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride &&
+        isBetterCandidate(
+          sharedScore[localInvocationIndex + stride], sharedFacility[localInvocationIndex + stride],
+          sharedScore[localInvocationIndex], sharedFacility[localInvocationIndex])) {
+      sharedScore[localInvocationIndex] = sharedScore[localInvocationIndex + stride];
+      sharedFacility[localInvocationIndex] = sharedFacility[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
   }
-  chosen[chosenOffset] = bestFacility;`
+  if (localInvocationIndex == 0u) {
+    bestFacility = sharedFacility[0];
+    if (bestFacility != NONE && (MODE == 0u || sharedScore[0] > 0.0)) {
+      selected[selectedOffset + bestFacility] = 1u;
+      status[statusOffset] += 1u;
+    } else {
+      bestFacility = NONE;
+    }
+    chosen[chosenOffset] = bestFacility;
+  }`
         }),
         createWGSLKernelNode(graph, {
           id: `${id}-update-${step}`,
@@ -423,29 +464,48 @@ fn isInvalid(value: f32) -> bool { return value != value || value < 0.0; }`;
         id: `${id}-finalize`,
         operation: OPERATION,
         variant: `${props.operation}-finalize`,
-        invocationCount: 1,
+        invocationCount: CHOOSE_WORKGROUP_SIZE,
+        workgroupSize: CHOOSE_WORKGROUP_SIZE,
+        guardIndex: false,
         bindings: [
           {name: 'demandObjectives', view: demandObjectives, type: 'f32', access: 'read'},
           {name: 'uncovered', view: uncovered, type: 'u32', access: 'read'},
           {name: 'objective', view: output.objective, type: 'f32', access: 'read_write'},
           {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
         ],
-        declarations,
-        body: `if (status[statusOffset + 3u] != 0u) { return; }
-  var uncoveredCount = 0u;
+        declarations: `${declarations}
+const FINALIZE_WORKGROUP_SIZE: u32 = ${CHOOSE_WORKGROUP_SIZE}u;
+var<workgroup> sharedObjective: array<f32, ${CHOOSE_WORKGROUP_SIZE}>;
+var<workgroup> sharedUncovered: array<u32, ${CHOOSE_WORKGROUP_SIZE}>;`,
+        // One workgroup sums strided partials, then tree-reduces in a fixed order. No early
+        // return: every invocation must reach the barriers.
+        body: `var uncoveredCount = 0u;
   var objectiveValue = 0.0;
-  for (var demand = 0u; demand < DEMAND_COUNT; demand++) {
+  for (var demand = localInvocationIndex; demand < DEMAND_COUNT; demand += FINALIZE_WORKGROUP_SIZE) {
     uncoveredCount += uncovered[uncoveredOffset + demand];
     objectiveValue += demandObjectives[demandObjectivesOffset + demand];
   }
-  let selectedCount = status[statusOffset];
-  objective[objectiveOffset] = select(objectiveValue, f32(selectedCount), MODE == 2u);
-  status[statusOffset + 1u] = uncoveredCount;
-  status[statusOffset + 2u] = select(
-    0u,
-    1u,
-    select(selectedCount == MAXIMUM_FACILITIES, uncoveredCount == 0u, MODE == 2u)
-  );`
+  sharedObjective[localInvocationIndex] = objectiveValue;
+  sharedUncovered[localInvocationIndex] = uncoveredCount;
+  workgroupBarrier();
+  for (var stride = FINALIZE_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride >> 1u) {
+    if (localInvocationIndex < stride) {
+      sharedObjective[localInvocationIndex] += sharedObjective[localInvocationIndex + stride];
+      sharedUncovered[localInvocationIndex] += sharedUncovered[localInvocationIndex + stride];
+    }
+    workgroupBarrier();
+  }
+  if (localInvocationIndex == 0u && status[statusOffset + 3u] == 0u) {
+    let selectedCount = status[statusOffset];
+    let totalUncovered = sharedUncovered[0];
+    objective[objectiveOffset] = select(sharedObjective[0], f32(selectedCount), MODE == 2u);
+    status[statusOffset + 1u] = totalUncovered;
+    status[statusOffset + 2u] = select(
+      0u,
+      1u,
+      select(selectedCount == MAXIMUM_FACILITIES, totalUncovered == 0u, MODE == 2u)
+    );
+  }`
       })
     );
     return nodes;

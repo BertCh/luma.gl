@@ -742,16 +742,23 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
           invocationCount: chunk.length,
           declarations: declarations(chunkFirstRow),
           body: probeBody(
-            `let slot = pointOffsets[pointOffsetsOffset + row] + found;
-        if (slot < CANDIDATE_CAPACITY) {
-          candidatePairs[candidatePairsOffset + slot * 2u] = row;
-          candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
-          let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
-          candidatePoints[candidatePointsOffset + pointRow * 2u] = point.x;
-          candidatePoints[candidatePointsOffset + pointRow * 2u + 1u] = point.y;
-        }
-        found = found + 1u;`,
-            '',
+            `let slot = slotStart + found;
+        candidatePairs[candidatePairsOffset + slot * 2u] = row;
+        candidatePairs[candidatePairsOffset + slot * 2u + 1u] = featureRow;
+        let pointRow = slot * ${props.pointRowScale}u + ${props.pointRowOffset}u;
+        candidatePoints[candidatePointsOffset + pointRow * 2u] = point.x;
+        candidatePoints[candidatePointsOffset + pointRow * 2u + 1u] = point.y;
+        found = found + 1u;
+        if (slot + 1u >= slotEnd) { break; }`,
+            // Points with no candidates, or whose slots all fall past the capacity, skip the second
+            // traversal; the rest stop at their last counted candidate instead of finishing the walk.
+            // The last row's end comes from the capacity, which keeps this pass within 8 bindings.
+            `let slotStart = pointOffsets[pointOffsetsOffset + row];
+  var slotEnd = CANDIDATE_CAPACITY;
+  if (row + 1u < ${props.points.length}u) {
+    slotEnd = min(pointOffsets[pointOffsetsOffset + row + 1u], CANDIDATE_CAPACITY);
+  }
+  if (slotStart >= slotEnd) { return; }`,
             ''
           )
         })

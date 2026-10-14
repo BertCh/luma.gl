@@ -3395,7 +3395,7 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
 | `addHotSpotAnalysisRecipe` | (GPUPointToCell) -> GPUCellAggregation -> GPUCellGeometry centers -> GPUNeighborSearch (or GPULatticeWeights for raster source) -> GPUHotSpotAnalysis -> GPULocalPermutationTest -> GPUClassBreaks -> GPUColorScale |
 | `addRateClusterMapRecipe` | GPUEmpiricalBayesRates -> GPUContiguityWeights -> GPUSpatialWeightsTransform(row) -> GPULocalMoran (`quadrantGating: 'none'` with permutation) -> GPULocalPermutationTest -> quadrant colors |
 | `addPointsInPolygonsChoroplethRecipe` | backend 'zonal' (GPUZonalStatistics) or 'group' (GPUPointInPolygonJoin -> dense GPUGroupStatistics) -> GPUClassBreaks -> GPUColorScale |
-| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets -> key adapter -> GPUGroupStatistics -> dense cube -> GPUEmergingHotSpots -> ordinal GPUColorScale |
+| `addSpaceTimeHotSpotsRecipe` | GPUCalendarBuckets -> atomic count into the dense cube (sorted GPUGroupStatistics path when its scratch or overflow outputs are passed) -> GPUEmergingHotSpots -> ordinal GPUColorScale |
 | `addClusterAndOutlineRecipe` | GPUSpatialClustering -> GPUGroupGeometry + GPUGroupConvexHull -> GPUGeometryMeasures |
 | `addSpatialRegressionRecipe` | GPUOrdinaryLeastSquares -> GPUSpatialRegressionDiagnostics + residual GPULocalMoran (+ optional GPUGeographicallyWeightedRegression) |
 | `addDriveTimeCatchmentRecipe` | GPUNetworkSnapping -> GPUNetworkServiceAreas -> (GPUNetworkIsochrones raster and/or cell outline with rings -> GPUPointInPolygonJoin demand join) -> snap demand -> band adapters -> GPUGroupStatistics |
@@ -3403,12 +3403,13 @@ const hotSpots = addHotSpotAnalysisRecipe(graph, {
 | `addChangeOfSupportRecipe` | 2x GPUPolygonRasterization -> GPUArealInterpolation -> GPUSpatialLag |
 | `addFleetDwellRecipe` | GPUTrajectoryMetrics stops -> GPUPointInPolygonJoin -> stop mask -> GPUGroupStatistics (dense, one row per zone) |
 | `addFleetDwellZoneEventsRecipe` | GPUZoneEvents -> GPUGroupStatistics (dense, one row per zone; zone-event variant of the fleet dwell recipe) |
-| `addPeriodComparisonRecipe` | 2x GPUCellAggregation -> GPUCellTableCompare -> union mask -> GPUClassBreaks -> GPUColorScale |
+| `addPeriodComparisonRecipe` | 2x GPUCellAggregation -> GPUCellTableCompare (with mask) -> GPUClassBreaks -> GPUColorScale |
 
 Notes:
 
-- The space-time recipe aggregates `cell * sliceCount + slice` keys with `GPUGroupStatistics` into a dense
-  cube, because `GPUCellAggregation` keys must be valid Quadbin or H3 cells.
+- The space-time recipe counts events into a dense `cell * sliceCount + slice` cube with integer atomics,
+  because `GPUCellAggregation` keys must be valid Quadbin or H3 cells. Passing the sorted-path scratch
+  views or `outputs.groupOverflow` selects the `GPUGroupStatistics` path instead.
 - The drive-time catchment recipe classifies demand in network space (the minimum over the snapped edge
   ends) and also returns the isochrone triangles for drawing. It assumes both directions are in the CSR.
   `isochrones` takes `raster` and/or `cellOutline` (at least one). `cellOutline.rings` returns closed

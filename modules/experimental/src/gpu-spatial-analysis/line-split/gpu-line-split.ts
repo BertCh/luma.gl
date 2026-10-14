@@ -24,6 +24,12 @@ const OPERATION = 'GPULineSplit';
 /** Value written to `pieces.sourceIds` slots that hold no piece. */
 export const GPU_LINE_SPLIT_NONE = 0xffffffff;
 
+/**
+ * Bit set in a `pieces.vertexSourceEdges` row when its input edge meets another segment of its own
+ * line, or when the intersection pair list overflowed. The low 31 bits hold the edge index.
+ */
+export const GPU_LINE_SPLIT_SELF_CONTACT = 0x80000000;
+
 /** Number of `u32` words per piece-table row. */
 const PIECE_STRIDE = 8;
 
@@ -43,6 +49,17 @@ export type GPULineSplitPieces = GPUGeneratedGeometryPort<GPULineGeometryPort> &
   vertexCount?: GraphDataView<'uint32'>;
   /** Optional one-row scalar receiving the unclamped number of vertices. */
   requiredVertexCount?: GraphDataView<'uint32'>;
+  /**
+   * Optional per-vertex source edge, aligned with `geometry.positions`. For every written vertex
+   * that is not the last of its piece, the low 31 bits hold the input edge (the index of its first
+   * input vertex) that contains the segment starting at that vertex. Rows at the last vertex of a
+   * piece and beyond the written vertices are unspecified. Bit 31
+   * ({@link GPU_LINE_SPLIT_SELF_CONTACT}) is set when that edge is listed by the self-mode
+   * `GPUSegmentIntersection` against another segment of the same line (crossing, touch, overlap
+   * or uncertain; neighbors meeting only at their shared vertex are not listed), or when that pair
+   * list overflowed. Omitting it adds no work.
+   */
+  vertexSourceEdges?: GraphDataView<'uint32'>;
 };
 
 /**
@@ -147,6 +164,14 @@ export class GPULineSplit implements GPUCommandNodeProducer {
     if (this.vertexCapacity < 1) {
       throw new Error(`${id} pieces.geometry.positions must be non-empty`);
     }
+    if (pieces.vertexSourceEdges) {
+      validatePackedUint32View(pieces.vertexSourceEdges, `${id} pieces.vertexSourceEdges`);
+      if (pieces.vertexSourceEdges.length !== this.vertexCapacity) {
+        throw new Error(
+          `${id} pieces.vertexSourceEdges length must equal pieces.geometry.positions length`
+        );
+      }
+    }
     for (const [name, view] of [
       ['count', pieces.status.count],
       ['vertexCount', pieces.vertexCount],
@@ -183,6 +208,7 @@ export class GPULineSplit implements GPUCommandNodeProducer {
       pieces.status.candidateOverflow,
       pieces.status.requiredCount,
       pieces.requiredVertexCount,
+      pieces.vertexSourceEdges,
       props.uncertainCount
     ]);
     const nodes: GPUCommandNode<Parameters>[] = [];
@@ -540,6 +566,52 @@ fn uniqueBefore(position: u32) -> u32 {
       }).getCommandNodes(graph)
     );
 
+    // Optional: flag every input edge listed against another segment of its own line.
+    const {vertexSourceEdges} = pieces;
+    const selfContacts = vertexSourceEdges ? T('self-contacts', 'uint32', vertexCount) : null;
+    if (selfContacts) {
+      nodes.push(
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-self-contacts-clear`,
+          operation: OPERATION,
+          variant: 'self-contacts-clear',
+          bindings: [{name: 'selfContacts', view: selfContacts, type: 'u32', access: 'read_write'}],
+          invocationCount: vertexCount,
+          body: 'selfContacts[selfContactsOffset + index] = 0u;'
+        }),
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-self-contacts`,
+          operation: OPERATION,
+          variant: 'self-contacts',
+          bindings: [
+            {name: 'pairLeft', view: pairLeft, type: 'u32', access: 'read'},
+            {name: 'pairRight', view: pairRight, type: 'u32', access: 'read'},
+            {name: 'pairCount', view: pairCount, type: 'u32', access: 'read'},
+            {name: 'lineOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
+            {name: 'selfContacts', view: selfContacts, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: pairCapacity,
+          declarations: `const LINE_COUNT: u32 = ${lineCount}u;
+// Largest line whose first vertex is at most vertex.
+fn lineOfVertex(vertex: u32) -> u32 {
+  var low = 0u;
+  var high = LINE_COUNT - 1u;
+  while (low < high) {
+    let middle = (low + high + 1u) / 2u;
+    if (lineOffsets[lineOffsetsOffset + middle] <= vertex) { low = middle; } else { high = middle - 1u; }
+  }
+  return low;
+}`,
+          body: `if (index >= pairCount[pairCountOffset]) { return; }
+  let left = pairLeft[pairLeftOffset + index];
+  let right = pairRight[pairRightOffset + index];
+  if (lineOfVertex(left) != lineOfVertex(right)) { return; }
+  atomicStore(&selfContacts[selfContactsOffset + left], 1u);
+  atomicStore(&selfContacts[selfContactsOffset + right], 1u);`
+        })
+      );
+    }
+
     // 6. Capacity clamp: the longest prefix of pieces that fits both capacities.
     const state = T('state', 'uint32', 8);
     nodes.push(
@@ -603,13 +675,24 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-vertices`,
         operation: OPERATION,
-        variant: 'write-vertices',
+        variant: selfContacts ? 'write-vertices-with-edges' : 'write-vertices',
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'pieceTable', view: pieceTable, type: 'u32', access: 'read'},
           {name: 'vertexStarts', view: pieceVertexStarts, type: 'u32', access: 'read'},
           {name: 'positions', view: lines.positions, type: 'f32', access: 'read'},
-          {name: 'outPositions', view: pieces.geometry.positions, type: 'f32', access: 'read_write'}
+          {
+            name: 'outPositions',
+            view: pieces.geometry.positions,
+            type: 'f32',
+            access: 'read_write'
+          },
+          ...(selfContacts && vertexSourceEdges
+            ? ([
+                {name: 'selfContacts', view: selfContacts, type: 'u32', access: 'read'},
+                {name: 'sourceEdges', view: vertexSourceEdges, type: 'u32', access: 'read_write'}
+              ] satisfies WGSLKernelBinding[])
+            : [])
         ],
         invocationCount: vertexCapacity,
         body: `if (index >= state[stateOffset + 1u]) { return; }
@@ -625,6 +708,15 @@ fn pieceEnd(piece: u32) -> u32 { return vertexStarts[vertexStartsOffset + piece]
   let runLength = pieceTable[row + 2u] - firstVertex + 1u;
   let flags = pieceTable[row + 3u];
   var local = index - vertexStarts[vertexStartsOffset + low];
+  ${
+    selfContacts
+      ? `// A prefix point lies inside the edge before firstVertex; input vertex v starts edge v.
+  let edge = firstVertex - (flags & 1u) + local;
+  var contact = state[stateOffset + 5u] != 0u;
+  if (edge < ${vertexCount}u && selfContacts[selfContactsOffset + edge] != 0u) { contact = true; }
+  sourceEdges[sourceEdgesOffset + index] = edge | select(0u, ${GPU_LINE_SPLIT_SELF_CONTACT}u, contact);`
+      : ''
+  }
   var point = vec2f(0.0);
   var resolved = false;
   if ((flags & 1u) != 0u) {

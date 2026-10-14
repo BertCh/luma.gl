@@ -542,8 +542,7 @@ export const buildPeriodComparisonScene: RecipeSceneBuilder = async host => {
     chain: [
       'GPUCellAggregation (earlier period)',
       'GPUCellAggregation (later period)',
-      'GPUCellTableCompare (outer join, delta)',
-      'union mask adapter',
+      'GPUCellTableCompare (outer join, delta, union mask)',
       'GPUClassBreaks (custom edges)',
       'GPUColorScale (threshold)'
     ].slice(0, 6),
@@ -782,8 +781,7 @@ export const buildSpaceTimeScene: RecipeSceneBuilder = async host => {
     contributorCount: recipe.contributors.length,
     chain: [
       'GPUCalendarBuckets (minute of each event)',
-      'key adapter + GPUGroupStatistics (counts per cell and minute)',
-      'dense cube scatter adapter',
+      'atomic count adapter (counts per cell and minute into the dense cube)',
       'GPUEmergingHotSpots (Gi* per bin, Mann-Kendall)',
       'GPUColorScale (ordinal categories)'
     ],

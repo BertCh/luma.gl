@@ -8,7 +8,6 @@ import {
   createGPUComputeCommandNode,
   createTransientView,
   getBoundedDispatchLayout,
-  getBoundedInvocationIndexSource,
   getViewBinding,
   getViewElementOffset,
   GraphVectorView,
@@ -92,13 +91,24 @@ export function createWGSLActiveCountDispatch<Parameters>(
     ],
     invocationCount: 1,
     workgroupSize: 2,
-    declarations: `const COUNT_ROW: u32 = ${countRow}u;
-const MAXIMUM_ITEM_COUNT: u32 = ${props.maximumItemCount}u;
-const INVOCATIONS_PER_ITEM: u32 = ${invocationsPerItem}u;
-const ADDITIONAL_INVOCATION_COUNT: u32 = ${additionalInvocationCount}u;
-const TARGET_WORKGROUP_SIZE: u32 = ${workgroupSize}u;
-const MAXIMUM_X: u32 = ${layout.x}u;
-const MAXIMUM_Y: u32 = ${layout.y}u;`,
+    // Topology values are pipeline-overridable so every active-count updater shares one WGSL
+    // module; only the specialized pipeline constants differ between call sites.
+    declarations: `override COUNT_ROW: u32;
+override MAXIMUM_ITEM_COUNT: u32;
+override INVOCATIONS_PER_ITEM: u32;
+override ADDITIONAL_INVOCATION_COUNT: u32;
+override TARGET_WORKGROUP_SIZE: u32;
+override MAXIMUM_X: u32;
+override MAXIMUM_Y: u32;`,
+    constants: {
+      COUNT_ROW: countRow,
+      MAXIMUM_ITEM_COUNT: props.maximumItemCount,
+      INVOCATIONS_PER_ITEM: invocationsPerItem,
+      ADDITIONAL_INVOCATION_COUNT: additionalInvocationCount,
+      TARGET_WORKGROUP_SIZE: workgroupSize,
+      MAXIMUM_X: layout.x,
+      MAXIMUM_Y: layout.y
+    },
     body: `let itemCount = min(count[countOffset + COUNT_ROW], MAXIMUM_ITEM_COUNT);
   let invocationCount = itemCount * INVOCATIONS_PER_ITEM + ADDITIONAL_INVOCATION_COUNT;
   let workgroupCount = (invocationCount + TARGET_WORKGROUP_SIZE - 1u) / TARGET_WORKGROUP_SIZE;
@@ -164,6 +174,12 @@ export type WGSLKernelProps<Parameters> = {
   workgroupSize?: number;
   /** Module-scope WGSL declarations such as constants and helper functions. */
   declarations?: string;
+  /**
+   * Values for `override` declarations in {@link declarations}. Every named override must be
+   * statically used by the kernel body. Moving size-like values here instead of baking them into
+   * `const` declarations lets kernels that differ only in those values share one shader module.
+   */
+  constants?: Readonly<Record<string, number>>;
   /** WGSL statements executed once per in-range `index`. */
   body: string;
   /**
@@ -224,8 +240,14 @@ export function createWGSLKernelNode<Parameters>(
   // with an extra entry fails validation. A phony assignment of each binding's address is a
   // static use with no memory access, so every declared binding stays in the layout.
   const bindingReferences = props.bindings.map(binding => `_ = &${binding.name};`).join('\n  ');
+  // The invocation count and the bounded dispatch shape are pipeline-overridable constants, so the
+  // WGSL source does not depend on the problem size and same-shaped kernels share one shader
+  // module. The phony use keeps INVOCATION_COUNT statically used by unguarded kernels.
+  const maximumLinearWorkgroupCount = Math.floor(0xffffffff / workgroupSize) + 1;
   const source = /* wgsl */ `
 override INVOCATION_COUNT: u32;
+override WGSL_KERNEL_DISPATCH_X: u32;
+override WGSL_KERNEL_DISPATCH_Y: u32;
 ${declarations}
 ${props.declarations ?? ''}
 
@@ -235,7 +257,12 @@ fn main(
   @builtin(workgroup_id) workgroupId: vec3<u32>
 ) {
   ${bindingReferences}
-  ${getBoundedInvocationIndexSource(layout, workgroupSize)}
+  _ = INVOCATION_COUNT;
+  let workgroupIndex =
+    (workgroupId.z * WGSL_KERNEL_DISPATCH_Y + workgroupId.y) * WGSL_KERNEL_DISPATCH_X +
+    workgroupId.x;
+  if (workgroupIndex >= ${maximumLinearWorkgroupCount}u) { return; }
+  let index = workgroupIndex * ${workgroupSize}u + localInvocationIndex;
   ${props.guardIndex === false ? '' : 'if (index >= INVOCATION_COUNT) {\n    return;\n  }'}
   ${props.body}
 }`;
@@ -272,7 +299,12 @@ fn main(
       const kernel = new Kernel(device, {
         id: props.id,
         source,
-        constants: {INVOCATION_COUNT: props.invocationCount},
+        constants: {
+          ...props.constants,
+          INVOCATION_COUNT: props.invocationCount,
+          WGSL_KERNEL_DISPATCH_X: layout.x,
+          WGSL_KERNEL_DISPATCH_Y: layout.y
+        },
         shaderLayout: {
           bindings: props.bindings.map((binding, location) => ({
             name: binding.name,
@@ -461,8 +493,13 @@ export function createPublishNode<Parameters>(
     variant: 'publish',
     bindings,
     invocationCount: Math.max(copyRowCount, 1),
-    declarations: `const CAPACITY: u32 = ${capacity}u;
-const COPY_ROW_COUNT: u32 = ${copyRowCount}u;`,
+    // Capacities are overrides so publish nodes with the same binding shape share one module.
+    declarations:
+      copyRowCount > 0
+        ? 'override CAPACITY: u32;\noverride COPY_ROW_COUNT: u32;'
+        : 'override CAPACITY: u32;',
+    constants:
+      copyRowCount > 0 ? {CAPACITY: capacity, COPY_ROW_COUNT: copyRowCount} : {CAPACITY: capacity},
     body: `let total = totalIn[totalInOffset];
   let count = min(total, CAPACITY);
   ${

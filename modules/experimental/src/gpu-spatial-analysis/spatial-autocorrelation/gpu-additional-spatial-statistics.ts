@@ -23,6 +23,9 @@ import {
   validateSpatialAutocorrelationInputs
 } from './spatial-autocorrelation-kernels';
 
+/** Lanes of the single workgroup that reduces a global edge-association statistic. */
+const EDGE_ASSOCIATION_WORKGROUP_SIZE = 256;
+
 /** Inputs shared by global edge-association statistics. */
 type GPUEdgeAssociationProps = {
   id?: string;
@@ -307,47 +310,96 @@ function createEdgeAssociationNode<Parameters>(
     id: `${id}-statistic`,
     operation: operation === 'pearson' ? 'GPUSpatialPearson' : 'GPUGammaStatistic',
     variant: operation,
-    invocationCount: 1,
+    // One workgroup reduces all edges: lanes stripe rows and combine in a fixed tree order.
+    workgroupSize: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    invocationCount: EDGE_ASSOCIATION_WORKGROUP_SIZE,
+    guardIndex: false,
     bindings,
-    declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}\nconst ROWS: u32 = ${props.values.length}u;`,
-    body: `var weightTotal = 0.0;
-  var sumX = 0.0;
-  var sumY = 0.0;
-  for (var row = 0u; row < ROWS; row++) {
-    if (${props.mask ? 'mask[maskOffset + row] == 0u || ' : ''}!isFiniteFloat(values[valuesOffset + row])) { continue; }
+    declarations: `${SPATIAL_AUTOCORRELATION_FLOAT_WGSL}
+const ROWS: u32 = ${props.values.length}u;
+const LANES: u32 = ${EDGE_ASSOCIATION_WORKGROUP_SIZE}u;
+var<workgroup> sharedA: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
+var<workgroup> sharedB: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
+var<workgroup> sharedC: array<f32, ${EDGE_ASSOCIATION_WORKGROUP_SIZE}>;
+`,
+    body: `let lane = localInvocationIndex;
+  var laneWeight = 0.0;
+  var laneX = 0.0;
+  var laneY = 0.0;
+  for (var row = lane; row < ROWS; row += LANES) {
+    if (%ROW_OK%) { continue; }
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor >= ROWS || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])) { continue; }
+      if (%NEIGHBOR_OK%) { continue; }
       let weight = weights[weightsOffset + slot];
-      weightTotal += weight;
-      sumX += weight * values[valuesOffset + row];
-      sumY += weight * secondValues[secondValuesOffset + neighbor];
+      laneWeight += weight;
+      laneX += weight * values[valuesOffset + row];
+      laneY += weight * secondValues[secondValuesOffset + neighbor];
     }
   }
-  let meanX = sumX / weightTotal;
-  let meanY = sumY / weightTotal;
-  var numerator = 0.0;
-  var squareX = 0.0;
-  var squareY = 0.0;
-  for (var row = 0u; row < ROWS; row++) {
-    if (${props.mask ? 'mask[maskOffset + row] == 0u || ' : ''}!isFiniteFloat(values[valuesOffset + row])) { continue; }
+  sharedA[lane] = laneWeight;
+  sharedB[lane] = laneX;
+  sharedC[lane] = laneY;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      sharedA[lane] += sharedA[lane + stride];
+      sharedB[lane] += sharedB[lane + stride];
+      sharedC[lane] += sharedC[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  let weightTotal = sharedA[0];
+  let meanX = sharedB[0] / weightTotal;
+  let meanY = sharedC[0] / weightTotal;
+  workgroupBarrier();
+  var laneNumerator = 0.0;
+  var laneSquareX = 0.0;
+  var laneSquareY = 0.0;
+  for (var row = lane; row < ROWS; row += LANES) {
+    if (%ROW_OK%) { continue; }
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
-      if (neighbor >= ROWS || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])) { continue; }
+      if (%NEIGHBOR_OK%) { continue; }
       let weight = weights[weightsOffset + slot];
       let x = values[valuesOffset + row];
       let y = secondValues[secondValuesOffset + neighbor];
-      numerator += weight * ${term};
-      squareX += weight * (x - meanX) * (x - meanX);
-      squareY += weight * (y - meanY) * (y - meanY);
+      laneNumerator += weight * ${term};
+      laneSquareX += weight * (x - meanX) * (x - meanX);
+      laneSquareY += weight * (y - meanY) * (y - meanY);
     }
   }
-  var answer = getQuietNaN(0u);
-  ${
-    operation === 'pearson'
-      ? 'if (weightTotal > 0.0 && squareX > 0.0 && squareY > 0.0) { answer = clamp(numerator / sqrt(squareX * squareY), -1.0, 1.0); }'
-      : 'if (weightTotal > 0.0) { answer = numerator / weightTotal; }'
+  sharedA[lane] = laneNumerator;
+  sharedB[lane] = laneSquareX;
+  sharedC[lane] = laneSquareY;
+  workgroupBarrier();
+  for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
+    if (lane < stride) {
+      sharedA[lane] += sharedA[lane + stride];
+      sharedB[lane] += sharedB[lane + stride];
+      sharedC[lane] += sharedC[lane + stride];
+    }
+    workgroupBarrier();
   }
-  result[resultOffset] = answer;`
+  if (lane == 0u) {
+    let numerator = sharedA[0];
+    let squareX = sharedB[0];
+    let squareY = sharedC[0];
+    var answer = getQuietNaN(0u);
+    ${
+      operation === 'pearson'
+        ? 'if (weightTotal > 0.0 && squareX > 0.0 && squareY > 0.0) { answer = clamp(numerator / sqrt(squareX * squareY), -1.0, 1.0); }'
+        : 'if (weightTotal > 0.0) { answer = numerator / weightTotal; }'
+    }
+    result[resultOffset] = answer;
+  }`
+      .replaceAll(
+        '%ROW_OK%',
+        `${props.mask ? 'mask[maskOffset + row] == 0u || ' : ''}!isFiniteFloat(values[valuesOffset + row])`
+      )
+      .replaceAll(
+        '%NEIGHBOR_OK%',
+        `neighbor >= ROWS || ${props.mask ? 'mask[maskOffset + neighbor] == 0u || ' : ''}!isFiniteFloat(secondValues[secondValuesOffset + neighbor])`
+      )
   });
 }

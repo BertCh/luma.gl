@@ -400,11 +400,16 @@ export class GPUPolygonize implements GPUCommandNodeProducer {
           {name: 'counters', view: diagnosticCounters, type: 'atomic<u32>', access: 'read_write'}
         ],
         invocationCount: segmentCapacity,
-        declarations: `const NONE: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_NONE}u;
+        // Workgroup-local counters, then five global atomics per workgroup instead of per segment.
+        guardIndex: false,
+        declarations: `var<workgroup> localCounts: array<atomic<u32>, 5>;
+const NONE: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_NONE}u;
 const FLAG_CANCELLED: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_CANCELLED}u;
 const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
-        body: `var classification = 0u;
-  if (index < segmentCount[segmentCountOffset]) {
+        body: `if (localInvocationIndex < 5u) { atomicStore(&localCounts[localInvocationIndex], 0u); }
+  workgroupBarrier();
+  var classification = 0u;
+  if (index < INVOCATION_COUNT && index < segmentCount[segmentCountOffset]) {
     let first = 2u * index;
     let firstRing = ringIds[ringIdsOffset + first];
     let secondRing = ringIds[ringIdsOffset + first + 1u];
@@ -416,24 +421,29 @@ const FLAG_DANGLING: u32 = ${GPU_SEGMENT_RING_ASSEMBLY_FLAG_DANGLING}u;`,
     let cancelled = (flagBits & FLAG_CANCELLED) != 0u;
     if (used) {
       classification = ${edgeClass.closedRing}u;
-      atomicAdd(&counters[countersOffset], 1u);
+      atomicAdd(&localCounts[0u], 1u);
     } else {
       classification = ${edgeClass.unused}u;
-      atomicAdd(&counters[countersOffset + 4u], 1u);
+      atomicAdd(&localCounts[4u], 1u);
       if (!cancelled) {
         classification = classification | ${edgeClass.openChain}u;
-        atomicAdd(&counters[countersOffset + 1u], 1u);
+        atomicAdd(&localCounts[1u], 1u);
       }
       if (dangle) {
         classification = classification | ${edgeClass.dangle}u;
-        atomicAdd(&counters[countersOffset + 3u], 1u);
+        atomicAdd(&localCounts[3u], 1u);
       } else if (!cancelled) {
         classification = classification | ${edgeClass.cut}u;
-        atomicAdd(&counters[countersOffset + 2u], 1u);
+        atomicAdd(&localCounts[2u], 1u);
       }
     }
   }
-  edgeClasses[edgeClassesOffset + index] = classification;`
+  if (index < INVOCATION_COUNT) { edgeClasses[edgeClassesOffset + index] = classification; }
+  workgroupBarrier();
+  if (localInvocationIndex < 5u) {
+    let localCount = atomicLoad(&localCounts[localInvocationIndex]);
+    if (localCount > 0u) { atomicAdd(&counters[countersOffset + localInvocationIndex], localCount); }
+  }`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-publish-diagnostics`,

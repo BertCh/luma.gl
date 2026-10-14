@@ -46,3 +46,46 @@ fn getRowOfSlot(slot: u32) -> u32 {
 
 /** Sentinel slot or ID shared by the regionalization kernels. @internal */
 export const REGIONALIZATION_NONE_WGSL = 'const NONE: u32 = 0xffffffffu;';
+
+/**
+ * Workgroup-wide lexicographic argmin over `(score, key, value)` tuples for cooperative
+ * regionalization kernels. The order is total on distinct tuples, so the winner does not depend
+ * on the reduction tree. `reduceArgmin` contains barriers: call it from uniform control flow
+ * with every invocation of the workgroup. It returns the winning `value` to all invocations.
+ *
+ * @internal
+ */
+export function getWorkgroupArgminWGSL(workgroupSize: number): string {
+  return /* wgsl */ `
+var<workgroup> argminScores: array<f32, ${workgroupSize}>;
+var<workgroup> argminKeys: array<u32, ${workgroupSize}>;
+var<workgroup> argminValues: array<u32, ${workgroupSize}>;
+
+fn isArgminBetter(score: f32, key: u32, value: u32, bestScore: f32, bestKey: u32, bestValue: u32) -> bool {
+  return score < bestScore || (score == bestScore && (key < bestKey || (key == bestKey && value < bestValue)));
+}
+
+fn reduceArgmin(lane: u32, score: f32, key: u32, value: u32) -> u32 {
+  argminScores[lane] = score;
+  argminKeys[lane] = key;
+  argminValues[lane] = value;
+  workgroupBarrier();
+  for (var stride = ${workgroupSize / 2}u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride) {
+      let other = lane + stride;
+      if (isArgminBetter(argminScores[other], argminKeys[other], argminValues[other],
+          argminScores[lane], argminKeys[lane], argminValues[lane])) {
+        argminScores[lane] = argminScores[other];
+        argminKeys[lane] = argminKeys[other];
+        argminValues[lane] = argminValues[other];
+      }
+    }
+    workgroupBarrier();
+  }
+  let winner = workgroupUniformLoad(&argminValues[0]);
+  // Keep the next call's writes from racing this read of slot 0.
+  workgroupBarrier();
+  return winner;
+}
+`;
+}

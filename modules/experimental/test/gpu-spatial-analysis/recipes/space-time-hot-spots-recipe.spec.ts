@@ -116,7 +116,8 @@ it('addSpaceTimeHotSpotsRecipe counts events into a cube and classifies emerging
         )
       }
     });
-    expect(recipe.contributors.length).toBe(4);
+    // Calendar, emerging hot spots and color scale: the atomic count path adds no contributor.
+    expect(recipe.contributors.length).toBe(3);
     fixture.run();
 
     // The dense cube equals the CPU histogram exactly.
@@ -234,6 +235,149 @@ it('addSpaceTimeHotSpotsRecipe accepts cell ids with weights and skips out-of-ra
     const z = await fixture.readFloat32(giZScores, CELLS * sliceCount);
     expect(z.filter(Number.isFinite).length).toBe(CELLS * sliceCount);
     expect(Math.max(...z)).toBeGreaterThan(1.5);
+  } finally {
+    fixture.destroy();
+  }
+}, 120000);
+
+it('addSpaceTimeHotSpotsRecipe atomic counts match the sorted GPUGroupStatistics path bit for bit', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) {
+    return;
+  }
+  // A few hundred events: a dense hot bin (atomic contention), sparse noise, positions outside the
+  // lattice, cell ids out of range, months past the last slice, and masked events.
+  const sliceCount = 9;
+  const random = createSeededRandom(7);
+  const positions: number[] = [];
+  const words: number[] = [];
+  const cellIds: number[] = [];
+  const mask: number[] = [];
+  const expected = new Uint32Array(CELLS * sliceCount);
+  for (let event = 0; event < 480; event++) {
+    const isHot = event < 160;
+    const column = isHot ? 2 : Math.floor(random() * (WIDTH + 2)) - 1;
+    const row = isHot ? 3 : Math.floor(random() * HEIGHT);
+    const month = isHot ? 4 : Math.floor(random() * 12);
+    const isMasked = !isHot && random() < 0.1;
+    const milliseconds = Date.UTC(2023, month, 1 + Math.floor(random() * 28), 6);
+    positions.push(column + 0.1 + 0.8 * random(), row + 0.1 + 0.8 * random());
+    words.push(milliseconds % 2 ** 32, Math.floor(milliseconds / 2 ** 32));
+    const isInside = column >= 0 && column < WIDTH;
+    const cell = row * WIDTH + column;
+    cellIds.push(isInside ? cell : CELLS + event);
+    mask.push(isMasked ? 0 : 1);
+    if (isInside && month < sliceCount && !isMasked) {
+      expected[cell * sliceCount + month]++;
+    }
+  }
+  const eventCount = mask.length;
+  const binCount = CELLS * sliceCount;
+  const offsets = [0];
+  const neighbors: number[] = [];
+  for (let cell = 0; cell < CELLS; cell++) {
+    const x = cell % WIDTH;
+    const y = Math.floor(cell / WIDTH);
+    if (y > 0) neighbors.push(cell - WIDTH);
+    if (x > 0) neighbors.push(cell - 1);
+    if (x < WIDTH - 1) neighbors.push(cell + 1);
+    if (y < HEIGHT - 1) neighbors.push(cell + WIDTH);
+    offsets.push(neighbors.length);
+  }
+
+  const fixture = new RecipeTestFixture(device, 'space-time-hot-spots-paths-test');
+  try {
+    const timestamps = fixture.input('timestamps', Uint32Array.from(words), 'uint32x2', eventCount);
+    const eventMask = fixture.input('mask', Uint32Array.from(mask), 'uint32', eventCount);
+    const calendarParameters = fixture.input(
+      'calendar-parameters',
+      getGPUCalendarBucketsParameterValues(0),
+      'sint32',
+      2
+    );
+    const parameters = fixture.parameters(
+      'emerging-parameters',
+      'float32',
+      getGPUEmergingHotSpotParameterValues({radius: 1.5, temporalWindow: 1})
+    );
+    const lattice = {
+      kind: 'lattice',
+      positions: fixture.input('positions', Float32Array.from(positions), 'float32x2', eventCount),
+      width: WIDTH,
+      height: HEIGHT,
+      bounds: [0, 0, WIDTH, HEIGHT]
+    } as const;
+    const ids = {
+      kind: 'ids',
+      cellIds: fixture.input('cell-ids', Uint32Array.from(cellIds), 'uint32', eventCount),
+      cellCount: CELLS,
+      weights: {
+        offsets: fixture.input('offsets', Uint32Array.from(offsets), 'uint32', CELLS + 1),
+        neighbors: fixture.input(
+          'neighbors',
+          Uint32Array.from(neighbors),
+          'uint32',
+          neighbors.length
+        ),
+        weights: fixture.input(
+          'weights',
+          new Float32Array(neighbors.length).fill(1),
+          'float32',
+          neighbors.length
+        )
+      }
+    } as const;
+
+    const runs = [];
+    for (const [cellsName, cells] of [
+      ['lattice', lattice],
+      ['ids', ids]
+    ] as const) {
+      for (const path of ['atomic', 'sorted'] as const) {
+        const name = `${cellsName}-${path}`;
+        const cube = fixture.output(`${name}-cube`, 'uint32', binCount);
+        const giZScores = fixture.output(`${name}-gi-z`, 'float32', binCount);
+        const category = fixture.output(`${name}-category`, 'uint32', CELLS);
+        const groupOverflow = fixture.output(`${name}-overflow`, 'uint32', 1);
+        const recipe = addSpaceTimeHotSpotsRecipe(fixture.graph, {
+          id: name,
+          timestamps,
+          mask: eventMask,
+          calendarParameters,
+          slices: {field: 'month', firstValue: 1, count: sliceCount},
+          cells,
+          parameters,
+          outputs: {
+            cube: cube.view,
+            giZScores: giZScores.view,
+            category: category.view,
+            // Asking for the overflow flag selects the sorted GPUGroupStatistics path.
+            ...(path === 'sorted' ? {groupOverflow: groupOverflow.view} : {})
+          }
+        });
+        expect(recipe.contributors.length, name).toBe(path === 'sorted' ? 3 : 2);
+        expect(recipe.status.stages.length, name).toBe(path === 'sorted' ? 1 : 0);
+        runs.push({name, path, cube, giZScores, category, groupOverflow});
+      }
+    }
+    fixture.run();
+
+    for (let index = 0; index < runs.length; index += 2) {
+      const atomic = runs[index];
+      const sorted = runs[index + 1];
+      const atomicCube = await fixture.readUint32(atomic.cube, binCount);
+      expect(atomicCube, atomic.name).toEqual([...expected]);
+      expect(await fixture.readUint32(sorted.cube, binCount), sorted.name).toEqual(atomicCube);
+      expect(await fixture.readUint32(sorted.groupOverflow, 1), sorted.name).toEqual([0]);
+      // Same cube, same downstream kernels: the float32 z-scores agree in every bit.
+      expect(await fixture.readUint32(sorted.giZScores, binCount), sorted.name).toEqual(
+        await fixture.readUint32(atomic.giZScores, binCount)
+      );
+      expect(await fixture.readUint32(sorted.category, CELLS), sorted.name).toEqual(
+        await fixture.readUint32(atomic.category, CELLS)
+      );
+    }
+    expect(expected[(3 * WIDTH + 2) * sliceCount + 4]).toBeGreaterThanOrEqual(160);
   } finally {
     fixture.destroy();
   }

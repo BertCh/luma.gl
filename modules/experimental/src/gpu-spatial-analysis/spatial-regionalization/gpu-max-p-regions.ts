@@ -12,6 +12,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {getWorkgroupArgminWGSL} from './regionalization-wgsl';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -19,6 +20,7 @@ import {
 import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weights/index';
 
 export const GPU_MAX_P_MAXIMUM_COLUMNS = 8;
+const MAX_P_WORKGROUP_SIZE = 256;
 export const GPU_MAX_P_STATUS = {
   regionCount: 0,
   feasible: 1,
@@ -58,6 +60,12 @@ export type GPUMaxPRegionsProps = {
  * threshold, selecting the adjacent row nearest to the region mean. An under-threshold remainder
  * is merged into an adjacent completed region when possible. This is a reproducible construction
  * heuristic rather than the randomized multi-start search used by some CPU implementations.
+ *
+ * Scale limit: the construction is sequential and runs as one dispatch of one 256-lane
+ * workgroup. Every growth step rescans all rows and their neighbor lists, so the dispatch does
+ * about `rowCount * (rowCount + neighborCount) / 256` steps per lane. That is fine for thousands
+ * of rows, but from roughly 50k-100k rows one dispatch can run for seconds and trip the operating
+ * system's GPU watchdog (device loss). Partition larger inputs first, or use SKATER.
  */
 export class GPUMaxPRegions implements GPUCommandNodeProducer {
   readonly id: string;
@@ -138,7 +146,8 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
     ]);
     const regionStride = columnCount + 2;
     const regions = createTransientView(graph, `${id}-regions`, 'float32', rowCount * regionStride);
-    const state = createTransientView(graph, `${id}-state`, 'uint32', 5);
+    // Words indexed by MAX_P_STATE: region count, infeasible count, and the invalid-input copy.
+    const state = createTransientView(graph, `${id}-state`, 'uint32', 3);
     const candidateScoreA = createTransientView(
       graph,
       `${id}-candidate-score-a`,
@@ -150,18 +159,6 @@ export class GPUMaxPRegions implements GPUCommandNodeProducer {
       `${id}-candidate-score-b`,
       'float32',
       rowCount
-    );
-    const candidateDataA = createTransientView(
-      graph,
-      `${id}-candidate-data-a`,
-      'uint32',
-      2 * rowCount
-    );
-    const candidateDataB = createTransientView(
-      graph,
-      `${id}-candidate-data-b`,
-      'uint32',
-      2 * rowCount
     );
     const declarations = `const ROW_COUNT: u32 = ${rowCount}u;
 const COLUMN_COUNT: u32 = ${columnCount}u;
@@ -187,9 +184,9 @@ fn tieKey(row: u32) -> u32 {
           {name: 'objective', view: output.objective, type: 'f32', access: 'read_write'},
           {name: 'status', view: output.status, type: 'u32', access: 'read_write'}
         ],
-        declarations: 'const NONE: u32 = 0xffffffffu;',
-        body: `for (var word = 0u; word < 5u; word++) { state[stateOffset + word] = 0u; }
-  state[stateOffset + 4u] = NONE;
+        body: `state[stateOffset] = 0u;
+  state[stateOffset + 1u] = 0u;
+  state[stateOffset + 2u] = 0u;
   objective[objectiveOffset] = 0.0;
   status[statusOffset] = 0u;
   status[statusOffset + 1u] = 0u;
@@ -238,278 +235,157 @@ fn tieKey(row: u32) -> u32 {
     invalid += select(0u, 1u, neighbors[neighborsOffset + slot] >= ROW_COUNT);
   }
   if (invalid > 0u) { atomicAdd(&status[statusOffset + 3u], invalid); }`
+      }),
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-capture-invalid`,
+        operation: 'GPUMaxPRegions',
+        variant: 'capture-invalid',
+        invocationCount: 1,
+        bindings: [
+          {name: 'status', view: output.status, type: 'u32', access: 'read'},
+          {name: 'state', view: state, type: 'u32', access: 'read_write'}
+        ],
+        body: 'state[stateOffset + 2u] = status[statusOffset + 3u];'
+      }),
+      // The construction is inherently sequential: every growth step depends on the previous
+      // one. One persistent workgroup runs the whole seed / grow / merge loop with parallel
+      // strided candidate scans and shared-memory argmin reductions, instead of unrolling
+      // O(rowCount^2) graph nodes of mostly empty full-size dispatches.
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-construct`,
+        operation: 'GPUMaxPRegions',
+        variant: 'persistent-workgroup-construction',
+        invocationCount: MAX_P_WORKGROUP_SIZE,
+        workgroupSize: MAX_P_WORKGROUP_SIZE,
+        guardIndex: false,
+        bindings: [
+          {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'values', view: props.values, type: 'f32', access: 'read'},
+          {name: 'extensive', view: props.extensiveValues, type: 'f32', access: 'read'},
+          {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'},
+          {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
+          {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
+          {name: 'state', view: state, type: 'u32', access: 'read_write'}
+        ],
+        declarations: `${declarations}
+${getWorkgroupArgminWGSL(MAX_P_WORKGROUP_SIZE)}
+// Running count, extensive sum and column sums of the region under construction.
+var<workgroup> currentStats: array<f32, REGION_STRIDE>;
+var<workgroup> broadcastWord: u32;`,
+        body: `let lane = localInvocationIndex;
+  if (lane == 0u) { broadcastWord = state[stateOffset + 2u]; }
+  let invalid = workgroupUniformLoad(&broadcastWord);
+  var regionCount = 0u;
+  var infeasibleCount = 0u;
+  if (invalid == 0u) {
+    let thresholdValue = threshold[thresholdOffset];
+    for (var construction = 0u; construction < ROW_COUNT; construction++) {
+      var bestScore = LARGE_DISTANCE;
+      var bestKey = NONE;
+      var bestValue = NONE;
+      for (var row = lane; row < ROW_COUNT; row += ${MAX_P_WORKGROUP_SIZE}u) {
+        let key = tieKey(row);
+        if (labels[labelsOffset + row] == NONE && isArgminBetter(0.0, key, row, bestScore, bestKey, bestValue)) {
+          bestScore = 0.0; bestKey = key; bestValue = row;
+        }
+      }
+      let seed = reduceArgmin(lane, bestScore, bestKey, bestValue);
+      if (seed == NONE) { break; }
+      let region = regionCount;
+      if (lane == 0u) {
+        labels[labelsOffset + seed] = region;
+        currentStats[0] = 1.0;
+        currentStats[1] = extensive[extensiveOffset + seed];
+        for (var column = 0u; column < COLUMN_COUNT; column++) {
+          currentStats[2u + column] = values[valuesOffset + seed * COLUMN_COUNT + column];
+        }
+        broadcastWord = select(1u, 2u, currentStats[1] >= thresholdValue);
+      }
+      var phase = workgroupUniformLoad(&broadcastWord);
+      storageBarrier();
+      // Grow while under threshold: the unassigned row adjacent to the region nearest its mean.
+      loop {
+        if (phase != 1u) { break; }
+        bestScore = LARGE_DISTANCE; bestKey = NONE; bestValue = NONE;
+        for (var row = lane; row < ROW_COUNT; row += ${MAX_P_WORKGROUP_SIZE}u) {
+          if (labels[labelsOffset + row] != NONE) { continue; }
+          var adjacent = false;
+          for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+            if (labels[labelsOffset + neighbors[neighborsOffset + slot]] == region) { adjacent = true; break; }
+          }
+          if (!adjacent) { continue; }
+          var distance = 0.0;
+          for (var column = 0u; column < COLUMN_COUNT; column++) {
+            let difference = values[valuesOffset + row * COLUMN_COUNT + column] - currentStats[2u + column] / currentStats[0];
+            distance += difference * difference;
+          }
+          let key = tieKey(row);
+          if (isArgminBetter(distance, key, row, bestScore, bestKey, bestValue)) {
+            bestScore = distance; bestKey = key; bestValue = row;
+          }
+        }
+        let grown = reduceArgmin(lane, bestScore, bestKey, bestValue);
+        if (grown == NONE) { break; }
+        if (lane == 0u) {
+          labels[labelsOffset + grown] = region;
+          currentStats[0] += 1.0;
+          currentStats[1] += extensive[extensiveOffset + grown];
+          for (var column = 0u; column < COLUMN_COUNT; column++) {
+            currentStats[2u + column] += values[valuesOffset + grown * COLUMN_COUNT + column];
+          }
+          broadcastWord = select(1u, 2u, currentStats[1] >= thresholdValue);
+        }
+        phase = workgroupUniformLoad(&broadcastWord);
+        storageBarrier();
+      }
+      if (lane == 0u) {
+        let base = regionsOffset + region * REGION_STRIDE;
+        for (var slot = 0u; slot < REGION_STRIDE; slot++) { regions[base + slot] = currentStats[slot]; }
+      }
+      // Nearest adjacent completed region by mean distance, ties to the lowest region ID.
+      bestScore = LARGE_DISTANCE; bestKey = NONE; bestValue = NONE;
+      for (var row = lane; row < ROW_COUNT; row += ${MAX_P_WORKGROUP_SIZE}u) {
+        if (labels[labelsOffset + row] != region) { continue; }
+        for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
+          let candidate = labels[labelsOffset + neighbors[neighborsOffset + slot]];
+          if (candidate == NONE || candidate == region) { continue; }
+          let candidateBase = regionsOffset + candidate * REGION_STRIDE;
+          var distance = 0.0;
+          for (var column = 0u; column < COLUMN_COUNT; column++) {
+            let difference = currentStats[2u + column] / currentStats[0] -
+              regions[candidateBase + 2u + column] / regions[candidateBase];
+            distance += difference * difference;
+          }
+          if (isArgminBetter(distance, candidate, candidate, bestScore, bestKey, bestValue)) {
+            bestScore = distance; bestKey = candidate; bestValue = candidate;
+          }
+        }
+      }
+      let mergeRegion = reduceArgmin(lane, bestScore, bestKey, bestValue);
+      if (phase != 2u && mergeRegion != NONE) {
+        // Enclave: fold the under-threshold remainder into its nearest neighbor region and
+        // reuse this region ID for the next seed.
+        if (lane == 0u) {
+          let mergeBase = regionsOffset + mergeRegion * REGION_STRIDE;
+          for (var slot = 0u; slot < REGION_STRIDE; slot++) { regions[mergeBase + slot] += currentStats[slot]; }
+        }
+        for (var row = lane; row < ROW_COUNT; row += ${MAX_P_WORKGROUP_SIZE}u) {
+          if (labels[labelsOffset + row] == region) { labels[labelsOffset + row] = mergeRegion; }
+        }
+      } else {
+        regionCount += 1u;
+        if (phase != 2u) { infeasibleCount += 1u; }
+      }
+      storageBarrier();
+    }
+  }
+  if (lane == 0u) {
+    state[stateOffset] = regionCount;
+    state[stateOffset + 1u] = infeasibleCount;
+  }`
       })
     ];
-
-    const appendReduction = (prefix: string) => {
-      let activeCount = rowCount;
-      let sourceScore = candidateScoreA;
-      let sourceData = candidateDataA;
-      let destinationScore = candidateScoreB;
-      let destinationData = candidateDataB;
-      let level = 0;
-      while (activeCount > 1) {
-        const nextCount = Math.ceil(activeCount / 2);
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${prefix}-reduce-${level}`,
-            operation: 'GPUMaxPRegions',
-            variant: 'deterministic-reduction',
-            invocationCount: nextCount,
-            bindings: [
-              {name: 'scoreIn', view: sourceScore, type: 'f32', access: 'read'},
-              {name: 'dataIn', view: sourceData, type: 'u32', access: 'read'},
-              {name: 'scoreOut', view: destinationScore, type: 'f32', access: 'read_write'},
-              {name: 'dataOut', view: destinationData, type: 'u32', access: 'read_write'}
-            ],
-            declarations: `const INPUT_COUNT: u32 = ${activeCount}u;`,
-            body: `let left = 2u * index;
-  let right = left + 1u;
-  var winner = left;
-  if (right < INPUT_COUNT) {
-    let leftScore = scoreIn[scoreInOffset + left];
-    let rightScore = scoreIn[scoreInOffset + right];
-    let leftBase = dataInOffset + 2u * left;
-    let rightBase = dataInOffset + 2u * right;
-    let leftKey = dataIn[leftBase]; let rightKey = dataIn[rightBase];
-    let leftValue = dataIn[leftBase + 1u]; let rightValue = dataIn[rightBase + 1u];
-    if (rightScore < leftScore || (rightScore == leftScore &&
-        (rightKey < leftKey || (rightKey == leftKey && rightValue < leftValue)))) { winner = right; }
-  }
-  scoreOut[scoreOutOffset + index] = scoreIn[scoreInOffset + winner];
-  let sourceBase = dataInOffset + 2u * winner;
-  let destinationBase = dataOutOffset + 2u * index;
-  dataOut[destinationBase] = dataIn[sourceBase];
-  dataOut[destinationBase + 1u] = dataIn[sourceBase + 1u];`
-          })
-        );
-        activeCount = nextCount;
-        [sourceScore, destinationScore] = [destinationScore, sourceScore];
-        [sourceData, destinationData] = [destinationData, sourceData];
-        level++;
-      }
-      return {score: sourceScore, data: sourceData};
-    };
-
-    for (let construction = 0; construction < rowCount; construction++) {
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-construction-${construction}-seed-candidates`,
-          operation: 'GPUMaxPRegions',
-          variant: 'parallel-seed-candidates',
-          invocationCount: rowCount,
-          bindings: [
-            {name: 'labels', view: output.labels, type: 'u32', access: 'read'},
-            {name: 'status', view: output.status, type: 'u32', access: 'read'},
-            {name: 'scoreOut', view: candidateScoreA, type: 'f32', access: 'read_write'},
-            {name: 'dataOut', view: candidateDataA, type: 'u32', access: 'read_write'}
-          ],
-          declarations,
-          body: `let accepted = labels[labelsOffset + index] == NONE && status[statusOffset + 3u] == 0u;
-  scoreOut[scoreOutOffset + index] = select(LARGE_DISTANCE, 0.0, accepted);
-  let base = dataOutOffset + 2u * index;
-  dataOut[base] = select(NONE, tieKey(index), accepted);
-  dataOut[base + 1u] = select(NONE, index, accepted);`
-        })
-      );
-      const seed = appendReduction(`${id}-construction-${construction}-seed`);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-construction-${construction}-seed-apply`,
-          operation: 'GPUMaxPRegions',
-          variant: 'apply-seed',
-          invocationCount: 1,
-          bindings: [
-            {name: 'values', view: props.values, type: 'f32', access: 'read'},
-            {name: 'extensive', view: props.extensiveValues, type: 'f32', access: 'read'},
-            {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
-            {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
-            {name: 'state', view: state, type: 'u32', access: 'read_write'},
-            {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'},
-            {name: 'data', view: seed.data, type: 'u32', access: 'read'}
-          ],
-          declarations,
-          body: `let row = data[dataOffset + 1u];
-  state[stateOffset + 2u] = select(0u, 1u, row != NONE);
-  state[stateOffset + 4u] = NONE;
-  if (row == NONE) { return; }
-  let region = state[stateOffset];
-  state[stateOffset + 1u] = region;
-  labels[labelsOffset + row] = region;
-  let base = regionsOffset + region * REGION_STRIDE;
-  regions[base] = 1.0;
-  regions[base + 1u] = extensive[extensiveOffset + row];
-  for (var column = 0u; column < COLUMN_COUNT; column++) {
-    regions[base + 2u + column] = values[valuesOffset + row * COLUMN_COUNT + column];
-  }
-  if (regions[base + 1u] >= threshold[thresholdOffset]) { state[stateOffset + 2u] = 2u; }`
-        })
-      );
-
-      for (let growth = 0; growth < rowCount - 1; growth++) {
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-construction-${construction}-growth-${growth}-candidates`,
-            operation: 'GPUMaxPRegions',
-            variant: 'parallel-growth-candidates',
-            invocationCount: rowCount,
-            bindings: [
-              {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
-              {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
-              {name: 'values', view: props.values, type: 'f32', access: 'read'},
-              {name: 'labels', view: output.labels, type: 'u32', access: 'read'},
-              {name: 'regions', view: regions, type: 'f32', access: 'read'},
-              {name: 'state', view: state, type: 'u32', access: 'read'},
-              {name: 'scoreOut', view: candidateScoreA, type: 'f32', access: 'read_write'},
-              {name: 'dataOut', view: candidateDataA, type: 'u32', access: 'read_write'}
-            ],
-            declarations,
-            body: `let region = state[stateOffset + 1u];
-  let regionBase = regionsOffset + region * REGION_STRIDE;
-  var accepted = state[stateOffset + 2u] == 1u && labels[labelsOffset + index] == NONE;
-  var adjacent = false;
-  if (accepted) {
-    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
-      adjacent = adjacent || labels[labelsOffset + neighbors[neighborsOffset + slot]] == region;
-    }
-  }
-  accepted = accepted && adjacent;
-  var distance = LARGE_DISTANCE;
-  if (accepted) {
-    distance = 0.0;
-    for (var column = 0u; column < COLUMN_COUNT; column++) {
-      let difference = values[valuesOffset + index * COLUMN_COUNT + column] - regions[regionBase + 2u + column] / regions[regionBase];
-      distance += difference * difference;
-    }
-  }
-  scoreOut[scoreOutOffset + index] = distance;
-  let base = dataOutOffset + 2u * index;
-  dataOut[base] = select(NONE, tieKey(index), accepted);
-  dataOut[base + 1u] = select(NONE, index, accepted);`
-          })
-        );
-        const growthCandidate = appendReduction(
-          `${id}-construction-${construction}-growth-${growth}`
-        );
-        nodes.push(
-          createWGSLKernelNode<Parameters>(graph, {
-            id: `${id}-construction-${construction}-growth-${growth}-apply`,
-            operation: 'GPUMaxPRegions',
-            variant: 'apply-growth',
-            invocationCount: 1,
-            bindings: [
-              {name: 'values', view: props.values, type: 'f32', access: 'read'},
-              {name: 'extensive', view: props.extensiveValues, type: 'f32', access: 'read'},
-              {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
-              {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
-              {name: 'state', view: state, type: 'u32', access: 'read_write'},
-              {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'},
-              {name: 'data', view: growthCandidate.data, type: 'u32', access: 'read'}
-            ],
-            declarations,
-            body: `let row = data[dataOffset + 1u];
-  if (row == NONE) { return; }
-  let region = state[stateOffset + 1u];
-  labels[labelsOffset + row] = region;
-  let base = regionsOffset + region * REGION_STRIDE;
-  regions[base] += 1.0;
-  regions[base + 1u] += extensive[extensiveOffset + row];
-  for (var column = 0u; column < COLUMN_COUNT; column++) {
-    regions[base + 2u + column] += values[valuesOffset + row * COLUMN_COUNT + column];
-  }
-  if (regions[base + 1u] >= threshold[thresholdOffset]) { state[stateOffset + 2u] = 2u; }`
-          })
-        );
-      }
-
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-construction-${construction}-merge-candidates`,
-          operation: 'GPUMaxPRegions',
-          variant: 'parallel-enclave-candidates',
-          invocationCount: rowCount,
-          bindings: [
-            {name: 'offsets', view: props.weights.offsets, type: 'u32', access: 'read'},
-            {name: 'neighbors', view: props.weights.neighbors, type: 'u32', access: 'read'},
-            {name: 'labels', view: output.labels, type: 'u32', access: 'read'},
-            {name: 'regions', view: regions, type: 'f32', access: 'read'},
-            {name: 'state', view: state, type: 'u32', access: 'read'},
-            {name: 'scoreOut', view: candidateScoreA, type: 'f32', access: 'read_write'},
-            {name: 'dataOut', view: candidateDataA, type: 'u32', access: 'read_write'}
-          ],
-          declarations,
-          body: `let current = state[stateOffset + 1u];
-  let currentBase = regionsOffset + current * REGION_STRIDE;
-  var bestRegion = NONE;
-  var bestDistance = LARGE_DISTANCE;
-  if (state[stateOffset + 2u] != 0u && labels[labelsOffset + index] == current) {
-    for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
-      let candidate = labels[labelsOffset + neighbors[neighborsOffset + slot]];
-      if (candidate == NONE || candidate == current) { continue; }
-      let candidateBase = regionsOffset + candidate * REGION_STRIDE;
-      var distance = 0.0;
-      for (var column = 0u; column < COLUMN_COUNT; column++) {
-        let difference = regions[currentBase + 2u + column] / regions[currentBase] -
-          regions[candidateBase + 2u + column] / regions[candidateBase];
-        distance += difference * difference;
-      }
-      if (distance < bestDistance || (distance == bestDistance && candidate < bestRegion)) {
-        bestDistance = distance; bestRegion = candidate;
-      }
-    }
-  }
-  scoreOut[scoreOutOffset + index] = bestDistance;
-  let base = dataOutOffset + 2u * index;
-  dataOut[base] = bestRegion;
-  dataOut[base + 1u] = bestRegion;`
-        })
-      );
-      const mergeCandidate = appendReduction(`${id}-construction-${construction}-merge`);
-      nodes.push(
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-construction-${construction}-finalize`,
-          operation: 'GPUMaxPRegions',
-          variant: 'finalize-region',
-          invocationCount: 1,
-          bindings: [
-            {name: 'threshold', view: props.threshold, type: 'f32', access: 'read'},
-            {name: 'regions', view: regions, type: 'f32', access: 'read_write'},
-            {name: 'state', view: state, type: 'u32', access: 'read_write'},
-            {name: 'data', view: mergeCandidate.data, type: 'u32', access: 'read'}
-          ],
-          declarations,
-          body: `if (state[stateOffset + 2u] == 0u) { return; }
-  let current = state[stateOffset + 1u];
-  let currentBase = regionsOffset + current * REGION_STRIDE;
-  let feasible = regions[currentBase + 1u] >= threshold[thresholdOffset];
-  let mergeRegion = data[dataOffset + 1u];
-  state[stateOffset + 4u] = NONE;
-  if (!feasible && mergeRegion != NONE) {
-    let mergeBase = regionsOffset + mergeRegion * REGION_STRIDE;
-    for (var slot = 0u; slot < REGION_STRIDE; slot++) { regions[mergeBase + slot] += regions[currentBase + slot]; }
-    state[stateOffset + 4u] = mergeRegion;
-  } else {
-    state[stateOffset] += 1u;
-    if (!feasible) { state[stateOffset + 3u] += 1u; }
-  }
-  state[stateOffset + 2u] = 0u;`
-        }),
-        createWGSLKernelNode<Parameters>(graph, {
-          id: `${id}-construction-${construction}-relabel-enclave`,
-          operation: 'GPUMaxPRegions',
-          variant: 'parallel-enclave-relabel',
-          invocationCount: rowCount,
-          bindings: [
-            {name: 'labels', view: output.labels, type: 'u32', access: 'read_write'},
-            {name: 'state', view: state, type: 'u32', access: 'read'}
-          ],
-          declarations: 'const NONE: u32 = 0xffffffffu;',
-          body: `let mergeRegion = state[stateOffset + 4u];
-  let current = state[stateOffset + 1u];
-  if (mergeRegion != NONE && labels[labelsOffset + index] == current) { labels[labelsOffset + index] = mergeRegion; }`
-        })
-      );
-    }
 
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -579,8 +455,8 @@ fn tieKey(row: u32) -> u32 {
         ],
         body: `objective[objectiveOffset] = score[scoreOffset];
   status[statusOffset] = state[stateOffset];
-  status[statusOffset + 1u] = select(0u, 1u, state[stateOffset + 3u] == 0u && status[statusOffset + 3u] == 0u);
-  status[statusOffset + 2u] = state[stateOffset + 3u];`
+  status[statusOffset + 1u] = select(0u, 1u, state[stateOffset + 1u] == 0u && status[statusOffset + 3u] == 0u);
+  status[statusOffset + 2u] = state[stateOffset + 1u];`
       })
     );
     return nodes;

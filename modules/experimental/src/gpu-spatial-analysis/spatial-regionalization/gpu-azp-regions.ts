@@ -4,6 +4,7 @@
 
 import {
   createTransientView,
+  GPUSort,
   validatePackedUint32View,
   validatePackedView,
   type GPUCommandGraph,
@@ -12,6 +13,8 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
+import {getSortedSegmentOffsetNodes} from '../../utils/sorted-segment-offsets';
+import {getSortKeyBits} from '../../utils/sorted-segment-sums';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph
@@ -21,6 +24,12 @@ import {type GPUSpatialWeights, validateGPUSpatialWeights} from '../spatial-weig
 
 export const GPU_AZP_MAXIMUM_COLUMNS = 8;
 export const GPU_AZP_MAXIMUM_ITERATIONS = 256;
+/**
+ * Largest supported row count. Each candidate invocation keeps a one-bit-per-row reachability
+ * set in private memory, and WGSL caps private memory at 8192 bytes per shader.
+ */
+const GPU_AZP_MAXIMUM_ROWS = 8192 * 8;
+const AZP_REDUCTION_WORKGROUP_SIZE = 256;
 export const GPU_AZP_STATUS = {
   iterationCount: 0,
   converged: 1,
@@ -66,6 +75,9 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
     this.rowCount = validateGPUSpatialWeights(this.id, props.weights);
     this.columnCount = props.columnCount ?? 1;
     const {id, rowCount, columnCount} = this;
+    if (rowCount > GPU_AZP_MAXIMUM_ROWS) {
+      throw new Error(`${id} supports at most ${GPU_AZP_MAXIMUM_ROWS} rows`);
+    }
     if (
       !Number.isSafeInteger(columnCount) ||
       columnCount < 1 ||
@@ -141,6 +153,7 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       props.optimization.status
     ]);
     const regionStride = columnCount + 1;
+    const reachedWordCount = Math.ceil(rowCount / 32);
     const regions = createTransientView(
       graph,
       `${id}-regions`,
@@ -172,6 +185,18 @@ export class GPUAZPRegions implements GPUCommandNodeProducer {
       `${id}-candidate-data-b`,
       'uint32',
       3 * rowCount
+    );
+    // Rows stably sorted by initial label, so each region's members form one segment in ascending
+    // row order. Labels at or above regionCapacity sort last and belong to no segment.
+    const sortKeys = createTransientView(graph, `${id}-label-sort-keys`, 'uint32', rowCount);
+    const sortIndices = createTransientView(graph, `${id}-label-sort-indices`, 'uint32', rowCount);
+    const sortedKeys = createTransientView(graph, `${id}-label-sorted-keys`, 'uint32', rowCount);
+    const sortedRows = createTransientView(graph, `${id}-label-sorted-rows`, 'uint32', rowCount);
+    const regionOffsets = createTransientView(
+      graph,
+      `${id}-region-offsets`,
+      'uint32',
+      props.regionCapacity + 1
     );
     const declarations = `const ROWS: u32 = ${rowCount}u;
 const COLUMNS: u32 = ${columnCount}u;
@@ -229,7 +254,9 @@ fn regionSum(region: u32, column: u32) -> f32 { return regions[regionsOffset + r
             view: props.optimization.status,
             type: 'atomic<u32>',
             access: 'read_write'
-          }
+          },
+          {name: 'sortKeys', view: sortKeys, type: 'u32', access: 'read_write'},
+          {name: 'sortIndices', view: sortIndices, type: 'u32', access: 'read_write'}
         ],
         declarations: `const ROWS: u32 = ${rowCount}u;
 const COLUMNS: u32 = ${columnCount}u;
@@ -237,6 +264,8 @@ const REGION_CAPACITY: u32 = ${props.regionCapacity}u;
 fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u; }`,
         body: `let region = initialLabels[initialLabelsOffset + index];
   labels[labelsOffset + index] = region;
+  sortKeys[sortKeysOffset + index] = min(region, REGION_CAPACITY);
+  sortIndices[sortIndicesOffset + index] = index;
   var invalidCount = select(0u, 1u, region >= REGION_CAPACITY);
   for (var slot = offsets[offsetsOffset + index]; slot < offsets[offsetsOffset + index + 1u]; slot++) {
     invalidCount += select(0u, 1u, neighbors[neighborsOffset + slot] >= ROWS);
@@ -246,29 +275,48 @@ fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u
   }
   if (invalidCount > 0u) { atomicAdd(&status[statusOffset + 3u], invalidCount); }`
       }),
+      ...new GPUSort({
+        id: `${id}-label-sort`,
+        keys: sortKeys,
+        values: sortIndices,
+        outputKeys: sortedKeys,
+        outputValues: sortedRows,
+        keyBits: getSortKeyBits(props.regionCapacity)
+      }).getCommandNodes(graph),
+      ...getSortedSegmentOffsetNodes<Parameters>(graph, {
+        id: `${id}-regions`,
+        operation: 'GPUAZPRegions',
+        groupCount: props.regionCapacity,
+        sortedGroupKeys: sortedKeys,
+        segmentOffsets: regionOffsets
+      }),
+      // One pass over the rows in total: each region walks only its own segment. The sort is
+      // stable, so every region still sums its members in ascending row order, exactly the float
+      // order of the former full scan per region (the search below depends on exact sums).
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-region-statistics`,
         operation: 'GPUAZPRegions',
-        variant: 'parallel-region-statistics',
+        variant: 'segmented-region-statistics',
         invocationCount: props.regionCapacity,
         bindings: [
-          {name: 'labels', view: props.labels, type: 'u32', access: 'read'},
+          {name: 'sortedRows', view: sortedRows, type: 'u32', access: 'read'},
+          {name: 'regionOffsets', view: regionOffsets, type: 'u32', access: 'read'},
           {name: 'values', view: props.values, type: 'f32', access: 'read'},
           {name: 'regions', view: regions, type: 'f32', access: 'read_write'}
         ],
         declarations,
         body: `let region = index;
   let base = regionsOffset + region * REGION_STRIDE;
-  var count = 0u;
+  let begin = regionOffsets[regionOffsetsOffset + region];
+  let end = regionOffsets[regionOffsetsOffset + region + 1u];
   for (var column = 0u; column < COLUMNS; column++) { regions[base + 1u + column] = 0.0; }
-  for (var row = 0u; row < ROWS; row++) {
-    if (labels[labelsOffset + row] != region) { continue; }
-    count++;
+  for (var position = begin; position < end; position++) {
+    let row = sortedRows[sortedRowsOffset + position];
     for (var column = 0u; column < COLUMNS; column++) {
       regions[base + 1u + column] += values[valuesOffset + row * COLUMNS + column];
     }
   }
-  regions[base] = f32(count);`
+  regions[base] = f32(end - begin);`
       }),
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-objective-rows`,
@@ -372,42 +420,20 @@ fn isFiniteFloat(value: f32) -> bool { return (bitcast<u32>(value) & 0x7f800000u
             {name: 'dataOut', view: candidateDataA, type: 'u32', access: 'read_write'}
           ],
           declarations: `${declarations}
-var<private> reached: array<bool, ${rowCount}>;`,
+// One reachability bit per row: ${reachedWordCount * 4} bytes of private memory per invocation.
+const REACHED_WORDS: u32 = ${reachedWordCount}u;
+var<private> reached: array<u32, ${reachedWordCount}>;
+fn isReached(vertex: u32) -> bool { return (reached[vertex >> 5u] & (1u << (vertex & 31u))) != 0u; }
+fn markReached(vertex: u32) { reached[vertex >> 5u] |= 1u << (vertex & 31u); }`,
           body: `let row = index;
   let source = labels[labelsOffset + row];
   var sourceCount = 0u;
   if (state[stateOffset] == 0u) { sourceCount = regionCount(source); }
-  var connected = sourceCount > MINIMUM_SIZE && state[stateOffset] == 0u;
-  var root = NONE;
-  if (connected) {
-    for (var vertex = 0u; vertex < ROWS; vertex++) {
-      reached[vertex] = false;
-      if (vertex != row && labels[labelsOffset + vertex] == source) { root = min(root, vertex); }
-    }
-    connected = root != NONE;
-  }
-  if (connected) {
-    reached[root] = true;
-    for (var propagation = 0u; propagation < ROWS; propagation++) {
-      var changed = false;
-      for (var vertex = 0u; vertex < ROWS; vertex++) {
-        if (!reached[vertex] || vertex == row || labels[labelsOffset + vertex] != source) { continue; }
-        for (var slot = offsets[offsetsOffset + vertex]; slot < offsets[offsetsOffset + vertex + 1u]; slot++) {
-          let neighbor = neighbors[neighborsOffset + slot];
-          if (neighbor != row && neighbor < ROWS && labels[labelsOffset + neighbor] == source && !reached[neighbor]) {
-            reached[neighbor] = true; changed = true;
-          }
-        }
-      }
-      if (!changed) { break; }
-    }
-    for (var vertex = 0u; vertex < ROWS; vertex++) {
-      if (vertex != row && labels[labelsOffset + vertex] == source && !reached[vertex]) { connected = false; }
-    }
-  }
+  let movable = sourceCount > MINIMUM_SIZE && state[stateOffset] == 0u;
   var bestDelta = LARGE_DELTA;
   var bestDestination = NONE;
-  if (connected) {
+  // Cheap exact delta first: only an improving move pays for the reachability search below.
+  if (movable) {
     for (var slot = offsets[offsetsOffset + row]; slot < offsets[offsetsOffset + row + 1u]; slot++) {
       let neighbor = neighbors[neighborsOffset + slot];
       if (neighbor >= ROWS) { continue; }
@@ -428,6 +454,36 @@ var<private> reached: array<bool, ${rowCount}>;`,
       }
     }
   }
+  if (bestDelta < 0.0) {
+    // Removing this row must leave the rest of the source region connected.
+    var root = NONE;
+    var last = 0u;
+    for (var word = 0u; word < REACHED_WORDS; word++) { reached[word] = 0u; }
+    for (var vertex = 0u; vertex < ROWS; vertex++) {
+      if (vertex != row && labels[labelsOffset + vertex] == source) { root = min(root, vertex); last = vertex; }
+    }
+    var connected = root != NONE;
+    if (connected) {
+      markReached(root);
+      for (var propagation = 0u; propagation < ROWS; propagation++) {
+        var changed = false;
+        for (var vertex = root; vertex <= last; vertex++) {
+          if (!isReached(vertex) || vertex == row || labels[labelsOffset + vertex] != source) { continue; }
+          for (var slot = offsets[offsetsOffset + vertex]; slot < offsets[offsetsOffset + vertex + 1u]; slot++) {
+            let neighbor = neighbors[neighborsOffset + slot];
+            if (neighbor != row && neighbor < ROWS && labels[labelsOffset + neighbor] == source && !isReached(neighbor)) {
+              markReached(neighbor); changed = true;
+            }
+          }
+        }
+        if (!changed) { break; }
+      }
+      for (var vertex = root; vertex <= last; vertex++) {
+        if (vertex != row && labels[labelsOffset + vertex] == source && !isReached(vertex)) { connected = false; }
+      }
+    }
+    if (!connected) { bestDelta = LARGE_DELTA; bestDestination = NONE; }
+  }
   if (bestDelta >= 0.0) { bestDelta = LARGE_DELTA; bestDestination = NONE; }
   deltaOut[deltaOutOffset + row] = bestDelta;
   let base = dataOutOffset + 3u * row;
@@ -444,44 +500,62 @@ var<private> reached: array<bool, ${rowCount}>;`,
       let destinationData = candidateDataB;
       let reduction = 0;
       while (activeCount > 1) {
-        const nextCount = Math.ceil(activeCount / 2);
+        // One 256-lane workgroup argmin per block: log256 instead of log2 dispatches per move.
+        const nextCount = Math.ceil(activeCount / AZP_REDUCTION_WORKGROUP_SIZE);
         nodes.push(
           createWGSLKernelNode<Parameters>(graph, {
             id: `${id}-iteration-${iteration}-reduce-${reduction}`,
             operation: 'GPUAZPRegions',
-            variant: 'deterministic-candidate-reduction',
-            invocationCount: nextCount,
+            variant: 'deterministic-workgroup-candidate-reduction',
+            invocationCount: nextCount * AZP_REDUCTION_WORKGROUP_SIZE,
+            workgroupSize: AZP_REDUCTION_WORKGROUP_SIZE,
+            guardIndex: false,
             bindings: [
               {name: 'deltaIn', view: sourceDelta, type: 'f32', access: 'read'},
               {name: 'dataIn', view: sourceData, type: 'u32', access: 'read'},
               {name: 'deltaOut', view: destinationDelta, type: 'f32', access: 'read_write'},
               {name: 'dataOut', view: destinationData, type: 'u32', access: 'read_write'}
             ],
-            declarations: `const INPUT_COUNT: u32 = ${activeCount}u;`,
-            body: `let left = 2u * index;
-  let right = left + 1u;
-  var winner = left;
-  if (right < INPUT_COUNT) {
-    let leftDelta = deltaIn[deltaInOffset + left];
-    let rightDelta = deltaIn[deltaInOffset + right];
-    let leftBase = dataInOffset + 3u * left;
-    let rightBase = dataInOffset + 3u * right;
-    let leftKey = dataIn[leftBase + 2u];
-    let rightKey = dataIn[rightBase + 2u];
-    let leftRow = dataIn[leftBase];
-    let rightRow = dataIn[rightBase];
-    let leftDestination = dataIn[leftBase + 1u];
-    let rightDestination = dataIn[rightBase + 1u];
-    if (rightDelta < leftDelta || (rightDelta == leftDelta &&
-        (rightKey < leftKey || (rightKey == leftKey &&
-        (rightRow < leftRow || (rightRow == leftRow && rightDestination < leftDestination)))))) { winner = right; }
+            declarations: `const INPUT_COUNT: u32 = ${activeCount}u;
+const WORKGROUP_SIZE: u32 = ${AZP_REDUCTION_WORKGROUP_SIZE}u;
+const NONE: u32 = 0xffffffffu;
+const LARGE_DELTA: f32 = 3.402823466e+38;
+var<workgroup> sharedDelta: array<f32, ${AZP_REDUCTION_WORKGROUP_SIZE}>;
+var<workgroup> sharedData: array<vec4<u32>, ${AZP_REDUCTION_WORKGROUP_SIZE}>;
+// Candidate tuples are (row, destination, key) ordered by delta, key, row, then destination.
+fn isBetter(delta: f32, data: vec4<u32>, bestDelta: f32, best: vec4<u32>) -> bool {
+  return delta < bestDelta || (delta == bestDelta &&
+    (data.z < best.z || (data.z == best.z &&
+    (data.x < best.x || (data.x == best.x && data.y < best.y)))));
+}`,
+            // No early return: every invocation of a workgroup must reach the barriers.
+            body: `let lane = localInvocationIndex;
+  var delta = LARGE_DELTA;
+  var data = vec4<u32>(NONE, NONE, NONE, 0u);
+  if (index < INPUT_COUNT) {
+    let base = dataInOffset + 3u * index;
+    delta = deltaIn[deltaInOffset + index];
+    data = vec4<u32>(dataIn[base], dataIn[base + 1u], dataIn[base + 2u], 0u);
   }
-  deltaOut[deltaOutOffset + index] = deltaIn[deltaInOffset + winner];
-  let sourceBase = dataInOffset + 3u * winner;
-  let destinationBase = dataOutOffset + 3u * index;
-  dataOut[destinationBase] = dataIn[sourceBase];
-  dataOut[destinationBase + 1u] = dataIn[sourceBase + 1u];
-  dataOut[destinationBase + 2u] = dataIn[sourceBase + 2u];`
+  sharedDelta[lane] = delta;
+  sharedData[lane] = data;
+  workgroupBarrier();
+  for (var stride = WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
+    if (lane < stride && isBetter(sharedDelta[lane + stride], sharedData[lane + stride], sharedDelta[lane], sharedData[lane])) {
+      sharedDelta[lane] = sharedDelta[lane + stride];
+      sharedData[lane] = sharedData[lane + stride];
+    }
+    workgroupBarrier();
+  }
+  if (lane == 0u) {
+    let block = index / WORKGROUP_SIZE;
+    let winner = sharedData[0];
+    let destinationBase = dataOutOffset + 3u * block;
+    deltaOut[deltaOutOffset + block] = sharedDelta[0];
+    dataOut[destinationBase] = winner.x;
+    dataOut[destinationBase + 1u] = winner.y;
+    dataOut[destinationBase + 2u] = winner.z;
+  }`
           })
         );
         activeCount = nextCount;

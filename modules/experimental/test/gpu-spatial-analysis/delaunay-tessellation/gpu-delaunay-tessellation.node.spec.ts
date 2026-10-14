@@ -37,6 +37,8 @@ it('tessellation contributors stay within minimum WebGPU storage-binding limits'
   });
   const delaunayNodeIds = delaunay.getCommandNodes(graph).map(node => node.id);
   expect(delaunayNodeIds[0]).toBe('delaunay-tessellation-initialize-status');
+  expect(delaunayNodeIds).toContain('delaunay-tessellation-classify-sites');
+  expect(delaunayNodeIds).toContain('delaunay-tessellation-flag-duplicate-sites');
   expect(delaunayNodeIds).toContain('delaunay-tessellation-site-0-cavity');
   expect(delaunayNodeIds).toContain('delaunay-tessellation-site-7-rebuild');
   expect(delaunayNodeIds).toContain('delaunay-tessellation-compact-output-scatter');
@@ -62,6 +64,8 @@ it('tessellation contributors stay within minimum WebGPU storage-binding limits'
   const voronoiNodeIds = voronoi.getCommandNodes(graph).map(node => node.id);
   expect(voronoiNodeIds[0]).toBe('voronoi-diagram-initialize');
   expect(voronoiNodeIds).toContain('voronoi-diagram-circumcenters');
+  expect(voronoiNodeIds).toContain('voronoi-diagram-edge-keys');
+  expect(voronoiNodeIds).toContain('voronoi-diagram-classify-edges');
   expect(voronoiNodeIds).toContain('voronoi-diagram-compact-edges-scatter');
   expect(voronoiNodeIds).toContain('voronoi-diagram-materialize');
   expect(voronoiNodeIds.at(-1)).toBe('voronoi-diagram-publish-status');

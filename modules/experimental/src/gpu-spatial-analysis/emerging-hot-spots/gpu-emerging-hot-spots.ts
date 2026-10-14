@@ -30,7 +30,6 @@ import {
 } from './emerging-hot-spot-parameters';
 
 const OPERATION = 'GPUEmergingHotSpots';
-/** Bins reduced by one invocation in the first level of the deterministic global sums. */
 /** Bins reduced by one workgroup in the first level of the moment sums. */
 const BIN_BLOCK = 4096;
 /** Threads of the moment-sum workgroups. */

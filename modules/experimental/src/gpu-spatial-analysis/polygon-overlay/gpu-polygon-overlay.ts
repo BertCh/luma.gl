@@ -436,6 +436,26 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
     const rightMembership = right
       ? createTransientView(graph, `${id}-right-membership`, 'uint32', props.capacity.nodedSegments)
       : undefined;
+    // Per-ring [minY, maxY] extents let the membership ray cast skip rings a probe cannot cross.
+    const leftRingBounds = createTransientView(
+      graph,
+      `${id}-left-ring-bounds`,
+      'float32',
+      leftRingCount * 2
+    );
+    nodes.push(this._createRingBoundsNode(graph, 'left', left, leftRingBounds, leftRingCount));
+    let rightRingBounds: GraphDataView<'float32'> | undefined;
+    if (right) {
+      rightRingBounds = createTransientView(
+        graph,
+        `${id}-right-ring-bounds`,
+        'float32',
+        rightRingCount * 2
+      );
+      nodes.push(
+        this._createRingBoundsNode(graph, 'right', right, rightRingBounds, rightRingCount)
+      );
+    }
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-left-membership`,
@@ -447,6 +467,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
           {name: 'positions', view: left.positions, type: 'f32', access: 'read'},
           {name: 'polygonOffsets', view: left.polygonOffsets, type: 'u32', access: 'read'},
           {name: 'ringOffsets', view: left.ringOffsets, type: 'u32', access: 'read'},
+          {name: 'ringBounds', view: leftRingBounds, type: 'f32', access: 'read'},
           {name: 'membership', view: leftMembership, type: 'u32', access: 'read_write'}
         ],
         invocationCount: props.capacity.nodedSegments,
@@ -469,7 +490,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
   membership[membershipOffset + index] = value;`
       })
     );
-    if (right && rightMembership) {
+    if (right && rightMembership && rightRingBounds) {
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-right-membership`,
@@ -481,6 +502,7 @@ const RIGHT_POLYGON_COUNT: u32 = ${right ? right.polygonOffsets.length - 1 : 0}u
             {name: 'positions', view: right.positions, type: 'f32', access: 'read'},
             {name: 'polygonOffsets', view: right.polygonOffsets, type: 'u32', access: 'read'},
             {name: 'ringOffsets', view: right.ringOffsets, type: 'u32', access: 'read'},
+            {name: 'ringBounds', view: rightRingBounds, type: 'f32', access: 'read'},
             {name: 'membership', view: rightMembership, type: 'u32', access: 'read_write'}
           ],
           invocationCount: props.capacity.nodedSegments,
@@ -751,6 +773,39 @@ const NONE: u32 = ${GPU_TOPOLOGY_NONE}u;`,
     return nodes;
   }
 
+  private _createRingBoundsNode<Parameters>(
+    graph: GPUCommandGraph<Parameters>,
+    side: 'left' | 'right',
+    polygons: PackedPolygons,
+    bounds: GraphDataView<'float32'>,
+    ringCount: number
+  ): GPUCommandNode<Parameters> {
+    return createWGSLKernelNode<Parameters>(graph, {
+      id: `${this.id}-${side}-ring-bounds`,
+      operation: OPERATION,
+      variant: `${side}-ring-bounds`,
+      bindings: [
+        {name: 'positions', view: polygons.positions, type: 'f32', access: 'read'},
+        {name: 'ringOffsets', view: polygons.ringOffsets, type: 'u32', access: 'read'},
+        {name: 'bounds', view: bounds, type: 'f32', access: 'read_write'}
+      ],
+      invocationCount: Math.max(1, ringCount),
+      declarations: `const RING_COUNT: u32 = ${ringCount}u;`,
+      body: `if (index >= RING_COUNT) { return; }
+  let begin = ringOffsets[ringOffsetsOffset + index];
+  let end = ringOffsets[ringOffsetsOffset + index + 1u];
+  var lowY = 3.4e38;
+  var highY = -3.4e38;
+  for (var row = begin; row < end; row++) {
+    let y = positions[positionsOffset + row * 2u + 1u];
+    lowY = min(lowY, y);
+    highY = max(highY, y);
+  }
+  bounds[boundsOffset + index * 2u] = lowY;
+  bounds[boundsOffset + index * 2u + 1u] = highY;`
+    });
+  }
+
   private _createNodedPort<Parameters>(graph: GPUCommandGraph<Parameters>): GPUNodedSegmentPort {
     const {id, props} = this;
     const rows = props.capacity.nodedSegments;
@@ -800,7 +855,10 @@ fn insidePolygons(point: vec2f) -> bool {
       let begin = ringOffsets[ringOffsetsOffset + ring];
       let end = ringOffsets[ringOffsetsOffset + ring + 1u];
       var inside = false;
-      if (end > begin + 2u) {
+      let lowY = ringBounds[ringBoundsOffset + ring * 2u];
+      let highY = ringBounds[ringBoundsOffset + ring * 2u + 1u];
+      // A probe outside the ring's y extent cannot toggle the crossing parity.
+      if (end > begin + 2u && point.y >= lowY && point.y < highY) {
         var previous = end - 1u;
         for (var row = begin; row < end; row++) {
           let a = vec2f(positions[positionsOffset + previous * 2u], positions[positionsOffset + previous * 2u + 1u]);
@@ -812,7 +870,13 @@ fn insidePolygons(point: vec2f) -> bool {
           previous = row;
         }
       }
-      if (ring == firstRing) { inShell = inside; } else if (inside) { inHole = true; }
+      if (ring == firstRing) {
+        inShell = inside;
+        if (!inShell) { break; }
+      } else if (inside) {
+        inHole = true;
+        break;
+      }
     }
     if (inShell && !inHole) { return true; }
   }

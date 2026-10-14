@@ -56,6 +56,8 @@ export type GPUCellTableCompareOutput = {
   cells: GraphDataView<'uint32x2'>;
   /** Per cell: bit 1 (`GPU_CELL_COMPARE_PRESENT_BEFORE`) in `before`, bit 2 in `after`. */
   presence?: GraphDataView<'uint32'>;
+  /** Per cell: 1 for a union row below `count`, 0 for the empty tail. Same length as `cells`. */
+  mask?: GraphDataView<'uint32'>;
   /** Measure in the `before` table, 0 when absent. */
   before?: GraphDataView<'float32'>;
   /** Measure in the `after` table, 0 when absent. */
@@ -170,6 +172,9 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     if (output.presence) {
       validatePackedUint32View(output.presence, `${id} output.presence`);
     }
+    if (output.mask) {
+      validatePackedUint32View(output.mask, `${id} output.mask`);
+    }
     for (const name of ['before', 'after', 'delta', 'ratio', 'percentChange', 'zScore'] as const) {
       const view = output[name];
       if (view) {
@@ -178,6 +183,7 @@ export class GPUCellTableCompare implements GPUCommandNodeProducer {
     }
     for (const name of [
       'presence',
+      'mask',
       'before',
       'after',
       'delta',
@@ -530,7 +536,8 @@ ${ORDERED_KEY_WGSL}`,
           read('afterRows', afterRows),
           read('total', total),
           write('cellsOut', output.cells),
-          ...(output.presence ? [write('presenceOut', output.presence)] : [])
+          ...(output.presence ? [write('presenceOut', output.presence)] : []),
+          ...(output.mask ? [write('maskOut', output.mask)] : [])
         ],
         invocationCount: capacity,
         declarations: `const CAPACITY: u32 = ${capacity}u;
@@ -539,8 +546,10 @@ const NO_ROW: u32 = 0xffffffffu;`,
     cellsOut[cellsOutOffset + 2u * index] = 0xffffffffu;
     cellsOut[cellsOutOffset + 2u * index + 1u] = 0xffffffffu;
     ${output.presence ? 'presenceOut[presenceOutOffset + index] = 0u;' : ''}
+    ${output.mask ? 'maskOut[maskOutOffset + index] = 0u;' : ''}
     return;
   }
+  ${output.mask ? 'maskOut[maskOutOffset + index] = 1u;' : ''}
   ${
     output.presence
       ? `presenceOut[presenceOutOffset + index] =
@@ -575,6 +584,7 @@ function getOutputViews(output: GPUCellTableCompareOutput): (GraphDataView | und
   return [
     output.cells,
     output.presence,
+    output.mask,
     output.before,
     output.after,
     output.delta,

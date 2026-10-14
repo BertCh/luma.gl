@@ -13,10 +13,282 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
+import {createStableLexicographicIndexSortNodes} from '../../utils/stable-lexicographic-index-sort';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {validateGPUStatusPort, type GPUBoundedResultStatusPort} from '../contracts/status';
+import {EXACT_ORIENTATION_WGSL} from '../segment-intersection/exact-orientation-wgsl';
 
 const OPERATION = 'GPUDelaunayTessellation';
+const REBUILD_WORKGROUP_SIZE = 256;
+/** Sort key for non-finite sites: a NaN bit pattern, which no finite coordinate key can equal. */
+const SITE_KEY_WGSL = /* wgsl */ `const INVALID_SITE_KEY: u32 = 0xffffffffu;`;
+const REBUILD_SCAN_WGSL = /* wgsl */ `
+const REBUILD_WORKGROUP_SIZE: u32 = ${REBUILD_WORKGROUP_SIZE}u;
+var<workgroup> scanValues: array<u32, ${REBUILD_WORKGROUP_SIZE}>;
+var<workgroup> rebuildFailed: u32;
+var<workgroup> rebuildOldCount: u32;
+var<workgroup> rebuildRow: u32;
+var<workgroup> rebuildDuplicate: u32;
+// Hillis-Steele inclusive scan; the total is left in scanValues[REBUILD_WORKGROUP_SIZE - 1].
+fn inclusiveScan(lane: u32, value: u32) -> u32 {
+  workgroupBarrier();
+  scanValues[lane] = value;
+  workgroupBarrier();
+  for (var stride = 1u; stride < REBUILD_WORKGROUP_SIZE; stride = stride << 1u) {
+    var addend = 0u;
+    if (lane >= stride) { addend = scanValues[lane - stride]; }
+    workgroupBarrier();
+    scanValues[lane] = scanValues[lane] + addend;
+    workgroupBarrier();
+  }
+  return scanValues[lane];
+}`;
+
+/**
+ * Adaptive-exact incircle predicate. `inCircumcircle(a, b, c, point)` is true when `point` lies
+ * inside or exactly on the circumcircle of the counter-clockwise triangle `abc`.
+ *
+ * A float filter decides clear cases. Its bound, 1e-6 (about 16.8 f32 epsilons) times the
+ * permanent, covers the roughly 11 epsilons of Shewchuk's incircle analysis with margin. The
+ * analysis assumes each operation is rounded at most once. A fused multiply-add rounds less often,
+ * and the three-term sum may be reassociated, so neither can invalidate the bound. Inputs that
+ * could underflow fall through to the exact path: nonzero coordinates below 2^-30, or a permanent
+ * below 2^-90. Overflow makes the bound infinite or the determinant NaN, and also falls through.
+ *
+ * The exact path aligns the eight coordinates to the smallest exponent, which makes them integers
+ * of at most 79 bits. It then evaluates the determinant of exact coordinate differences in 16-bit
+ * limb integer arithmetic, with sign-magnitude terms and separate positive and negative
+ * accumulators. Integer arithmetic is used for the same reason as `exact-orientation-wgsl.ts`:
+ * shader compilers may contract or reassociate float error-free transforms. When the coordinate
+ * exponents span more than 55 bits, or a coordinate is not finite, the exact path returns 2 and
+ * the caller uses the float sign.
+ */
+const ADAPTIVE_INCIRCLE_WGSL = /* wgsl */ `
+const INCIRCLE_FILTER_BOUND: f32 = 1.0e-6;
+// 2^-30: nonzero coordinates below this could underflow the float filter.
+const INCIRCLE_TINY_COORDINATE: f32 = 9.313225746154785e-10;
+// 2^-90: below this permanent, underflow error could exceed the filter slack.
+const INCIRCLE_MINIMUM_PERMANENT: f32 = 8.077935669463161e-28;
+const INCIRCLE_MAXIMUM_SPAN: i32 = 55;
+// Workspace layout in 16-bit limbs: six 5-limb differences, two 11-limb scratch values, an
+// 11-limb lift, an 11-limb minor, a 22-limb product, and 22-limb positive and negative sums.
+const INCIRCLE_DIFFERENCES: u32 = 0u;
+const INCIRCLE_SCRATCH_A: u32 = 30u;
+const INCIRCLE_SCRATCH_B: u32 = 41u;
+const INCIRCLE_LIFT: u32 = 52u;
+const INCIRCLE_MINOR: u32 = 63u;
+const INCIRCLE_PRODUCT: u32 = 74u;
+const INCIRCLE_POSITIVE: u32 = 96u;
+const INCIRCLE_NEGATIVE: u32 = 118u;
+const INCIRCLE_WORKSPACE_LIMBS: u32 = 140u;
+
+fn incircleCopy(work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, destination: u32, source: u32, limbs: u32) {
+  for (var limb = 0u; limb < limbs; limb++) { (*work)[destination + limb] = (*work)[source + limb]; }
+}
+
+// destination += source over limbs; callers guarantee the sum fits.
+fn incircleAdd(work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, destination: u32, source: u32, limbs: u32) {
+  var carry = 0u;
+  for (var limb = 0u; limb < limbs; limb++) {
+    let sum = (*work)[destination + limb] + (*work)[source + limb] + carry;
+    (*work)[destination + limb] = sum & 0xffffu;
+    carry = sum >> 16u;
+  }
+}
+
+// destination -= source over limbs; callers guarantee destination >= source.
+fn incircleSubtract(work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, destination: u32, source: u32, limbs: u32) {
+  var borrow = 0u;
+  for (var limb = 0u; limb < limbs; limb++) {
+    let difference = (*work)[destination + limb] + 0x10000u - (*work)[source + limb] - borrow;
+    (*work)[destination + limb] = difference & 0xffffu;
+    borrow = 1u - (difference >> 16u);
+  }
+}
+
+fn incircleCompare(work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, firstOffset: u32, secondOffset: u32, limbs: u32) -> i32 {
+  for (var limb = limbs; limb > 0u; limb--) {
+    let left = (*work)[firstOffset + limb - 1u];
+    let right = (*work)[secondOffset + limb - 1u];
+    if (left != right) { return select(-1, 1, left > right); }
+  }
+  return 0;
+}
+
+// destination[0, leftLimbs + rightLimbs) = left * right; destination must not overlap either
+// factor. Limbs stay below 2^16 after each row and the running carry is at most 2^16, so no
+// u32 operation overflows.
+fn incircleMultiply(
+  work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>,
+  destination: u32, leftOffset: u32, leftLimbs: u32, rightOffset: u32, rightLimbs: u32
+) {
+  for (var limb = 0u; limb < leftLimbs + rightLimbs; limb++) { (*work)[destination + limb] = 0u; }
+  for (var i = 0u; i < leftLimbs; i++) {
+    let leftLimb = (*work)[leftOffset + i];
+    if (leftLimb != 0u) {
+      var carry = 0u;
+      for (var j = 0u; j < rightLimbs; j++) {
+        let product = leftLimb * (*work)[rightOffset + j];
+        let sum = (*work)[destination + i + j] + (product & 0xffffu) + carry;
+        (*work)[destination + i + j] = sum & 0xffffu;
+        carry = (sum >> 16u) + (product >> 16u);
+      }
+      (*work)[destination + i + rightLimbs] = carry;
+    }
+  }
+}
+
+// Writes |value| * 2^-minimumExponent as a 5-limb integer.
+fn incircleLoadMagnitude(
+  work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, destination: u32, valueBits: u32, alignmentExponent: i32
+) {
+  let absoluteBits = valueBits & 0x7fffffffu;
+  let biasedExponent = absoluteBits >> 23u;
+  let significand = select(0x800000u | (absoluteBits & 0x7fffffu), absoluteBits, biasedExponent == 0u);
+  let shift = select(i32(biasedExponent) - 150, -149, biasedExponent == 0u) - alignmentExponent;
+  for (var limb = 0u; limb < 5u; limb++) {
+    let relative = 16 * i32(limb) - shift;
+    var value = 0u;
+    if (relative >= 0 && relative < 24) {
+      value = significand >> u32(relative);
+    } else if (relative < 0 && relative > -16) {
+      value = significand << u32(-relative);
+    }
+    (*work)[destination + limb] = value & 0xffffu;
+  }
+}
+
+// Writes |first - second| into difference slot and returns whether it is negative.
+fn incircleDifference(
+  work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>, slot: u32, first: u32, second: u32, alignmentExponent: i32
+) -> bool {
+  let differenceOffset = INCIRCLE_DIFFERENCES + 5u * slot;
+  incircleLoadMagnitude(work, INCIRCLE_SCRATCH_A, first, alignmentExponent);
+  incircleLoadMagnitude(work, INCIRCLE_SCRATCH_B, second, alignmentExponent);
+  let firstNegative = (first >> 31u) == 1u;
+  let secondNegative = (second >> 31u) == 1u;
+  if (firstNegative != secondNegative) {
+    incircleCopy(work, differenceOffset, INCIRCLE_SCRATCH_A, 5u);
+    incircleAdd(work, differenceOffset, INCIRCLE_SCRATCH_B, 5u);
+    return firstNegative;
+  }
+  if (incircleCompare(work, INCIRCLE_SCRATCH_A, INCIRCLE_SCRATCH_B, 5u) >= 0) {
+    incircleCopy(work, differenceOffset, INCIRCLE_SCRATCH_A, 5u);
+    incircleSubtract(work, differenceOffset, INCIRCLE_SCRATCH_B, 5u);
+    return firstNegative;
+  }
+  incircleCopy(work, differenceOffset, INCIRCLE_SCRATCH_B, 5u);
+  incircleSubtract(work, differenceOffset, INCIRCLE_SCRATCH_A, 5u);
+  return !firstNegative;
+}
+
+// Adds sign * lift(x, y) * (p * q - r * t) for difference slots to the exact sums.
+fn incircleAccumulateRow(
+  work: ptr<function, array<u32, INCIRCLE_WORKSPACE_LIMBS>>,
+  negatives: ptr<function, array<u32, 6>>,
+  x: u32, y: u32, p: u32, q: u32, r: u32, t: u32, rowNegative: bool
+) {
+  let differences = INCIRCLE_DIFFERENCES;
+  incircleMultiply(work, INCIRCLE_SCRATCH_A, differences + 5u * x, 5u, differences + 5u * x, 5u);
+  incircleMultiply(work, INCIRCLE_SCRATCH_B, differences + 5u * y, 5u, differences + 5u * y, 5u);
+  (*work)[INCIRCLE_SCRATCH_A + 10u] = 0u;
+  (*work)[INCIRCLE_SCRATCH_B + 10u] = 0u;
+  incircleCopy(work, INCIRCLE_LIFT, INCIRCLE_SCRATCH_A, 11u);
+  incircleAdd(work, INCIRCLE_LIFT, INCIRCLE_SCRATCH_B, 11u);
+
+  incircleMultiply(work, INCIRCLE_SCRATCH_A, differences + 5u * p, 5u, differences + 5u * q, 5u);
+  incircleMultiply(work, INCIRCLE_SCRATCH_B, differences + 5u * r, 5u, differences + 5u * t, 5u);
+  (*work)[INCIRCLE_SCRATCH_A + 10u] = 0u;
+  (*work)[INCIRCLE_SCRATCH_B + 10u] = 0u;
+  let firstNegative = ((*negatives)[p] ^ (*negatives)[q]) == 1u;
+  let secondNegative = ((*negatives)[r] ^ (*negatives)[t]) == 1u;
+  var minorNegative = firstNegative;
+  if (firstNegative != secondNegative) {
+    incircleCopy(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_A, 11u);
+    incircleAdd(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_B, 11u);
+  } else if (incircleCompare(work, INCIRCLE_SCRATCH_A, INCIRCLE_SCRATCH_B, 11u) >= 0) {
+    incircleCopy(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_A, 11u);
+    incircleSubtract(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_B, 11u);
+  } else {
+    incircleCopy(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_B, 11u);
+    incircleSubtract(work, INCIRCLE_MINOR, INCIRCLE_SCRATCH_A, 11u);
+    minorNegative = !firstNegative;
+  }
+
+  incircleMultiply(work, INCIRCLE_PRODUCT, INCIRCLE_LIFT, 11u, INCIRCLE_MINOR, 11u);
+  if (minorNegative != rowNegative) {
+    incircleAdd(work, INCIRCLE_NEGATIVE, INCIRCLE_PRODUCT, 22u);
+  } else {
+    incircleAdd(work, INCIRCLE_POSITIVE, INCIRCLE_PRODUCT, 22u);
+  }
+}
+
+// Exact sign of the incircle determinant: -1, 0 or 1, or 2 when it cannot be evaluated.
+fn incircleExact(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, point: vec2<f32>) -> i32 {
+  var bits = array<u32, 8>(
+    bitcast<u32>(a.x), bitcast<u32>(a.y), bitcast<u32>(b.x), bitcast<u32>(b.y),
+    bitcast<u32>(c.x), bitcast<u32>(c.y), bitcast<u32>(point.x), bitcast<u32>(point.y));
+  var minimumExponent: i32 = 100000;
+  var maximumExponent: i32 = -100000;
+  for (var coordinate = 0u; coordinate < 8u; coordinate++) {
+    let magnitude = bits[coordinate] & 0x7fffffffu;
+    if (magnitude >= 0x7f800000u) { return 2; }
+    if (magnitude != 0u) {
+      let exponentBits = magnitude >> 23u;
+      let exponent = select(i32(exponentBits) - 150, -149, exponentBits == 0u);
+      minimumExponent = min(minimumExponent, exponent);
+      maximumExponent = max(maximumExponent, exponent);
+    }
+  }
+  if (minimumExponent > maximumExponent) { return 0; }
+  // Aligned coordinates have at most 24 + 55 = 79 bits, so differences fit 5 limbs, lifts and
+  // minors 11 limbs, and the three 322-bit terms 22 limbs.
+  if (maximumExponent - minimumExponent > INCIRCLE_MAXIMUM_SPAN) { return 2; }
+  var work: array<u32, INCIRCLE_WORKSPACE_LIMBS>;
+  // Sign bits of the six differences, 1 when negative.
+  var negatives: array<u32, 6>;
+  for (var slot = 0u; slot < 6u; slot++) {
+    let negative = incircleDifference(&work, slot, bits[slot], bits[6u + (slot & 1u)], minimumExponent);
+    negatives[slot] = select(0u, 1u, negative);
+  }
+  // Slots: 0 adx, 1 ady, 2 bdx, 3 bdy, 4 cdx, 5 cdy, all relative to point.
+  // alift * (bdx cdy - cdx bdy) - blift * (adx cdy - cdx ady) + clift * (adx bdy - bdx ady)
+  incircleAccumulateRow(&work, &negatives, 0u, 1u, 2u, 5u, 4u, 3u, false);
+  incircleAccumulateRow(&work, &negatives, 2u, 3u, 0u, 5u, 4u, 1u, true);
+  incircleAccumulateRow(&work, &negatives, 4u, 5u, 0u, 3u, 2u, 1u, false);
+  return incircleCompare(&work, INCIRCLE_POSITIVE, INCIRCLE_NEGATIVE, 22u);
+}
+
+fn inCircumcircle(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, point: vec2<f32>) -> bool {
+  let av = a - point;
+  let bv = b - point;
+  let cv = c - point;
+  let bcLeft = bv.x * cv.y;
+  let bcRight = cv.x * bv.y;
+  let caLeft = cv.x * av.y;
+  let caRight = av.x * cv.y;
+  let abLeft = av.x * bv.y;
+  let abRight = bv.x * av.y;
+  let aLift = av.x * av.x + av.y * av.y;
+  let bLift = bv.x * bv.x + bv.y * bv.y;
+  let cLift = cv.x * cv.x + cv.y * cv.y;
+  let determinant = aLift * (bcLeft - bcRight) + bLift * (caLeft - caRight) + cLift * (abLeft - abRight);
+  let permanent = (abs(bcLeft) + abs(bcRight)) * aLift + (abs(caLeft) + abs(caRight)) * bLift +
+    (abs(abLeft) + abs(abRight)) * cLift;
+  let first = vec4<f32>(a, b);
+  let second = vec4<f32>(c, point);
+  let tiny = any((abs(first) < vec4<f32>(INCIRCLE_TINY_COORDINATE)) & (first != vec4<f32>(0.0))) ||
+    any((abs(second) < vec4<f32>(INCIRCLE_TINY_COORDINATE)) & (second != vec4<f32>(0.0)));
+  if (!tiny && permanent >= INCIRCLE_MINIMUM_PERMANENT) {
+    let bound = INCIRCLE_FILTER_BOUND * permanent;
+    if (determinant > bound) { return true; }
+    if (-determinant > bound) { return false; }
+  }
+  let exact = incircleExact(a, b, c, point);
+  // Unrepresentable inputs (non-finite or exponent span over 55 bits) keep the float sign.
+  if (exact == 2) { return determinant >= 0.0; }
+  return exact >= 0;
+}`;
 
 /** Bounded Delaunay triangles and their exact completeness status. */
 export type GPUDelaunayTessellationOutput = {
@@ -52,7 +324,8 @@ export function getDelaunayMaximumTriangleCount(pointCount: number): number {
  * One bounded Bowyer-Watson invocation performs the topology update while applications obtain
  * throughput by placing independent point sets in separate graphs. Exact duplicate coordinates use
  * first-row ownership. Collinear inputs produce zero triangles. Cocircular sites are accepted into
- * the current cavity, making the selected diagonal stable for a fixed input order. The output is
+ * the current cavity, making the selected diagonal stable for a fixed input order. Orientation and
+ * incircle tests are adaptive exact, so near-degenerate input cannot break the topology. The output is
  * capacity bounded, but `status.requiredCount` always reports the exact final triangle count.
  *
  * This contributor deliberately accepts one packed point set: partitioned inputs must select seam
@@ -113,7 +386,15 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
       'uint32',
       4 * scratchTriangleCapacity
     );
-    const state = createTransientView(graph, `${id}-state`, 'uint32', 2);
+    // [triangleCount, failed, cavityTriangleCount, nextInsertionRow]. The insertion row lives in GPU
+    // state so every site's kernels share one WGSL source and compile once instead of n times.
+    const state = createTransientView(graph, `${id}-state`, 'uint32', 4);
+    const cavityTriangleIds = createTransientView(
+      graph,
+      `${id}-cavity-triangle-ids`,
+      'uint32',
+      scratchTriangleCapacity
+    );
     const bounds = createTransientView(graph, `${id}-bounds`, 'float32', 4);
     const duplicateFlags = createTransientView(
       graph,
@@ -156,6 +437,10 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
     const duplicateCount =
       output.duplicateCount ?? createTransientView(graph, `${id}-duplicate-count`, 'uint32', 1);
     const sharedDeclarations = getDelaunayCoreWGSL({pointCount, scratchTriangleCapacity});
+    const cavityDeclarations = `${sharedDeclarations}
+${ADAPTIVE_INCIRCLE_WGSL}`;
+    const orientationDeclarations = `${sharedDeclarations}
+${EXACT_ORIENTATION_WGSL}`;
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-initialize-status`,
@@ -169,11 +454,24 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
         invocationCount: 1,
         body: `state[stateOffset] = 0u;
   state[stateOffset + 1u] = 0u;
+  state[stateOffset + 2u] = 0u;
+  state[stateOffset + 3u] = 0u;
   invalidCount[invalidCountOffset] = 0u;
   duplicateCount[duplicateCountOffset] = 0u;`
       })
     ];
     if (pointCount > 0) {
+      // Exact duplicate detection by sorting coordinate bit patterns: equal sites become adjacent,
+      // and the stable sort over identity row ids puts the owning (lowest) row first in each run.
+      const siteRows = createTransientView(graph, `${id}-site-rows`, 'uint32', pointCount);
+      const siteXKeys = createTransientView(graph, `${id}-site-x-keys`, 'uint32', pointCount);
+      const siteYKeys = createTransientView(graph, `${id}-site-y-keys`, 'uint32', pointCount);
+      const siteSort = createStableLexicographicIndexSortNodes<Parameters>(graph, {
+        id: `${id}-site-sort`,
+        operation: OPERATION,
+        indices: siteRows,
+        keys: [{view: siteXKeys}, {view: siteYKeys}]
+      });
       nodes.push(
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-classify-sites`,
@@ -181,8 +479,39 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
           variant: 'parallel-site-validation',
           bindings: [
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
+            {name: 'siteRows', view: siteRows, type: 'u32', access: 'read_write'},
+            {name: 'siteXKeys', view: siteXKeys, type: 'u32', access: 'read_write'},
+            {name: 'siteYKeys', view: siteYKeys, type: 'u32', access: 'read_write'},
+            {name: 'invalidCount', view: invalidCount, type: 'atomic<u32>', access: 'read_write'}
+          ],
+          invocationCount: pointCount,
+          declarations: `${SITE_KEY_WGSL}
+fn isFiniteCoordinate(value: f32) -> bool {
+  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
+}
+// Float equality, not bit equality, decides duplicates: -0 and +0 share one key.
+fn coordinateKey(value: f32) -> u32 {
+  return select(bitcast<u32>(value), 0u, value == 0.0);
+}`,
+          body: `let base = positionsOffset + 2u * index;
+  let point = vec2<f32>(positions[base], positions[base + 1u]);
+  let valid = isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y);
+  if (!valid) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }
+  siteRows[siteRowsOffset + index] = index;
+  // Non-finite rows take a NaN bit pattern that no finite key equals, so they never pair.
+  siteXKeys[siteXKeysOffset + index] = select(INVALID_SITE_KEY, coordinateKey(point.x), valid);
+  siteYKeys[siteYKeysOffset + index] = select(INVALID_SITE_KEY, coordinateKey(point.y), valid);`
+        }),
+        ...siteSort.nodes,
+        createWGSLKernelNode<Parameters>(graph, {
+          id: `${id}-flag-duplicate-sites`,
+          operation: OPERATION,
+          variant: 'sorted-duplicate-sites',
+          bindings: [
+            {name: 'sortedRows', view: siteSort.sortedIndices, type: 'u32', access: 'read'},
+            {name: 'sortedXKeys', view: siteSort.sortedPrimaryKeys, type: 'u32', access: 'read'},
+            {name: 'siteYKeys', view: siteYKeys, type: 'u32', access: 'read'},
             {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read_write'},
-            {name: 'invalidCount', view: invalidCount, type: 'atomic<u32>', access: 'read_write'},
             {
               name: 'duplicateCount',
               view: duplicateCount,
@@ -191,24 +520,16 @@ export class GPUDelaunayTessellation implements GPUCommandNodeProducer {
             }
           ],
           invocationCount: pointCount,
-          declarations: `const POINT_COUNT: u32 = ${pointCount}u;
-fn isFiniteCoordinate(value: f32) -> bool {
-  return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
-}`,
-          body: `let base = positionsOffset + 2u * index;
-  let point = vec2<f32>(positions[base], positions[base + 1u]);
-  let valid = isFiniteCoordinate(point.x) && isFiniteCoordinate(point.y);
-  if (!valid) { atomicAdd(&invalidCount[invalidCountOffset], 1u); }
+          declarations: SITE_KEY_WGSL,
+          body: `let row = sortedRows[sortedRowsOffset + index];
+  let xKey = sortedXKeys[sortedXKeysOffset + index];
   var duplicate = false;
-  if (valid) {
-    for (var earlier = 0u; earlier < index; earlier++) {
-      let earlierBase = positionsOffset + 2u * earlier;
-      if (positions[earlierBase] == point.x && positions[earlierBase + 1u] == point.y) {
-        duplicate = true; break;
-      }
-    }
+  if (index > 0u && xKey != INVALID_SITE_KEY) {
+    let previousRow = sortedRows[sortedRowsOffset + index - 1u];
+    duplicate = sortedXKeys[sortedXKeysOffset + index - 1u] == xKey &&
+      siteYKeys[siteYKeysOffset + previousRow] == siteYKeys[siteYKeysOffset + row];
   }
-  duplicateFlags[duplicateFlagsOffset + index] = select(0u, 1u, duplicate);
+  duplicateFlags[duplicateFlagsOffset + row] = select(0u, 1u, duplicate);
   if (duplicate) { atomicAdd(&duplicateCount[duplicateCountOffset], 1u); }`
         })
       );
@@ -258,22 +579,28 @@ fn isFiniteCoordinate(value: f32) -> bool {
             {name: 'positions', view: props.positions, type: 'f32', access: 'read'},
             {name: 'bounds', view: bounds, type: 'f32', access: 'read'},
             {name: 'triangles', view: sourceTriangles, type: 'u32', access: 'read'},
-            {name: 'state', view: state, type: 'u32', access: 'read'},
+            {name: 'state', view: state, type: 'atomic<u32>', access: 'read_write'},
             {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read'},
-            {name: 'badFlags', view: badFlags, type: 'u32', access: 'read_write'}
+            {name: 'badFlags', view: badFlags, type: 'u32', access: 'read_write'},
+            {name: 'cavityTriangleIds', view: cavityTriangleIds, type: 'u32', access: 'read_write'}
           ],
           invocationCount: scratchTriangleCapacity,
-          declarations: `${sharedDeclarations}
-const INSERTION_ROW: u32 = ${pointRow}u;`,
+          declarations: cavityDeclarations,
           body: `var bad = false;
-  if (index < state[stateOffset] && state[stateOffset + 1u] == 0u && duplicateFlags[duplicateFlagsOffset + INSERTION_ROW] == 0u) {
-    let point = pointAt(INSERTION_ROW);
+  let insertionRow = atomicLoad(&state[stateOffset + 3u]);
+  if (index < atomicLoad(&state[stateOffset]) && atomicLoad(&state[stateOffset + 1u]) == 0u && duplicateFlags[duplicateFlagsOffset + insertionRow] == 0u) {
+    let point = pointAt(insertionRow);
     let a = pointAt(triangleVertex(index, 0u));
     let b = pointAt(triangleVertex(index, 1u));
     let c = pointAt(triangleVertex(index, 2u));
     bad = inCircumcircle(a, b, c, point);
   }
-  badFlags[badFlagsOffset + index] = select(0u, 1u, bad);`
+  badFlags[badFlagsOffset + index] = select(0u, 1u, bad);
+  if (bad) {
+    // Compact list of cavity triangles so boundary detection scans O(cavity), not O(triangles).
+    let slot = atomicAdd(&state[stateOffset + 2u], 1u);
+    cavityTriangleIds[cavityTriangleIdsOffset + slot] = index;
+  }`
         }),
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-site-${pointRow}-boundary`,
@@ -285,26 +612,30 @@ const INSERTION_ROW: u32 = ${pointRow}u;`,
             {name: 'triangles', view: sourceTriangles, type: 'u32', access: 'read'},
             {name: 'state', view: state, type: 'u32', access: 'read'},
             {name: 'badFlags', view: badFlags, type: 'u32', access: 'read'},
-            {name: 'boundaryFlags', view: boundaryFlags, type: 'u32', access: 'read_write'}
+            {name: 'boundaryFlags', view: boundaryFlags, type: 'u32', access: 'read_write'},
+            {name: 'cavityTriangleIds', view: cavityTriangleIds, type: 'u32', access: 'read'}
           ],
           invocationCount: 3 * scratchTriangleCapacity,
-          declarations: `${sharedDeclarations}
-const INSERTION_ROW: u32 = ${pointRow}u;`,
+          declarations: orientationDeclarations,
           body: `let triangle = index / 3u;
   let edge = index % 3u;
   var boundary = triangle < state[stateOffset] && badFlags[badFlagsOffset + triangle] != 0u;
   if (boundary) {
+    let insertionRow = state[stateOffset + 3u];
     let a = triangleVertex(triangle, edge);
     let b = triangleVertex(triangle, (edge + 1u) % 3u);
-    for (var other = 0u; other < state[stateOffset] && boundary; other++) {
-      if (other == triangle || badFlags[badFlagsOffset + other] == 0u) { continue; }
+    let cavityCount = state[stateOffset + 2u];
+    for (var slot = 0u; slot < cavityCount && boundary; slot++) {
+      let other = cavityTriangleIds[cavityTriangleIdsOffset + slot];
+      if (other == triangle) { continue; }
       for (var otherEdge = 0u; otherEdge < 3u; otherEdge++) {
         let otherA = triangleVertex(other, otherEdge);
         let otherB = triangleVertex(other, (otherEdge + 1u) % 3u);
         if ((a == otherA && b == otherB) || (a == otherB && b == otherA)) { boundary = false; }
       }
     }
-    boundary = boundary && orient(pointAt(a), pointAt(b), pointAt(INSERTION_ROW)) != 0.0;
+    // Exact: an edge collinear with the site would create a zero-area triangle.
+    boundary = boundary && orientSign(pointAt(a), pointAt(b), pointAt(insertionRow)) != 0;
   }
   boundaryFlags[boundaryFlagsOffset + index] = select(0u, 1u, boundary);`
         }),
@@ -322,43 +653,74 @@ const INSERTION_ROW: u32 = ${pointRow}u;`,
             {name: 'boundaryFlags', view: boundaryFlags, type: 'u32', access: 'read'},
             {name: 'duplicateFlags', view: duplicateFlags, type: 'u32', access: 'read'}
           ],
-          invocationCount: 1,
-          declarations: `${sharedDeclarations}
-const INSERTION_ROW: u32 = ${pointRow}u;`,
-          body: `if (state[stateOffset + 1u] != 0u) { return; }
-  let oldCount = state[stateOffset];
+          // One cooperative workgroup: the serial rebuild was the O(sites * triangles) bottleneck.
+          invocationCount: REBUILD_WORKGROUP_SIZE,
+          workgroupSize: REBUILD_WORKGROUP_SIZE,
+          guardIndex: false,
+          declarations: `${orientationDeclarations}
+${REBUILD_SCAN_WGSL}`,
+          body: `let lane = localInvocationIndex;
+  if (lane == 0u) {
+    rebuildFailed = state[stateOffset + 1u];
+    rebuildOldCount = state[stateOffset];
+    rebuildRow = state[stateOffset + 3u];
+    rebuildDuplicate = duplicateFlags[duplicateFlagsOffset + state[stateOffset + 3u]];
+  }
+  let failed = workgroupUniformLoad(&rebuildFailed);
+  let oldCount = workgroupUniformLoad(&rebuildOldCount);
+  let insertionRow = workgroupUniformLoad(&rebuildRow);
+  let duplicate = workgroupUniformLoad(&rebuildDuplicate);
+  if (failed != 0u) { return; }
+  // Stable cooperative compaction: survivors first, then one new triangle per boundary edge,
+  // both in ascending source order, so output order matches a serial rebuild.
   var nextCount = 0u;
-  for (var triangle = 0u; triangle < oldCount; triangle++) {
-    if (badFlags[badFlagsOffset + triangle] == 0u) {
+  for (var chunk = 0u; chunk < oldCount; chunk += REBUILD_WORKGROUP_SIZE) {
+    let triangle = chunk + lane;
+    let keep = select(0u, 1u, triangle < oldCount && badFlags[badFlagsOffset + triangle] == 0u);
+    let inclusive = inclusiveScan(lane, keep);
+    let total = scanValues[REBUILD_WORKGROUP_SIZE - 1u];
+    if (keep == 1u) {
       let sourceBase = trianglesOffset + 4u * triangle;
-      let destinationBase = trianglesOutOffset + 4u * nextCount;
+      let destinationBase = trianglesOutOffset + 4u * (nextCount + inclusive - 1u);
       trianglesOut[destinationBase] = triangles[sourceBase];
       trianglesOut[destinationBase + 1u] = triangles[sourceBase + 1u];
       trianglesOut[destinationBase + 2u] = triangles[sourceBase + 2u];
       trianglesOut[destinationBase + 3u] = 0u;
-      nextCount++;
     }
+    nextCount += total;
   }
-  if (duplicateFlags[duplicateFlagsOffset + INSERTION_ROW] == 0u) {
-    for (var candidate = 0u; candidate < 3u * oldCount; candidate++) {
-      if (boundaryFlags[boundaryFlagsOffset + candidate] == 0u) { continue; }
-      if (nextCount >= SCRATCH_TRIANGLE_CAPACITY) { state[stateOffset + 1u] = 1u; return; }
+  let candidateCount = select(3u * oldCount, 0u, duplicate != 0u);
+  for (var chunk = 0u; chunk < candidateCount; chunk += REBUILD_WORKGROUP_SIZE) {
+    let candidate = chunk + lane;
+    let isBoundary = candidate < candidateCount && boundaryFlags[boundaryFlagsOffset + candidate] != 0u;
+    let inclusive = inclusiveScan(lane, select(0u, 1u, isBoundary));
+    let total = scanValues[REBUILD_WORKGROUP_SIZE - 1u];
+    let slot = nextCount + inclusive - 1u;
+    if (isBoundary && slot < SCRATCH_TRIANGLE_CAPACITY) {
       let triangle = candidate / 3u;
       let edge = candidate % 3u;
       var a = triangleVertex(triangle, edge);
       var b = triangleVertex(triangle, (edge + 1u) % 3u);
-      if (orient(pointAt(a), pointAt(b), pointAt(INSERTION_ROW)) < 0.0) {
+      if (orientSign(pointAt(a), pointAt(b), pointAt(insertionRow)) < 0) {
         let swap = a; a = b; b = swap;
       }
-      let destinationBase = trianglesOutOffset + 4u * nextCount;
+      let destinationBase = trianglesOutOffset + 4u * slot;
       trianglesOut[destinationBase] = a;
       trianglesOut[destinationBase + 1u] = b;
-      trianglesOut[destinationBase + 2u] = INSERTION_ROW;
+      trianglesOut[destinationBase + 2u] = insertionRow;
       trianglesOut[destinationBase + 3u] = 0u;
-      nextCount++;
     }
+    nextCount += total;
   }
-  state[stateOffset] = nextCount;`
+  if (lane == 0u) {
+    state[stateOffset + 2u] = 0u;
+    state[stateOffset + 3u] = insertionRow + 1u;
+    if (nextCount > SCRATCH_TRIANGLE_CAPACITY) {
+      state[stateOffset + 1u] = 1u;
+    } else {
+      state[stateOffset] = nextCount;
+    }
+  }`
         })
       );
       [sourceTriangles, destinationTriangles] = [destinationTriangles, sourceTriangles];
@@ -466,19 +828,6 @@ fn pointAt(row: u32) -> vec2<f32> {
   if (row == POINT_COUNT) { return center + vec2<f32>(-32.0 * scale, -2.0 * scale); }
   if (row == POINT_COUNT + 1u) { return center + vec2<f32>(32.0 * scale, -2.0 * scale); }
   return center + vec2<f32>(0.0, 32.0 * scale);
-}
-fn orient(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>) -> f32 {
-  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-}
-fn inCircumcircle(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, point: vec2<f32>) -> bool {
-  let av = a - point;
-  let bv = b - point;
-  let cv = c - point;
-  let determinant = dot(av, av) * (bv.x * cv.y - cv.x * bv.y)
-    - dot(bv, bv) * (av.x * cv.y - cv.x * av.y)
-    + dot(cv, cv) * (av.x * bv.y - bv.x * av.y);
-  let scale = max(max(max(dot(av, av), dot(bv, bv)), dot(cv, cv)), 1.0);
-  return determinant >= -1e-6 * scale * scale;
 }
 fn triangleVertex(triangle: u32, vertex: u32) -> u32 {
   return triangles[trianglesOffset + 4u * triangle + vertex];

@@ -17,6 +17,12 @@ import {
   readUint32,
   submitGraph
 } from '../../utils/gpu-contributor-test-utils';
+import {
+  createRandomValues,
+  createRookLattice,
+  findDisconnectedLabels
+} from './large-lattice-invariants';
+import {evaluatePartition} from './spatial-regionalization-oracle';
 
 it('GPUAZPRegions reproducibly improves a contiguous partition and reports convergence', async () => {
   const device = await getWebGPUTestDevice();
@@ -169,6 +175,87 @@ it('GPUAZPRegions accepts a non-leaf move when exact source connectivity is pres
   expect(await readUint32(outputs.labels, 4)).toEqual([1, 0, 0, 1]);
   expect((await readFloat32(outputs.objective, 1))[0]).toBeCloseTo(0, 4);
   expect(await readUint32(outputs.status, GPU_AZP_STATUS.length)).toEqual([1, 1, 0, 0]);
+  compiled.destroy();
+  Object.values(inputs).forEach(buffer => buffer.destroy());
+  Object.values(outputs).forEach(buffer => buffer.destroy());
+});
+
+it('GPUAZPRegions keeps 36 contiguous regions on a 900-row lattice', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // 900 rows exceed the 256-lane workgroup, so the candidate argmin needs a second reduction pass.
+  const width = 30;
+  const tile = 5;
+  const rowCount = width * width;
+  const regionCount = (width / tile) ** 2;
+  const {offsets, neighbors, weights: edgeWeights} = createRookLattice(width, width);
+  const values = createRandomValues(rowCount, 303);
+  const initialLabels = Uint32Array.from({length: rowCount}, (_, row) => {
+    const x = row % width;
+    const y = Math.floor(row / width);
+    return Math.floor(y / tile) * (width / tile) + Math.floor(x / tile);
+  });
+  const initialObjective = evaluatePartition(values, 1, initialLabels).withinSsd;
+  const graph = new GPUCommandGraph(device, {id: 'azp-large'});
+  const inputs = {
+    offsets: createInputBuffer(device, offsets),
+    neighbors: createInputBuffer(device, neighbors),
+    weights: createInputBuffer(device, edgeWeights),
+    values: createInputBuffer(device, values),
+    initialLabels: createInputBuffer(device, initialLabels)
+  };
+  const outputs = {
+    labels: createOutputBuffer(device, rowCount),
+    objective: createOutputBuffer(device, 1),
+    status: createOutputBuffer(device, GPU_AZP_STATUS.length)
+  };
+  const seed = 11;
+  graph.add(
+    new GPUAZPRegions({
+      weights: {
+        offsets: importGraphBuffer(graph, 'offsets', inputs.offsets, 'uint32', offsets.length),
+        neighbors: importGraphBuffer(
+          graph,
+          'neighbors',
+          inputs.neighbors,
+          'uint32',
+          neighbors.length
+        ),
+        weights: importGraphBuffer(graph, 'weights', inputs.weights, 'float32', edgeWeights.length)
+      },
+      values: importGraphBuffer(graph, 'values', inputs.values, 'float32', rowCount),
+      initialLabels: importGraphBuffer(
+        graph,
+        'initial-labels',
+        inputs.initialLabels,
+        'uint32',
+        rowCount
+      ),
+      regionCapacity: regionCount,
+      maximumIterations: 16,
+      seed,
+      labels: importGraphBuffer(graph, 'labels', outputs.labels, 'uint32', rowCount),
+      optimization: {
+        objective: importGraphBuffer(graph, 'objective', outputs.objective, 'float32', 1),
+        status: importGraphBuffer(graph, 'status', outputs.status, 'uint32', GPU_AZP_STATUS.length),
+        seed
+      }
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const labels = await readUint32(outputs.labels, rowCount);
+  const [objective] = await readFloat32(outputs.objective, 1);
+  const status = await readUint32(outputs.status, GPU_AZP_STATUS.length);
+  expect(labels.every(label => label < regionCount)).toBe(true);
+  expect(new Set(labels).size).toBe(regionCount);
+  expect(status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+  expect(findDisconnectedLabels(offsets, neighbors, labels)).toEqual([]);
+  // The reported objective is the within-region SSD of the returned labels, and AZP only improves.
+  const finalObjective = evaluatePartition(values, 1, labels).withinSsd;
+  expect(Math.abs(objective - finalObjective)).toBeLessThan(1e-3 * finalObjective);
+  expect(finalObjective).toBeLessThanOrEqual(initialObjective * (1 + 1e-6));
+  expect(status[GPU_AZP_STATUS.iterationCount]).toBeGreaterThan(0);
   compiled.destroy();
   Object.values(inputs).forEach(buffer => buffer.destroy());
   Object.values(outputs).forEach(buffer => buffer.destroy());

@@ -126,6 +126,7 @@ function importInputTable(graph: GPUCommandGraph, name: string, table: InputTabl
 type CompareBuffers = Record<
   | 'cells'
   | 'presence'
+  | 'mask'
   | 'before'
   | 'after'
   | 'delta'
@@ -142,6 +143,7 @@ function createCompareBuffers(fixture: Fixture, capacity: number): CompareBuffer
   return {
     cells: fixture.output(2 * capacity),
     presence: fixture.output(capacity),
+    mask: fixture.output(capacity),
     before: fixture.output(capacity),
     after: fixture.output(capacity),
     delta: fixture.output(capacity),
@@ -163,6 +165,7 @@ function importCompareOutput(graph: GPUCommandGraph, buffers: CompareBuffers, ca
   return {
     cells: importGraphBuffer(graph, 'out-cells', buffers.cells, 'uint32x2', capacity),
     presence: view('presence', 'uint32'),
+    mask: view('mask', 'uint32'),
     before: view('before', 'float32'),
     after: view('after', 'float32'),
     delta: view('delta', 'float32'),
@@ -193,6 +196,7 @@ async function readCompare(buffers: CompareBuffers, capacity: number): Promise<A
   const [total] = await readUint32(buffers.total, 1);
   const cells = await readUint32(buffers.cells, 2 * capacity);
   const presence = await readUint32(buffers.presence, capacity);
+  const mask = await readUint32(buffers.mask, capacity);
   const floats = async (
     name: 'before' | 'after' | 'delta' | 'ratio' | 'percentChange' | 'zScore'
   ) => readFloat32(buffers[name], capacity);
@@ -206,6 +210,10 @@ async function readCompare(buffers: CompareBuffers, capacity: number): Promise<A
     zScore: await floats('zScore')
   };
   let tailIsEmpty = true;
+  for (let row = 0; row < capacity; row++) {
+    // The mask is 1 exactly on the union rows below count.
+    tailIsEmpty &&= mask[row] === (row < count ? 1 : 0);
+  }
   for (let row = count; row < capacity; row++) {
     tailIsEmpty &&=
       cells[2 * row] === EMPTY_KEY &&

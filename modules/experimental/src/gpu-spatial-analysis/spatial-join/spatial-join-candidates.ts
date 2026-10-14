@@ -197,13 +197,21 @@ fn nodeOverlaps(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> bool {
       invocationCount: leftCount,
       declarations: probeDeclarations,
       body: probeBody(
-        `let slot = leftOffsets[leftOffsetsOffset + index] + found;
-          if (slot < CANDIDATE_CAPACITY) {
-            candidatePairs[candidatePairsOffset + slot * 2u] = index;
-            candidatePairs[candidatePairsOffset + slot * 2u + 1u] = rightRow;
-          }
-          found = found + 1u;`,
-        'var found = 0u;',
+        `let slot = slotStart + found;
+          candidatePairs[candidatePairsOffset + slot * 2u] = index;
+          candidatePairs[candidatePairsOffset + slot * 2u + 1u] = rightRow;
+          found = found + 1u;
+          if (slot + 1u >= slotEnd) { break; }`,
+        // Left features with no candidates, or whose slots all fall past the capacity, skip the
+        // second traversal; the rest stop at their last counted candidate. The last row's end comes
+        // from the capacity, which keeps this pass within 8 storage bindings.
+        `var found = 0u;
+  let slotStart = leftOffsets[leftOffsetsOffset + index];
+  var slotEnd = CANDIDATE_CAPACITY;
+  if (index + 1u < ${leftCount}u) {
+    slotEnd = min(leftOffsets[leftOffsetsOffset + index + 1u], CANDIDATE_CAPACITY);
+  }
+  if (slotStart >= slotEnd) { return; }`,
         ''
       )
     })

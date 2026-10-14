@@ -1236,12 +1236,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
           : []),
         kernel(
           'polygon-counts',
-          [
-            read('sortedKeys', sortedPolygonKeys),
-            read('shellScan', shellScan),
-            write('validRings', validRings),
-            write('featureOffsets', polygons.featureOffsets)
-          ],
+          [read('sortedKeys', sortedPolygonKeys), write('validRings', validRings)],
           1,
           `var low = 0u;
   var high = ${ringCapacity}u;
@@ -1249,11 +1244,7 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
     let middle = low + (high - low) / 2u;
     if (sortedKeys[sortedKeysOffset + middle] == ${none}) { high = middle; } else { low = middle + 1u; }
   }
-  validRings[validRingsOffset] = low;
-  let polygonCount = shellScan[shellScanOffset + ${ringCapacity - 1}u];
-  for (var feature = 0u; feature <= ${ringCapacity}u; feature++) {
-    featureOffsets[featureOffsetsOffset + feature] = min(feature, polygonCount);
-  }`
+  validRings[validRingsOffset] = low;`
         ),
         kernel(
           'polygon-offsets',
@@ -1263,10 +1254,13 @@ fn publishRing(ring: u32, sum: f32, minimum: vec2f, maximum: vec2f) {
             read('polygonStarts', polygonStarts),
             read('validRings', validRings),
             write('ringOffsetsOut', polygons.ringOffsets),
-            write('polygonOffsetsOut', polygons.polygonOffsets)
+            write('polygonOffsetsOut', polygons.polygonOffsets),
+            write('featureOffsets', polygons.featureOffsets)
           ],
           ringCapacity + 1,
           `let polygonCount = shellScan[shellScanOffset + ${ringCapacity - 1}u];
+  // Identity feature table: one feature per polygon, padded flat with the polygon count.
+  featureOffsets[featureOffsetsOffset + index] = min(index, polygonCount);
   var ringOffset = 0u;
   if (index > 0u) { ringOffset = lengthScan[lengthScanOffset + index - 1u]; }
   ringOffsetsOut[ringOffsetsOutOffset + index] = ringOffset;

@@ -86,14 +86,20 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
     hotSliceCount?: GraphDataView<'uint32'>;
     coldSliceCount?: GraphDataView<'uint32'>;
     colors?: GraphDataView<'uint32'>;
+    /** Group-statistics overflow flag; setting it selects the sorted counting path. */
     groupOverflow?: GraphDataView<'uint32'>;
   },
   {
     calendarField?: GraphDataView<'sint32'> | GraphDataView<'uint32'>;
+    /** Per-event cube key; setting it selects the sorted counting path. */
     keys?: GraphDataView<'uint32'>;
+    /** Per-event key validity; setting it selects the sorted counting path. */
     keyMask?: GraphDataView<'uint32'>;
+    /** Distinct keys in sorted order; setting it selects the sorted counting path. */
     groupKeys?: GraphDataView<'uint32'>;
+    /** Event count per distinct key; setting it selects the sorted counting path. */
     groupCounts?: GraphDataView<'uint32'>;
+    /** Number of distinct keys; setting it selects the sorted counting path. */
     groupCount?: GraphDataView<'uint32'>;
     colorDomain?: GraphDataView<'float32'>;
   }
@@ -146,11 +152,17 @@ export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
 /**
  * Space-time hot spot recipe: timestamped events to an ArcGIS-style emerging hot spot map.
  *
- * Chain: `GPUCalendarBuckets` decodes event times, an adapter kernel turns calendar field and
- * cell into the key `cell * sliceCount + slice`, `GPUGroupStatistics` counts the events per key,
- * an adapter scatters the sparse counts into a dense `cell x slice` cube (`uint32`, the layout
- * `GPUEmergingHotSpots` reads), `GPUEmergingHotSpots` classifies every cell, and
- * `GPUColorScale` (ordinal) colors the categories.
+ * Chain: `GPUCalendarBuckets` decodes event times, an adapter kernel bins every event into
+ * `cell * sliceCount + slice` of a zeroed dense `cell x slice` cube (`uint32`, the layout
+ * `GPUEmergingHotSpots` reads) with an integer `atomicAdd`, `GPUEmergingHotSpots` classifies every
+ * cell, and `GPUColorScale` (ordinal) colors the categories.
+ *
+ * Passing any of `scratch.keys`, `scratch.keyMask`, `scratch.groupKeys`, `scratch.groupCounts`,
+ * `scratch.groupCount` or `outputs.groupOverflow` selects the sorted path instead: an adapter
+ * writes the key per event, `GPUGroupStatistics` counts the events per key, and an adapter
+ * scatters the sparse counts into the cube. Only that path fills those views, adds the
+ * `GPUGroupStatistics` contributor and reports the `cube-counts` status stage. Both paths produce
+ * the same cube, bit for bit.
  *
  * The roadmap chain names `GPUCellAggregation` for the per-slice counts. Its keys must be valid
  * Quadbin or H3 cells and cannot carry a slice index, so the recipe counts with
@@ -207,9 +219,8 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     })
   );
 
-  // 2. Adapter: (calendar field, cell) -> key and validity.
-  const keys = getOrCreateView(graph, `${id}-keys`, 'uint32', eventCount, scratch.keys);
-  const keyMask = getOrCreateView(graph, `${id}-key-mask`, 'uint32', eventCount, scratch.keyMask);
+  // 2. Event -> (cell, slice) and validity, shared by both counting paths so they bin every event
+  // identically.
   const cellBindings =
     cells.kind === 'ids'
       ? [{name: 'cellIds', view: cells.cellIds, type: 'u32', access: 'read'} as const]
@@ -224,66 +235,19 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   let fy = floor((py - ${getWGSLFloatLiteral(cells.bounds[1])}) / ${getWGSLFloatLiteral((cells.bounds[3] - cells.bounds[1]) / cells.height)});
   let cellValid = fx >= 0.0 && fy >= 0.0 && fx < ${cells.width}.0 && fy < ${cells.height}.0;
   let cell = select(0u, u32(fy) * ${cells.width}u + u32(fx), cellValid);`;
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-keys`,
-      operation: 'GPUSpaceTimeHotSpotsKeys',
-      bindings: [
-        {
-          name: 'calendarField',
-          view: calendarView,
-          type: fieldIsSigned ? 'i32' : 'u32',
-          access: 'read'
-        },
-        ...cellBindings,
-        {name: 'keyOutput', view: keys, type: 'u32', access: 'read_write'},
-        {name: 'keyMaskOutput', view: keyMask, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: eventCount,
-      body: `${cellSource}
+  const eventBinSource = `${cellSource}
   let value = i32(calendarField[calendarFieldOffset + index]);
   let slice = value - ${Math.trunc(slices.firstValue)};
   let sliceValid = value != bitcast<i32>(0x80000000u) && slice >= 0 && slice < ${sliceCount};
-  let valid = cellValid && sliceValid;
-  keyOutput[keyOutputOffset + index] = select(0xffffffffu, cell * ${sliceCount}u + u32(slice), valid);
-  keyMaskOutput[keyMaskOutputOffset + index] = select(0u, 1u, valid);`
-    })
-  );
+  let valid = cellValid && sliceValid;`;
+  const calendarBinding = {
+    name: 'calendarField',
+    view: calendarView,
+    type: fieldIsSigned ? 'i32' : 'u32',
+    access: 'read'
+  } as const;
 
-  // 3. Sparse counts per (cell, slice).
-  const groupKeys = getOrCreateView(
-    graph,
-    `${id}-group-keys`,
-    'uint32',
-    cubeLength,
-    scratch.groupKeys
-  );
-  const groupCounts = getOrCreateView(
-    graph,
-    `${id}-group-counts`,
-    'uint32',
-    cubeLength,
-    scratch.groupCounts
-  );
-  const groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1, scratch.groupCount);
-  const groupOverflow = getOrCreateView(
-    graph,
-    `${id}-group-overflow`,
-    'uint32',
-    1,
-    outputOverrides.groupOverflow
-  );
-  builder.add(
-    new GPUGroupStatistics({
-      id: `${id}-counts`,
-      keys,
-      mask: keyMask,
-      columns: [],
-      output: {keys: groupKeys, counts: groupCounts, count: groupCount, overflow: groupOverflow}
-    })
-  );
-
-  // 4. Dense cube.
+  // 3. Dense cube of event counts, zeroed first: both paths only write bins that hold events.
   const cube = getOrCreateView(graph, `${id}-cube`, 'uint32', cubeLength, outputOverrides.cube);
   graph.add(
     createFillNode<Parameters>(graph, {
@@ -294,28 +258,121 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
       value: '0u'
     })
   );
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-cube-scatter`,
-      operation: 'GPUSpaceTimeHotSpotsCube',
-      variant: 'scatter',
-      bindings: [
-        {name: 'groupKeys', view: groupKeys, type: 'u32', access: 'read'},
-        {name: 'groupCounts', view: groupCounts, type: 'u32', access: 'read'},
-        {name: 'groupCountScalar', view: groupCount, type: 'u32', access: 'read'},
-        {name: 'cubeOutput', view: cube, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: cubeLength,
-      body: `if (index < groupCountScalar[groupCountScalarOffset]) {
+
+  // Every cube value is an integer count, so a `u32` atomic increment per event builds the cube
+  // exactly and deterministically (integer addition commutes), with no sort. The sorted
+  // `GPUGroupStatistics` path runs only when the caller asks for its intermediates (keys, key
+  // mask, group keys, counts or count) or for `outputs.groupOverflow`. Both paths write identical
+  // cubes: counts never exceed `eventCount`, which is far below 2^32. `GPUEmergingHotSpots` reads
+  // a count as `f32(count)`, exact below 2^24 events per bin, the same in both paths.
+  const useGroupStatistics =
+    scratch.keys !== undefined ||
+    scratch.keyMask !== undefined ||
+    scratch.groupKeys !== undefined ||
+    scratch.groupCounts !== undefined ||
+    scratch.groupCount !== undefined ||
+    outputOverrides.groupOverflow !== undefined;
+  let intermediates: GPUSpaceTimeHotSpotsRecipeResult['intermediates'] = {
+    calendarField: calendarView
+  };
+  let status: GPUSpaceTimeHotSpotsRecipeResult['status'] = {stages: []};
+  if (!useGroupStatistics) {
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-cube-count`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        variant: 'atomic-count',
+        bindings: [
+          calendarBinding,
+          ...cellBindings,
+          {name: 'cubeOutput', view: cube, type: 'atomic<u32>', access: 'read_write'}
+        ],
+        invocationCount: eventCount,
+        body: `${eventBinSource}
+  if (valid) {
+    atomicAdd(&cubeOutput[cubeOutputOffset + cell * ${sliceCount}u + u32(slice)], 1u);
+  }`
+      })
+    );
+  } else {
+    // Sorted path: key `cell * sliceCount + slice` per event, sparse counts per key, scatter.
+    const keys = getOrCreateView(graph, `${id}-keys`, 'uint32', eventCount, scratch.keys);
+    const keyMask = getOrCreateView(graph, `${id}-key-mask`, 'uint32', eventCount, scratch.keyMask);
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-keys`,
+        operation: 'GPUSpaceTimeHotSpotsKeys',
+        bindings: [
+          calendarBinding,
+          ...cellBindings,
+          {name: 'keyOutput', view: keys, type: 'u32', access: 'read_write'},
+          {name: 'keyMaskOutput', view: keyMask, type: 'u32', access: 'read_write'}
+        ],
+        invocationCount: eventCount,
+        body: `${eventBinSource}
+  keyOutput[keyOutputOffset + index] = select(0xffffffffu, cell * ${sliceCount}u + u32(slice), valid);
+  keyMaskOutput[keyMaskOutputOffset + index] = select(0u, 1u, valid);`
+      })
+    );
+    const groupKeys = getOrCreateView(
+      graph,
+      `${id}-group-keys`,
+      'uint32',
+      cubeLength,
+      scratch.groupKeys
+    );
+    const groupCounts = getOrCreateView(
+      graph,
+      `${id}-group-counts`,
+      'uint32',
+      cubeLength,
+      scratch.groupCounts
+    );
+    const groupCount = getOrCreateView(graph, `${id}-group-count`, 'uint32', 1, scratch.groupCount);
+    const groupOverflow = getOrCreateView(
+      graph,
+      `${id}-group-overflow`,
+      'uint32',
+      1,
+      outputOverrides.groupOverflow
+    );
+    builder.add(
+      new GPUGroupStatistics({
+        id: `${id}-counts`,
+        keys,
+        mask: keyMask,
+        columns: [],
+        output: {keys: groupKeys, counts: groupCounts, count: groupCount, overflow: groupOverflow}
+      })
+    );
+    graph.add(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${id}-cube-scatter`,
+        operation: 'GPUSpaceTimeHotSpotsCube',
+        variant: 'scatter',
+        bindings: [
+          {name: 'groupKeys', view: groupKeys, type: 'u32', access: 'read'},
+          {name: 'groupCounts', view: groupCounts, type: 'u32', access: 'read'},
+          {name: 'groupCountScalar', view: groupCount, type: 'u32', access: 'read'},
+          {name: 'cubeOutput', view: cube, type: 'u32', access: 'read_write'}
+        ],
+        // Distinct groups never outnumber the events, so the scatter needs no more threads.
+        invocationCount: Math.min(cubeLength, eventCount),
+        body: `if (index < groupCountScalar[groupCountScalarOffset]) {
     let key = groupKeys[groupKeysOffset + index];
     if (key < ${cubeLength}u) {
       cubeOutput[cubeOutputOffset + key] = groupCounts[groupCountsOffset + index];
     }
   }`
-    })
-  );
+      })
+    );
+    intermediates = {...intermediates, keys, keyMask, groupKeys, groupCounts, groupCount};
+    status = {
+      stages: [{stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}]
+    };
+  }
 
-  // 5. Emerging hot spots.
+  // 4. Emerging hot spots.
   const outputs = {
     giZScores: getOrCreateView(
       graph,
@@ -374,11 +431,11 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
     cube,
     ...outputs,
     outputs: {cube, ...outputs},
-    intermediates: {calendarField: calendarView, keys, keyMask, groupKeys, groupCounts, groupCount},
-    status: {stages: [{stage: 'cube-counts', status: {count: groupCount, overflow: groupOverflow}}]}
+    intermediates,
+    status
   };
 
-  // 6. Category colors (ordinal scale).
+  // 5. Category colors (ordinal scale).
   if (props.color) {
     const {color} = props;
     const maximumPaletteCount =

@@ -14,7 +14,7 @@ import {
 } from '@luma.gl/gpgpu/gpu-core';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {validateGraphViewsBelongToGraph} from '../../utils/gpu-contributor-utils';
-import {GPULineSplit} from '../line-split/index';
+import {GPULineSplit, GPU_LINE_SPLIT_SELF_CONTACT} from '../line-split/index';
 import type {GPULineGeometryPort} from '../contracts/index';
 import {GPU_TOPOLOGY_NONE, type GPUNodedSegmentPort} from './topology-types';
 
@@ -136,6 +136,7 @@ export class GPULineNoding implements GPUCommandNodeProducer {
     const pieceRequiredCount = transient('piece-required-count', 'uint32', 1);
     const pieceVertexCount = transient('piece-vertex-count', 'uint32', 1);
     const pieceRequiredVertexCount = transient('piece-required-vertex-count', 'uint32', 1);
+    const pieceSourceEdges = transient('piece-source-edges', 'uint32', pieceVertexCapacity);
     const nodes: GPUCommandNode<Parameters>[] = [];
     nodes.push(
       ...new GPULineSplit({
@@ -154,7 +155,8 @@ export class GPULineNoding implements GPUCommandNodeProducer {
             overflow: output.status.candidateOverflow
           },
           vertexCount: pieceVertexCount,
-          requiredVertexCount: pieceRequiredVertexCount
+          requiredVertexCount: pieceRequiredVertexCount,
+          vertexSourceEdges: pieceSourceEdges
         }
       }).getCommandNodes(graph)
     );
@@ -299,6 +301,10 @@ const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
   sourceFeatureIds[sourceFeatureIdsOffset + outputRow] = ${lines.sourceIds ? 'inputSourceIds[inputSourceIdsOffset + line]' : 'line'};
   sourceRingIds[sourceRingIdsOffset + outputRow] = line;`
       }),
+      // The edge is the input edge of least midpoint error, ties to the smaller index. The splitter
+      // reports the edge each segment lies on; when that edge and its neighbors are regular and it
+      // meets no other segment of its line, only the neighbors (and, for closed lines, the far
+      // end) can tie or beat it, so they are the only candidates. Otherwise every edge is scanned.
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-write-edge-provenance`,
         operation: OPERATION,
@@ -307,6 +313,7 @@ const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
           {name: 'flags', view: segmentFlags, type: 'u32', access: 'read'},
           {name: 'scan', view: segmentScan, type: 'u32', access: 'read'},
           {name: 'piecePositions', view: piecePositions, type: 'f32', access: 'read'},
+          {name: 'pieceSourceEdges', view: pieceSourceEdges, type: 'u32', access: 'read'},
           {name: 'sourceRingIds', view: output.sourceRingIds, type: 'u32', access: 'read'},
           {name: 'inputPositions', view: lines.positions, type: 'f32', access: 'read'},
           {name: 'inputOffsets', view: lines.lineOffsets, type: 'u32', access: 'read'},
@@ -314,11 +321,32 @@ const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;`,
         ],
         invocationCount: pieceVertexCapacity,
         declarations: `const OUTPUT_CAPACITY: u32 = ${outputCapacity}u;
+const SELF_CONTACT: u32 = ${GPU_LINE_SPLIT_SELF_CONTACT}u;
 fn inputPoint(vertex: u32) -> vec2f {
   return vec2f(inputPositions[inputPositionsOffset + vertex * 2u], inputPositions[inputPositionsOffset + vertex * 2u + 1u]);
 }
 fn piecePoint(vertex: u32) -> vec2f {
   return vec2f(piecePositions[piecePositionsOffset + vertex * 2u], piecePositions[piecePositionsOffset + vertex * 2u + 1u]);
+}
+// Finite and non-zero length: the intersection treats such an edge's successor as adjacent.
+fn isRegularEdge(edge: u32) -> bool {
+  let delta = inputPoint(edge + 1u) - inputPoint(edge);
+  let lengthSquared = dot(delta, delta);
+  return lengthSquared > 0.0 && lengthSquared <= 3.4e38;
+}
+fn considerEdge(edge: u32, midpoint: vec2f, bestEdge: ptr<function, u32>, bestError: ptr<function, f32>) {
+  let p = inputPoint(edge);
+  let q = inputPoint(edge + 1u);
+  let delta = q - p;
+  let lengthSquared = dot(delta, delta);
+  if (lengthSquared == 0.0) { return; }
+  let parameter = clamp(dot(midpoint - p, delta) / lengthSquared, 0.0, 1.0);
+  let difference = midpoint - (p + parameter * delta);
+  let error = dot(difference, difference);
+  if (error < *bestError || (error == *bestError && edge < *bestEdge)) {
+    *bestError = error;
+    *bestEdge = edge;
+  }
 }`,
         body: `if (flags[flagsOffset + index] == 0u) { return; }
   let outputRow = scan[scanOffset + index] - 1u;
@@ -327,21 +355,30 @@ fn piecePoint(vertex: u32) -> vec2f {
   let midpoint = 0.5 * (piecePoint(index) + piecePoint(index + 1u));
   let firstEdge = inputOffsets[inputOffsetsOffset + line];
   let lastVertex = inputOffsets[inputOffsetsOffset + line + 1u];
+  let lastEdge = lastVertex - 2u;
+  let source = pieceSourceEdges[pieceSourceEdgesOffset + index];
+  let edge = source & ~SELF_CONTACT;
   var bestEdge = ${GPU_TOPOLOGY_NONE}u;
   var bestError = 3.4e38;
-  for (var edge = firstEdge; edge + 1u < lastVertex; edge++) {
-    let p = inputPoint(edge);
-    let q = inputPoint(edge + 1u);
-    let delta = q - p;
-    let lengthSquared = dot(delta, delta);
-    if (lengthSquared == 0.0) { continue; }
-    let parameter = clamp(dot(midpoint - p, delta) / lengthSquared, 0.0, 1.0);
-    let difference = midpoint - (p + parameter * delta);
-    let error = dot(difference, difference);
-    if (error < bestError || (error == bestError && edge < bestEdge)) {
-      bestError = error;
-      bestEdge = edge;
+  var scanAll = (source & SELF_CONTACT) != 0u || edge < firstEdge || edge > lastEdge;
+  if (!scanAll) {
+    scanAll = !isRegularEdge(edge) ||
+      (edge > firstEdge && !isRegularEdge(edge - 1u)) ||
+      (edge < lastEdge && !isRegularEdge(edge + 1u)) ||
+      (edge == firstEdge && !isRegularEdge(lastEdge)) ||
+      (edge == lastEdge && !isRegularEdge(firstEdge));
+  }
+  if (scanAll) {
+    for (var candidate = firstEdge; candidate + 1u < lastVertex; candidate++) {
+      considerEdge(candidate, midpoint, &bestEdge, &bestError);
     }
+  } else {
+    // The minimum of (error, edge) does not depend on visiting order or repeats.
+    considerEdge(firstEdge, midpoint, &bestEdge, &bestError);
+    if (edge > firstEdge) { considerEdge(edge - 1u, midpoint, &bestEdge, &bestError); }
+    considerEdge(edge, midpoint, &bestEdge, &bestError);
+    if (edge < lastEdge) { considerEdge(edge + 1u, midpoint, &bestEdge, &bestError); }
+    considerEdge(lastEdge, midpoint, &bestEdge, &bestError);
   }
   sourceEdgeIds[sourceEdgeIdsOffset + outputRow] = bestEdge;`
       }),

@@ -177,6 +177,14 @@ it('GPUDelaunayTessellation reports collinear, cocircular, and capacity edge cas
   expect(first).toMatchObject({written: 2, required: 2, didOverflow: 0, invalid: 0});
   expect(second.indices).toEqual(first.indices);
 
+  // Sort-based duplicate detection: -0 equals +0, non-finite rows are invalid and never owners.
+  const duplicates = await runDelaunay(
+    device,
+    Float32Array.of(0, 0, 1, 0, 1, 1, -0, 0, Number.NaN, 0, 0, 1, 1, 0),
+    8
+  );
+  expect(duplicates).toMatchObject({invalid: 1, duplicates: 2});
+
   const bounded = await runDelaunay(device, Float32Array.of(0, 0, 1, 0, 1, 1, 0, 1, 0.5, 0.5), 2);
   expect(bounded).toMatchObject({written: 2, required: 4, didOverflow: 1, invalid: 0});
 });
@@ -256,6 +264,17 @@ it('GPUVoronoiDiagram derives compact internal and clipped hull edges', async ()
   expect(
     new Set(Array.from({length: 8}, (_, row) => `${pairs[2 * row]}:${pairs[2 * row + 1]}`))
   ).toEqual(new Set(['0:1', '1:4', '0:4', '1:2', '2:4', '2:3', '3:4', '0:3']));
+  // Compact order is candidate (triangle, local edge) order; internal edges belong to the lower row.
+  expect(Array.from({length: 8}, (_, row) => `${pairs[2 * row]}:${pairs[2 * row + 1]}`)).toEqual([
+    '0:1',
+    '1:4',
+    '0:4',
+    '1:2',
+    '2:4',
+    '2:3',
+    '3:4',
+    '0:3'
+  ]);
   compiled.destroy();
   for (const buffer of buffers) {
     buffer.destroy();

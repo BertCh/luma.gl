@@ -432,7 +432,11 @@ fn eventKey(event: u32) -> f32 { return bitcast<f32>(eventTable[eventTableOffset
       id: `${id}-event-order`,
       operation: OPERATION,
       indices: eventIndices,
-      keys: [{view: eventSegments}, {view: eventOrderKeys}, {view: eventOtherKeys}]
+      keys: [
+        {view: eventSegments, keyBits: Math.max(1, Math.ceil(Math.log2(vertexCount + 1)))},
+        {view: eventOrderKeys},
+        {view: eventOtherKeys}
+      ]
     });
     nodes.push(...eventSort.nodes);
     const sortedSegments = eventSort.sortedPrimaryKeys;

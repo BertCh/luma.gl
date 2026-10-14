@@ -4,7 +4,6 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUClassBreaks, GPUColorScale} from '../../gpu-dataframe/column-classification/index';
-import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {GPUCellAggregation} from '../cell-aggregation/index';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {GPUCellTableCompare} from '../cell-table-compare/index';
@@ -119,9 +118,9 @@ export type GPUPeriodComparisonRecipeResult = GPURecipeResult & {
  * Period comparison recipe: two periods of events to a classified, colored change map.
  *
  * Chain: two `GPUCellAggregation` tables -> `GPUCellTableCompare` (outer join with delta, ratio,
- * percent change and z-score) -> `GPUClassBreaks` of the chosen column -> `GPUColorScale`. An
- * adapter kernel masks the unused tail of the capacity-bounded union table so it never reaches
- * the classification (the compare columns of the tail are undefined).
+ * percent change and z-score) -> `GPUClassBreaks` of the chosen column -> `GPUColorScale`. The
+ * compare node's `mask` output marks the unused tail of the capacity-bounded union table so it
+ * never reaches the classification (the compare columns of the tail are undefined).
  */
 export function addPeriodComparisonRecipe<Parameters>(
   graph: GPUCommandGraph<Parameters>,
@@ -220,6 +219,8 @@ export function addPeriodComparisonRecipe<Parameters>(
       given.zScore
     );
   }
+  const mask = getOrCreateView(graph, `${id}-union-mask`, 'uint32', unionCapacity, scratch.mask);
+  comparison.mask = mask;
   builder.add(
     new GPUCellTableCompare({
       id: `${id}-compare`,
@@ -228,20 +229,6 @@ export function addPeriodComparisonRecipe<Parameters>(
       measure,
       zScore: props.zScore,
       output: comparison
-    })
-  );
-
-  const mask = getOrCreateView(graph, `${id}-union-mask`, 'uint32', unionCapacity, scratch.mask);
-  graph.add(
-    createWGSLKernelNode<Parameters>(graph, {
-      id: `${id}-union-mask`,
-      operation: 'GPUPeriodComparisonMask',
-      bindings: [
-        {name: 'unionCount', view: comparison.count, type: 'u32', access: 'read'},
-        {name: 'maskOutput', view: mask, type: 'u32', access: 'read_write'}
-      ],
-      invocationCount: unionCapacity,
-      body: 'maskOutput[maskOutputOffset + index] = select(0u, 1u, index < unionCount[unionCountOffset]);'
     })
   );
 

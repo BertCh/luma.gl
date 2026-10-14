@@ -62,3 +62,58 @@ it('GPURoseStatistic matches directional and axial circular oracles', async () =
     binsBuffer.destroy();
   }
 });
+
+it('GPURoseStatistic sorts rows into group segments for multiple groups', async () => {
+  const device = await getWebGPUTestDevice();
+  if (!device) return;
+  // Interleaved groups, one masked row and one out-of-range group ID (both excluded).
+  const starts = new Float32Array(16);
+  const ends = Float32Array.from([1, 0, 0, 1, 0, 1, -1, 0, 1, 0, 0, -1, 1, 0, 0, 1]);
+  const groupIds = Uint32Array.from([0, 1, 0, 2, 1, 2, 9, 0]);
+  const mask = Uint32Array.from([1, 1, 1, 1, 0, 1, 1, 1]);
+  const groupCount = 3;
+  const binCount = 4;
+  const graph = new GPUCommandGraph(device, {id: 'rose-segmented'});
+  const inputs = {
+    starts: createInputBuffer(device, starts),
+    ends: createInputBuffer(device, ends),
+    groupIds: createInputBuffer(device, groupIds),
+    mask: createInputBuffer(device, mask)
+  };
+  const summaryLength = groupCount * GPU_ROSE_STATISTIC_SUMMARY.stride;
+  const summaryBuffer = createOutputBuffer(device, summaryLength);
+  const binsBuffer = createOutputBuffer(device, groupCount * binCount);
+  graph.add(
+    new GPURoseStatistic({
+      starts: importGraphBuffer(graph, 'starts', inputs.starts, 'float32x2', 8),
+      ends: importGraphBuffer(graph, 'ends', inputs.ends, 'float32x2', 8),
+      groupIds: importGraphBuffer(graph, 'groupIds', inputs.groupIds, 'uint32', 8),
+      mask: importGraphBuffer(graph, 'mask', inputs.mask, 'uint32', 8),
+      groupCount,
+      circular: {
+        mode: 'directional',
+        angleUnit: 'radians',
+        origin: 'positive-x-counter-clockwise',
+        binCount
+      },
+      summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'float32', summaryLength),
+      bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', groupCount * binCount)
+    })
+  );
+  const compiled = graph.compile();
+  submitGraph(device, compiled, undefined);
+  const summary = await readFloat32(summaryBuffer, summaryLength);
+  const bins = await readFloat32(binsBuffer, groupCount * binCount);
+  const stride = GPU_ROSE_STATISTIC_SUMMARY.stride;
+  // Group 0: rows 0 (east), 2 (north), 7 (north). Group 1: row 1 (north); row 4 is masked.
+  // Group 2: rows 3 (west) and 5 (south).
+  expect([0, 1, 2].map(group => summary[group * stride])).toEqual([3, 1, 2]);
+  expect(bins).toEqual([1, 2, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]);
+  expect(summary[stride + GPU_ROSE_STATISTIC_SUMMARY.meanAngle]).toBeCloseTo(Math.PI / 2, 5);
+  expect(summary[stride + GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(1, 5);
+  expect(summary[GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(Math.sqrt(5) / 3, 5);
+  compiled.destroy();
+  Object.values(inputs).forEach(buffer => buffer.destroy());
+  summaryBuffer.destroy();
+  binsBuffer.destroy();
+});
