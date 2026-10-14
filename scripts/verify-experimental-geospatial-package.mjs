@@ -106,7 +106,7 @@ try {
   type GPUPairwisePointLinestringNearestProps,
   type GPUPointInPolygonClassification,
   type GPUPointSpatialQueryProps,
-  type GPUSpatialQueryOutput
+  type GPUCompactOutput
 } from '@luma.gl/experimental/geospatial';
 import type {GPUProgramPrimitive} from '@luma.gl/gpgpu/gpu-core';
 
@@ -126,7 +126,7 @@ declare const polygonProps: GPUPairwisePointInPolygonProps;
 declare const nearestProps: GPUPairwisePointLinestringNearestProps;
 declare const classification: GPUPointInPolygonClassification;
 declare const queryProps: GPUPointSpatialQueryProps;
-declare const queryOutput: GPUSpatialQueryOutput;
+declare const queryOutput: GPUCompactOutput;
 void constructors;
 const gridPrimitive: GPUProgramPrimitive = new GPUGridIndex(gridProps);
 void gridPrimitive;
