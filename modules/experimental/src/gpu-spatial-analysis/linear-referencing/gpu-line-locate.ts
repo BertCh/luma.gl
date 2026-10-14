@@ -33,6 +33,12 @@ import {
 
 const OPERATION = 'GPULineLocate';
 
+// Event placement uses cumulative line lengths and lateral distances.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
+
 /**
  * Largest `eventLineIndices` row count of {@link GPULineLocate} on `device`: the packed result
  * table holds 6 `uint32` words (24 bytes) per event in one storage binding, so 5592405 on a default
@@ -175,7 +181,7 @@ export class GPULineLocate implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';

@@ -255,7 +255,7 @@ export function createDensityNode<Parameters>(
     columns: number;
     rows: number;
     coordinateSystem: 'planar' | 'spherical';
-    radius: number;
+    areaRadius: number;
     parameters: GraphDataView<'float32'>;
     lengths: GraphDataView<'float32'>;
     densities: GraphDataView<'float32'>;
@@ -272,7 +272,7 @@ export function createDensityNode<Parameters>(
     ],
     invocationCount: props.columns * props.rows,
     declarations: `const COLUMNS: u32 = ${props.columns}u;
-const RADIUS: f32 = ${getWGSLFloatLiteral(props.radius)};
+const AREA_RADIUS: f32 = ${getWGSLFloatLiteral(props.areaRadius)};
 const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;`,
     body: `let row = index / COLUMNS;
   let width = parameters[parametersOffset + 2u];
@@ -281,7 +281,7 @@ const DEGREES_TO_RADIANS: f32 = 0.017453292519943295;`,
     props.coordinateSystem === 'spherical'
       ? `let south = parameters[parametersOffset + 1u] + f32(row) * height;
   // Exact area of a longitude/latitude cell on the sphere.
-  let area = RADIUS * RADIUS * width * DEGREES_TO_RADIANS *
+  let area = AREA_RADIUS * AREA_RADIUS * width * DEGREES_TO_RADIANS *
     (sin((south + height) * DEGREES_TO_RADIANS) - sin(south * DEGREES_TO_RADIANS));`
       : 'let area = width * height;'
   }

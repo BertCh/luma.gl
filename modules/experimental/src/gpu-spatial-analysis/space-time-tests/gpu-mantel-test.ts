@@ -92,6 +92,8 @@ export type GPUMantelTestProps = {
    * that lists it; duplicates and self entries are ignored), with `distances` as the spatial
    * distance. A radius-mode `GPUNeighborSearch` gives the distance band; a band wide enough to
    * list every pair gives the full Mantel test.
+   * Pairs carry their own `spatialContext` from `GPUNeighborSearch`. No context check is
+   * needed: the correlation is unit-free and no spatial distance parameter is supplied.
    */
   pairs: GPUSpatialWeights;
   /**

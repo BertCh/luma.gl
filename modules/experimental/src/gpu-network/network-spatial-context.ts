@@ -7,7 +7,7 @@ import {GEODESIC_WGSL} from '../gpu-spatial-analysis/geometry-measures/geodesic-
 /**
  * WGSL point and segment metric shared by the network contributors. Include it once per shader.
  *
- * - `networkDistance(a, b)`: Euclidean distance, or the great-circle distance in meters.
+ * - `networkDistance(a, b)`: Euclidean distance, or the great-circle distance in the radius' length unit.
  * - `networkSegmentFraction(point, start, end)`: fraction in `[0, 1]` of the point of the segment
  *   closest to `point`. On longitude/latitude it is computed in the local equirectangular frame at
  *   `point` (east offsets scaled by `cos(latitude)`, longitudes wrapped at +-180), which is exact to

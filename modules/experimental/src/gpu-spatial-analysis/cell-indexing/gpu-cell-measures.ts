@@ -19,9 +19,10 @@ import {
   validateGraphViewsBelongToGraph,
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/earth';
+import type {GPU_EARTH_AUTHALIC_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
   getGPUAreaUnit,
+  getGPUAuthalicSphereRadius,
   type GPUMeasureDescription,
   type GPUSpatialUnit
 } from '../../analysis-core/contracts/spatial-context';
@@ -248,6 +249,12 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
   }`
       : ''
   }`;
+    // H3 uses the authalic radius for both areas and edge lengths.
+    const radius = getGPUAuthalicSphereRadius({
+      coordinateSpace: 'longitude-latitude',
+      metric: 'great-circle',
+      units: this.units
+    });
     return [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-measures`,
@@ -256,7 +263,7 @@ export class GPUCellMeasures implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.cells.length,
         declarations: `const MAXIMUM_EDGE_COUNT: u32 = ${maximumEdgeCount}u;
-const EARTH_RADIUS: f32 = ${getWGSLFloatLiteral(this.units === 'kilometers' ? GPU_EARTH_AUTHALIC_RADIUS_METERS / 1000 : GPU_EARTH_AUTHALIC_RADIUS_METERS)};
+const EARTH_RADIUS: f32 = ${getWGSLFloatLiteral(radius)};
 ${dggs.source}
 ${CELL_KEY_WGSL}
 ${H3_BOUNDARY_WGSL}

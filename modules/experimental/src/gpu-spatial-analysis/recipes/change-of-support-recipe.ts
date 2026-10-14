@@ -18,6 +18,7 @@ import type {
   GPUArealInterpolationDenominators
 } from '../areal-interpolation/index';
 import {
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
@@ -36,8 +37,8 @@ import {
 const ID = 'GPUChangeOfSupportRecipe';
 /** Planar rasters, or longitude/latitude rasters weighted by spherical cell area. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
 });
 
 /**
@@ -83,10 +84,10 @@ export type GPUChangeOfSupportRecipeProps = GPURecipeOverrides<
   grid: GPURasterMetadata;
   /**
    * Coordinate space of the raster and the polygons. Omitted means native planar (cell counts are
-   * areas). `longitude-latitude` (metric `'none'` or `'great-circle'`) declares a longitude/latitude
-   * raster whose `parameters` are in degrees: areas become spherical cell areas in square meters, so
-   * the weights are ground-area shares. The polygon rasterization stage itself only tests cell
-   * centers in the coordinates as given (straight edges in degrees; split polygons at the
+   * areas). `longitude-latitude` requires metric `'great-circle'` and declares a raster whose
+   * `parameters` are in degrees: areas become spherical cell areas on the authalic sphere in the
+   * context's length unit squared (square meters by default), so weights are ground-area shares.
+   * The polygon rasterization stage itself only tests cell centers in the coordinates as given (straight edges in degrees; split polygons at the
    * antimeridian). The resolved context is returned as `result.spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
@@ -137,7 +138,7 @@ export type GPUChangeOfSupportRecipeResult = GPURecipeResult & {
   /** Intensive weights `a_st / B_t` on the same pattern. */
   intensiveWeights: GPUSpatialWeights;
   areas: GraphDataView<'float32'>;
-  /** Raster area of every source (cells, or square meters on a longitude/latitude raster). */
+  /** Raster area of every source (cells, or the context's length unit squared on a geographic raster). */
   sourceAreas: GraphDataView<'float32'>;
   /**
    * Fraction of each source's area that reached a target (the conserved fraction of its extensive

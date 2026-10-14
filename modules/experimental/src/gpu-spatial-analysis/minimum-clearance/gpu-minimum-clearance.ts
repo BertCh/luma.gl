@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -32,6 +33,12 @@ import type {GPUSegmentGeometry} from '../segment-intersection/segment-intersect
 import {getGPUSegmentIntersectionMaximumVertexCount} from '../segment-intersection/segment-intersection-wgsl';
 import {GPU_SEGMENT_NONE} from '../segment-intersection/segment-intersection-types';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUMinimumClearance';
 
@@ -148,7 +155,11 @@ export class GPUMinimumClearance implements GPUCommandNodeProducer {
   constructor(props: GPUMinimumClearanceProps) {
     this.id = props.id ?? 'minimum-clearance';
     this.props = props;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     const {id} = this;
     const {geometry} = props;
     validatePackedView(geometry.positions, ['float32x2'], `${id} geometry.positions`);

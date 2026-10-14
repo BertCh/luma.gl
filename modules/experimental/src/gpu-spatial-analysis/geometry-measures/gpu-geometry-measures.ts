@@ -28,7 +28,11 @@ import type {
 } from '../../analysis-core/contracts/index';
 import {
   getGPUAreaUnit,
-  validateGPUSpatialContext,
+  resolveGPUSpatialContext,
+  getGPULengthUnits,
+  getGPUAuthalicSphereRadius,
+  getGPUEllipsoid,
+  type GPUSpatialContextSupport,
   type GPUAreaModel,
   type GPULengthModel,
   type GPUMeasureDescription,
@@ -51,9 +55,19 @@ import {
 
 const OPERATION = 'GPUGeometryMeasures';
 
+// No measure declaration: this operator outputs both lengths and areas.
+const GEOMETRY_MEASURES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metricsByCoordinateSpace: Object.freeze({
+    planar: Object.freeze(['none', 'native'] as const),
+    'longitude-latitude': Object.freeze(['great-circle', 'ellipsoidal'] as const)
+  })
+});
+
 /**
  * Per-feature or per-group measurement columns of {@link GPUGeometryMeasures}. Every column is
- * optional and has one row per feature (or group).
+ * optional and has one row per feature (or group). Lengths are in the context's length unit;
+ * areas are in its square.
  */
 export type GPUGeometryMeasuresOutput = {
   /** Line length, or polygon perimeter over every ring including closing edges. */
@@ -99,12 +113,12 @@ export type GPUGeometryMeasuresGroupOutput = Omit<
 type GPUGeometryMeasuresSharedProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'geometry-measures'`. */
   id?: string;
-  /** Coordinate, metric and output-unit contract of the geometry. */
-  spatialContext: GPUSpatialContext;
+  /** Coordinate, metric and output-unit contract. Omitted means native planar coordinates. */
+  spatialContext?: GPUSpatialContext;
   /**
    * Ellipsoidal polygon-edge interpretation, for `metric: 'ellipsoidal'` contexts only. Defaults to
    * `'geodesic'`: edges of 20 km or more follow geodesics, as `pyproj.Geod.geometry_area_perimeter`.
-   * `'coordinate-linear'`: straight edges in the equal-area mapping of the WGS84 authalic sphere.
+   * `'coordinate-linear'`: straight edges in the equal-area mapping of the context ellipsoid onto its authalic sphere.
    */
   ellipsoidalEdgeModel?: 'coordinate-linear' | 'geodesic';
   /**
@@ -192,8 +206,7 @@ export type GPUGeometryMeasuresProps = GPUGeometryMeasuresSharedProps &
  * `output.status.invalidCount`. Split such polygons at the antimeridian or project them first.
  *
  * **Measure model.** {@link GPUGeometryMeasures.measures} describes the length and area models and
- * units of the outputs (planar: native units; geographic: meters and square meters unless the
- * context asks for kilometers on a sphere).
+ * units of the outputs: the context's length unit and its square for areas.
  *
  * **Groups.** Features are stably sorted by group ID; one workgroup per group reduces its
  * features with a fixed tree (bitwise reproducible). Group centroids are the area- or
@@ -229,16 +242,21 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
   readonly measures: GPUMeasureDescription;
   /** Internal kernel model resolved from `spatialContext`; not a prop. */
   readonly coordinateSystem: GPUGeometryCoordinateSystem;
-  /** Resolved sphere radius. */
+  /** Resolved sphere radius for lengths, in the context's length unit. */
   readonly radius: number;
+  /** Authalic radius used for spherical areas, in the context's length unit. */
+  readonly areaRadius: number;
   /** Resolved ring size above which a feature is measured cooperatively (0 disables). */
   readonly cooperativeRingRows: number;
 
   constructor(props: GPUGeometryMeasuresProps) {
     this.id = props.id ?? 'geometry-measures';
     this.props = props;
-    this.spatialContext = props.spatialContext;
-    validateGPUSpatialContext(this.id, this.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      GEOMETRY_MEASURES_SPATIAL_CONTEXT_SUPPORT
+    );
     this.coordinateSystem = resolveGeometryMeasureCoordinateSystem(
       this.id,
       this.spatialContext,
@@ -246,6 +264,7 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
     );
     this.measures = describeGeometryMeasures(this.coordinateSystem, this.spatialContext);
     this.radius = getGPUSphereRadius(this.spatialContext);
+    this.areaRadius = getGPUAuthalicSphereRadius(this.spatialContext);
     this.cooperativeRingRows = props.cooperativeRingRows ?? COOPERATIVE_RING_ROWS;
     const {id} = this;
     const {status, ...output} = props.output ?? {};
@@ -354,6 +373,12 @@ export class GPUGeometryMeasures implements GPUCommandNodeProducer {
       isPoint: props.geometryType === 'points',
       coordinateSystem: this.coordinateSystem,
       radius: this.radius,
+      areaRadius: this.areaRadius,
+      ellipsoid: getGPUEllipsoid(this.spatialContext),
+      lengthScale:
+        this.spatialContext.metric === 'ellipsoidal' && this.spatialContext.units === 'kilometers'
+          ? 0.001
+          : 1,
       featureStats
     };
     const invalidCount = status?.invalidCount;
@@ -526,7 +551,7 @@ function describeGeometryMeasures(
     wgs84: 'ellipsoidal-geodesic',
     geodesic: 'ellipsoidal-geodesic'
   };
-  const lengthUnits = coordinateSystem === 'planar' ? 'native' : (spatialContext.units ?? 'meters');
+  const lengthUnits = getGPULengthUnits(spatialContext);
   return {
     lengthModel: lengthModels[coordinateSystem],
     areaModel: areaModels[coordinateSystem],
@@ -564,34 +589,16 @@ function resolveGeometryMeasureCoordinateSystem(
   spatialContext: GPUSpatialContext,
   ellipsoidalEdgeModel: 'coordinate-linear' | 'geodesic' | undefined
 ): GPUGeometryCoordinateSystem {
-  if (
-    spatialContext.coordinateSpace === 'planar' &&
-    (spatialContext.metric === 'native' || spatialContext.metric === 'none')
-  ) {
-    if (ellipsoidalEdgeModel) {
-      throw new Error(`${id} ellipsoidalEdgeModel requires an ellipsoidal spatial context`);
-    }
+  if (ellipsoidalEdgeModel && spatialContext.metric !== 'ellipsoidal') {
+    throw new Error(`${id} ellipsoidalEdgeModel requires an ellipsoidal spatial context`);
+  }
+  if (spatialContext.coordinateSpace === 'planar') {
     return 'planar';
   }
-  if (
-    spatialContext.coordinateSpace === 'longitude-latitude' &&
-    spatialContext.metric === 'great-circle'
-  ) {
-    if (ellipsoidalEdgeModel) {
-      throw new Error(`${id} ellipsoidalEdgeModel requires an ellipsoidal spatial context`);
-    }
+  if (spatialContext.metric === 'great-circle') {
     return 'spherical';
   }
-  if (
-    spatialContext.coordinateSpace === 'longitude-latitude' &&
-    spatialContext.metric === 'ellipsoidal'
-  ) {
-    if (spatialContext.units === 'kilometers') {
-      throw new Error(`${id} ellipsoidal geometry measures currently publish meters`);
-    }
-    return ellipsoidalEdgeModel === 'coordinate-linear' ? 'wgs84' : 'geodesic';
-  }
-  throw new Error(`${id} spatial context is not supported by geometry measures`);
+  return ellipsoidalEdgeModel === 'coordinate-linear' ? 'wgs84' : 'geodesic';
 }
 
 function validateMeasureColumns(

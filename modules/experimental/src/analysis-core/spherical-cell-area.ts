@@ -9,7 +9,7 @@ import {
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
 import {GPU_EARTH_AUTHALIC_RADIUS_METERS} from './contracts/earth';
-import type {GPUSpatialContext} from './contracts/spatial-context';
+import {getGPUAuthalicSphereRadius} from './contracts/spatial-context';
 import {createWGSLKernelNode, getWGSLFloatLiteral} from '../utils/wgsl-kernel-nodes';
 
 /** Number of float32 rows of a raster placement: `[originLongitude, originLatitude, cellWidth, cellHeight]`. */
@@ -17,7 +17,7 @@ const RASTER_EXTENT_LENGTH = 4;
 const DEGREES_TO_RADIANS = Math.PI / 180;
 
 /**
- * Area in squared meters of one cell of a longitude/latitude raster on a sphere:
+ * Area in the radius' length unit squared of one cell of a longitude/latitude raster on a sphere:
  * `R^2 * dLon * (sin(latTop) - sin(latBottom))`, evaluated as
  * `2 R^2 dLon cos(latMiddle) sin(dLat / 2)` so thin cells do not cancel.
  *
@@ -25,7 +25,7 @@ const DEGREES_TO_RADIANS = Math.PI / 180;
  * @param cellWidth Cell width in degrees of longitude.
  * @param cellHeight Cell height in degrees of latitude.
  * @param row Raster row; row 0 has the smallest latitude.
- * @param radius Sphere radius in meters. Defaults to the WGS84 authalic radius.
+ * @param radius Sphere radius in the desired length unit. Defaults to the WGS84 authalic radius in meters.
  */
 export function getSphericalRasterCellArea(
   originLatitude: number,
@@ -45,10 +45,8 @@ export function getSphericalRasterCellArea(
   );
 }
 
-/** Sphere radius in meters used for the cell areas of `context`. @internal */
-export function getRasterSphereRadius(context: GPUSpatialContext): number {
-  return context.sphereRadius ?? GPU_EARTH_AUTHALIC_RADIUS_METERS;
-}
+/** @deprecated Use getGPUAuthalicSphereRadius. */
+export const getRasterSphereRadius = getGPUAuthalicSphereRadius;
 
 /**
  * Validates the longitude/latitude placement view (`GPUPolygonRasterization.parameters`).
@@ -69,7 +67,7 @@ export function validateGeographicRaster(
 }
 
 /**
- * Declares `getCellArea(row)` in squared meters. Needs an `extent` f32 binding holding
+ * Declares `getCellArea(row)` in the radius' length unit squared. Needs an `extent` f32 binding holding
  * `[originLongitude, originLatitude, cellWidth, cellHeight]` in degrees. A cell size that is not
  * positive gives a non-positive or NaN area, which callers treat as no area. A negative
  * `cellHeight` (north-up rows) gives a negative area, which raster statistics read as `abs`;
@@ -95,7 +93,7 @@ fn getCellArea(row: u32) -> f32 {
 
 /**
  * Declares `getPlacedCellArea(row)` (and everything of {@link getSphericalCellAreaWGSL}): the area
- * in squared meters of a STORED raster row under the placement written by
+ * in the radius' length unit squared of a STORED raster row under the placement written by
  * `getGPUPolygonRasterizationParameterValues`. A negative `cellHeight` means stored rows advance
  * toward smaller latitude, so the row counted from the smallest latitude is mirrored; the area
  * uses `abs(cellHeight)`. With a positive `cellHeight` it equals `getCellArea(row)`. Needs a

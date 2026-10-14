@@ -38,6 +38,7 @@ import {
 } from './spatial-correlogram-parameters';
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -47,6 +48,12 @@ import {
 } from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUSpatialCorrelogram';
+
+/** Pair distances require a distance-compatible planar frame. */
+const SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /** Largest band count: each focus row keeps one private neighbor counter per band. */
 const MAXIMUM_BAND_COUNT = 64;
@@ -134,9 +141,10 @@ export type GPUSpatialCorrelogramProps = {
   id?: string;
   /**
    * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
-   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * Only planar contexts are supported: pair distances are Euclidean, so a
    * `longitude-latitude` context throws at construction (project positions to a planar frame
    * first).
+   * Lambert equal-area frames are rejected because this operator measures distance.
    */
   spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
@@ -214,7 +222,7 @@ export class GPUSpatialCorrelogram implements GPUCommandNodeProducer {
     this.id = props.id ?? 'spatial-correlogram';
     this.props = props;
     const id = this.id;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH

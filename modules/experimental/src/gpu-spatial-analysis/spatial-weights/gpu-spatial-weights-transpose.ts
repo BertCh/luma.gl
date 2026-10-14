@@ -134,6 +134,7 @@ export class GPUSpatialWeightsTranspose implements GPUCommandNodeProducer {
     this.columnCount = columns;
     const inputTransform = weights.information?.transform ?? 'unknown';
     this.outputWeights = describeGPUSpatialWeights(output, {
+      spatialContext: weights.spatialContext,
       information: {
         rowCount: columns,
         transform:

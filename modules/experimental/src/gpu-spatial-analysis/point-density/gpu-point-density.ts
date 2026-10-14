@@ -30,6 +30,7 @@ import {
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSampledSurfacePort,
   type GPUSpatialContext
@@ -49,6 +50,12 @@ import {
   createFixedPointScaleNodes,
   FIXED_POINT_WORD_COUNT
 } from '../../utils/fixed-point-accumulator';
+
+/** Spatial contexts supported by this area-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
+} as const);
 
 /** Cell shape. `'grid'` is row-major rectangular cells; `'hexagon'` is pointy-top odd-r hexagons. */
 export type GPUPointDensityBinning = 'grid' | 'hexagon';
@@ -255,7 +262,11 @@ export class GPUPointDensity implements GPUCommandNodeProducer {
   constructor(props: GPUPointDensityProps) {
     this.id = props.id ?? 'point-density';
     this.props = props;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.binning = props.binning ?? 'grid';
     this.statistic = props.statistic ?? 'count';
     const id = this.id;

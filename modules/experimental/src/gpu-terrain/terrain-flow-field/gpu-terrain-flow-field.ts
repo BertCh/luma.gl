@@ -210,7 +210,7 @@ const DIRECTION_PREVIOUS_ROW: u32 = 6u;`,
   let exaggeration = settings[settingsOffset + 6u];
   var gradientX = 0.0;
   if (column1 > column0) {
-    let spanX = f32(column1 - column0) * getGroundCellSize(f32(row) + 0.5).x;
+    let spanX = f32(column1 - column0) * getGroundCellSizeAtRowCoordinate(f32(row) + 0.5).x;
     gradientX = exaggeration * ((nextColumn - previousColumn) / spanX);
   }
   var gradientY = 0.0;

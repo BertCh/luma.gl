@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
 } from '../../analysis-core/contracts/spatial-context';
 import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
@@ -34,9 +34,17 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
 } from '../../analysis-core/network-topology';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUSpatialContext,
+  GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
 import {GEODESIC_WGSL} from '../../gpu-spatial-analysis/geometry-measures/geodesic-wgsl';
 import {GPU_NETWORK_LINE_GRAPH_PARAMETER_LENGTH} from './network-line-graph-parameters';
+
+const LINE_GRAPH_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 const OPERATION = 'GPUNetworkLineGraph';
 
@@ -79,7 +87,9 @@ export type GPUNetworkLineGraphProps = {
   /**
    * Coordinates of `topology.nodePositions`. Omitted means native planar coordinates (x east, y north).
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
-   * turn angles between great-circle bearings at the turn node.
+   * turn angles between great-circle bearings at the turn node. Meter and kilometer contexts
+   * produce the same angles; travel costs keep the caller's units. Local planar frames must
+   * be azimuthal-equidistant, not Lambert equal-area.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -179,7 +189,7 @@ export class GPUNetworkLineGraph implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      LINE_GRAPH_SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {

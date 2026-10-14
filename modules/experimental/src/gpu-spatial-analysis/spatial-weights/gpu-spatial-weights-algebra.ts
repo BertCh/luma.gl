@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUSpatialContexts,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUSort,
   type GPUCommandGraph,
@@ -326,6 +330,13 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
     this.props = props;
     const outputRows = validateGPUSpatialWeightsOutput(id, props.output);
     const inputs = this.getInputWeights();
+    let spatialContext: GPUSpatialContext | undefined;
+    for (const input of inputs) {
+      if (spatialContext && input.spatialContext) {
+        assertCompatibleGPUSpatialContexts(id, spatialContext, input.spatialContext);
+      }
+      spatialContext ??= input.spatialContext;
+    }
     const checkRows = (weights: GPUSpatialWeights, name: string) => {
       const rows = validateGPUSpatialWeights(id, weights, name);
       if (rows !== outputRows) {
@@ -398,6 +409,7 @@ export class GPUSpatialWeightsAlgebra implements GPUCommandNodeProducer {
       throw new Error(`${id} output.distances requires weights.distances`);
     }
     this.outputWeights = describeGPUSpatialWeights(props.output, {
+      spatialContext,
       information: getAlgebraOutputInformation(props, outputRows),
       status: {
         ...props.output.status,

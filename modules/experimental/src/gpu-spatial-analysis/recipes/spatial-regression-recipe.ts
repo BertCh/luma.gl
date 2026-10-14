@@ -8,7 +8,7 @@ import type {
   GPUCommandNodeProducer,
   GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
+import type {GPUInferenceMetadata, GPUSpatialContext} from '../../analysis-core/contracts/index';
 import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
@@ -196,8 +196,10 @@ class SpatialRegressionSpecificationSearch implements GPUCommandNodeProducer<nev
 
 /** Optional geographically weighted fits added to the regression recipe. */
 export type GPUSpatialRegressionLocalFitOptions = {
-  /** Planar positions, one per row, in the units of the bandwidths. */
+  /** Positions in the coordinates of `spatialContext`, one per row. */
   positions: GraphDataView<'float32x2'>;
+  /** Context of `positions`; bandwidths use its length unit. Omitted means native planar. */
+  spatialContext?: GPUSpatialContext;
   /** `getGPUGeographicallyWeightedRegressionParameterValues` view. */
   parameters: GraphDataView<'float32'>;
   /** Compile-time ladder capacity (default of the contributor: 32). */
@@ -587,6 +589,7 @@ export function addSpatialRegressionRecipe<Parameters>(
       new GPUGeographicallyWeightedRegression({
         id: `${id}-gwr`,
         positions: local.positions,
+        spatialContext: local.spatialContext,
         predictors: props.predictors,
         predictorCount,
         response: props.response,

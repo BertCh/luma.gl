@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUSpatialContexts,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   type GPUCommandGraph,
   type GPUCommandNode,
   type GraphDataView
@@ -62,10 +66,12 @@ export type GPULocalOutlierFactorProps = {
    * different, density-dependent statistic. With ties at the k-th distance the k-distance
    * neighborhood has more than `k` members (Breunig et al. 2000); a list cut at exactly `k`
    * entries drops the tied points and changes the scores (scikit-learn does the same). Distances
-   * are used as given: compute them in a projected planar frame, because raw lon/lat degrees distort
-   * with latitude. Neighbor IDs at or above the row count are skipped.
+   * are used as given; `GPUNeighborSearch` carries their `spatialContext` on the neighbors.
+   * Neighbor IDs at or above the row count are skipped.
    */
   neighbors: GPUSpatialWeights;
+  /** Context of the packed densityFloor, checked against neighbors.spatialContext when both exist. */
+  spatialContext?: GPUSpatialContext;
   /**
    * Per-frame parameters: packed float32 view of at least
    * `GPU_LOCAL_OUTLIER_FACTOR_PARAMETER_LENGTH` elements written with
@@ -96,9 +102,9 @@ export type GPULocalOutlierFactorProps = {
  * count as a cluster rather than as outliers (Breunig et al. 2000); the score scale shifts with
  * `k`, so compare scores only across runs with the same `k`.
  *
- * Coordinates: the class reads only the neighbor table and its distances, not positions, so it
- * takes no `spatialContext`; the neighbor search that produced the distances owns that choice, and
- * planar (projected) distances are expected.
+ * Coordinates: neighbors carry their own `spatialContext` from `GPUNeighborSearch`. LOF is a
+ * unit-free ratio, but `densityFloor` is added to a distance: its optional `spatialContext`
+ * is checked against the neighbors' context when both are supplied.
  *
  * Duplicates: `densityFloor` (default 1e-10, scikit-learn's value) keeps a cluster of coincident
  * points, whose mean reachability is 0, finite at density `1 / densityFloor`; points whose
@@ -122,6 +128,9 @@ export class GPULocalOutlierFactor implements GPUCommandNodeProducer {
     const id = props.id ?? 'local-outlier-factor';
     this.id = id;
     this.props = props;
+    if (props.neighbors.spatialContext && props.spatialContext) {
+      assertCompatibleGPUSpatialContexts(id, props.neighbors.spatialContext, props.spatialContext);
+    }
     const rows = validateGPUSpatialWeights(id, props.neighbors, 'neighbors');
     if (!props.neighbors.distances) {
       throw new Error(`${id} neighbors.distances is required`);

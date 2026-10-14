@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 import type {GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {
   validateGPUStatusPort,
@@ -32,6 +33,12 @@ import {validateCapacity, validatePackedView} from '../../utils/gpu-contributor-
  * contributors require square self-join weights where `neighbors` index the same rows as `offsets`.
  */
 export type GPUSpatialWeights = GPUSpatialWeightsPort & {
+  /**
+   * Resolved spatial context of the positions the weights were built from; `distances` and
+   * `information.provenance.radius` are in its length unit. Producers that measure distance set
+   * it; topology-only producers (contiguity, lattice) and uploads may omit it.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Optional CPU-side description of how the weights were built. Producers in this package attach
    * it to the weights they expose; uploaded weights may omit it, which consumers read as
@@ -71,7 +78,7 @@ export type GPUSpatialWeightsProvenance = {
   criterion?: string;
   /** `k` of a kNN criterion. */
   k?: number;
-  /** Distance band or kernel bandwidth, in the units of the spatial context. */
+  /** Distance band or kernel bandwidth, in the length unit of {@link GPUSpatialWeights.spatialContext}. */
   radius?: number;
   /** Order of a higher-order or cumulative contiguity matrix. */
   order?: number;
@@ -279,16 +286,22 @@ export function getGPUSpatialWeightsStatusViews(
  * their `outputWeights`.
  *
  * @param weights Caller-owned views.
- * @param description Metadata and status to attach. `status` entries replace those of `weights`.
+ * @param description Metadata, spatial context and status to attach. `status` entries replace those of `weights`.
  */
 export function describeGPUSpatialWeights(
   weights: GPUSpatialWeights,
-  description: {information: GPUSpatialWeightsInformation; status?: GPUSpatialWeights['status']}
+  description: {
+    information: GPUSpatialWeightsInformation;
+    status?: GPUSpatialWeights['status'];
+    /** Spatial context to attach; omitted preserves the input context. */
+    spatialContext?: GPUSpatialContext;
+  }
 ): GPUSpatialWeights {
   const status = {...weights.status, ...description.status};
   return {
     ...weights,
     information: description.information,
+    spatialContext: description.spatialContext ?? weights.spatialContext,
     status: Object.keys(status).length > 0 ? status : undefined
   };
 }

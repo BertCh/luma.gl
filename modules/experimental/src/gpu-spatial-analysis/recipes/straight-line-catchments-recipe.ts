@@ -4,6 +4,7 @@
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -31,6 +32,12 @@ import {
 } from './recipe-utils';
 
 const ID = 'GPUStraightLineCatchmentsRecipe';
+
+/** Native planar distances for the recipe's radius-based stages. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /** Properties for {@link addStraightLineCatchmentsRecipe}. */
 export type GPUStraightLineCatchmentsRecipeProps = GPURecipeOverrides<
@@ -120,7 +127,11 @@ export function addStraightLineCatchmentsRecipe<Parameters>(
   props: GPUStraightLineCatchmentsRecipeProps
 ): GPUStraightLineCatchmentsRecipeResult {
   const id = props.id ?? 'straight-line-catchments';
-  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    props.spatialContext,
+    SPATIAL_CONTEXT_SUPPORT
+  );
   const builder = new RecipeBuilder(graph);
   const {grid} = props;
   const cellCount = grid.width * grid.height;

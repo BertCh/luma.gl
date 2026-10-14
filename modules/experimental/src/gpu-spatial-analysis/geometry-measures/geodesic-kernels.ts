@@ -3,10 +3,13 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
-import {GPU_GEODESIC_WGS84_FLATTENING, GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS} from './geodesic-wgsl';
+import {
+  GPU_WGS84_ELLIPSOID,
+  type GPUSpatialEllipsoid
+} from '../../analysis-core/contracts/spatial-context';
 
 /**
- * Earth model of the geodesic column contributors: great circles on a sphere, Vincenty on WGS84,
+ * Earth model of the geodesic column contributors: great circles on a sphere, Vincenty on the context ellipsoid (`wgs84`),
  * or `'rhumb'` lines of constant bearing on a sphere (turf `rhumb*`, `geo` `Rhumb`).
  */
 export type GPUGeodesicModel = 'sphere' | 'wgs84' | 'rhumb';
@@ -31,25 +34,28 @@ struct VincentyDirect {
 `;
 
 /**
- * Returns the WGSL of the WGS84 Vincenty inverse and direct solutions in f32, rewritten so short
+ * Returns the WGSL of the ellipsoidal Vincenty inverse and direct solutions in f32, rewritten so short
  * lines stay well conditioned: the reduced-latitude difference comes from `Δφ` minus the small
  * gap `φ - β` (never from two rounded reduced latitudes), and `cos U1 sin U2 - sin U1 cos U2 cos λ`
  * is evaluated as `sin(ΔU) + 2 sin U1 cos U2 sin²(λ / 2)`. Iterations stop at a compile-time cap;
  * rows that do not converge (near-antipodal) report `converged = false`. Callers prepend
- * `GEODESIC_WGSL`.
+ * `GEODESIC_WGSL`. Distances use the unit of the ellipsoid's semi-major axis.
  *
  * @internal
  */
-export function getVincentyWGSL(iterations: number): string {
-  const semiMinorAxis = GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS * (1 - GPU_GEODESIC_WGS84_FLATTENING);
-  const a = GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS;
+export function getVincentyWGSL(
+  iterations: number,
+  ellipsoid: GPUSpatialEllipsoid = GPU_WGS84_ELLIPSOID
+): string {
+  const {semiMajorAxis, flattening} = ellipsoid;
+  const semiMinorAxis = semiMajorAxis * (1 - flattening);
   return /* wgsl */ `
 ${VINCENTY_INVERSE_STRUCT}
-const VINCENTY_A: f32 = ${getWGSLFloatLiteral(a)};
+const VINCENTY_A: f32 = ${getWGSLFloatLiteral(semiMajorAxis)};
 const VINCENTY_B: f32 = ${getWGSLFloatLiteral(semiMinorAxis)};
-const VINCENTY_F: f32 = ${getWGSLFloatLiteral(GPU_GEODESIC_WGS84_FLATTENING)};
+const VINCENTY_F: f32 = ${getWGSLFloatLiteral(flattening)};
 // (a^2 - b^2) / b^2
-const VINCENTY_SECOND_ECCENTRICITY_SQUARED: f32 = ${getWGSLFloatLiteral((a * a - semiMinorAxis * semiMinorAxis) / (semiMinorAxis * semiMinorAxis))};
+const VINCENTY_SECOND_ECCENTRICITY_SQUARED: f32 = ${getWGSLFloatLiteral((semiMajorAxis * semiMajorAxis - semiMinorAxis * semiMinorAxis) / (semiMinorAxis * semiMinorAxis))};
 const VINCENTY_ITERATIONS: u32 = ${iterations}u;
 
 fn getReducedLatitudeGap(phi: f32) -> f32 {

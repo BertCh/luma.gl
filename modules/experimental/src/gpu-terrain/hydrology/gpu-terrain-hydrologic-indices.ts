@@ -246,7 +246,7 @@ export class GPUTerrainHydrologicIndices implements GPUCommandNodeProducer {
   var minimumSlope = settings[settingsOffset + 4u];
   if (!(minimumSlope >= 0.0) || !isFiniteValue(minimumSlope)) { minimumSlope = 0.0; }
   let tangent = max(steepest, minimumSlope);
-  let ground = getGroundCellSize(f32(row) + 0.5);
+  let ground = getGroundCellSizeAtRowCoordinate(f32(row) + 0.5);
   let catchment = area / sqrt(ground.x * ground.y);
   // WGSL leaves division by zero and log(0) unspecified, so the limits are written explicitly.
   var wetness = getInfinity();

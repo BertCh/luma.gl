@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGroupStatistics} from '../../gpu-dataframe/group-statistics/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -33,6 +34,12 @@ import {
 } from './recipe-utils';
 
 const ID = 'GPUFleetDwellRecipe';
+
+/** Native planar distances for the recipe's radius-based stages. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /**
  * Caller-owned per-zone statistics table of the fleet dwell recipes. Every view is optional.
@@ -265,7 +272,11 @@ export function addFleetDwellRecipe<Parameters>(
   props: GPUFleetDwellRecipeProps
 ): GPUFleetDwellRecipeResult {
   const id = props.id ?? 'fleet-dwell';
-  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    props.spatialContext,
+    SPATIAL_CONTEXT_SUPPORT
+  );
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};
@@ -521,7 +532,11 @@ export function addFleetDwellZoneEventsRecipe<Parameters>(
   props: GPUFleetDwellZoneEventsRecipeProps
 ): GPUFleetDwellZoneEventsRecipeResult {
   const id = props.id ?? 'fleet-dwell-zone-events';
-  const spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    props.spatialContext,
+    SPATIAL_CONTEXT_SUPPORT
+  );
   const builder = new RecipeBuilder(graph);
   const outputs = props.outputs ?? {};
   const scratch = props.scratch ?? {};

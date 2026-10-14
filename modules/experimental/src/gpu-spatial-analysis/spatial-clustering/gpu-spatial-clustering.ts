@@ -43,6 +43,7 @@ import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {GPU_SPATIAL_CLUSTERING_PARAMETER_LENGTH} from './spatial-clustering-parameters';
 import {
   getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
@@ -50,8 +51,8 @@ import {
 
 /** Planar (native) or longitude/latitude with the great-circle metric. */
 const CLUSTERING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
 });
 
 const OPERATION = 'GPUSpatialClustering';

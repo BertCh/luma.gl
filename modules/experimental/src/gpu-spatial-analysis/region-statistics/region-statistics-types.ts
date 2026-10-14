@@ -239,9 +239,16 @@ export const GPU_REGION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Obje
   metrics: Object.freeze(['none', 'native'] as const)
 });
 
+/** Radius selections measure planar distance and require a distance-compatible frame. */
+const GPU_REGION_RADIUS_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_REGION_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 /**
  * Validates a region operation's spatial context. A `'radius'` selection throws in
- * longitude/latitude because its radius is a planar distance in position units.
+ * longitude/latitude because its radius is a planar distance in position units, and rejects
+ * Lambert equal-area frames because they do not preserve distance.
  * @internal
  */
 export function resolveGPURegionSpatialContext(
@@ -249,7 +256,13 @@ export function resolveGPURegionSpatialContext(
   context: GPUSpatialContext | undefined,
   regionKind: GPURegionSelection['kind'] | undefined
 ): GPUSpatialContext {
-  const resolved = resolveGPUSpatialContext(id, context, GPU_REGION_SPATIAL_CONTEXT_SUPPORT);
+  const resolved = resolveGPUSpatialContext(
+    id,
+    context,
+    regionKind === 'radius'
+      ? GPU_REGION_RADIUS_SPATIAL_CONTEXT_SUPPORT
+      : GPU_REGION_SPATIAL_CONTEXT_SUPPORT
+  );
   if (regionKind === 'radius' && resolved.coordinateSpace === 'longitude-latitude') {
     // A radius is a planar distance in position units.
     throw new Error(`${id} radius regions need planar coordinates`);

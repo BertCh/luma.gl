@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {GPU_EARTH_MEAN_RADIUS_METERS} from './earth';
+import {
+  GPU_EARTH_AUTHALIC_RADIUS_METERS,
+  GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_WGS84_FLATTENING,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from './earth';
 
 /** Logical coordinate spaces consumed by spatial-analysis operations. */
 export type GPUSpatialCoordinateSpace =
@@ -14,7 +19,10 @@ export type GPUSpatialCoordinateSpace =
 /** Metric applied to coordinates, kept separate from their coordinate space. */
 export type GPUSpatialMetric = 'none' | 'native' | 'great-circle' | 'rhumb' | 'ellipsoidal';
 
-/** Units of metric results. Native units are meaningful only for a native planar metric. */
+/**
+ * Units of metric results. `'native'` is meaningful only for a native planar metric; a planar
+ * native context may also declare `'meters'` when its native unit is the meter (local frames do).
+ */
 export type GPUSpatialUnit = 'native' | 'meters' | 'kilometers';
 
 /** Parameters of an ellipsoidal metric model. */
@@ -77,8 +85,13 @@ export function validateGPUSpatialContext(id: string, context: GPUSpatialContext
     // Spatial analysis does not silently reinterpret or reproject coordinates.
     throw new Error(`${id} metric ${metric} is incompatible with ${coordinateSpace}`);
   }
-  if (metric === 'native' && context.units && context.units !== 'native') {
-    throw new Error(`${id} native metrics must use native units`);
+  if (
+    metric === 'native' &&
+    context.units &&
+    context.units !== 'native' &&
+    context.units !== 'meters'
+  ) {
+    throw new Error(`${id} native metrics must use native or meters units`);
   }
   if (
     metric !== 'none' &&
@@ -123,6 +136,9 @@ export function validateGPUSpatialContext(id: string, context: GPUSpatialContext
   }
 }
 
+/** Quantity an operation measures, which decides the planar local frame kind it accepts. */
+export type GPUSpatialMeasure = 'distance' | 'area';
+
 /** Coordinate spaces and metrics an operation accepts, declared next to its implementation. */
 export type GPUSpatialContextSupport = {
   coordinateSpaces: readonly GPUSpatialCoordinateSpace[];
@@ -137,6 +153,14 @@ export type GPUSpatialContextSupport = {
   >;
   /** Accepted result units. Omitted accepts any unit valid for the metric. */
   units?: readonly GPUSpatialUnit[];
+  /**
+   * What the operation measures. `'distance'` rejects contexts whose frame is
+   * `'local-lambert-equal-area'`; `'area'` (densities included) rejects
+   * `'local-azimuthal-equidistant'`. `'crs'` frames and contexts without a frame always pass.
+   * Either value also requires the `'native'` metric for planar positions (planar `'none'` declares
+   * that nothing is measured). Omit for operations that measure both or neither.
+   */
+  measure?: GPUSpatialMeasure;
 };
 
 /** The context assumed when an operation is given none: native planar coordinates. */
@@ -183,6 +207,20 @@ export function resolveGPUSpatialContext(
   if (support.units && resolved.units !== undefined && !support.units.includes(resolved.units)) {
     throw new Error(
       `${id} units ${resolved.units} are not supported; results are in ${support.units.join(' or ')}`
+    );
+  }
+  if (support.measure && resolved.coordinateSpace === 'planar' && resolved.metric === 'none') {
+    throw new Error(`${id} planar positions need the native metric`);
+  }
+  const frameKind = resolved.frame?.kind;
+  if (support.measure === 'distance' && frameKind === 'local-lambert-equal-area') {
+    throw new Error(
+      `${id} measures distance; project into an azimuthal-equidistant frame, not lambert-equal-area`
+    );
+  }
+  if (support.measure === 'area' && frameKind === 'local-azimuthal-equidistant') {
+    throw new Error(
+      `${id} measures area; project into a lambert-equal-area frame, not azimuthal-equidistant`
     );
   }
   return resolved;
@@ -289,6 +327,43 @@ export function getGPUSphereRadius(context: GPUSpatialContext): number {
 }
 
 /**
+ * Sphere radius for spherical *areas* in the context's length unit: `sphereRadius` when given,
+ * else the WGS84 authalic (equal-area) radius in meters (or kilometers when `units` is
+ * `'kilometers'`). Areas computed with it are in the context's length unit squared. Spherical
+ * distances use {@link getGPUSphereRadius} (mean radius) instead.
+ */
+export function getGPUAuthalicSphereRadius(context: GPUSpatialContext): number {
+  return (
+    context.sphereRadius ??
+    (context.units === 'kilometers'
+      ? GPU_EARTH_AUTHALIC_RADIUS_METERS / 1000
+      : GPU_EARTH_AUTHALIC_RADIUS_METERS)
+  );
+}
+
+/** The WGS84 ellipsoid: semi-major axis in meters and flattening. */
+export const GPU_WGS84_ELLIPSOID: GPUSpatialEllipsoid = Object.freeze({
+  semiMajorAxis: GPU_WGS84_SEMI_MAJOR_AXIS_METERS,
+  flattening: GPU_WGS84_FLATTENING
+});
+
+/**
+ * Ellipsoid of an ellipsoidal context: `context.ellipsoid` when given, else WGS84. The semi-major
+ * axis is in meters; ellipsoidal kernels bake both parameters into their shaders.
+ */
+export function getGPUEllipsoid(context: GPUSpatialContext): GPUSpatialEllipsoid {
+  return context.ellipsoid ?? GPU_WGS84_ELLIPSOID;
+}
+
+/**
+ * Length unit of a context's metric results: `context.units` when declared, else `'native'` for
+ * planar coordinates and `'meters'` for geographic metrics. Feeds {@link GPUMeasureDescription}.
+ */
+export function getGPULengthUnits(context: GPUSpatialContext): GPUSpatialUnit {
+  return context.units ?? (context.coordinateSpace === 'planar' ? 'native' : 'meters');
+}
+
+/**
  * Sphere radius of a great-circle context in the context's length unit, or `undefined` for any
  * other metric (planar distances). The one place kernels derive their default radius.
  */
@@ -312,7 +387,12 @@ export function getGPUSpatialContextCompatibility(
   if (source.metric !== 'none' && target.metric !== 'none' && source.metric !== target.metric) {
     return {compatible: false, reason: `metrics differ (${source.metric} and ${target.metric})`};
   }
-  if (source.units && target.units && source.units !== target.units) {
+  if (
+    source.units &&
+    target.units &&
+    source.units !== target.units &&
+    !isDeclaredPlanarMeters(source, target)
+  ) {
     return {compatible: false, reason: `units differ (${source.units} and ${target.units})`};
   }
   if (!equalOptionalNumber(source.sphereRadius, target.sphereRadius)) {
@@ -350,6 +430,14 @@ export function assertCompatibleGPUSpatialContexts(
   if ('reason' in compatibility) {
     throw new Error(`${id} incompatible spatial contexts: ${compatibility.reason}`);
   }
+}
+
+/** Planar `'native'` units are undeclared, so they match a planar frame declared in meters. */
+function isDeclaredPlanarMeters(source: GPUSpatialContext, target: GPUSpatialContext): boolean {
+  const units = [source.units, target.units];
+  return (
+    source.coordinateSpace === 'planar' && units.includes('native') && units.includes('meters')
+  );
 }
 
 function isPositiveFinite(value: number): boolean {

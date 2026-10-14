@@ -13,15 +13,15 @@ export type GPUNetworkIsochronesSettings = {
    * and the last band everything at or above the last active break (including unreached pixels).
    */
   breakCount: number;
-  /** Raster extent `[minX, minY, maxX, maxY]` in the units of `nodePositions`. Row 0 is at `minY`. */
+  /** Raster extent `[minX, minY, maxX, maxY]` in the context's length unit. Row 0 is at `minY`. */
   extent: readonly [number, number, number, number];
   /**
-   * Walking buffer radius in `nodePositions` units. Pixels within it of an edge sample get that
+   * Walking buffer radius in the context's length unit. Pixels within it of an edge sample get that
    * sample's cost plus `walkCostPerUnit` times the distance. The effective radius is at least half
    * a pixel diagonal so every sample marks its own pixel. Defaults to 0.
    */
   bufferRadius?: number;
-  /** Cost per distance unit walked off the network inside the buffer. Defaults to 0. */
+  /** Cost per context length unit walked off the network inside the buffer. Defaults to 0. */
   walkCostPerUnit?: number;
   /** First band emitted as geometry. Defaults to 0. */
   firstBand?: number;

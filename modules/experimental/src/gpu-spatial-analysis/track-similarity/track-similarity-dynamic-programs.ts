@@ -151,7 +151,7 @@ var<workgroup> sharedReachable: u32;
 var<workgroup> reachableCounter: atomic<u32>;
 var<workgroup> boundaryReachableCounter: atomic<u32>;
 ${COUPLED_METRIC_WGSL}
-// Epsilon in the internal metric space of pointMetric (squared planar distance, or meters).
+// Epsilon in the internal metric space of pointMetric (squared planar distance, or the context's length unit).
 fn getEpsilonMetric(epsilon: f32) -> f32 {
   ${isGreatCircle ? 'return epsilon;' : 'return epsilon * epsilon;'}
 }

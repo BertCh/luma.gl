@@ -8,7 +8,7 @@ export const GPU_LINE_SIMPLIFICATION_PARAMETER_LENGTH = 4;
 /** CPU description of the per-frame parameters of `GPULineSimplification`. */
 export type GPULineSimplificationSettings = {
   /**
-   * Douglas-Peucker tolerance in position units (meters in a great-circle context). A vertex is kept when its importance is strictly
+   * Douglas-Peucker tolerance in position units (the context length unit in a great-circle context). A vertex is kept when its importance is strictly
    * greater than the tolerance, which is the classic `dmax > epsilon` split rule. Line endpoints
    * are always kept. Must be finite and non-negative.
    */

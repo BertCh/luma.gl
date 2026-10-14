@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
@@ -37,13 +37,21 @@ import {
 } from '../../analysis-core/network-topology';
 import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 import {PERMUTATION_RANDOM_WGSL} from '../../gpu-spatial-analysis/permutation-inference/permutation-random';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUSpatialContext,
+  GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
 import {GPUNetworkSnapping} from '../network-accessibility/index';
 import {recommendLaneCount} from '../network-accessibility/network-accessibility-lanes';
 import {ACCESSIBILITY_NONE} from '../network-accessibility/network-accessibility-passes';
 import {GPUNetworkReachability} from '../network-reachability/index';
 import {GPU_NETWORK_K_FUNCTION_PARAMETER_LENGTH} from './network-k-function-parameters';
 import {PHILOX_PURPOSES} from '../../utils/philox-random';
+
+const K_FUNCTION_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 const OPERATION = 'GPUNetworkKFunction';
 
@@ -91,7 +99,7 @@ export type GPUNetworkKFunctionOutput = {
   /**
    * `(1 + simulationCount) * bandCount` float32 values: `K(d_k)` of the observed pattern in row 0
    * (the first `bandCount` values) and of simulation `s` in row `s`, where
-   * `d_k = maximumDistance * k / (bandCount - 1)`.
+   * `d_k = maximumDistance * k / (bandCount - 1)`, in the context's length unit.
    */
   kValues: GraphDataView<'float32'>;
   /**
@@ -101,7 +109,7 @@ export type GPUNetworkKFunctionOutput = {
   pairCounts?: GraphDataView<'uint32'>;
   /**
    * Optional `3 * bandCount` float32 simulation envelope: the minimum, the mean and the maximum
-   * of the active simulations per band, in three consecutive rows of `bandCount` values.
+   * of the active simulations per band, in the context's length unit, in three consecutive rows.
    * All zero without active simulations.
    */
   envelope?: GraphDataView<'float32'>;
@@ -133,8 +141,10 @@ export type GPUNetworkKFunctionProps = {
   /**
    * Coordinates of `positions` and `topology.nodePositions`, passed to `GPUNetworkSnapping`. Omitted means
    * native planar coordinates. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
-   * snaps longitude/latitude events with great-circle meters; `topology.weights`, `maximumSnapDistance`,
-   * `maximumDistance` and `networkLength` are then meters.
+   * snaps longitude/latitude events with great-circle distances in the context's length unit
+   * (meters by default, or kilometers), as are `topology.weights`, `maximumSnapDistance`,
+   * `maximumDistance`, `networkLength`, `kValues` and `envelope`. Local planar frames must be
+   * azimuthal-equidistant, not Lambert equal-area.
    */
   spatialContext?: GPUSpatialContext;
   /** Events (for example points of interest) to snap onto the network. */
@@ -144,19 +154,19 @@ export type GPUNetworkKFunctionProps = {
    * directions of every road. Edge slots past `offsets[nodeCount]` (a topology shorter than its
    * edge capacity) are not part of the network: they are never snapped to or drawn by the
    * simulation. `weights` are the non-negative lengths (costs) per edge, equal for the two
-   * directions of a road.
+   * directions of a road, in the context's length unit.
    */
   topology: GPUNetworkTopology & {nodePositions: GraphDataView<'float32x2'>};
-  /** Optional one-row maximum snap distance. Events farther from every edge are excluded. */
+  /** Optional one-row maximum snap distance in the context's length unit. Events farther from every edge are excluded. */
   maximumSnapDistance?: GraphDataView<'float32'>;
   /** Optional compile-time candidate capacity of `GPUNetworkSnapping`. Requires `maximumSnapDistance`. */
   candidateCapacity?: number;
   /** Compile-time. Morton-sort edges before the BVH build of the snapping candidate search. */
   spatialSort?: boolean;
-  /** One-row largest distance `d_max` of the K function: the distance bands span `[0, d_max]`. */
+  /** One-row largest distance `d_max` in the context's length unit: the distance bands span `[0, d_max]`. */
   maximumDistance: GraphDataView<'float32'>;
   /**
-   * One-row total length `L` of the network with every road counted once, that is, half of the sum
+   * One-row total length `L` in the context's length unit with every road counted once, that is, half of the sum
    * of `topology.weights` over the live rows `0..offsets[nodeCount]` of a topology that lists both
    * directions.
    * It scales K. The random edge draw is quantized against the longest live edge (a GPU maximum),
@@ -213,8 +223,8 @@ export type GPUNetworkKFunctionProps = {
  * minimum, mean and maximum of the simulated K values.
  *
  * Network distances come from `topology.weights` only; positions are used to snap events. With a
- * great-circle `spatialContext` events are snapped in great-circle meters on longitude/latitude
- * positions, so `topology.weights` should be meters too.
+ * great-circle `spatialContext` events are snapped on longitude/latitude positions. Every distance
+ * input and output, including `topology.weights`, is in the context's length unit.
  *
  * Roads that share both end nodes (parallel edges) count as one road when two events fall on them.
  * Each block adds about `maximumIterations + 6` command nodes and the total is
@@ -251,7 +261,7 @@ export class GPUNetworkKFunction implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      K_FUNCTION_SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {

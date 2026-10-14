@@ -115,6 +115,8 @@ export type GPUMapColoringProps = {
    * separate polygons that touch at a point). Only the pattern is used, so weights of any value
    * work. The pattern must be symmetric (`j` in row `i` implies `i` in row `j`); an asymmetric
    * pattern can yield a color conflict, which `conflictCount` reports.
+   * Weights from `GPUNeighborSearch` carry their own `spatialContext`; topology-only weights
+   * may omit it. No context check is needed because coloring uses only adjacency.
    */
   weights: GPUSpatialWeights;
   /**

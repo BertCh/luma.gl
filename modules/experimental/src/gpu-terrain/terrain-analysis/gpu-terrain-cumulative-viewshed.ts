@@ -34,9 +34,18 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
   validateRasterGrid,
+  validateRasterGridAxisAligned,
   validateRasterParameters
 } from '../../gpu-raster/raster-band-utils';
-import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
+import {
+  type GPURasterCellSizeMode,
+  validateRasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getTerrainSightLineGroundCellWGSL,
+  getTerrainSightLineWGSL,
+  type GPUTerrainSightLineTraversal
+} from './terrain-sight-line';
 
 /**
  * Default sight-line samples per {@link GPUTerrainCumulativeViewshed} dispatch (2^28), which keeps
@@ -58,14 +67,25 @@ export type GPUTerrainCumulativeViewshedOutput = {
 /**
  * Properties for {@link GPUTerrainCumulativeViewshed}.
  *
- * Cell-size model: projected metres on a planar grid, see `GPUTerrainLineOfSightSettings`
- * (curvature conventions: mt-image `k = 0.13`, GDAL `-cc 0.85714` is `k = 1 / 7`).
+ * Cell-size model: `'uniform'` (default) treats grid world units as ground meters on a planar
+ * grid. `'geographic'` and `'web-mercator'` use a WGS84 ground cell evaluated at each ray's middle
+ * row, held constant along that ray. Along-ray scale change is ignored, so range boundaries and
+ * curvature drops are approximate on long rays, especially at high latitudes.
+ * Rays join pixel positions, with row order supplied by the affine; there is no azimuth input,
+ * so no `getPixelDirection` conversion or `rowDirection` prop is needed.
  */
 export type GPUTerrainCumulativeViewshedProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-cumulative-viewshed'`. */
   id?: string;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
+  /**
+   * Cell-size interpretation. Defaults to `'uniform'`: grid world units are ground meters
+   * (projected planar grid). `'geographic'` uses a degree grid; `'web-mercator'` uses EPSG:3857.
+   * In both non-uniform modes, maximumDistance, curvature drop `c * d^2`, tolerance bands,
+   * targetIgnoreDistance and clearance are in WGS84 ground meters, using the ray's middle row.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
   /** Observers as `[column, row]` in pixel-center index space; fractional values allowed. */
@@ -116,7 +136,7 @@ export type GPUTerrainCumulativeViewshedProps = {
  * (not bilinear), exactly as in {@link GPUTerrainViewshed}, so the counts equal the sum of the
  * single-observer viewsheds.
  *
- * Cell-size model: projected metres (planar). Cost is
+ * Cell-size model: see {@link GPUTerrainCumulativeViewshedProps}. Cost is
  * O(observers * width * height * max(width, height)) samples for `'march'`.
  */
 export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
@@ -140,6 +160,8 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     validatePackedView(props.observers, ['float32x2'], `${id} observers`);
     if (props.observerHeights) {
       validatePackedView(props.observerHeights, ['float32'], `${id} observerHeights`);
@@ -202,6 +224,9 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
     const {id, props, pyramidLayout} = this;
     const {output} = props;
     const {width, height} = props.grid;
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const groundCellDeclarations =
+      cellSizeMode === 'uniform' ? '' : getTerrainSightLineGroundCellWGSL(cellSizeMode);
     const pixelCount = width * height;
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
@@ -343,7 +368,7 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-batch-${batch}`,
           operation,
-          variant: props.traversal === 'pyramid' ? 'pyramid' : 'march',
+          variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
           bindings: [
             ...bindings,
             {
@@ -358,7 +383,7 @@ export class GPUTerrainCumulativeViewshed implements GPUCommandNodeProducer {
             }
           ],
           invocationCount: batchSize,
-          declarations: `${sightLine}
+          declarations: `${sightLine}${groundCellDeclarations}
 const OBSERVER_COUNT: u32 = ${observerCount}u;
 const PIXEL_COUNT: u32 = ${pixelCount}u;
 fn isInsideGrid(position: vec2<f32>) -> bool {
@@ -380,7 +405,11 @@ fn isInsideGrid(position: vec2<f32>) -> bool {
   let observerHeight = records[recordsOffset + 3u * observerIndex + 2u];
   let targetHeight = settings[settingsOffset + 1u];
   let maxDistance = settings[settingsOffset + 2u];
-  let cellSize = vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u]);
+  let cellSize = ${
+    cellSizeMode === 'uniform'
+      ? 'vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u])'
+      : 'getRayGroundCell(vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u]), settings[settingsOffset + 10u], settings[settingsOffset + 11u], 0.5 * (observer.y + f32(row)) + 0.5)'
+  };
   let curvature = settings[settingsOffset + 5u];
   let tolerance = vec4<f32>(
     settings[settingsOffset + 6u], settings[settingsOffset + 7u],

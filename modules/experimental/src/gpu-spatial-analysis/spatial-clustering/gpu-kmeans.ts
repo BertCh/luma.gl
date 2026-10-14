@@ -25,10 +25,17 @@ import {
   IS_NAN_BITS_WGSL
 } from '../../utils/wgsl-common';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
+
+/** Planar contexts suitable for distance measurements. */
+const KMEANS_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUKMeans';
 const NO_ROW = '0xffffffffu';
@@ -266,7 +273,11 @@ export class GPUKMeans implements GPUCommandNodeProducer {
     this.props = props;
     this.initialization = props.initialization ?? 'kmeans++';
     this.restartCount = props.restartCount ?? 1;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      KMEANS_SPATIAL_CONTEXT_SUPPORT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     if (rows < 1) {

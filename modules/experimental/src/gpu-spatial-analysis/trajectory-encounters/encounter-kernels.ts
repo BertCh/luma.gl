@@ -27,9 +27,9 @@ export type EncounterShape = {
   bounds: readonly [number, number, number, number];
   cellSize: number;
   /**
-   * Great-circle mode: `radius` is the sphere radius in meters, `maximumDistance` the largest
-   * distance in meters the lattice can search conservatively, and `wrapColumns` whether the
-   * columns span a full turn of longitude and wrap across the antimeridian.
+   * Great-circle mode: `radius` and the conservative search limit `maximumDistance` are in
+   * the context's length unit. `wrapColumns` indicates whether the columns span a full turn
+   * of longitude and wrap across the antimeridian.
    */
   geodesic?: {radius: number; maximumDistance: number; wrapColumns: boolean};
 };

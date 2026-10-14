@@ -19,6 +19,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {assertCompatibleGPUSpatialContexts} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUHuffTradeAreas';
 
@@ -117,6 +118,8 @@ export type GPUHuffTradeAreasProps = {
  * so results are deterministic and match a sequential CPU evaluation within f32 rounding.
  * Facilities with zero attractiveness have probability 0.
  *
+ * When both weights declare spatial contexts, they must be compatible.
+ *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop; distance units and the coordinate space are those of the weights' producer.
  */
@@ -136,6 +139,13 @@ export class GPUHuffTradeAreas implements GPUCommandNodeProducer {
     this.props = props;
     this.demandCount = validateGPUSpatialWeights(id, props.demandWeights, 'demandWeights');
     this.facilityCount = props.attractiveness.length;
+    if (props.demandWeights?.spatialContext && props.facilityWeights?.spatialContext) {
+      assertCompatibleGPUSpatialContexts(
+        id,
+        props.demandWeights.spatialContext,
+        props.facilityWeights.spatialContext
+      );
+    }
     const {output} = props;
     validatePackedView(props.attractiveness, ['float32'], `${id} attractiveness`);
     validatePackedView(output.tradeArea, ['uint32'], `${id} output.tradeArea`);

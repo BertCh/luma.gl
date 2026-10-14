@@ -37,6 +37,7 @@ import {
 } from './geographic-distribution-kernels';
 import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from './geographic-distribution-parameters';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -48,6 +49,13 @@ import {
 } from './grouped-sum-reduction';
 
 const OPERATION = 'GPUGeographicDistribution';
+
+// Standard distances and deviational ellipse axes measure distance.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
+
 /** Workgroup size of the chunked median convergence check (one lane per group). */
 const CHECK_WORKGROUP_SIZE = 256;
 /** Workgroup size of the sorted median update (a workgroup OR before one global atomic). */
@@ -279,7 +287,11 @@ export class GPUGeographicDistribution implements GPUCommandNodeProducer {
     this.id = props.id ?? 'geographic-distribution';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;

@@ -4,7 +4,10 @@
 
 import type {Device} from '@luma.gl/core';
 import type {GPUOverflowStatusPort} from '../../analysis-core/contracts/index';
-import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
+import {
+  getGPUGreatCircleRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+} from '../../analysis-core/contracts/spatial-context';
 import {
   createTransientView,
   type GPUCommandGraph,
@@ -34,7 +37,7 @@ import {
 import {IS_NAN_BITS_WGSL} from '../../utils/wgsl-common';
 import {EXACT_GEOMETRY_WGSL, getExactRingWindingWGSL} from '../../utils/exact-geometry-wgsl';
 import {EXACT_ORIENTATION_WGSL} from '../../utils/exact-orientation-wgsl';
-import {GEODESIC_WGSL, GPU_GEODESIC_MEAN_EARTH_RADIUS} from '../geometry-measures/geodesic-wgsl';
+import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {FIND_LINE_WGSL} from '../line-segmentize/line-segmentize-kernels';
 import {GPUSpatialJoinCandidates} from '../spatial-join/gpu-spatial-join-candidates';
 import {createFeatureRingsNode} from '../spatial-join/spatial-join-geometry';
@@ -47,16 +50,17 @@ import type {
 const OPERATION = 'GPULineLengthPerPolygon';
 
 /** Planar/native, or longitude-latitude with the great-circle metric. */
-const LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
-  coordinateSpaces: ['planar', 'longitude-latitude'],
-  metrics: ['none', 'native', 'great-circle']
-};
+const LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 /** Caller-owned outputs of {@link GPULineLengthPerPolygon}. */
 export type GPULineLengthPerPolygonOutput = {
   /**
    * Total length of the part of every line that lies inside each polygon feature, one row per
-   * polygon feature, in position units (planar/native context) or sphere-radius units (longitude-latitude).
+   * polygon feature, in the context's length unit (position units for planar, meters by default
+   * for longitude/latitude).
    */
   lengths: GraphDataView<'float32'>;
   /** Optional `sum(length * lineWeight)` per polygon feature. Requires `lineWeights`. */
@@ -101,8 +105,8 @@ export type GPULineLengthPerPolygonProps = GPULineGeometryFields & {
   polygons: GPUPackedGeometryPort<GPUPolygonGeometryPort>;
   /**
    * Planar/native (default when omitted) or longitude-latitude with the `'great-circle'` metric
-   * (positions in degrees, piece lengths in meters, or in `sphereRadius` units). Replaces the former
-   * `coordinateSystem` and `radius` props. Other contexts throw at construction.
+   * (positions in degrees, piece lengths in the context's length unit, meters by default). Replaces
+   * the former `coordinateSystem` and `radius` props. Other contexts throw at construction.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -156,7 +160,7 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Resolved coordinate system derived from `spatialContext`. */
   readonly coordinateSystem: 'planar' | 'spherical';
-  /** Resolved sphere radius (`GPU_GEODESIC_MEAN_EARTH_RADIUS` unless the context sets one). */
+  /** Mean sphere radius in the context's length unit unless overridden; 1 for planar. */
   readonly radius: number;
   /** Resolved candidate pair capacity. */
   readonly pairCapacity: number;
@@ -173,14 +177,8 @@ export class GPULineLengthPerPolygon implements GPUCommandNodeProducer {
       LINE_LENGTH_SPATIAL_CONTEXT_SUPPORT
     );
     const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
-    if (spherical && this.spatialContext.metric !== 'great-circle') {
-      // Only the great-circle metric is implemented; 'none' on lon/lat has no length meaning.
-      throw new Error(`${id} longitude-latitude needs the great-circle metric`);
-    }
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
-    this.radius = spherical
-      ? getGPUSphereRadius(this.spatialContext)
-      : GPU_GEODESIC_MEAN_EARTH_RADIUS;
+    this.radius = getGPUGreatCircleRadius(this.spatialContext) ?? 1;
     // The default is clamped to the device limit at declaration, see getCommandNodes.
     this.pairCapacity = props.pairCapacity ?? Math.max(1024, 8 * props.positions.length);
     this.maximumCrossingCount = props.maximumCrossingCount ?? 64;

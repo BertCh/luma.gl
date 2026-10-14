@@ -47,7 +47,10 @@ export type GPULocalFrame = {
   readonly kind: GPULocalFrameKind;
   /** Frame origin `[longitude, latitude]` in degrees. */
   readonly origin: readonly [number, number];
-  /** Planar native context of frame coordinates (native unit: meter) with the frame identity. */
+  /**
+   * Planar native context of frame coordinates, `units: 'meters'`, with the frame identity. Its
+   * frame kind lets distance operators reject Lambert frames and area operators reject AEQD frames.
+   */
   readonly spatialContext: GPUSpatialContext;
   /** Projects a longitude/latitude in degrees to frame meters. Antipodes give NaN. */
   project(longitude: number, latitude: number): [number, number];
@@ -99,6 +102,7 @@ export function createGPULocalFrame(props: GPULocalFrameProps): GPULocalFrame {
     equidistant && sphereRadius !== GPU_EARTH_MEAN_RADIUS_METERS ? `,R=${sphereRadius}` : '';
   const spatialContext: GPUSpatialContext = Object.freeze({
     ...GPU_PLANAR_SPATIAL_CONTEXT,
+    units: 'meters',
     frame: Object.freeze({
       id: props.id ?? `${frameKind}(${originLongitude},${originLatitude}${radiusSuffix})`,
       kind: frameKind,

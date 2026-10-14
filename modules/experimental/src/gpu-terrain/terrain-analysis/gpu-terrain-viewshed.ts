@@ -39,11 +39,20 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
   validateRasterGrid,
+  validateRasterGridAxisAligned,
   validateRasterParameters,
   validateRasterOutputTexture
 } from '../../gpu-raster/raster-band-utils';
-import {getRasterGridGeoreference} from '../../analysis-core/raster-grid';
-import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode,
+  validateRasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getTerrainSightLineGroundCellWGSL,
+  getTerrainSightLineWGSL,
+  type GPUTerrainSightLineTraversal
+} from './terrain-sight-line';
 
 /**
  * Visibility codes written by the terrain sight-line contributors.
@@ -60,11 +69,11 @@ export const GPU_TERRAIN_VISIBILITY = {
 } as const;
 
 /** Number of float32 values read from `GPUTerrainViewshedProps.parameters`. */
-export const GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH = 8;
+export const GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH = 10;
 
 /**
- * CPU-side description packed by {@link getGPUTerrainViewshedParameterValues}. The ground cell
- * size comes from the grid passed next to it.
+ * CPU-side description packed by {@link getGPUTerrainViewshedParameterValues}. The grid cell
+ * size and row edges come from the grid passed next to it.
  */
 export type GPUTerrainViewshedSettings = {
   /** Observer `[column, row]` in pixel-center index space; fractional values allowed. */
@@ -81,8 +90,11 @@ export type GPUTerrainViewshedSettings = {
 
 /**
  * Packs viewshed settings into
- * `[observerColumn, observerRow, observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY, curvatureCoefficient]`,
- * with the cell size from `grid` (meters per pixel along columns and rows).
+ * `[observerColumn, observerRow, observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY,
+ * curvatureCoefficient, northEdge, southEdge]`.
+ * Cell sizes and row edges always come from `grid`, in world units (meters or degrees), regardless
+ * of cellSizeMode. Edges are the top of row 0 and bottom of the last row, including point-pixel
+ * half-row offsets. The kernel converts cell sizes to ground meters according to cellSizeMode.
  *
  * @throws If a grid cell size is not finite and positive, or `target` is too short.
  */
@@ -96,7 +108,7 @@ export function getGPUTerrainViewshedParameterValues(
     target,
     GPU_TERRAIN_VIEWSHED_PARAMETER_LENGTH
   );
-  const {cellSize} = getRasterGridGeoreference(grid);
+  const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
   if (!cellSize.every(size => Number.isFinite(size) && size > 0)) {
     throw new Error(
       'getGPUTerrainViewshedParameterValues grid cell size must be finite and positive'
@@ -110,7 +122,9 @@ export function getGPUTerrainViewshedParameterValues(
     settings.maximumDistance ?? 0,
     cellSize[0],
     cellSize[1],
-    settings.curvatureCoefficient ?? 0
+    settings.curvatureCoefficient ?? 0,
+    northEdge,
+    southEdge
   ]);
   return target;
 }
@@ -121,7 +135,7 @@ export const GPU_TERRAIN_VIEWSHED_TOLERANCE_PARAMETER_LENGTH = 4;
 /**
  * CPU-side description packed by {@link getGPUTerrainViewshedToleranceParameterValues}.
  *
- * All distances are projected metres on the same planar cell-size model as the settings.
+ * All distances are ground meters under the contributor's cellSizeMode.
  */
 export type GPUTerrainViewshedToleranceSettings = {
   /**
@@ -204,24 +218,34 @@ export type GPUTerrainViewshedOutput = {
 /**
  * Properties for {@link GPUTerrainViewshed}.
  *
- * Topology: grid, elevation format and calibration, traversal, and which outputs exist.
- * Per-frame: `parameters` (observer, heights, radius, grid cell size, curvature),
+ * Topology: grid, elevation format and calibration, traversal, cellSizeMode, and which outputs exist.
+ * Per-frame: `parameters` (observer, heights, radius, grid cell size, curvature, row edges),
  * `toleranceParameters` and elevation contents.
  *
- * Cell-size model: the raster is in projected metres (planar); the grid cell size gives ground
- * metres per pixel and distances are Euclidean in that plane. Web Mercator rasters must be
- * resampled or given a locally scaled cell size. Earth curvature follows the convention of
- * {@link getGPUTerrainCurvatureCoefficient} (mt-image `k = 0.13`; GDAL `-cc 0.85714` is
- * `k = 1 / 7`).
+ * Cell-size model: `'uniform'` (default) treats grid world units as ground meters on a planar
+ * grid. `'geographic'` and `'web-mercator'` use a WGS84 ground cell evaluated at each ray's middle
+ * row, held constant along that ray. Along-ray scale change is ignored, so range boundaries and
+ * curvature drops are approximate on long rays, especially at high latitudes.
+ * Rays join pixel positions, with row order supplied by the affine; there is no azimuth input,
+ * so no `getPixelDirection` conversion or `rowDirection` prop is needed.
+ * Earth curvature follows {@link getGPUTerrainCurvatureCoefficient} (mt-image `k = 0.13`;
+ * GDAL `-cc 0.85714` is `k = 1 / 7`).
  */
 export type GPUTerrainViewshedProps = {
   /** Prefix for node and transient IDs. Defaults to `'terrain-viewshed'`. */
   id?: string;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
+  /**
+   * Cell-size interpretation. Defaults to `'uniform'`: grid world units are ground meters
+   * (projected planar grid). `'geographic'` uses a degree grid; `'web-mercator'` uses EPSG:3857.
+   * In both non-uniform modes, maximumDistance, curvature drop `c * d^2`, tolerance bands,
+   * targetIgnoreDistance and clearance are in WGS84 ground meters, using the ray's middle row.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
-  /** Per-frame parameters with at least 8 float32 values, see {@link getGPUTerrainViewshedParameterValues}. */
+  /** Per-frame parameters with at least 10 float32 values, see {@link getGPUTerrainViewshedParameterValues}. */
   parameters: GraphDataView<'float32'>;
   /** Caller-owned outputs. */
   output: GPUTerrainViewshedOutput;
@@ -278,6 +302,8 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     if (!output.visibility && !output.visibilityTexture) {
       throw new Error(`${id} requires at least one output`);
     }
@@ -339,6 +365,9 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
     const {id, props} = this;
     const {output} = props;
     const {width, height} = props.grid;
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const groundCellDeclarations =
+      cellSizeMode === 'uniform' ? '' : getTerrainSightLineGroundCellWGSL(cellSizeMode);
     validateRasterBandBelongsToGraph(id, graph, props.elevation, [output.visibilityTexture]);
     validateGraphViewsBelongToGraph(id, graph, [
       props.pyramid?.combined,
@@ -367,7 +396,7 @@ export class GPUTerrainViewshed implements GPUCommandNodeProducer {
         createWGSLKernelNode<Parameters>(graph, {
           id: `${id}-viewshed`,
           operation: 'GPUTerrainViewshed',
-          variant: 'line-of-sight',
+          variant: `line-of-sight${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
           bindings: [
             {
               name: 'elevationValues',
@@ -386,7 +415,7 @@ const HIDDEN: u32 = ${GPU_TERRAIN_VISIBILITY.hidden}u;
 const VISIBLE: u32 = ${GPU_TERRAIN_VISIBILITY.visible}u;
 const OUT_OF_RANGE: u32 = ${GPU_TERRAIN_VISIBILITY.outOfRange}u;
 const NO_DATA: u32 = ${GPU_TERRAIN_VISIBILITY.noData}u;
-${RASTER_WGSL_HELPERS}
+${RASTER_WGSL_HELPERS}${groundCellDeclarations}
 fn isValidPixel(column: u32, row: u32) -> bool {
   return elevationValidity[elevationValidityOffset + row * WIDTH + column] != 0u;
 }
@@ -420,7 +449,11 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   let observerHeight = settings[settingsOffset + 2u];
   let targetHeight = settings[settingsOffset + 3u];
   let maxDistance = settings[settingsOffset + 4u];
-  let cellSize = vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u]);
+  let cellSize = ${
+    cellSizeMode === 'uniform'
+      ? 'vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u])'
+      : 'getRayGroundCell(vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u]), settings[settingsOffset + 8u], settings[settingsOffset + 9u], 0.5 * (observer.y + f32(row)) + 0.5)'
+  };
   let curvature = settings[settingsOffset + 7u];
   let observerInside = isFiniteValue(observer.x) && isFiniteValue(observer.y) &&
     observer.x >= 0.0 && observer.y >= 0.0 &&
@@ -493,6 +526,9 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
   ): GPUCommandNode<Parameters>[] {
     const {id, props, pyramidLayout} = this;
     const {width, height} = props.grid;
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const groundCellDeclarations =
+      cellSizeMode === 'uniform' ? '' : getTerrainSightLineGroundCellWGSL(cellSizeMode);
     const nodes: GPUCommandNode<Parameters>[] = [];
     const bindings: WGSLKernelBinding[] = [
       {name: 'elevationValues', view: values, type: 'f32', access: 'read'},
@@ -532,23 +568,28 @@ fn sampleElevation(position: vec2<f32>) -> vec2<f32> {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-viewshed`,
         operation: 'GPUTerrainViewshed',
-        variant: props.traversal === 'pyramid' ? 'pyramid' : 'tolerance',
+        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'tolerance'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
         bindings,
         invocationCount: width * height,
-        declarations: getTerrainSightLineWGSL({
-          width,
-          height,
-          traversal: props.traversal ?? 'march',
-          layout: pyramidLayout,
-          clearance: false
-        }),
+        declarations:
+          getTerrainSightLineWGSL({
+            width,
+            height,
+            traversal: props.traversal ?? 'march',
+            layout: pyramidLayout,
+            clearance: false
+          }) + groundCellDeclarations,
         body: `let column = index % WIDTH;
   let row = index / WIDTH;
   let observer = vec2<f32>(settings[settingsOffset], settings[settingsOffset + 1u]);
   let observerHeight = settings[settingsOffset + 2u];
   let targetHeight = settings[settingsOffset + 3u];
   let maxDistance = settings[settingsOffset + 4u];
-  let cellSize = vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u]);
+  let cellSize = ${
+    cellSizeMode === 'uniform'
+      ? 'vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u])'
+      : 'getRayGroundCell(vec2<f32>(settings[settingsOffset + 5u], settings[settingsOffset + 6u]), settings[settingsOffset + 8u], settings[settingsOffset + 9u], 0.5 * (observer.y + f32(row)) + 0.5)'
+  };
   let curvature = settings[settingsOffset + 7u];
   ${
     props.toleranceParameters

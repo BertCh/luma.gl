@@ -52,6 +52,12 @@ import {
 
 const OPERATION = 'GPULinearReferencing';
 
+// Line measures and nearest-line offsets measure distance.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
+
 /** Kernel model of {@link GPULinearReferencing}, derived from its `spatialContext` (not a prop). */
 export type GPULinearReferencingCoordinateSystem = 'planar' | 'spherical';
 
@@ -223,7 +229,7 @@ export class GPULinearReferencing implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';

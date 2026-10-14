@@ -24,7 +24,7 @@ import {
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport,
-  getGPUGreatCircleRadius
+  getGPUSphereRadius
 } from '../../analysis-core/contracts/spatial-context';
 import type {
   GPUCardinalityPort,
@@ -36,7 +36,6 @@ import type {
 import {GPUPointInPolygonJoin} from '../../gpu-spatial-analysis/spatial-join/index';
 import type {GPUSegmentRingAssemblyOutput} from '../../analysis-core/ring-assembly/index';
 import {createWGSLKernelNode} from '../../utils/wgsl-kernel-nodes';
-import {GPU_EARTH_MEAN_RADIUS_METERS} from '../../analysis-core/contracts/earth';
 import {
   assertRecipe,
   getOrCreateView,
@@ -50,12 +49,14 @@ const ID = 'GPUDriveTimeCatchmentRecipe';
 /**
  * Spatial contexts of {@link addDriveTimeCatchmentRecipe}: native planar coordinates (for example a
  * `createGPULocalFrame` frame in meters), or longitude/latitude degrees with the `'none'` or
- * `'great-circle'` metric. On longitude/latitude both snappings are great-circle (meters) either way.
+ * `'great-circle'` metric. Both snappings measure distance in the context's length unit
+ * (meters by default, or kilometers on longitude/latitude). Lambert equal-area frames are rejected.
  */
 export const GPU_DRIVE_TIME_CATCHMENT_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport =
   Object.freeze({
     coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-    metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+    metrics: Object.freeze(['none', 'native', 'great-circle'] as const),
+    measure: 'distance'
   });
 
 /** Band key written for demand points that are unsnapped or beyond every break. */
@@ -137,11 +138,13 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
    * `createGPULocalFrame` frame), and `maximumSnapDistance` is in those units. With
    * `coordinateSpace: 'longitude-latitude'` (metric `'none'` or `'great-circle'`; the cell-outline
    * isochrone path needs degrees) both snappings are great-circle: edges are ranked by great-circle
-   * distance in meters and `maximumSnapDistance` is in meters, with no east-west bias at any latitude
+   * distance in the context's length unit (meters by default, or kilometers), as is
+   * `maximumSnapDistance`, with no east-west bias at any latitude
    * (`sphereRadius` of a great-circle context is honored, else the mean Earth radius). Travel
    * costs (`topology.weights`) are independent of positions: the snapped fraction splits the edge
    * cost, so drive times stay in the units of the weights. Other geographic metrics (`'rhumb'`,
-   * `'ellipsoidal'`) and kilometer units throw. The resolved context is returned as
+   * `'ellipsoidal'`) throw. Local planar frames must be azimuthal-equidistant, not Lambert
+   * equal-area. The resolved context is returned as
    * the returned `spatialContext`.
    */
   spatialContext?: GPUSpatialContext;
@@ -157,14 +160,15 @@ export type GPUDriveTimeCatchmentRecipeProps = GPURecipeOverrides<
   /** Optional per-demand-point value summarised per drive-time band. */
   demandValues?: GraphDataView<'float32'>;
   /**
-   * Optional one-row per-frame maximum snap distance (needed with `candidateCapacity`): meters on
-   * longitude/latitude, coordinate units on planar positions.
+   * Optional one-row per-frame maximum snap distance in the context's length unit
+   * (needed with `candidateCapacity`).
    */
   maximumSnapDistance?: GraphDataView<'float32'>;
   /**
    * Compile-time BVH candidate capacity of the snapping; omit for the exact all-edges scan. When
    * set, each snapping reports candidate overflow (the returned `snapping`, stages `snap-facilities` and
    * `snap-demand`): an overflow means some facilities or demand may be snapped to a farther edge.
+   * Great-circle searches ignore the capacity; kilometer contexts scan directly and report no overflow.
    */
   candidateCapacity?: number;
   /** Optional one-row cost cutoff of the service-area search. */
@@ -328,8 +332,7 @@ export type GPUDriveTimeCatchmentRecipeOutput = GPURecipeResult & {
  * and is constructed with the native planar context whatever `spatialContext` says.
  *
  * Spatial context: see `GPUDriveTimeCatchmentRecipeProps.spatialContext`. Costs are in the units
- * of `topology.weights`; distances (`maximumSnapDistance`) are meters on longitude/latitude
- * (great-circle snapping) and coordinate units on planar positions.
+ * of `topology.weights`; distances (`maximumSnapDistance`) are in the context's length unit.
  *
  * Status: `status.stages` reports `snap-facilities` and `snap-demand` (candidate overflow, with
  * `candidateCapacity`), `service-areas` (convergence), the isochrone stages for the caller-owned
@@ -383,16 +386,16 @@ export function addDriveTimeCatchmentRecipe<Parameters>(
     graph.add(node);
   }
 
-  // Longitude/latitude positions snap great-circle in meters, whatever the declared metric.
-  const snappingContext: GPUSpatialContext | undefined =
+  // Longitude/latitude positions snap great-circle in the context's length unit for either metric.
+  const snappingContext: GPUSpatialContext =
     spatialContext.coordinateSpace === 'longitude-latitude'
       ? {
           coordinateSpace: 'longitude-latitude',
           metric: 'great-circle',
-          sphereRadius: getGPUGreatCircleRadius(spatialContext) ?? GPU_EARTH_MEAN_RADIUS_METERS,
+          sphereRadius: getGPUSphereRadius(spatialContext),
           ...(spatialContext.units ? {units: spatialContext.units} : {})
         }
-      : undefined;
+      : spatialContext;
   const providedSnapping = outputs.snapping ?? {};
   const snapping: GPUDriveTimeCatchmentRecipeOutput['snapping'] =
     props.candidateCapacity !== undefined

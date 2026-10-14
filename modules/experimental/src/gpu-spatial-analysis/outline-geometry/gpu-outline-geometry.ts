@@ -35,7 +35,11 @@ const OPERATION = 'GPUOutlineGeometry';
 /** Planar coordinates, or longitude/latitude with a sphere (great-circle) metric. */
 const SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['native', 'great-circle'] as const)
+  metricsByCoordinateSpace: Object.freeze({
+    planar: Object.freeze(['native'] as const),
+    'longitude-latitude': Object.freeze(['great-circle'] as const)
+  }),
+  measure: 'distance'
 });
 
 /** Number of float32 elements in a {@link GPUOutlineGeometry} parameter buffer. */

@@ -108,10 +108,16 @@ const MAXIMUM_STORAGE_BUFFERS = 8;
  * degrees. On longitude/latitude, `dwithin` takes `metric: 'great-circle'` (meters); every other
  * predicate is topological and takes `metric: 'none'`.
  */
-const SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
+const SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: ['planar', 'longitude-latitude'],
   metrics: ['none', 'native', 'great-circle']
-};
+} as const);
+
+/** Distance predicates additionally require a frame suitable for distance measurements. */
+const SPATIAL_DISTANCE_PREDICATE_JOIN_CONTEXT_SUPPORT = Object.freeze({
+  ...SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /**
  * Predicates supported by {@link GPUSpatialPredicateJoin}: `intersects`, `contains`, `within`,
@@ -524,7 +530,9 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
     const context = resolveGPUSpatialContext(
       id,
       views.spatialContext,
-      SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT
+      predicate === 'dwithin'
+        ? SPATIAL_DISTANCE_PREDICATE_JOIN_CONTEXT_SUPPORT
+        : SPATIAL_PREDICATE_JOIN_CONTEXT_SUPPORT
     );
     this.spatialContext = context;
     if (context.coordinateSpace === 'longitude-latitude') {

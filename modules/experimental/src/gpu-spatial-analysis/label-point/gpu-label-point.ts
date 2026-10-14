@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -22,6 +23,12 @@ import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 
 const OPERATION = 'GPULabelPoint';
+
+// Label placement maximizes distance to the polygon boundary.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 /** Default samples per axis of the first search grid. */
 export const GPU_LABEL_POINT_DEFAULT_INITIAL_GRID_SIZE = 16;
@@ -155,7 +162,11 @@ export class GPULabelPoint implements GPUCommandNodeProducer {
   constructor(props: GPULabelPointProps) {
     this.id = props.id ?? 'label-point';
     this.props = props;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.initialGridSize = props.initialGridSize ?? GPU_LABEL_POINT_DEFAULT_INITIAL_GRID_SIZE;
     this.refinementGridSize =
       props.refinementGridSize ?? GPU_LABEL_POINT_DEFAULT_REFINEMENT_GRID_SIZE;

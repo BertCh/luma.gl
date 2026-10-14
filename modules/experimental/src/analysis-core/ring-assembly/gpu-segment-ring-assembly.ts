@@ -107,7 +107,11 @@ export type GPUSegmentRingAssemblyOutput = {
   ringOffsets: GraphDataView<'uint32'>;
   /** Ring vertices in ring order. */
   positions: GraphDataView<'float32x2'>;
-  /** Optional signed area per ring (shoelace, input units squared; counter-clockwise positive). */
+  /**
+   * Optional signed shoelace measure per ring in input units squared; counter-clockwise positive.
+   * For longitude/latitude input this is an orientation-only measure in degrees², not an area.
+   * Use it for winding/sign only and measure areas with `GPUGeometryMeasures`.
+   */
   ringAreas?: GraphDataView<'float32'>;
   /**
    * Optional 1 for rings that are holes (interior on the outside of the ring), else 0. The ring's
@@ -997,7 +1001,8 @@ fn ringScaled(delta: vec2f, latitude: f32) -> vec2f {
       )
     );
 
-    // 8. Ring statistics: area, hole flag, bounds, group, shell assignment.
+    // 8. Ring statistics: signed shoelace measure (orientation only for longitude/latitude),
+    // hole flag, bounds, group, shell assignment.
     const ringAreas = output.ringAreas ?? transient('ring-areas', 'float32', ringCapacity);
     const ringIsHole = output.ringIsHole ?? u32('ring-is-hole', ringCapacity);
     const needsShells = Boolean(output.ringShells ?? output.polygons);

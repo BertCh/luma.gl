@@ -3,6 +3,10 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  assertCompatibleGPUSpatialContexts,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUReduction,
   type GPUCommandGraph,
@@ -131,7 +135,8 @@ export type GPUSpatialWeightsTransformProps = {
   kernel?: GPUSpatialWeightsKernel;
   /**
    * Bandwidth `h` of `'kernel'`. Required for `'kernel'`; there is no default, because the right
-   * bandwidth depends on how the neighbors were chosen. Either:
+   * bandwidth depends on how the neighbors were chosen. Its unit is that of `weights.distances`,
+   * the length unit of `weights.spatialContext`. Either:
    * - a positive number: the same `h` for every row, in the units of `weights.distances` (the
    *   fixed bandwidth of PySAL `Kernel`; use the distance-band radius for band weights); or
    * - `'adaptive'`: PySAL's adaptive bandwidth, `h_i` is the distance to the k-th nearest
@@ -142,6 +147,8 @@ export type GPUSpatialWeightsTransformProps = {
    *   distance-band weights pass the band radius as a number.
    */
   bandwidth?: number | 'adaptive';
+  /** Context of the numeric bandwidth, checked against `weights.spatialContext` when both exist. */
+  spatialContext?: GPUSpatialContext;
 };
 
 const OPERATION_STATES: Record<
@@ -233,6 +240,9 @@ export class GPUSpatialWeightsTransform implements GPUCommandNodeProducer {
       throw new Error(`${id} unknown operation ${props.operation}`);
     }
     validateGPUSpatialWeights(id, props.weights);
+    if (props.weights.spatialContext && props.spatialContext) {
+      assertCompatibleGPUSpatialContexts(id, props.weights.spatialContext, props.spatialContext);
+    }
     if (props.output) {
       validatePackedView(props.output, ['float32'], `${id} output`);
       if (props.output.length !== props.weights.neighbors.length) {

@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -36,6 +36,12 @@ import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-cont
 import {GPU_TRAJECTORY_PLAYHEAD_PARAMETER_LENGTH} from './trajectory-playhead-parameters';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 /**
  * Largest track count (`trackOffsets.length - 1`) of {@link GPUTrajectoryPlayhead} on `device`: the
  * internal bracket scratch keeps 5 uint32 words (20 bytes) per track, read by every output kernel,
@@ -65,8 +71,8 @@ export type GPUTrajectoryPlayheadOutput = {
    */
   headings?: GraphDataView<'float32'>;
   /**
-   * Optional speed of the bracketing segment for active tracks, otherwise 0: planar distance, or
-   * great-circle meters, per timestamp unit.
+   * Optional speed of the bracketing segment in the context's length unit per timestamp unit
+   * for active tracks, otherwise 0.
    */
   speeds?: GraphDataView<'float32'>;
   /** Optional `GPU_TRAJECTORY_PLAYHEAD_STATUS` value per track, `trackCount` rows. */
@@ -112,8 +118,10 @@ export type GPUTrajectoryPlayheadProps = GPUTrajectoryGeometryFields & {
    * Coordinate space and metric of `positions`. Omitted means native planar coordinates with
    * linear interpolation. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` means
    * `(longitude, latitude)` degrees interpolated along great circles (spherical linear
-   * interpolation) on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`); lengths
-   * and speeds are then meters. Other contexts throw.
+   * interpolation) on a sphere of `sphereRadius` (default mean Earth radius in the context's length
+   * unit); lengths
+   * are in the context's length unit and speeds use that unit per timestamp unit. Other contexts
+   * throw.
    */
   spatialContext?: GPUSpatialContext;
   /** Optional packed elevation (z) per sample, same length as `positions`. */
@@ -149,7 +157,7 @@ export type GPUTrajectoryPlayheadProps = GPUTrajectoryGeometryFields & {
  * - Exact sample times: `p == t[k]` gives fraction 0 on segment `[k, k + 1]` and position
  *   `positions[k]` bit-exactly.
  *
- * Speed is segment length (planar, or great-circle meters) over duration in the timestamps' unit
+ * Speed is segment length in the context's length unit over duration in the timestamps' unit
  * and is only non-zero for active tracks.
  *
  * Spatial context: with a great-circle `spatialContext`, positions are interpolated along the
@@ -183,7 +191,7 @@ export class GPUTrajectoryPlayhead implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
     const rowCount = props.positions.length;

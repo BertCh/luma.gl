@@ -183,6 +183,9 @@ export type GPUPointPatternIndicesProps = {
    * Only planar contexts are supported: distances and areas are Euclidean, so a
    * `longitude-latitude` context throws at construction (project positions to a planar frame
    * first).
+   * Measures both distance and window area, so neither local frame is exact: use an
+   * azimuthal-equidistant frame for study areas small enough that its area distortion is
+   * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per event. At least one and fewer than 2^24 rows. */

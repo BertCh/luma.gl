@@ -127,9 +127,10 @@ export function getRasterD8Distance(
 /**
  * Returns WGSL grid constants and D8 helpers for one compile-time grid.
  *
- * The generated `getGroundCellSize` and `getD8Distance` read the shared parameter prefix from a
- * float32 storage binding named `settings` (with the generated `settingsOffset` constant), so the
- * kernel must bind it. Declares `GRID_WIDTH`, `GRID_HEIGHT`, `getD8ColumnOffset`,
+ * The generated `getGroundCellSizeAtRowCoordinate` and `getD8Distance` read the shared parameter
+ * prefix from a float32 storage binding named `settings` (with the generated `settingsOffset`
+ * constant), so the kernel must bind it. The name differs from the `getGroundCellSize(row: u32)`
+ * of `getRasterGroundCellSizeWGSL`, so both helpers can share one shader. Declares `GRID_WIDTH`, `GRID_HEIGHT`, `getD8ColumnOffset`,
  * `getD8RowOffset`, `getD8Code`, `getD8Neighbor` (returns `0xffffffff` outside the grid),
  * `getInfinity`, `getQuietNaN`, `isFiniteValue`, and `isNaNValue` (bit tests, immune to NaN folding).
  *
@@ -179,7 +180,7 @@ fn getD8Neighbor(cell: u32, direction: u32) -> u32 {
 }
 
 // Ground meters per cell at a continuous row coordinate (row index + 0.5 is a cell center).
-fn getGroundCellSize(rowCoordinate: f32) -> vec2<f32> {
+fn getGroundCellSizeAtRowCoordinate(rowCoordinate: f32) -> vec2<f32> {
   let cellSize = vec2<f32>(settings[settingsOffset], settings[settingsOffset + 1u]);
   ${groundCellSource}
 }
@@ -188,7 +189,7 @@ fn getGroundCellSize(rowCoordinate: f32) -> vec2<f32> {
 fn getD8Distance(direction: u32, centerRow: u32) -> f32 {
   let rowOffset = getD8RowOffset(direction);
   let neighborRow = i32(centerRow) + rowOffset;
-  let ground = getGroundCellSize((f32(centerRow) + f32(neighborRow) + 1.0) * 0.5);
+  let ground = getGroundCellSizeAtRowCoordinate((f32(centerRow) + f32(neighborRow) + 1.0) * 0.5);
   if (rowOffset == 0) { return ground.x; }
   if (getD8ColumnOffset(direction) == 0) { return ground.y; }
   return sqrt(ground.x * ground.x + ground.y * ground.y);

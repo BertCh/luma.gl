@@ -40,9 +40,16 @@ import {
 } from '../line-simplification/index';
 import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUCoverageSimplification';
 const INVALID = `${KEY_PAIR_INVALID}u`;
@@ -215,7 +222,11 @@ export class GPUCoverageSimplification implements GPUCommandNodeProducer {
   constructor(props: GPUCoverageSimplificationProps) {
     const id = props.id ?? 'coverage-simplification';
     this.id = id;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     if (props.positions.length < 1) {

@@ -4,6 +4,8 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 
 import {Buffer} from '@luma.gl/core';
+import type {GPUSpatialContext} from '../analysis-core/contracts/spatial-context';
+import {getGPUProjectionSpatialContext} from './projection-spatial-context';
 
 import {
   type GPUCommandGraph,
@@ -47,6 +49,12 @@ type GPUProjectionBaseProps = {
   positions: GPUGeospatialPositions;
   /** Provider-independent adaptive projection program compiled on the CPU. */
   plan: ProjectionPlan;
+  /**
+   * Identifier of the projected destination CRS, for example `'EPSG:32633'`. When set,
+   * `spatialContext` describes the output rows with a `'crs'` frame of this id. Omit it for
+   * geographic (longitude/latitude) destinations.
+   */
+  targetCrs?: string;
   /** Optional explicit patch index per position; omission performs source-domain lookup. */
   patchIds?: GPUProjectionPatchIds;
   /** Optional caller-owned validity rows: one for projected rows and zero for rejected rows. */
@@ -91,6 +99,12 @@ export class GPUProjection {
   readonly positions: GPUGeospatialPositions;
   /** Arithmetic and output precision used by this contributor. */
   readonly precision: ProjectionPrecision;
+  /**
+   * Planar native context of the output rows with frame `{kind: 'crs', id: targetCrs}`; pass it
+   * to planar analysis operators. Undefined without `targetCrs`. `local-f32` rows stay relative
+   * to `plan.destinationOrigin`.
+   */
+  readonly spatialContext?: GPUSpatialContext;
   /** Precision-specific caller-owned destination rows. */
   readonly output: GPUFloat32Positions | GPUDoubleSinglePositions;
   /** Optional per-row explicit patch IDs. */
@@ -110,6 +124,7 @@ export class GPUProjection {
     this.id = props.id ?? 'gpu-projection';
     this.positions = props.positions;
     this.precision = props.precision ?? 'local-f32';
+    this.spatialContext = getGPUProjectionSpatialContext(props.targetCrs);
     this.output = props.output;
     this.projectionPlan = props.plan;
     this.patchIds = props.patchIds;

@@ -58,14 +58,15 @@ import {
 
 const OPERATION = 'GPUNeighborSearch';
 
-/**
- * Spatial contexts {@link GPUNeighborSearch} accepts: native planar coordinates, or longitude/latitude
- * degrees with the `'great-circle'` metric. Pass it to `resolveGPUSpatialContext` to validate a
- * context before building the node.
- */
+/** Planar or great-circle contexts suitable for neighbor distance measurements. */
 export const GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT: GPUSpatialContextSupport = Object.freeze({
   coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  metricsByCoordinateSpace: Object.freeze({
+    planar: Object.freeze(['none', 'native'] as const),
+    'longitude-latitude': Object.freeze(['great-circle'] as const)
+  }),
+  // Measuring operators reject planar 'none' in resolveGPUSpatialContext.
+  measure: 'distance'
 });
 
 /** Weight transform states a caller can declare for {@link GPUNeighborSearchProps.weightTransform}. */
@@ -278,15 +279,6 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       props.spatialContext,
       GPU_NEIGHBOR_SEARCH_GREAT_CIRCLE_SUPPORT
     );
-    if (
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric !== 'great-circle'
-    ) {
-      throw new Error(`${id} longitude-latitude positions need the great-circle metric`);
-    }
-    if (this.spatialContext.coordinateSpace === 'planar' && this.spatialContext.metric === 'none') {
-      throw new Error(`${id} planar positions need the native metric`);
-    }
     if (props.mode !== 'knn' && props.mode !== 'radius') {
       throw new Error(`${id} mode must be 'knn' or 'radius'`);
     }
@@ -377,6 +369,7 @@ export class GPUNeighborSearch implements GPUCommandNodeProducer {
       !props.queryPositions &&
       !props.queryMask;
     this.outputWeights = describeGPUSpatialWeights(output, {
+      spatialContext: this.spatialContext,
       information: {
         rowCount: queryRows,
         transform,

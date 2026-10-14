@@ -6,7 +6,13 @@ import type {
   GPULineGeometryFields,
   GPUOverflowStatusPort
 } from '../../analysis-core/contracts/index';
-import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
+import {
+  getGPUAuthalicSphereRadius,
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
 import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,
@@ -28,7 +34,6 @@ import {createFillNode} from '../../utils/wgsl-kernel-nodes';
 import {
   defineGPUSpatialParameterSchema,
   packGPUSpatialParameterValues,
-  validateGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/index';
 import {
@@ -40,6 +45,10 @@ import {
 } from './line-density-kernels';
 
 const OPERATION = 'GPULineDensity';
+const LINE_DENSITY_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
+});
 
 /** Number of float32 elements in a {@link GPULineDensity} parameter buffer. */
 export const GPU_LINE_DENSITY_PARAMETER_LENGTH = 4;
@@ -123,13 +132,13 @@ export function getGPULineDensityParameterValues(
 export type GPULineDensityOutput = {
   /**
    * Total line length inside each cell, `columns * rows` rows in row-major order (cell
-   * `row * columns + column`), in position units (`'planar'`) or sphere-radius units
-   * (`'spherical'`, meters by default).
+   * `row * columns + column`), in the context's length unit (position units for planar,
+   * meters by default for longitude/latitude).
    */
   lengths: GraphDataView<'float32'>;
   /**
-   * Optional length divided by cell area (`1 / unit`), same layout. Spherical cells use the exact
-   * spherical area of the longitude/latitude cell.
+   * Optional length divided by cell area, in the context's length unit per square length unit,
+   * same layout. Spherical cells use the exact spherical area with the authalic radius by default.
    */
   densities?: GraphDataView<'float32'>;
   /**
@@ -144,14 +153,17 @@ export type GPULineDensityOutput = {
  * Properties for {@link GPULineDensity}.
  *
  * Per-frame (no recompile): the grid origin and cell size in `parameters`, and every input
- * buffer. Compile-time: view lengths, `columns`, `rows`, `coordinateSystem`, `radius`,
+ * buffer. Compile-time: view lengths, `columns`, `rows`, `spatialContext`,
  * `recordCapacity`, and which outputs are present.
  */
 export type GPULineDensityProps = GPULineGeometryFields & {
   /** Prefix for generated node and transient IDs. Defaults to `'line-density'`. */
   id?: string;
-  /** Planar/native or longitude-latitude/great-circle context for positions and lengths. */
-  spatialContext: GPUSpatialContext;
+  /**
+   * Native planar when omitted. A `longitude-latitude` context with metric `'great-circle'`
+   * measures lengths in the context's length unit and areas in its square (meters by default).
+   */
+  spatialContext?: GPUSpatialContext;
   /** Grid columns (compile time). `columns * rows` is at most {@link GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT}. */
   columns: number;
   /** Grid rows (compile time). `columns * rows` is at most {@link GPU_LINE_DENSITY_MAXIMUM_CELL_COUNT}. */
@@ -198,29 +210,25 @@ export class GPULineDensity implements GPUCommandNodeProducer {
   readonly cellCount: number;
   /** Resolved coordinate system. */
   readonly coordinateSystem: 'planar' | 'spherical';
-  /** Resolved sphere radius. */
+  /** Mean sphere radius for lengths, in the context's length unit; 1 for planar. */
   readonly radius: number;
+  /** Authalic sphere radius for cell areas, in the context's length unit; 1 for planar. */
+  readonly areaRadius: number;
   /** Resolved piece capacity. */
   readonly recordCapacity: number;
 
   constructor(props: GPULineDensityProps) {
     this.id = props.id ?? 'line-density';
     this.props = props;
-    this.spatialContext = props.spatialContext;
-    validateGPUSpatialContext(this.id, this.spatialContext);
-    const spherical =
-      this.spatialContext.coordinateSpace === 'longitude-latitude' &&
-      this.spatialContext.metric === 'great-circle';
-    const planar =
-      this.spatialContext.coordinateSpace === 'planar' &&
-      ['native', 'none'].includes(this.spatialContext.metric);
-    if (!planar && !spherical) {
-      throw new Error(
-        `${this.id} requires a planar/native or longitude-latitude/great-circle spatial context`
-      );
-    }
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      LINE_DENSITY_SUPPORT
+    );
+    const spherical = this.spatialContext.coordinateSpace === 'longitude-latitude';
     this.coordinateSystem = spherical ? 'spherical' : 'planar';
     this.radius = spherical ? getGPUSphereRadius(this.spatialContext) : 1;
+    this.areaRadius = spherical ? getGPUAuthalicSphereRadius(this.spatialContext) : 1;
     this.recordCapacity = props.recordCapacity ?? Math.max(1024, 4 * props.positions.length);
     const {id} = this;
     validateCapacity(id, 'columns', props.columns);
@@ -373,7 +381,7 @@ export class GPULineDensity implements GPUCommandNodeProducer {
               columns: props.columns,
               rows: props.rows,
               coordinateSystem: this.coordinateSystem,
-              radius: this.radius,
+              areaRadius: this.areaRadius,
               parameters: props.parameters,
               lengths: output.lengths,
               densities: output.densities

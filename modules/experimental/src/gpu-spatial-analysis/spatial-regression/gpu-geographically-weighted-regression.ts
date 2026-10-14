@@ -51,6 +51,12 @@ import {
 } from './geographically-weighted-regression-parameters';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 const OPERATION = 'GPUGeographicallyWeightedRegression';
 /** Rows summed in fixed order by one thread of a tile pass. */
 const TILE_ROWS = 256;
@@ -422,7 +428,7 @@ export class GPUGeographicallyWeightedRegression implements GPUCommandNodeProduc
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.maximumBandwidthCount =
       props.maximumBandwidthCount ?? GPU_GEOGRAPHICALLY_WEIGHTED_REGRESSION_MAXIMUM_LADDER_LENGTH;

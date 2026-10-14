@@ -44,9 +44,16 @@ import type {GPUPolygonOverlayFillRule} from '../polygon-overlay/gpu-polygon-ove
 import {getGPUSnapRoundedNodingMaximumVertexCount} from '../geometry-topology/gpu-snap-rounded-noding';
 import type {Device} from '@luma.gl/core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUBufferSurface';
 
@@ -145,7 +152,11 @@ export class GPUBufferSurface implements GPUCommandNodeProducer {
 
   constructor(props: GPUBufferSurfaceProps) {
     this.id = props.id ?? 'buffer-surface';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     this.joinStyle = props.joinStyle ?? 'round';
     this.capStyle = props.capStyle ?? 'round';

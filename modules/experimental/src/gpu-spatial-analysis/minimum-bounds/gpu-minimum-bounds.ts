@@ -74,6 +74,9 @@ type GPUMinimumBoundsSharedProps = {
    * Longitude/latitude (or any other non-planar) contexts throw at construction: project
    * positions to a planar frame first, for example with `createGPULocalFrame` and
    * `GPULocalFrameProjection`, and pass the frame's context so its `frame` identity is kept.
+   * Measures both distance and area, so neither local frame is exact: use an
+   * azimuthal-equidistant frame for study areas small enough that its area distortion is
+   * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
   /**

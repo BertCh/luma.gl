@@ -25,6 +25,7 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -43,6 +44,12 @@ import {
   createClosestApproachStatusNode,
   type ClosestApproachShape
 } from './closest-approach-kernels';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUTrajectoryClosestApproach';
 
@@ -170,7 +177,11 @@ export class GPUTrajectoryClosestApproach implements GPUCommandNodeProducer {
     this.id = props.id ?? 'trajectory-closest-approach';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);
     validatePackedView(props.trackOffsets, ['uint32'], `${id} trackOffsets`);

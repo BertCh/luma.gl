@@ -32,12 +32,13 @@ import {
   getSortKeyBits
 } from '../../utils/sorted-segment-sums';
 import {
+  getGPUAuthalicSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
 import {
-  getRasterSphereRadius,
   getPlacedCellAreaWGSL,
   validateGeographicRaster
 } from '../../analysis-core/spherical-cell-area';
@@ -49,8 +50,8 @@ import {getZoneAnchorNodes} from './zone-anchor-nodes';
 const OPERATION = 'GPUPycnophylactic';
 /** Planar coordinates, or longitude/latitude rasters smoothed as density per spherical cell area. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
 });
 
 /** Maximum number of smoothing iterations of {@link GPUPycnophylactic}. */
@@ -69,8 +70,9 @@ export type GPUPycnophylacticOutput = {
    */
   mass: GraphDataView<'float32'>;
   /**
-   * Optional `grid.width * grid.height` density surface (mass per unit area: per cell on a planar raster,
-   * per square meter on a longitude/latitude raster), the quantity that is smoothed.
+   * Optional `grid.width * grid.height` density surface, the quantity that is smoothed. Mass per
+   * cell on a planar raster; mass per square unit of the context (square meters by default) on a
+   * longitude/latitude raster.
    */
   density?: GraphDataView<'float32'>;
   /** Optional status words; each is one uint32 row. */
@@ -128,12 +130,12 @@ export type GPUPycnophylacticProps = {
   tolerance?: GraphDataView<'float32'>;
   /**
    * Coordinate space of the raster. Omitted means native planar: every cell has the same area, so
-   * mass and density coincide. A `longitude-latitude` context (metric `'none'` or `'great-circle'`)
-   * means a longitude/latitude grid placed by `parameters`: the surface smoothed is the DENSITY
-   * (mass per square meter) and the zone totals are enforced on mass = density times the spherical
-   * cell area `R^2 dLon (sin(latTop) - sin(latBottom))`, with `R` = `context.sphereRadius` or the
-   * WGS84 authalic radius. `output.mass` is then mass per cell and `output.density` the surface
-   * itself.
+   * mass and density coincide. A `longitude-latitude` context with metric `'great-circle'`
+   * means a longitude/latitude grid placed by `parameters`: the surface smoothed is the density,
+   * mass per square unit of the context (square meters by default). The zone totals are enforced
+   * on mass = density times the spherical cell area `R^2 dLon (sin(latTop) - sin(latBottom))`, with `R` = `context.sphereRadius` or the
+   * WGS84 authalic radius in the context's length unit. `output.mass` is then mass per cell and
+   * `output.density` the surface itself.
    * Smoothing neighbors are still cell-index neighbors, so the focal mean is anisotropic on the
    * ground away from the equator. Other spaces throw.
    */
@@ -193,8 +195,9 @@ export type GPUPycnophylacticProps = {
  * `output.status.invalidCount`. Totals of zones with no cell never appear in `output.mass`.
  *
  * Longitude/latitude rasters. With a `longitude-latitude` `spatialContext` the smoothed quantity is
- * the density per square meter and the totals are enforced on density times the spherical cell
- * area, so the surface is a density per ground area and total mass is exact per zone. Without it,
+ * the density per square unit of the context (square meters by default). The totals are enforced
+ * on density times the spherical cell area, so the surface is a density per ground area and total
+ * mass is exact per zone. Without it,
  * every cell counts the same, which is only correct on an equal-area raster.
  *
  * Zone sums use a fixed-order segmented reduction over cells sorted once by zone, so results are
@@ -460,7 +463,7 @@ fn getTotal(zone: u32) -> f32 {
           declarations: `const ZONE_COUNT: u32 = ${zoneCount}u;
 const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-${getPlacedCellAreaWGSL(getRasterSphereRadius(this.spatialContext))}`,
+${getPlacedCellAreaWGSL(getGPUAuthalicSphereRadius(this.spatialContext))}`,
           body: `var area = getPlacedCellArea(index / WIDTH);
   // Cells outside the zones and cells without a positive finite area carry no area.
   if (zones[zonesOffset + index] >= ZONE_COUNT || (bitcast<u32>(area) & 0x7f800000u) == 0x7f800000u || !(area > 0.0)) {

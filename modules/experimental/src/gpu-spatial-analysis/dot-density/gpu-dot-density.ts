@@ -6,6 +6,7 @@ import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgp
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUPolygonGeometryFields} from '../../analysis-core/contracts/index';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/index';
@@ -17,6 +18,12 @@ import {
   type GPUDotDensityMask,
   type GPUDotDensityOutput
 } from './dot-density-sampling';
+
+// Uniform dot placement weights triangles by area.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
+});
 
 /**
  * Properties for {@link GPUDotDensity}.
@@ -113,7 +120,11 @@ export class GPUDotDensity implements GPUCommandNodeProducer {
 
   constructor(props: GPUDotDensityProps) {
     const id = props.id ?? 'dot-density';
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.config = {
       id,
       operation: 'GPUDotDensity',

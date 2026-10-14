@@ -19,9 +19,16 @@ import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-ker
 import {getSegmentBVHNodes} from '../segment-intersection/segment-bvh';
 import {getNextPowerOfTwo} from '../../utils/gpu-contributor-utils';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /** Reference count above which the global mode searches a BVH instead of scanning every row. */
 const BVH_MINIMUM_REFERENCES = 64;
@@ -138,7 +145,11 @@ export class GPUVertexSnap implements GPUCommandNodeProducer {
 
   constructor(props: GPUVertexSnapProps) {
     this.id = props.id ?? 'vertex-snap';
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.props = props;
     const {id} = this;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);

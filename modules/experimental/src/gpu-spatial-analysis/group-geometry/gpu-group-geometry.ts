@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -33,6 +34,12 @@ import {GPU_GEOGRAPHIC_DISTRIBUTION_PARAMETER_LENGTH} from '../geographic-distri
 import {GET_QUIET_NAN_SEEDED_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUGroupGeometry';
+
+// Medoids and standard distances use Euclidean distance.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 const MAXIMUM_ROWS = 2 ** 24 - 1;
 const DEFAULT_MEDOID_MAXIMUM_GROUP_SIZE = 4096;
 
@@ -169,7 +176,11 @@ export class GPUGroupGeometry implements GPUCommandNodeProducer {
   constructor(props: GPUGroupGeometryProps) {
     this.id = props.id ?? 'group-geometry';
     this.props = props;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     const {id} = this;
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);

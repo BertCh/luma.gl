@@ -3,6 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
   createTransientView,
   GPUScan,
   type GPUCommandGraph,
@@ -18,11 +23,19 @@ import {
   validateCapacity
 } from '../../utils/gpu-contributor-utils';
 import {
+  describeGPUSpatialWeights,
+  type GPUSpatialWeights,
   type GPUSpatialWeightsOutput,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
 import {GPU_SPATIAL_JOIN_NO_FEATURE} from './spatial-join-types';
 import {validateStatusScalars} from './spatial-join-geometry';
+
+/** Contexts of the producing join's distances and this adapter's distance floor. */
+const NEAREST_FEATURE_WEIGHTS_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUNearestFeatureWeights';
 
@@ -39,6 +52,8 @@ const MAXIMUM_SLOTS = 64;
 export type GPUNearestFeatureWeightsProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'nearest-feature-weights'`. */
   id?: string;
+  /** Resolved context of the producing join; distanceFloor uses its length unit. Defaults to planar. */
+  spatialContext?: GPUSpatialContext;
   /** `neighborIds` of the join: `queryCount * slotCapacity` feature IDs, padded with `GPU_SPATIAL_JOIN_NO_FEATURE`. */
   neighborIds: GraphDataView<'uint32'>;
   /** `neighborCounts` of the join: filled slots per query. Its length is the row count. */
@@ -94,9 +109,8 @@ export type GPUNearestFeatureWeightsProps = {
  * row's own ID, then sorts the kept IDs ascending as the CSR invariants require. Rows with fewer
  * than `k` available neighbors are simply shorter. The result is deterministic and exact.
  *
- * Distances are in the units of the join: coordinate units for a planar join, meters for a join with
- * a great-circle `spatialContext`, so `distanceFloor` and the inverse-distance weights are in
- * meters there. The adapter reads no positions and needs no `spatialContext` of its own.
+ * Distances and `distanceFloor` use the producing join's length unit. Pass its resolved
+ * `spatialContext` to carry that unit into `outputWeights` and subsequent transforms.
  *
  * The weights are directed: a nearest-neighbor relation is generally not symmetric, so this
  * output does not meet the symmetric-pattern requirement of the `'symmetrize'` transform. Take the
@@ -113,11 +127,20 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
   readonly rows: number;
   /** Resolved neighbors kept per row. */
   readonly k: number;
+  /** Resolved context of the producing join. */
+  readonly spatialContext: GPUSpatialContext;
+  /** Output CSR carrying the producing join context and weights metadata. */
+  readonly outputWeights: GPUSpatialWeights;
 
   constructor(props: GPUNearestFeatureWeightsProps) {
     const id = props.id ?? 'nearest-feature-weights';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      NEAREST_FEATURE_WEIGHTS_SPATIAL_CONTEXT_SUPPORT
+    );
     const {slotCapacity} = props;
     validateCapacity(id, 'slotCapacity', slotCapacity, 1, MAXIMUM_SLOTS);
     this.k = props.k ?? (props.excludeSelf ? Math.max(slotCapacity - 1, 1) : slotCapacity);
@@ -155,6 +178,16 @@ export class GPUNearestFeatureWeights implements GPUCommandNodeProducer {
     if (validateGPUSpatialWeights(id, props.output) !== this.rows) {
       throw new Error(`${id} output.offsets needs neighborCounts.length + 1 rows`);
     }
+    this.outputWeights = describeGPUSpatialWeights(props.output, {
+      spatialContext: this.spatialContext,
+      information: {
+        rowCount: this.rows,
+        transform: weightType === 'binary' ? 'binary' : 'raw',
+        symmetric: 'unknown',
+        hasSelfWeights: !props.excludeSelf,
+        provenance: {source: OPERATION, criterion: 'knn', k: this.k}
+      }
+    });
     const {status} = props.output;
     if (status.requiredCount || status.candidateOverflow) {
       throw new Error(`${id} writes only output.status.overflow`);

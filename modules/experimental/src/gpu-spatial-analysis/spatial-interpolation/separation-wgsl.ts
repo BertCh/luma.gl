@@ -11,6 +11,12 @@ import {
 import {getWGSLFloatLiteral} from '../../utils/wgsl-kernel-nodes';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 /** Resolved metric of an interpolation operator. @internal */
 export type InterpolationSeparation = {
   context: GPUSpatialContext;
@@ -30,11 +36,7 @@ export function resolveInterpolationSeparation(
   id: string,
   context: GPUSpatialContext | undefined
 ): InterpolationSeparation {
-  const resolved = resolveGPUSpatialContext(
-    id,
-    context,
-    GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
-  );
+  const resolved = resolveGPUSpatialContext(id, context, SPATIAL_CONTEXT_SUPPORT);
   const geographic = resolved.coordinateSpace === 'longitude-latitude';
   return {context: resolved, geographic, sphereRadius: getGPUSphereRadius(resolved)};
 }

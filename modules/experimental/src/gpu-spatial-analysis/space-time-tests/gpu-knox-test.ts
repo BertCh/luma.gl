@@ -88,6 +88,8 @@ export type GPUKnoxTestProps = {
    * pair listed only from the higher row (a k-nearest-neighbor list, or a radius list with
    * overflow-truncated rows) is taken from that row. Duplicate entries and self entries are
    * ignored. Lists need not be sorted. Rows are the events.
+   * Pairs carry their own `spatialContext` from `GPUNeighborSearch`. No context check is
+   * needed: the spatial threshold has already been applied and only pair IDs are read.
    */
   pairs: GPUSpatialWeights;
   /**

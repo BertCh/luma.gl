@@ -34,12 +34,19 @@ import type {
 } from '../../gpu-spatial-analysis/line-split/index';
 import {
   resolveGPUSpatialContext,
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  type GPUSpatialContextSupport,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE
 } from '../network-workgroup-counters';
+
+const NODING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 const OPERATION = 'GPUNetworkNoding';
 
@@ -88,7 +95,7 @@ export type GPUNetworkNodingEdges = {
   fromNodes: GraphDataView<'uint32'>;
   /** Node ID at the end of each piece. */
   toNodes: GraphDataView<'uint32'>;
-  /** Length of each piece along its vertices, in input coordinate units. */
+  /** Length of each piece along its vertices, in the context's length unit. */
   lengths: GraphDataView<'float32'>;
 };
 
@@ -103,7 +110,7 @@ export type GPUNetworkNodingTopology = {
   offsets: GraphDataView<'uint32'>;
   /** Neighbor node per entry. Capacity `2 * pieces.sourceIds.length`. */
   neighbors: GraphDataView<'uint32'>;
-  /** Edge length per entry. 3.4028234e38 beyond the last valid entry, which no traversal reaches. */
+  /** Edge length per entry in the context's length unit. 3.4028234e38 beyond the last valid entry. */
   weights: GraphDataView<'float32'>;
   /** Optional edge row per entry. */
   edgeIds?: GraphDataView<'uint32'>;
@@ -121,10 +128,11 @@ export type GPUNetworkNodingProps = {
   /**
    * Coordinates of `lines`. Planar only: snapping cells, `tolerance` and edge lengths are
    * Euclidean, so longitude/latitude throws; project to a planar frame first (for example
-   * `createGPULocalFrame`). Omitted means native planar coordinates.
+   * `createGPULocalFrame`). Local frames must be azimuthal-equidistant, not Lambert equal-area.
+   * Omitted means native planar coordinates.
    */
   spatialContext?: GPUSpatialContext;
-  /** Linestrings, in input coordinate units (planar meters for a routable network). */
+  /** Linestrings in the context's length unit (meters for a local azimuthal-equidistant frame). */
   lines: GPULineSplitProps['lines'];
   /**
    * Capacity of the internal intersection pair list; see `GPULineSplitProps`. At most
@@ -132,7 +140,7 @@ export type GPUNetworkNodingProps = {
    */
   intersectionCapacity: number;
   /**
-   * One-row per-frame snap tolerance, at least 0. Piece end points whose integer tolerance cells
+   * One-row per-frame snap tolerance in the context's length unit, at least 0. Piece end points whose integer tolerance cells
    * (`floor((coordinate - origin) / tolerance)`, with `origin` the minimum corner of the live end
    * points, computed on the GPU every encoding) coincide share one node, whose position is the
    * first such end point. 0 merges only bit-identical end points. Two end points closer than the
@@ -211,7 +219,11 @@ export class GPUNetworkNoding implements GPUCommandNodeProducer {
     this.id = props.id ?? 'network-noding';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      NODING_SPATIAL_CONTEXT_SUPPORT
+    );
     const {nodes, edges, topology: csr, pieces} = props.output;
     validateCapacity(id, 'intersectionCapacity', props.intersectionCapacity);
     validatePackedView(props.tolerance, ['float32'], `${id} tolerance`);

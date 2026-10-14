@@ -35,6 +35,12 @@ import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geo
 
 const OPERATION = 'GPULineSegmentize';
 
+// Segment subdivision uses measured segment lengths.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
+
 /** Default compile-time cap on output pieces per input segment. */
 export const GPU_LINE_SEGMENTIZE_DEFAULT_MAXIMUM_PIECE_COUNT = 1024;
 
@@ -115,7 +121,7 @@ export class GPULineSegmentize implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'spherical' : 'planar';

@@ -5,6 +5,32 @@
 import {type GPURasterExtremaPyramidLayout} from '../../gpu-raster/raster-pyramid/index';
 import {getRasterExtremaPyramidWGSL} from '../../gpu-raster/raster-pyramid/gpu-raster-extrema-pyramid';
 import {RASTER_WGSL_HELPERS} from '../../gpu-raster/raster-band-utils';
+import {
+  getRasterGroundScaleWGSL,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+
+/**
+ * Returns the WGS84 ground cell helper for a continuous row coordinate (pixel row + 0.5).
+ * Evaluate it once at the ray's middle row and hold the cell constant along the ray: sample
+ * distances remain monotone `targetDistance * k / n`, preserving the pyramid skip proof.
+ * Rays join pixel positions without an azimuth, so no `getPixelDirection` conversion is needed.
+ * The consuming kernel declares `HEIGHT`; uniform kernels omit this helper entirely.
+ *
+ * @internal
+ */
+export function getTerrainSightLineGroundCellWGSL(mode: GPURasterCellSizeMode): string {
+  return `
+fn getRayGroundCell(cellSize: vec2<f32>, northEdge: f32, southEdge: f32, rowCoordinate: f32) -> vec2<f32> {
+  ${
+    mode === 'uniform'
+      ? 'return cellSize;'
+      : `let edge = mix(northEdge, southEdge, rowCoordinate / f32(HEIGHT));
+  ${getRasterGroundScaleWGSL(mode)}
+  return cellSize * groundScale;`
+  }
+}`;
+}
 
 /** Marching strategy of the sight-line contributors. */
 export type GPUTerrainSightLineTraversal = 'march' | 'pyramid';

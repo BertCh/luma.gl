@@ -389,7 +389,7 @@ fn getWeight(cell: u32) -> f32 {
   }
   ${
     props.area
-      ? `let ground = getGroundCellSize(f32(cell / GRID_WIDTH) + 0.5);
+      ? `let ground = getGroundCellSizeAtRowCoordinate(f32(cell / GRID_WIDTH) + 0.5);
   weight = weight * (ground.x * ground.y);`
       : ''
   }

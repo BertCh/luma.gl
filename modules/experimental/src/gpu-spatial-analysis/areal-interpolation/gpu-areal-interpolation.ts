@@ -22,13 +22,14 @@ import {
 import {createSegmentSumNode, getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 import {GET_NAN_WGSL} from '../../utils/wgsl-common';
 import {
+  getGPUAuthalicSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
 import {
   createSphericalCellWeightsNode,
-  getRasterSphereRadius,
   validateGeographicRaster
 } from '../../analysis-core/spherical-cell-area';
 import {validateRasterGrid} from '../../gpu-raster/raster-band-utils';
@@ -65,8 +66,8 @@ export function getGPUArealInterpolationMaximumCellCount(device: Device): number
 export const GPU_AREAL_INTERPOLATION_MAXIMUM_WEIGHTED_PAIR_COUNT = 2 ** 24 - 1;
 /** Planar coordinates, or longitude/latitude rasters weighted by spherical cell area. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
-  metrics: Object.freeze(['none', 'native', 'great-circle'] as const)
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
 });
 const INVALID = `${KEY_PAIR_INVALID}u`;
 /** Consecutive cells folded into runs by one zone-count thread. */
@@ -117,14 +118,14 @@ export type GPUArealInterpolationOutput = {
   /** Optional weights (one per slot) holding the normalization that is not `mode`. */
   alternateWeights?: GraphDataView<'float32'>;
   /**
-   * Optional overlap area per slot (cell count, or the sum of `cellWeights`; square meters on a
-   * longitude/latitude raster).
+   * Optional overlap area per slot (cell count, or the sum of `cellWeights`; square units of the
+   * context, square meters by default, on a longitude/latitude raster).
    */
   areas?: GraphDataView<'float32'>;
   /**
    * Optional `sourceZoneCount` rows: the whole raster area `A_s` of each source (cell count, or the
-   * sum of the cell weights; square meters on a longitude/latitude raster, after anchoring). 0 when
-   * the source rasterized to no cell.
+   * sum of the cell weights; square units of the context, square meters by default, on a
+   * longitude/latitude raster, after anchoring). 0 when the source rasterized to no cell.
    */
   sourceAreas?: GraphDataView<'float32'>;
   /**
@@ -201,11 +202,12 @@ export type GPUArealInterpolationProps = {
   denominator?: GPUArealInterpolationDenominator | GPUArealInterpolationDenominators;
   /**
    * Coordinate space of the zone rasters. Omitted means native planar: every area is a cell count
-   * (or a sum of `cellWeights`). A `longitude-latitude` context (metric `'none'` or
-   * `'great-circle'`) means the rasters are longitude/latitude grids placed by `parameters`
-   * and `grid`; each cell is then weighted by its spherical area in square meters,
+   * (or a sum of `cellWeights`). A `longitude-latitude` context with metric `'great-circle'` means
+   * the rasters are longitude/latitude grids placed by `parameters` and `grid`; each cell is then
+   * weighted by its spherical area in square units of the context (square meters by default),
    * `R^2 dLon (sin(latTop) - sin(latBottom))` with `R` = `context.sphereRadius` or the WGS84
-   * authalic radius, times `cellWeights` when given, so a latitude band is not over-counted.
+   * authalic radius in the context's length unit, times `cellWeights` when given, so a latitude band
+   * is not over-counted.
    * Cell membership of the zones is by cell center in degrees. Other spaces throw.
    */
   spatialContext?: GPUSpatialContext;
@@ -268,8 +270,8 @@ export type GPUArealInterpolationProps = {
  * never silent.
  *
  * Coordinates. With a `longitude-latitude` `spatialContext` the areas are spherical cell areas in
- * square meters, so the weights are ground-area shares on a geographic raster (a cell at 60 degrees
- * latitude weighs half of one at the equator). Without it every cell weighs 1 (or `cellWeights`),
+ * square units of the context (square meters by default), so the weights are ground-area shares on
+ * a geographic raster (a cell at 60 degrees latitude weighs half of one at the equator). Without it every cell weighs 1 (or `cellWeights`),
  * which is only an equal-area share on a planar raster.
  *
  * Accuracy. The result is exact only for the rasterized zones, never for the polygon
@@ -511,7 +513,7 @@ export class GPUArealInterpolation implements GPUCommandNodeProducer {
           cellCount,
           width: props.grid.width,
           height: props.grid.height,
-          radius: getRasterSphereRadius(this.spatialContext),
+          radius: getGPUAuthalicSphereRadius(this.spatialContext),
           extent: props.parameters!,
           cellWeights,
           output: areaWeights

@@ -35,6 +35,7 @@ import {
 } from './variogram-parameters';
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -44,6 +45,12 @@ import {
 } from '../../analysis-core/contracts/status';
 
 const OPERATION = 'GPUVariogram';
+
+/** Pair distances require a distance-compatible planar frame. */
+const SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /**
  * Fixed-point full scale of the distance and robust terms: they are scaled to at most `2^24`
@@ -105,9 +112,10 @@ export type GPUVariogramProps = {
   id?: string;
   /**
    * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates.
-   * Only planar contexts are supported: distances and areas are Euclidean, so a
+   * Only planar contexts are supported: pair distances are Euclidean, so a
    * `longitude-latitude` context throws at construction (project positions to a planar frame
    * first).
+   * Lambert equal-area frames are rejected because this operator measures distance.
    */
   spatialContext?: GPUSpatialContext;
   /** Packed planar points, one row per observation. At least one and fewer than 2^24 rows. */
@@ -203,7 +211,7 @@ export class GPUVariogram implements GPUCommandNodeProducer {
     this.id = props.id ?? 'variogram';
     this.props = props;
     const id = this.id;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     validatePairStatisticsInputs(id, {
       ...props,
       parameterLength: GPU_VARIOGRAM_PARAMETER_LENGTH

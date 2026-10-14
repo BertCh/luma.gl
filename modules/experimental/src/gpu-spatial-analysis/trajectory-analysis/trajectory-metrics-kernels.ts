@@ -148,7 +148,8 @@ fn findTrack(row: u32) -> u32 {
 }
 
 /**
- * Sphere radius in meters when step distances are great-circle distances of longitude/latitude
+ * Sphere radius in the context's length unit when step distances are great-circle distances of
+ * longitude/latitude
  * positions, or `undefined` for planar Euclidean distances. @internal
  */
 export type TrajectoryGeodesicRadius = number | undefined;
@@ -211,7 +212,7 @@ export type TrajectoryStepsProps = TrajectoryTimeViews & {
   trackOffsets: GraphDataView<'uint32'>;
   /** Present when any stop output is requested. */
   parameters?: GraphDataView<'float32'>;
-  /** Sphere radius in meters for great-circle step distances; omitted for planar. */
+  /** Sphere radius in the context's length unit for great-circle step distances; omitted for planar. */
   geodesicRadius?: TrajectoryGeodesicRadius;
   stepDistances?: GraphDataView<'float32'>;
   stepSpeeds?: GraphDataView<'float32'>;
@@ -346,7 +347,7 @@ export type TrajectoryStepColumnsProps = TrajectoryTimeViews & {
   id: string;
   positions: GraphDataView<'float32x2'>;
   trackOffsets: GraphDataView<'uint32'>;
-  /** Sphere radius in meters for great-circle steps and bearings; omitted for planar. */
+  /** Sphere radius in the context's length unit for great-circle steps and bearings; omitted for planar. */
   geodesicRadius?: TrajectoryGeodesicRadius;
   stepSpeeds?: GraphDataView<'float32'>;
   stepHeadings?: GraphDataView<'float32'>;

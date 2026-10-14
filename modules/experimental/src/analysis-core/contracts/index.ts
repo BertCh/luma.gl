@@ -56,7 +56,8 @@ export type {
   GPUAreaModel,
   GPUAreaUnit,
   GPULengthModel,
-  GPUMeasureDescription
+  GPUMeasureDescription,
+  GPUSpatialMeasure
 } from './spatial-context';
 export {
   assertCompatibleGPUSpatialContexts,
@@ -67,6 +68,10 @@ export {
   validateGPUSpatialContext,
   getGPUAreaUnit,
   getGPUSphereRadius,
+  getGPUAuthalicSphereRadius,
+  getGPUEllipsoid,
+  getGPULengthUnits,
+  GPU_WGS84_ELLIPSOID,
   getGPUGreatCircleRadius,
   GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
   GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
@@ -78,7 +83,9 @@ export {
 export {
   GPU_EARTH_AUTHALIC_RADIUS_METERS,
   GPU_EARTH_MEAN_RADIUS_METERS,
+  GPU_SINUSOIDAL_KILOMETERS_PER_DEGREE,
   GPU_WGS84_FLATTENING,
+  GPU_WGS84_INVERSE_FLATTENING,
   GPU_WGS84_SEMI_MAJOR_AXIS_METERS
 } from './earth';
 

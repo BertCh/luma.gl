@@ -69,11 +69,17 @@ import {
 
 import {
   getGPUGreatCircleRadius,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {assert, type Device} from '@luma.gl/core';
+
+/** Planar or great-circle contexts suitable for distance measurements in their length unit. */
+const NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUNearestFeatureJoin';
 
@@ -92,7 +98,7 @@ export type GPUNearestFeatureJoinOutput = {
   neighborIds?: GraphDataView<'uint32'>;
   /** Neighbors mode, required with `neighborIds`: number of filled slots per query. Length `queryCount`. */
   neighborCounts?: GraphDataView<'uint32'>;
-  /** Neighbors mode: distance per slot (planar, or meters when great-circle), `-1` in unused slots. Same layout as `neighborIds`. */
+  /** Neighbors mode: distance per slot (in the spatial context length unit), `-1` in unused slots. Same layout as `neighborIds`. */
   neighborDistances?: GraphDataView<'float32'>;
   /**
    * Neighbors mode: the point of the feature nearest to the query per slot (the query point
@@ -116,7 +122,7 @@ export type GPUNearestFeatureJoinOutput = {
    * vertex order is returned, which may differ from GEOS.
    */
   neighborQueryPoints?: GraphDataView<'float32x2'>;
-  /** Nearest-feature mode: optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1. Chunked like the query points. */
+  /** Nearest-feature mode: optional per-point distance to the nearest feature (in the spatial context length unit), or -1. Chunked like the query points. */
   nearestDistances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Nearest-feature mode: optional per-feature count of points whose nearest feature it is. */
   featureCounts?: GraphDataView<'uint32'>;
@@ -183,9 +189,9 @@ export type GPUNearestFeatureJoinProps = {
    * - Omitted, or planar: native planar coordinates; distances (`radius`, `nearestDistances`,
    *   `neighborDistances`) are planar in coordinate units.
    * - `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`: positions are longitude and
-   *   latitude in degrees and every distance is a great-circle distance in meters on the mean Earth
-   *   sphere (`GPU_EARTH_MEAN_RADIUS_METERS`; `sphereRadius` of the context overrides it, and
-   *   `units: 'kilometers'` is rejected). Both modes use the branch-and-bound BVH traversal with a
+   *   latitude in degrees and every distance is a great-circle distance in the context length unit on the mean Earth
+   *   sphere (meters by default, or kilometers with `units: 'kilometers'`; `sphereRadius`
+   *   overrides the radius in that unit). Both modes use the branch-and-bound BVH traversal with a
    *   conservative great-circle lower bound on node boxes (latitude gap, longitude gap through the
    *   antimeridian when shorter, and the cosine of the latitude farthest from the equator), so
    *   `candidateCapacity` is not used (it is accepted but ignored, `candidateCount` reads 0) and a
@@ -195,7 +201,7 @@ export type GPUNearestFeatureJoinProps = {
    *   foot points are on the edge and longitudes are wrapped to +-180. A polygon that spans the
    *   antimeridian is not split. Positions are float32, so distances carry the coordinate
    *   quantization (about 1 m at longitude 100).
-   * - Any other longitude/latitude metric, or kilometers, throws at construction.
+   * - Any other longitude/latitude metric throws at construction.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -211,7 +217,7 @@ export type GPUNearestFeatureJoinProps = {
    */
   features: GPUNearestFeatureGeometry;
   /**
-   * Per-frame inclusive search radius (coordinate units, or meters when great-circle), one float32
+   * Per-frame inclusive search radius (in the spatial context length unit), one float32
    * row; features farther than this are never returned. NaN, negative, or infinite matches
    * nothing. Required in nearest-feature mode; omitted in neighbors mode means unbounded.
    */
@@ -379,7 +385,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
   readonly ties: GPUNearestTieMode;
   /** Resolved spatial context. */
   readonly spatialContext: GPUSpatialContext;
-  /** Sphere radius in meters of a great-circle search, or undefined for planar distances. */
+  /** Sphere radius in the context length unit of a great-circle search, or undefined for planar distances. */
   readonly sphereRadius: number | undefined;
 
   constructor(props: GPUNearestFeatureJoinProps) {
@@ -391,7 +397,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       views.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     this.mode = views.neighborIds ? 'neighbors' : 'nearest-feature';

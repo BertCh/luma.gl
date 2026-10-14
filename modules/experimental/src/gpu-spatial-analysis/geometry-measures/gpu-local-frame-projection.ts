@@ -49,7 +49,7 @@ export type GPULocalFrameProjectionProps = {
 export class GPULocalFrameProjection implements GPUCommandNodeProducer {
   readonly id: string;
   readonly frame: GPULocalFrame;
-  /** Planar context of the output rows, carrying the frame identity. */
+  /** Planar context of the output rows, carrying `units: 'meters'` and the frame identity/kind. */
   readonly spatialContext: GPUSpatialContext;
   /** Compiled plan; its destination origin is the frame origin `[0, 0]`. */
   readonly plan: ProjectionPlan;

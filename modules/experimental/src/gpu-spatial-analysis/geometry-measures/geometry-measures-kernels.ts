@@ -8,11 +8,11 @@ import {
   getWGSLFloatLiteral,
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
+import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
-  GEODESIC_WGSL,
-  GPU_GEODESIC_WGS84_FLATTENING,
-  GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS
-} from './geodesic-wgsl';
+  GPU_WGS84_ELLIPSOID,
+  type GPUSpatialEllipsoid
+} from '../../analysis-core/contracts/spatial-context';
 import {getVincentyWGSL, GPU_GEODESIC_DEFAULT_ITERATIONS} from './geodesic-kernels';
 import {
   COOPERATIVE_BODY_SOURCE,
@@ -36,8 +36,8 @@ export type GPUGeometryCoordinateSystem = 'planar' | 'spherical' | 'wgs84' | 'ge
  */
 export const GEOMETRY_STATS_STRIDE = 16;
 
-/** WGS84-derived constants of the authalic sphere, computed in f64. @internal */
-export function getAuthalicConstants(): {
+/** Ellipsoid-derived authalic constants in f64; radius uses the semi-major axis unit. @internal */
+export function getAuthalicConstants(ellipsoid: GPUSpatialEllipsoid = GPU_WGS84_ELLIPSOID): {
   eccentricitySquared: number;
   authalicRadius: number;
   /** `2 (1 - e^2) / q_p`, the scale from `∫ (1 - e^2 s^2)^-2 ds` to `sin(authalic latitude)`. */
@@ -45,16 +45,18 @@ export function getAuthalicConstants(): {
   /** `q_p` itself. */
   polarQ: number;
 } {
-  const flattening = GPU_GEODESIC_WGS84_FLATTENING;
+  const {flattening} = ellipsoid;
   const eccentricitySquared = flattening * (2 - flattening);
   const eccentricity = Math.sqrt(eccentricitySquared);
   const polarQ =
-    1 +
-    ((1 - eccentricitySquared) / (2 * eccentricity)) *
-      Math.log((1 + eccentricity) / (1 - eccentricity));
+    eccentricity === 0
+      ? 2
+      : 1 +
+        ((1 - eccentricitySquared) / (2 * eccentricity)) *
+          Math.log((1 + eccentricity) / (1 - eccentricity));
   return {
     eccentricitySquared,
-    authalicRadius: GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS * Math.sqrt(polarQ / 2),
+    authalicRadius: ellipsoid.semiMajorAxis * Math.sqrt(polarQ / 2),
     sinAuthalicScale: (2 * (1 - eccentricitySquared)) / polarQ,
     polarQ
   };
@@ -62,16 +64,21 @@ export function getAuthalicConstants(): {
 
 function getMeasureConstantsSource(
   coordinateSystem: GPUGeometryCoordinateSystem,
-  radius: number
+  radius: number,
+  sphericalAreaRadius: number,
+  ellipsoid: GPUSpatialEllipsoid,
+  lengthScale: number
 ): string {
-  const authalic = getAuthalicConstants();
+  const authalic = getAuthalicConstants(ellipsoid);
   const eccentricity = Math.sqrt(authalic.eccentricitySquared);
-  const areaRadius = coordinateSystem === 'spherical' ? radius : authalic.authalicRadius;
+  const areaRadius =
+    coordinateSystem === 'spherical' ? sphericalAreaRadius : authalic.authalicRadius;
   return /* wgsl */ `
+const LENGTH_SCALE: f32 = ${getWGSLFloatLiteral(lengthScale)};
 const RADIUS: f32 = ${getWGSLFloatLiteral(radius)};
 const AREA_RADIUS: f32 = ${getWGSLFloatLiteral(areaRadius)};
-const WGS84_A: f32 = ${getWGSLFloatLiteral(GPU_GEODESIC_WGS84_SEMI_MAJOR_AXIS)};
-const WGS84_F: f32 = ${getWGSLFloatLiteral(GPU_GEODESIC_WGS84_FLATTENING)};
+const WGS84_A: f32 = ${getWGSLFloatLiteral(ellipsoid.semiMajorAxis)};
+const WGS84_F: f32 = ${getWGSLFloatLiteral(ellipsoid.flattening)};
 const WGS84_E2: f32 = ${getWGSLFloatLiteral(authalic.eccentricitySquared)};
 const WGS84_E: f32 = ${getWGSLFloatLiteral(eccentricity)};
 const SIN_AUTHALIC_SCALE: f32 = ${getWGSLFloatLiteral(authalic.sinAuthalicScale)};
@@ -148,6 +155,9 @@ fn getAuthalicSinDelta(sinOrigin: f32, sinDelta: f32) -> f32 {
 }
 
 fn getSinAuthalic(s: f32) -> f32 {
+  if (WGS84_E == 0.0) {
+    return s;
+  }
   let es = WGS84_E * s;
   let q = (1.0 - WGS84_E2) * (s / (1.0 - es * es) + log((1.0 + es) / (1.0 - es)) / (2.0 * WGS84_E));
   return q / POLAR_Q;
@@ -252,6 +262,12 @@ export type FeatureMeasuresNodeProps = {
   isPoint?: boolean;
   coordinateSystem: GPUGeometryCoordinateSystem;
   radius: number;
+  /** Spherical area radius in the context's length unit. */
+  areaRadius: number;
+  /** Ellipsoid with its semi-major axis in meters. */
+  ellipsoid: GPUSpatialEllipsoid;
+  /** Converts ellipsoidal meter lengths to context units; squared for areas. */
+  lengthScale: number;
   /** `featureCount * GEOMETRY_STATS_STRIDE` words. */
   featureStats: GraphDataView<'uint32'>;
   /**
@@ -385,10 +401,10 @@ fn isShellRing(ring: u32, isFirstRing: bool) -> bool {
 const IS_GEOGRAPHIC: bool = ${isGeographic};
 const STATS_STRIDE: u32 = ${GEOMETRY_STATS_STRIDE}u;
 ${GEODESIC_WGSL}
-${getMeasureConstantsSource(coordinateSystem, props.radius)}
+${getMeasureConstantsSource(coordinateSystem, props.radius, props.areaRadius, props.ellipsoid, props.lengthScale)}
 ${
   isEllipsoidal
-    ? `${getVincentyWGSL(GPU_GEODESIC_DEFAULT_ITERATIONS)}
+    ? `${getVincentyWGSL(GPU_GEODESIC_DEFAULT_ITERATIONS, props.ellipsoid)}
 ${WGS84_WGSL}`
     : ''
 }
@@ -460,9 +476,10 @@ fn writeStat(feature: u32, slot: u32, value: f32) {
     centroidX = origin.x + centroid.x;
     centroidY = origin.y + centroid.y;
   }
-  writeStat(index, 0u, totalLength);
-  writeStat(index, 1u, signedArea);
-  writeStat(index, 2u, abs(signedArea));
+  // Convert once before both feature output and group reduction, shared with the cooperative path.
+  writeStat(index, 0u, totalLength * LENGTH_SCALE);
+  writeStat(index, 1u, signedArea * LENGTH_SCALE * LENGTH_SCALE);
+  writeStat(index, 2u, abs(signedArea) * LENGTH_SCALE * LENGTH_SCALE);
   writeStat(index, 3u, select(centroidX, invalidNan, isInvalid));
   writeStat(index, 4u, select(centroidY, invalidNan, isInvalid));
   writeStat(index, 5u, origin.x + boundsMin.x);

@@ -4,7 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -32,6 +32,12 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import type {GPULineGeometryPort, GPUPackedGeometryPort} from '../../analysis-core/contracts/index';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 const OPERATION = 'GPUTrackSimilarity';
 const HAUSDORFF_WORKGROUP_SIZE = 64;
 const FRECHET_LANES = 256;
@@ -49,12 +55,13 @@ const MAXIMUM_DENSIFY_SUBDIVISIONS = 4096;
 const MAXIMUM_BAND_RADIUS = 2 ** 30;
 
 /**
- * WGSL: metric value (squared planar distance, or great-circle meters) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
+ * WGSL: metric value (squared planar distance, or great-circle distances in the context's length
+ * unit) from a point to the polyline of one track (`side` is `'A'` or `'B'`), with
  * Taha-Hanbury early break against `worst` and a rotating start (`hint`, updated to the nearest
  * segment found). Returns a value at most `worst` as soon as the point cannot raise the maximum.
  */
 function getDirectedPolylineSource(side: 'A' | 'B'): string {
-  return `// Metric value (squared distance, or meters on the sphere) from a point to polyline ${side}; may stop early once it is at most worst.
+  return `// Metric value (squared distance, or the context's length unit on the sphere) from a point to polyline ${side}; may stop early once it is at most worst.
 fn distanceToPolyline${side}(point: vec2<f32>, start: u32, count: u32, worst: f32, hint: ptr<function, u32>) -> f32 {
   if (count == 1u) {
     return pointMetric(point, load${side}(start));
@@ -133,22 +140,22 @@ export const GPU_TRACK_SIMILARITY_STATUS = {
 
 /** Caller-owned per-pair outputs of {@link GPUTrackSimilarity}. At least one measure is required. */
 export type GPUTrackSimilarityOutput = {
-  /** Optional per-pair symmetric discrete Hausdorff distance, NaN when not computed. */
+  /** Optional per-pair symmetric discrete Hausdorff distance in the context's length unit, NaN when not computed. */
   hausdorff?: GraphDataView<'float32'>;
-  /** Optional per-pair discrete Frechet distance, NaN when not computed. */
+  /** Optional per-pair discrete Frechet distance in the context's length unit, NaN when not computed. */
   frechet?: GraphDataView<'float32'>;
   /**
    * Optional per-pair Frechet decision: 1 when the discrete Frechet distance is at most
    * `frechetEpsilon`, else 0 (also 0 for skipped pairs and an unusable epsilon). Requires
    * `frechetEpsilon`. Cheaper than `frechet`: endpoint and coupling bounds decide most pairs in
    * `O(n + m)`, and the free-space program stops once no monotone path can survive. The test is
-   * made in the internal metric (squared planar distance against `epsilon^2`, or meters), so an
-   * epsilon within an f32 rounding of the distance may decide either way.
+   * made in the internal metric (squared planar distance against `epsilon^2`, or the context's
+   * length unit), so an epsilon within an f32 rounding of the distance may decide either way.
    */
   frechetWithin?: GraphDataView<'uint32'>;
   /**
-   * Optional per-pair dynamic time warping cost: the smallest sum of point distances (planar
-   * units, or great-circle meters) over monotone warping paths between the (densified) vertex
+   * Optional per-pair dynamic time warping cost: the smallest sum of point distances in the
+   * context's length unit over monotone warping paths between the (densified) vertex
    * sequences, the convention of `similaritymeasures.dtw` (not the square root of summed squares
    * of `tslearn` and `dtaidistance`). Banded by `dynamicTimeWarpingBandRadius`; NaN when not
    * computed. Summed in f32, so the relative error grows with the path length (about
@@ -157,7 +164,8 @@ export type GPUTrackSimilarityOutput = {
   dynamicTimeWarping?: GraphDataView<'float32'>;
   /**
    * Optional per-pair maximum distance between any vertex of one track and any vertex of the other
-   * (original vertices, never densified), NaN when not computed. Matches Sedona `ST_MaxDistance`.
+   * (original vertices, never densified), in the context's length unit, NaN when not computed.
+   * Matches Sedona `ST_MaxDistance`.
    */
   maximumDistance?: GraphDataView<'float32'>;
   /** Optional per-pair {@link GPU_TRACK_SIMILARITY_STATUS} bit set, 0 when computed. */
@@ -177,14 +185,16 @@ export type GPUTrackSimilarityProps = {
    * Coordinate space of both vertex sets. Native planar (the default): distances are Euclidean in
    * the f32 input coordinates. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`:
    * vertices are `[longitude, latitude]` degrees and every distance (Hausdorff, Frechet and
-   * `maximumDistance`) is a great-circle distance in meters on a sphere of `sphereRadius` (default
-   * `GPU_EARTH_MEAN_RADIUS_METERS`). Segments are straight in longitude/latitude (the edge model of
+   * `maximumDistance`) is a great-circle distance in the context's length unit on a sphere of
+   * `sphereRadius` (default
+   * mean Earth radius in the context's length unit). Segments are straight in longitude/latitude
+   * (the edge model of
    * the rest of the package): the point-to-segment distance is the haversine distance to the
    * closest point of the segment, with the closest point found in the local equirectangular frame
    * of the point, which is exact to first order for segments of kilometers; densify longer
    * segments (see `densify`). Densified points interpolate longitude and latitude linearly with the
-   * longitude difference wrapped to +-180, so tracks may cross the antimeridian. Kilometers and
-   * other metrics throw.
+   * longitude difference wrapped to +-180, so tracks may cross the antimeridian. Other metrics
+   * throw.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -223,8 +233,8 @@ export type GPUTrackSimilarityProps = {
    */
   maximumFrechetVertexCount?: number;
   /**
-   * Per-frame Frechet decision threshold, one float32 row, in the output distance unit (planar
-   * units, or meters with a great-circle context). Required with `output.frechetWithin`. NaN,
+   * Per-frame Frechet decision threshold in the context's length unit, one float32 row.
+   * Required with `output.frechetWithin`. NaN,
    * negative or infinite values decide 0.
    */
   frechetEpsilon?: GraphDataView<'float32'>;
@@ -251,7 +261,8 @@ export type GPUTrackSimilarityProps = {
  * `maximumDistance` is the largest vertex-to-vertex distance (Sedona `ST_MaxDistance`). Polygon
  * boundaries are the open ring sequences with the repeated closing vertex, so Frechet is
  * orientation and start sensitive. Distances are planar in the f32 input coordinates by default,
- * or great-circle meters with a `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}`
+ * or great-circle distances in the context's length unit with a `{coordinateSpace:
+ * 'longitude-latitude', metric: 'great-circle'}`
  * `spatialContext` (see {@link GPUTrackSimilarityProps.spatialContext}); the planar kernels contain
  * no geodesic code.
  *
@@ -280,7 +291,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
   readonly props: GPUTrackSimilarityProps;
   /** Resolved coordinate context: native planar, or longitude-latitude with the great-circle metric. */
   readonly spatialContext: GPUSpatialContext;
-  /** Sphere radius in meters of a great-circle context, `undefined` for planar. */
+  /** Sphere radius in the context's length unit of a great-circle context, `undefined` for planar. */
   readonly sphereRadius: number | undefined;
   /** Resolved Frechet vertex cap. */
   readonly maximumFrechetVertexCount: number;
@@ -294,7 +305,7 @@ export class GPUTrackSimilarity implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     const {linesA, linesB, output} = props;

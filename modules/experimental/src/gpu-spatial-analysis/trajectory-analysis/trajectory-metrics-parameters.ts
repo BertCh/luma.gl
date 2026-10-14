@@ -40,12 +40,14 @@ export const GPU_TRAJECTORY_METRICS_PARAMETER_SCHEMA = defineGPUSpatialParameter
 /**
  * CPU description of the per-frame stop-detection parameters of `GPUTrajectoryMetrics`.
  *
- * Both values use the units of the track data: positions per time unit for the speed threshold and
+ * Both values use the units of the track data: the context's length unit per timestamp unit for the
+ * speed threshold and
  * time units (the unit of the timestamps) for the minimum duration.
  */
 export type GPUTrajectoryMetricsSettings = {
   /**
-   * A step between two consecutive samples is slow when its speed is below this value. Must be
+   * Speed threshold in the context's length unit per timestamp unit. A step is slow below this
+   * value. Must be
    * finite and non-negative. A threshold of 0 only treats zero-distance steps as slow.
    */
   stopSpeedThreshold: number;

@@ -27,6 +27,7 @@ import {
   type WGSLKernelBinding
 } from '../../utils/wgsl-kernel-nodes';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/index';
@@ -54,6 +55,12 @@ import {
   getKernelValueWGSL,
   getWindowMassWGSL
 } from './kernel-density-wgsl';
+
+/** Spatial contexts supported by this area-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
+} as const);
 
 const OPERATION = 'GPUKernelDensity';
 
@@ -370,7 +377,11 @@ export class GPUKernelDensity implements GPUCommandNodeProducer {
     this.id = props.id ?? 'kernel-density';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.kernel = props.kernel ?? 'gaussian';
     this.edgeCorrection = props.edgeCorrection ?? 'uniform';
     this.normalization = props.normalization ?? 'intensity';

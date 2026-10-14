@@ -18,7 +18,7 @@ import {
   validateGraphViewsBelongToGraph,
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/index';
+import type {GPUSpatialContext, GPUSpatialEllipsoid} from '../../analysis-core/contracts/index';
 import {RHUMB_WGSL} from './rhumb-wgsl';
 import {GEODESIC_WGSL} from './geodesic-wgsl';
 import {
@@ -53,7 +53,7 @@ export type GPUGeodesicDestinationOutput = {
  * Properties for {@link GPUGeodesicDestination}.
  *
  * Per-frame (no recompile): the contents of every input column. Compile-time: the row count,
- * `model`, `radius`, `maximumIterations`, and which outputs are present.
+ * `spatialContext`, `maximumIterations`, and which outputs are present.
  */
 export type GPUGeodesicDestinationProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-destination'`. */
@@ -64,7 +64,7 @@ export type GPUGeodesicDestinationProps = {
   origins: GraphDataView<'float32x2'>;
   /** Initial bearings in degrees clockwise from north, aligned with `origins`. */
   bearings: GraphDataView<'float32'>;
-  /** Distances in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`), aligned with `origins`. */
+  /** Distances in the context's length unit, aligned with `origins`. */
   distances: GraphDataView<'float32'>;
   /** Compile-time Vincenty iteration cap for `'wgs84'`. Default 16. */
   maximumIterations?: number;
@@ -89,8 +89,10 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Resolved model. */
   readonly model: GPUGeodesicModel;
-  /** Resolved radius. */
+  /** Resolved sphere radius in the context's length unit. */
   readonly radius: number;
+  /** Ellipsoid in the context's length unit, used by the 'wgs84'/ellipsoidal model. */
+  readonly ellipsoid: GPUSpatialEllipsoid;
   /** Resolved Vincenty iteration cap. */
   readonly maximumIterations: number;
 
@@ -101,6 +103,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
     const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
     this.model = metric.model;
     this.radius = metric.radius;
+    this.ellipsoid = metric.ellipsoid;
     this.maximumIterations = props.maximumIterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
     validateGeodesicOptions(this.id, this.model, this.radius, this.maximumIterations);
     const {id} = this;
@@ -189,7 +192,7 @@ export class GPUGeodesicDestination implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
-${wgs84 ? getVincentyWGSL(this.maximumIterations) : ''}
+${wgs84 ? getVincentyWGSL(this.maximumIterations, this.ellipsoid) : ''}
 ${SPHERE_PAIR_WGSL}
 ${this.model === 'rhumb' ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,

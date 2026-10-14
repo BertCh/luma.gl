@@ -4,7 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -45,6 +45,12 @@ import {
   type EncounterShape
 } from './encounter-kernels';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 const OPERATION = 'GPUTrajectoryEncounters';
 
 /**
@@ -61,7 +67,7 @@ export type GPUTrajectoryEncounterPairs = GPUCompactOutput & {
   partners?: GraphDataView<'uint32'>;
   /** Optional first time bucket in which the pair was within the distance. */
   firstBuckets?: GraphDataView<'uint32'>;
-  /** Optional smallest distance over the pair's encounter buckets. */
+  /** Optional smallest distance over the pair's encounter buckets, in the context's length unit. */
   minimumDistances?: GraphDataView<'float32'>;
   /** Optional number of buckets in which the pair was within the distance. */
   bucketCounts?: GraphDataView<'uint32'>;
@@ -94,9 +100,9 @@ export type GPUTrajectoryEncountersProps = {
    * Coordinate space and metric of `samples`, `distance`, `cellSize` and `bounds`. Omitted means
    * native planar coordinates: `distance` and `cellSize` are position units and distances are
    * Euclidean. `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` means samples are
-   * `(longitude, latitude)` degrees, `distance` is great-circle meters on a sphere of
-   * `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`), `cellSize` and `bounds` stay in
-   * degrees, and the reported distances are meters. Other contexts throw.
+   * `(longitude, latitude)` degrees. Distance thresholds and outputs are in the context's length
+   * unit, using `sphereRadius` or the mean Earth radius in that unit. `cellSize` and `bounds`
+   * stay in degrees. Other contexts throw.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -116,8 +122,8 @@ export type GPUTrajectoryEncountersProps = {
    */
   trackValid?: GraphDataView<'uint32'>;
   /**
-   * Per-frame distance, one float32 row. A pair is an encounter in a bucket when the distance of
-   * its two samples (planar, or great-circle meters) is at most this value. It is clamped to
+   * Per-frame distance in the context's length unit, one float32 row. A pair is an encounter in
+   * a bucket when the distance of its two samples is at most this value. It is clamped to
    * `cellSize` (planar) or to {@link GPUTrajectoryEncounters.maximumDistance} (great-circle).
    * Negative or NaN matches nothing.
    */
@@ -174,7 +180,8 @@ export type GPUTrajectoryEncountersProps = {
  * for tracks with different time windows, or supply your own table and mark absent samples with
  * NaN or `trackValid`.
  *
- * Spatial context: with a great-circle context the test is the great-circle distance in meters
+ * Spatial context: with a great-circle context the test is the great-circle distance in the
+ * context's length unit
  * (`geodesicHaversineDistance`) between the two samples of the same bucket; there is no
  * segment-closest-approach computation, so the discrete-approximation caveat above is unchanged
  * and no tangent-plane approximation is involved. Candidate pruning is conservative in degrees:
@@ -184,7 +191,7 @@ export type GPUTrajectoryEncountersProps = {
  * distance is therefore `maximumDistance = radius * asin(sin(cellSize) * cos(L))` (scaled by
  * `1 - 1e-6` for rounding) and `distance` is clamped to it. Choose latitude bounds that exclude
  * the polar caps, since `maximumDistance` shrinks to 0 as `L` approaches 90 degrees. Reported
- * `minimumDistances` are meters.
+ * `minimumDistances` are in the context's length unit.
  *
  * Bounds: `output.status.candidateOverflow` is 1 when the hit scratch or grid index overflowed, after
  * which pairs may be missing or have too-small counts. `output.pairs.overflow` is independently 1
@@ -203,7 +210,8 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /**
    * Largest `distance` the lattice searches conservatively, in the units of `distance`: `cellSize`
-   * for a planar context, meters for a great-circle context. Larger per-frame distances are clamped.
+   * for a planar context, the context's length unit for a great-circle context. Larger per-frame
+   * distances are clamped.
    */
   readonly maximumDistance: number;
   /** Great-circle lattice parameters, or `undefined` for a planar context. */
@@ -216,7 +224,7 @@ export class GPUTrajectoryEncounters implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     const geodesicRadius = getGPUGreatCircleRadius(this.spatialContext);
     validateCapacity(id, 'trackCount', props.trackCount);

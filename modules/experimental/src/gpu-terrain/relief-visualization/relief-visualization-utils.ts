@@ -9,6 +9,7 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {getRasterGroundScaleWGSL} from '../../analysis-core/raster-grid';
 import type {GPURasterBufferBand} from '../../gpu-raster/index';
 import {
   createWGSLKernelNode,
@@ -64,6 +65,22 @@ export function createReliefMeanFilterScratch<Parameters>(
   };
 }
 
+/** Compile-time ground window and per-axis pixel bounds. @internal */
+export type ReliefGroundRadius = {
+  /** WGS84 ground scale model. */
+  mode: 'geographic' | 'web-mercator';
+  /** Affine cell sizes in grid world units. */
+  cellSize: readonly [number, number];
+  /** World y of the top edge of row 0. */
+  northEdge: number;
+  /** World y of the bottom edge of the last row. */
+  southEdge: number;
+  /** Ground radius in metres. */
+  radius: number;
+  /** Maximum rounded pixel half-width on each axis over every row, computed in float64. */
+  maximumRadius: readonly [number, number];
+};
+
 /** Properties for {@link getReliefMeanFilterNodes}. @internal */
 export type ReliefMeanFilterProps = {
   /** Prefix for the two node IDs. */
@@ -79,6 +96,8 @@ export type ReliefMeanFilterProps = {
    * `radiusSlot`, the largest radius the filter serves (the compile-time maximum).
    */
   radius: number;
+  /** Optional per-row rectangular ground window; cannot be combined with `radiusSlot`. */
+  groundRadius?: ReliefGroundRadius;
   /**
    * Optional per-frame radius read from a float32 settings view. The word is an integer in
    * `[1, radius]`: larger values clamp to `radius`, and a value below 1 (or NaN) selects `radius`.
@@ -123,6 +142,11 @@ export type ReliefMeanFilterProps = {
  *    `total` equals `sum(window) - count * c`, so `z - mean = -total / count`. The large values
  *    cancel inside the exact differences `a - c`, never inside a long accumulation.
  *
+ * With `groundRadius`, the horizontal pass uses its own row's radiusX and the vertical pass
+ * uses the center row's radiusY. This approximates a ground rectangle because the averaged rows
+ * were filtered with their own radiusX; ground scales typically differ by a fraction of a
+ * percent across a window (rounded pixel radii can still differ by one).
+ *
  * Cost is `O(radius)` per pixel per pass, independent of the grid size. The window always contains
  * the valid centre, so `count >= 1`.
  *
@@ -132,11 +156,12 @@ export function getReliefMeanFilterNodes<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: ReliefMeanFilterProps
 ): GPUCommandNode<Parameters>[] {
-  const {width, height, radius, scratch} = props;
+  const groundDeclarations = getReliefGroundRadiusWGSL(props);
+  const {width, height, radius, scratch, groundRadius} = props;
   const pixelCount = width * height;
   const declarations = `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
-const RADIUS: i32 = ${radius};`;
+const RADIUS: i32 = ${radius};${groundDeclarations}`;
   // With a per-frame radius the loops run to `radius` read from the settings, else to RADIUS.
   const {radiusSlot} = props;
   const radiusSource = radiusSlot
@@ -144,8 +169,8 @@ const RADIUS: i32 = ${radius};`;
   let radius = select(RADIUS, clamp(i32(radiusWord), 1, RADIUS), radiusWord >= 1.0);
   `
     : '';
-  const loopRadius = radiusSlot ? 'radius' : 'RADIUS';
-  const variantSuffix = radiusSlot ? '-radius' : '';
+  const loopRadius = radiusSlot || groundRadius ? 'radius' : 'RADIUS';
+  const variantSuffix = groundRadius ? `-${groundRadius.mode}` : radiusSlot ? '-radius' : '';
   const radiusBinding: WGSLKernelBinding[] = radiusSlot
     ? [{name: 'radiusSettings', view: radiusSlot.settings, type: 'f32', access: 'read'}]
     : [];
@@ -165,7 +190,7 @@ const RADIUS: i32 = ${radius};`;
     declarations,
     body: `let column = i32(index % WIDTH);
   let rowStart = index - u32(column);
-  ${radiusSource}
+  ${groundRadius ? 'let radius = getReliefPixelRadius(index / WIDTH).x;' : radiusSource}
   var anchor = 0.0;
   if (validity[validityOffset + index] != 0u) {
     anchor = values[valuesOffset + index];
@@ -231,7 +256,7 @@ const RADIUS: i32 = ${radius};`;
     declarations: `${declarations}\n${TERRAIN_ILLUMINATION_WGSL_CONSTANTS}`,
     body: `let column = index % WIDTH;
   let row = i32(index / WIDTH);
-  ${radiusSource}
+  ${groundRadius ? 'let radius = getReliefPixelRadius(u32(row)).y;' : radiusSource}
   let isValid = validity[validityOffset + index] != 0u;
   var deviationValue = getNaN(index);
   if (isValid) {
@@ -433,7 +458,10 @@ export function getReliefSummedAreaFilterNodes<Parameters>(
     quantum: number;
   }
 ): GPUCommandNode<Parameters>[] {
-  const {width, height, radius, radiusSlot} = props;
+  const groundDeclarations = getReliefGroundRadiusWGSL(props);
+  const {width, height, radius, radiusSlot, groundRadius} = props;
+  const radiusX = groundRadius ? 'radiusX' : 'radius';
+  const radiusY = groundRadius ? 'radiusY' : 'radius';
   const bindings: WGSLKernelBinding[] = [
     ...(props.table.anchor
       ? [{name: 'anchor', view: props.table.anchor, type: 'f32' as const, access: 'read' as const}]
@@ -474,13 +502,13 @@ export function getReliefSummedAreaFilterNodes<Parameters>(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${props.id}-deviation`,
       operation: props.operation,
-      variant: `mean-summed-area${radiusSlot ? '-radius' : ''}`,
+      variant: `mean-summed-area${groundRadius ? `-${groundRadius.mode}` : radiusSlot ? '-radius' : ''}`,
       bindings,
       invocationCount: width * height,
       declarations: `const WIDTH: u32 = ${width}u;
 const HEIGHT: u32 = ${height}u;
 const PIXEL_COUNT: u32 = ${width * height}u;
-const RADIUS: i32 = ${radius};
+const RADIUS: i32 = ${radius};${groundDeclarations}
 const QUANTUM: f32 = ${getWGSLFloatLiteral(props.quantum)};
 const INVERSE_QUANTUM: f32 = ${getWGSLFloatLiteral(1 / props.quantum)};
 ${TERRAIN_SUMMED_AREA_WGSL_HELPERS}
@@ -496,20 +524,26 @@ fn addWeighted(total: TerrainBoxSums, strip: TerrainBoxSums, weight: u32) -> Ter
 }`,
       body: `let column = i32(index % WIDTH);
   let row = i32(index / WIDTH);
-  ${radiusSource}
+  ${
+    groundRadius
+      ? `let pixelRadius = getReliefPixelRadius(u32(row));
+  let radiusX = pixelRadius.x;
+  let radiusY = pixelRadius.y;`
+      : radiusSource
+  }
   // A single-cell box returns the centre's quantized elevation and validity exactly.
   let centre = readBoxSums(column, column, row, row);
   let isValid = centre.count == 1u;
   var deviationValue = getNaN(index);
   if (isValid) {
-    let firstColumn = max(column - radius, 0i);
-    let lastColumn = min(column + radius, i32(WIDTH) - 1i);
-    let firstRow = max(row - radius, 0i);
-    let lastRow = min(row + radius, i32(HEIGHT) - 1i);
-    let overhangLeft = u32(max(radius - column, 0i));
-    let overhangRight = u32(max(column + radius - (i32(WIDTH) - 1i), 0i));
-    let overhangTop = u32(max(radius - row, 0i));
-    let overhangBottom = u32(max(row + radius - (i32(HEIGHT) - 1i), 0i));
+    let firstColumn = max(column - ${radiusX}, 0i);
+    let lastColumn = min(column + ${radiusX}, i32(WIDTH) - 1i);
+    let firstRow = max(row - ${radiusY}, 0i);
+    let lastRow = min(row + ${radiusY}, i32(HEIGHT) - 1i);
+    let overhangLeft = u32(max(${radiusX} - column, 0i));
+    let overhangRight = u32(max(column + ${radiusX} - (i32(WIDTH) - 1i), 0i));
+    let overhangTop = u32(max(${radiusY} - row, 0i));
+    let overhangBottom = u32(max(row + ${radiusY} - (i32(HEIGHT) - 1i), 0i));
     var total = readBoxSums(firstColumn, lastColumn, firstRow, lastRow);
     if (overhangLeft > 0u) {
       total = addWeighted(total, readBoxSums(0i, 0i, firstRow, lastRow), overhangLeft);
@@ -551,4 +585,32 @@ fn addWeighted(total: TerrainBoxSums, strip: TerrainBoxSums, weight: u32) -> Ter
   ${props.validityOutput ? 'validityOutput[validityOutputOffset + index] = select(0u, 1u, isValid);' : ''}`
     })
   ];
+}
+
+/** Adds ground-only declarations without changing uniform shaders or their radius-slot behavior. */
+function getReliefGroundRadiusWGSL(props: ReliefMeanFilterNodeProps): string {
+  const {groundRadius, radiusSlot} = props;
+  if (!groundRadius) {
+    return '';
+  }
+  if (radiusSlot) {
+    throw new Error('groundRadius cannot use radiusSlot');
+  }
+  const {cellSize, northEdge, southEdge, radius, maximumRadius, mode} = groundRadius;
+  return `
+const NORTH_EDGE: f32 = ${getWGSLFloatLiteral(northEdge)};
+const SOUTH_EDGE: f32 = ${getWGSLFloatLiteral(southEdge)};
+const GROUND_RADIUS: f32 = ${getWGSLFloatLiteral(radius)};
+const MAXIMUM_RADIUS_X: i32 = ${maximumRadius[0]};
+const MAXIMUM_RADIUS_Y: i32 = ${maximumRadius[1]};
+fn getReliefGroundCell(row: u32) -> vec2<f32> {
+  let cellSize = vec2<f32>(${getWGSLFloatLiteral(cellSize[0])}, ${getWGSLFloatLiteral(cellSize[1])});
+  let edge = mix(NORTH_EDGE, SOUTH_EDGE, (f32(row) + 0.5) / f32(HEIGHT));
+  ${getRasterGroundScaleWGSL(mode)}
+  return cellSize * groundScale;
+}
+fn getReliefPixelRadius(row: u32) -> vec2<i32> {
+  let rounded = vec2<i32>(round(vec2<f32>(GROUND_RADIUS) / getReliefGroundCell(row)));
+  return clamp(rounded, vec2<i32>(1), vec2<i32>(MAXIMUM_RADIUS_X, MAXIMUM_RADIUS_Y));
+}`;
 }

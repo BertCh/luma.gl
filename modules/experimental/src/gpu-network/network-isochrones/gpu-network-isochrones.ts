@@ -40,6 +40,7 @@ import type {
 } from '../../gpu-spatial-analysis/cell-set-outline/index';
 import {
   resolveGPUSpatialContext,
+  GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT,
   type GPUSpatialContext,
   type GPUSpatialContextSupport
 } from '../../analysis-core/contracts/spatial-context';
@@ -65,9 +66,10 @@ const DEFAULT_MAXIMUM_SAMPLES_PER_EDGE = 64;
 const MAXIMUM_SAMPLES_PER_EDGE_LIMIT = 1024;
 const DEFAULT_UNREACHED_COST = 1e30;
 /** The raster path is planar; the cell path takes longitude/latitude. */
-const ISOCHRONES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
-  coordinateSpaces: ['planar', 'longitude-latitude']
-};
+const ISOCHRONES_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  measure: 'distance'
+});
 
 /** Raster path of {@link GPUNetworkIsochrones}: splat edge costs to a raster, then isobands. */
 export type GPUNetworkIsochronesRaster = {
@@ -215,7 +217,10 @@ export type GPUNetworkIsochronesProps = {
    * `bufferRadius` and `walkCostPerUnit` are Euclidean in the units of the extent), so a
    * longitude/latitude context with `raster` throws: project to a planar frame first. The cell
    * path indexes longitude/latitude degrees, so a planar context with `cellOutline` throws.
-   * Omitted keeps the positions unchecked.
+   * Omitted resolves to native planar for `raster`, or longitude/latitude with metric `'none'`
+   * for `cellOutline` alone. With both paths and no context, the raster default applies and
+   * cell-outline positions remain unchecked for compatibility. Distance buffers accept an
+   * azimuthal-equidistant local frame and reject a Lambert equal-area frame.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -295,7 +300,8 @@ export type GPUNetworkIsochronesProps = {
  * features need a buffer. Costs of pixels in the buffer are the sample cost plus
  * `walkCostPerUnit` times the distance, which gives the standard "street cost plus walk" isochrone.
  * Edges are straight segments between node positions, so curved street geometry is approximated.
- * A `spatialContext` makes the coordinate expectations of both paths checked at construction.
+ * An explicit `spatialContext` checks both paths at construction; omitted defaults follow
+ * `GPUNetworkIsochronesProps.spatialContext`.
  *
  * The cell path outlines cells holding at least one reached node (cost at or below
  * `cellCostLimit`) with `GPUCellSetOutline`; `cellOutline.rings` chains the outline into closed
@@ -313,8 +319,8 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
   readonly nodeCount: number;
   /** Resolved raster accumulation mode, when the raster path is on. */
   readonly mode: GPUNetworkIsochronesMode;
-  /** The given spatial context, validated, or `undefined` when omitted. */
-  readonly spatialContext: GPUSpatialContext | undefined;
+  /** Resolved context: native planar for raster, longitude/latitude for cell outlines alone. */
+  readonly spatialContext: GPUSpatialContext;
 
   constructor(props: GPUNetworkIsochronesProps) {
     this.id = props.id ?? DEFAULT_ID;
@@ -324,14 +330,17 @@ export class GPUNetworkIsochrones implements GPUCommandNodeProducer {
     if (!raster && !cellOutline) {
       throw new Error(`${id} needs raster or cellOutline`);
     }
-    this.spatialContext = props.spatialContext
-      ? resolveGPUSpatialContext(id, props.spatialContext, ISOCHRONES_SPATIAL_CONTEXT_SUPPORT)
-      : undefined;
-    const coordinateSpace = this.spatialContext?.coordinateSpace;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext ?? (raster ? undefined : GPU_LONGITUDE_LATITUDE_SPATIAL_CONTEXT),
+      ISOCHRONES_SPATIAL_CONTEXT_SUPPORT
+    );
+    const coordinateSpace = this.spatialContext.coordinateSpace;
     if (raster && coordinateSpace === 'longitude-latitude') {
       throw new Error(`${id} raster needs planar positions; project to a planar frame first`);
     }
-    if (cellOutline && coordinateSpace === 'planar') {
+    // Legacy combined outputs without a context leave cell-outline positions unchecked.
+    if (cellOutline && coordinateSpace === 'planar' && props.spatialContext) {
       throw new Error(`${id} cellOutline needs longitude-latitude positions`);
     }
     for (const [name, view] of [

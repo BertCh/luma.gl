@@ -23,6 +23,7 @@ import {
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPULineGeometryFields,
   type GPUSpatialContext
@@ -34,6 +35,12 @@ import {IS_FINITE_FLOAT_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPURandomPointsOnLine';
 const NONE = '0xffffffffu';
+
+// Uniform line sampling weights segments by length.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 /** Philox key word 1 of the line-position draw (`PHILOX_PURPOSES` registry). */
 export const RANDOM_POINTS_ON_LINE_PURPOSE = PHILOX_PURPOSES.randomPointsOnLine.id;
@@ -102,7 +109,11 @@ export class GPURandomPointsOnLine implements GPUCommandNodeProducer {
     this.id = props.id ?? 'random-points-on-line';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     const {output} = props;
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.lineOffsets, ['uint32'], `${id} lineOffsets`);

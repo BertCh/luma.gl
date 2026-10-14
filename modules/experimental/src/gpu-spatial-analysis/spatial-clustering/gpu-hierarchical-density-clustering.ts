@@ -23,6 +23,7 @@ import {
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -57,6 +58,12 @@ import {
   getHierarchicalDensityCondensingNodes,
   getHierarchicalDensitySelectionNodes
 } from './hierarchical-density-tree';
+
+/** Planar contexts suitable for distance measurements. */
+const HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUHierarchicalDensityClustering';
 
@@ -163,7 +170,11 @@ export class GPUHierarchicalDensityClustering implements GPUCommandNodeProducer 
     this.id = props.id ?? 'hierarchical-density-clustering';
     this.props = props;
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      HIERARCHICAL_DENSITY_SPATIAL_CONTEXT_SUPPORT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     const rows = props.positions.length;
     validateCapacity(

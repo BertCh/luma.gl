@@ -4,7 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -39,6 +39,12 @@ import {
 import {GPU_TRAJECTORY_METRICS_PARAMETER_LENGTH} from './trajectory-metrics-parameters';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
 
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
+
 /**
  * Caller-owned, capacity-bounded stop (dwell) outputs of {@link GPUTrajectoryMetrics}: a
  * {@link GPUCompactOutput} extended with optional per-stop columns.
@@ -67,10 +73,11 @@ export type GPUTrajectoryStopOutput = GPUCompactOutput & {
 
 /**
  * Caller-owned outputs of {@link GPUTrajectoryMetrics}. At least one view must be present.
+ * Lengths use the context's length unit; speeds use that unit per timestamp unit.
  * Status: the stop list reports capacity overflow through `stops.overflow`.
  */
 export type GPUTrajectoryMetricsOutput = {
-  /** Optional per-track path length, `trackCount` rows. */
+  /** Optional per-track path length in the context's length unit, `trackCount` rows. */
   trackLengths?: GraphDataView<'float32'>;
   /** Optional per-track duration `t[last] - t[first]`, `trackCount` rows. */
   trackDurations?: GraphDataView<'float32'>;
@@ -97,7 +104,8 @@ export type GPUTrajectoryMetricsOutput = {
   stepHeadings?: GraphDataView<'float32'>;
   /**
    * Optional per-row acceleration of the step that ends at the row, `positions.length` rows:
-   * `(speed_i - speed_{i-1}) / deltaTime_i` in position units per time unit squared. 0 for the
+   * `(speed_i - speed_{i-1}) / deltaTime_i` in the context's length unit per timestamp unit
+   * squared. 0 for the
    * first two rows of every track, rows outside every track, and steps with a non-positive
    * `deltaTime`.
    */
@@ -138,9 +146,9 @@ export type GPUTrajectoryMetricsProps = GPUTrajectoryGeometryFields & {
   /**
    * Coordinate space and metric of the positions. Omitted means native planar coordinates and
    * Euclidean distances in position units. `{coordinateSpace: 'longitude-latitude', metric:
-   * 'great-circle'}` means positions are `(longitude, latitude)` degrees and distances are
-   * great-circle meters on a sphere of `sphereRadius` (default `GPU_EARTH_MEAN_RADIUS_METERS`),
-   * so speeds are meters per timestamp unit. Other contexts throw.
+   * 'great-circle'}` means positions are `(longitude, latitude)` degrees. Distances are in the
+   * context's length unit, using `sphereRadius` or the mean Earth radius in that unit. Speeds
+   * use the context's length unit per timestamp unit. Other contexts throw.
    */
   spatialContext?: GPUSpatialContext;
   /**
@@ -203,8 +211,9 @@ export type GPUTrajectoryMetricsProps = GPUTrajectoryGeometryFields & {
  * Spatial context: without `spatialContext` (or with a planar one) distances are Euclidean in
  * position units and headings are `atan2(deltaY, deltaX)`. With `{coordinateSpace:
  * 'longitude-latitude', metric: 'great-circle'}`, positions are `(longitude, latitude)` degrees,
- * step distances are great-circle meters (`geodesicHaversineDistance` on `sphereRadius`, default
- * `GPU_EARTH_MEAN_RADIUS_METERS`), speeds are meters per timestamp unit, and headings are initial
+ * step distances are in the context's length unit (`geodesicHaversineDistance` on `sphereRadius`,
+ * defaulting to the mean Earth radius in that unit). Speeds use that unit per timestamp unit.
+ * Headings are initial
  * bearings expressed counterclockwise from east (`pi / 2 - bearing`) in `(-pi, pi]`. Stop `centroids` are arithmetic means of
  * the coordinates, so a dwell that straddles the antimeridian or a pole has a meaningless centroid
  * in great-circle mode. Positions are f32 degrees (about 1 m resolution at mid-latitudes).
@@ -229,7 +238,7 @@ export class GPUTrajectoryMetrics implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.timestamps, ['float32', 'uint32x2'], `${id} timestamps`);

@@ -42,10 +42,17 @@ import {
   GPU_GWR_NONSTATIONARITY_TABLE_STRIDE
 } from './geographically-weighted-regression-nonstationarity-parameters';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
 import {GET_NAN_WGSL, IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUGeographicallyWeightedRegressionNonstationarityTest';
 /** Rows per thread of the compaction count pass. */
@@ -215,7 +222,7 @@ export class GPUGeographicallyWeightedRegressionNonstationarityTest
     this.id = id;
     this.props = props;
     const {predictorCount, output, maximumPermutations} = props;
-    resolveGPUSpatialContext(id, props.spatialContext);
+    resolveGPUSpatialContext(id, props.spatialContext, SPATIAL_CONTEXT_SUPPORT);
     validateCapacity(
       id,
       'predictorCount',

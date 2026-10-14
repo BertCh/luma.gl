@@ -5,6 +5,7 @@
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUPolygonGeometryFields,
   type GPUSpatialContext
@@ -18,6 +19,12 @@ import {
   type GPUDotDensityOutput
 } from './dot-density-sampling';
 import {validatePolygonTriangulationScratch} from '../polygon-triangulation/gpu-polygon-triangulation';
+
+// Uniform polygon sampling weights triangles by area.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'area'
+});
 
 /**
  * Properties for {@link GPURandomPointsInPolygon}.
@@ -70,7 +77,11 @@ export class GPURandomPointsInPolygon implements GPUCommandNodeProducer {
 
   constructor(props: GPURandomPointsInPolygonProps) {
     const id = props.id ?? 'random-points-in-polygon';
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.config = {
       id,
       operation: 'GPURandomPointsInPolygon',

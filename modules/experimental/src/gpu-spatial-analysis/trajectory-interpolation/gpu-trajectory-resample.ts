@@ -4,7 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -27,6 +27,12 @@ import {
   createTrajectoryResampleNode
 } from './trajectory-interpolation-kernels';
 import type {GPUTrajectoryGeometryFields} from '../../analysis-core/contracts/index';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /** How {@link GPUTrajectoryResample} spaces samples along each track. */
 export type GPUTrajectoryResampleSpacing = 'time' | 'arc-length' | 'clock';
@@ -66,8 +72,8 @@ export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'time
    * Coordinate space and metric of `positions`. Omitted means native planar coordinates, linear
    * interpolation and planar arc length. `{coordinateSpace: 'longitude-latitude', metric:
    * 'great-circle'}` means `(longitude, latitude)` degrees interpolated along great circles
-   * (spherical linear interpolation) on a sphere of `sphereRadius` (default
-   * `GPU_EARTH_MEAN_RADIUS_METERS`), with `'arc-length'` spacing measured in great-circle meters.
+   * (spherical linear interpolation) on a sphere of `sphereRadius`, defaulting to the mean Earth
+   * radius in the context's length unit. Arc lengths are measured in the context's length unit.
    * Other contexts throw.
    */
   spatialContext?: GPUSpatialContext;
@@ -79,7 +85,8 @@ export type GPUTrajectoryResampleProps = Omit<GPUTrajectoryGeometryFields, 'time
   sampleCount: number;
   /**
    * `'time'` (default) spaces samples uniformly between the first and last timestamp;
-   * `'arc-length'` spaces them uniformly along the path length (planar, or great-circle meters); `'clock'` samples every
+   * `'arc-length'` spaces them uniformly along the path length in the context's length unit;
+   * `'clock'` samples every
    * track at the shared instants `start + k * step` of `clock` (see below).
    */
   spacing?: GPUTrajectoryResampleSpacing;
@@ -138,7 +145,7 @@ export class GPUTrajectoryResample implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.spacing = props.spacing ?? 'time';
     const id = this.id;

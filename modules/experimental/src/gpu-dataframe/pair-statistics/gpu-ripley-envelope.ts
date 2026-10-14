@@ -87,6 +87,9 @@ export type GPURipleyEnvelopeProps = {
   /**
    * Coordinate and metric descriptor of `positions`. Omitted means native planar coordinates; a
    * `longitude-latitude` context throws (project to a planar frame first).
+   * Measures both distance and window area, so neither local frame is exact: use an
+   * azimuthal-equidistant frame for study areas small enough that its area distortion is
+   * negligible, or a projected CRS.
    */
   spatialContext?: GPUSpatialContext;
   /**

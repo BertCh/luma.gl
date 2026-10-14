@@ -24,6 +24,16 @@ import {
   validateGraphViewsBelongToGraph,
   validatePackedView
 } from '../../utils/gpu-contributor-utils';
+import {
+  getGPUSphereRadius,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
+import {
+  getSeparationWGSL,
+  type InterpolationSeparation
+} from '../spatial-interpolation/separation-wgsl';
 import {PERMUTATION_RANDOM_WGSL} from '../permutation-inference/permutation-random';
 import type {GPUInferenceMetadata} from '../../analysis-core/contracts/index';
 import {
@@ -42,6 +52,11 @@ import {
 import {PHILOX_PURPOSES} from '../../utils/philox-random';
 
 const OPERATION = 'GPUSpatialScanStatistic';
+/** Scan windows measure planar or great-circle distances. */
+const SCAN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 /** Fixed-order reduction blocks (at most 256 invocations walk the cells serially). */
 const MAXIMUM_BLOCKS = 256;
 /** Case-draw blocks per replicate: each owns a Philox stream, so results ignore the dispatch. */
@@ -52,7 +67,7 @@ const SCAN_STREAM = PHILOX_PURPOSES.spatialScanStatistic.id;
 const NEIGHBOR_RADIX_BINS = 256;
 /**
  * Words of one per-center record: LLR bits, zones, first bucket, last bucket, cases, expected,
- * truncated, squared radius bits.
+ * truncated, squared radius bits in the spatial context's squared length unit.
  */
 const CENTER_WORDS = 8;
 /** Invocations of the evaluate workgroups: each reduces the window maxima of 256 centers of one replicate. */
@@ -99,14 +114,22 @@ export type GPUSpatialScanStatisticOutput = {
  *
  * Per-frame (no recompile): the contents of `cases`, `baseline`, `controls`, `positions` and
  * `parameters` (seed, replicate count, window limits, window shape, rate direction). Compile-time:
- * the zone count, `model`, `timeBuckets`, `maximumWindowZones`, `maximumPermutations` and
- * `maximumClusters`.
+ * the zone count, `model`, `timeBuckets`, `maximumWindowZones`, `maximumPermutations`,
+ * `maximumClusters`, and `spatialContext`.
  */
 export type GPUSpatialScanStatisticProps = {
   /** Prefix for generated node and transient IDs. Defaults to `'scan-statistic'`. */
   id?: string;
-  /** Zone centroids in planar coordinates, finite, one row per zone. */
+  /** Finite zone centroids in the spatial context coordinates, one row per zone. */
   positions: GraphDataView<'float32x2'>;
+  /**
+   * Omitted means native planar: Euclidean distances in position units, for example meters in a
+   * `createGPULocalFrame` azimuthal-equidistant frame. Longitude/latitude degrees require
+   * `metric: 'great-circle'`: distances and radii are great-circle in the context's length unit
+   * (meters, or kilometers with `units: 'kilometers'`), on `sphereRadius` or the mean Earth radius.
+   * Other longitude/latitude metrics throw.
+   */
+  spatialContext?: GPUSpatialContext;
   /**
    * Probability model, compile-time. `'poisson'` (default): `baseline` is required. `'bernoulli'`:
    * `controls` is required, `baseline` is ignored. `'space-time-permutation'`: neither is used, the
@@ -173,9 +196,10 @@ export type GPUSpatialScanStatisticProps = {
  * Bernoulli (Kulldorff 1997) or space-time permutation (Kulldorff et al. 2005) model.
  *
  * Windows: for every center zone, the `k` nearest zones for every `k` (a circle: with the default
- * shape a window never splits zones at equal distance; ties are exact f32 squared-distance
- * equality), kept while they hold at most `maximumPopulationFraction` (default 0.5) of the total
- * population (the baseline, the cases plus controls, or, for the space-time permutation model, the
+ * shape a window never splits zones at equal distance; ties are exact f32 separation-key
+ * equality: squared distance for planar, haversine term for great-circle), kept while they hold
+ * at most `maximumPopulationFraction` (default 0.5) of the total population (the baseline,
+ * the cases plus controls, or, for the space-time permutation model, the
  * expected cases). The population share governs the size of a window: the per-center neighbor
  * tables hold up to `maximumWindowZones` zones, every zone by default, and a window that the
  * capacity cuts short is reported (`summary.overflow`, `truncatedByZoneCap`). With `timeBuckets > 1`
@@ -238,6 +262,8 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPUSpatialScanStatisticProps;
+  /** Resolved coordinate space, distance metric and length unit of the scan windows. */
+  readonly spatialContext: GPUSpatialContext;
   /** Number of zones. */
   readonly zones: number;
   /** Time buckets per zone. */
@@ -259,6 +285,11 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     const id = props.id ?? 'scan-statistic';
     this.id = id;
     this.props = props;
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      SCAN_SPATIAL_CONTEXT_SUPPORT
+    );
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);
     validatePackedView(props.cases, ['uint32'], `${id} cases`);
     this.model = props.model ?? 'poisson';
@@ -438,6 +469,12 @@ export class GPUSpatialScanStatistic implements GPUCommandNodeProducer {
     graph: GPUCommandGraph<Parameters>
   ): readonly GPUCommandNode<Parameters>[] {
     const {id, props, zones, timeBuckets, listLength, usableZones, maximumClusters, model} = this;
+    const separation: InterpolationSeparation = {
+      context: this.spatialContext,
+      geographic: this.spatialContext.coordinateSpace === 'longitude-latitude',
+      sphereRadius: getGPUSphereRadius(this.spatialContext)
+    };
+    const separationWGSL = getSeparationWGSL(separation);
     const {positions, cases, parameters, maximumPermutations} = props;
     const {clusterIndices, clusterStatistics, statistics, summary, zoneStatistics} = props.output;
     validateGraphViewsBelongToGraph(id, graph, [
@@ -712,16 +749,17 @@ fn getLogLikelihoodRatio(observed: f32, windowWeight: f32, totalCases: f32, tota
           {name: 'sortZones', view: sortZones, type: 'u32', access: 'read_write'}
         ],
         invocationCount: zones,
-        declarations: `const ZONES: u32 = ${zones}u;
+        declarations: `${separationWGSL}
+const ZONES: u32 = ${zones}u;
 const LIST: u32 = ${listLength}u;
 const RADIX_BINS: u32 = ${NEIGHBOR_RADIX_BINS}u;
-// Squared distances are non-negative f32, so their bits order as u32 keys.
-fn getSquaredDistanceKey(zone: u32, centerX: f32, centerY: f32) -> u32 {
-  let dx = positions[positionsOffset + zone * 2u] - centerX;
-  let dy = positions[positionsOffset + zone * 2u + 1u] - centerY;
-  return bitcast<u32>(dx * dx + dy * dy);
+// Separation keys are non-negative f32, so their bits order as u32 keys.
+fn getZoneSeparationKey(zone: u32, centerX: f32, centerY: f32) -> u32 {
+  let zoneX = positions[positionsOffset + zone * 2u];
+  let zoneY = positions[positionsOffset + zone * 2u + 1u];
+  return bitcast<u32>(getSeparationKey(vec2f(zoneX, zoneY), vec2f(centerX, centerY)));
 }`,
-        // The row of a center lists its LIST nearest zones in (squared distance, zone index) order.
+        // The row of a center lists its LIST nearest zones in (separation key, zone index) order.
         // When LIST < ZONES a radix select over the key bits (8-bit digits, most significant
         // first, one pass over the zones per digit) finds the key of the LIST-th nearest zone and
         // how many zones at that key still fit. One more pass gathers the selected zones in zone
@@ -744,7 +782,7 @@ fn getSquaredDistanceKey(zone: u32, centerX: f32, centerY: f32) -> u32 {
         histogram[bin] = 0u;
       }
       for (var zone = 0u; zone < ZONES; zone++) {
-        let key = getSquaredDistanceKey(zone, centerX, centerY);
+        let key = getZoneSeparationKey(zone, centerX, centerY);
         if ((key & prefixMask) == prefix) {
           let bin = (key >> shift) & 255u;
           histogram[bin] = histogram[bin] + 1u;
@@ -770,7 +808,7 @@ fn getSquaredDistanceKey(zone: u32, centerX: f32, centerY: f32) -> u32 {
     if (filled >= LIST) {
       break;
     }
-    let key = getSquaredDistanceKey(zone, centerX, centerY);
+    let key = getZoneSeparationKey(zone, centerX, centerY);
     var take = key < threshold;
     if (!take && key == threshold && equalTaken < equalCount) {
       take = true;
@@ -1286,6 +1324,7 @@ const SCAN_STREAM: u32 = ${SCAN_STREAM}u;`,
         guardIndex: false,
         declarations: `${withParameters}
 ${likelihood}
+${observed ? separationWGSL : ''}
 const EVALUATE_GROUPS: u32 = ${evaluateGroups}u;
 const EVALUATE_SIZE: u32 = ${EVALUATE_WORKGROUP_SIZE}u;
 var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
@@ -1359,10 +1398,10 @@ var<workgroup> maxima: array<f32, ${EVALUATE_WORKGROUP_SIZE}>;`,
     centerBest[record + 4u] = bitcast<u32>(bestCases);
     centerBest[record + 5u] = bitcast<u32>(bestExpected);
     centerBest[record + 6u] = centerBest[centerBestOffset + WINDOW_INFO_START + center * 2u + 1u];
-    // Squared radius of the best window: its farthest zone is the last of its nearest zones.
+    // Squared radius in context units: decode the key of the farthest zone.
     centerBest[record + 7u] = select(
       0u,
-      bitcast<u32>(distances[distancesOffset + center * LIST + max(bestZones, 1u) - 1u]),
+      bitcast<u32>(getSquaredMeters(distances[distancesOffset + center * LIST + max(bestZones, 1u) - 1u])),
       bestZones > 0u
     );
   }
@@ -1606,6 +1645,7 @@ const CLUSTERS: u32 = ${maximumClusters}u;`,
   clusterStatistics[statisticStart + 1u] = observed;
   clusterStatistics[statisticStart + 2u] = expected;
   clusterStatistics[statisticStart + 3u] = f32(exceeding + 1u) / f32(permutations + 1u);
+  // Word 7 already holds squared distance in the context unit, not a separation key.
   clusterStatistics[statisticStart + 4u] = sqrt(bitcast<f32>(centerBest[record + 7u]));
   clusterStatistics[statisticStart + 5u] = observed / expected;
   clusterStatistics[statisticStart + 6u] = f32(centerBest[record + 6u]);

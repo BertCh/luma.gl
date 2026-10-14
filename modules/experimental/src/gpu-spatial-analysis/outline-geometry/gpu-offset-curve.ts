@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
@@ -24,6 +25,12 @@ import {
 } from '../../utils/gpu-contributor-utils';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import {FIND_LINE_WGSL} from './gpu-outline-geometry';
+
+/** Spatial contexts supported by this distance-measuring operation. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUOffsetCurve';
 
@@ -223,7 +230,11 @@ export class GPUOffsetCurve implements GPUCommandNodeProducer {
   constructor(props: GPUOffsetCurveProps) {
     this.id = props.id ?? 'offset-curve';
     this.props = props;
-    this.spatialContext = resolveGPUSpatialContext(this.id, props.spatialContext);
+    this.spatialContext = resolveGPUSpatialContext(
+      this.id,
+      props.spatialContext,
+      SPATIAL_CONTEXT_SUPPORT
+    );
     this.geometryType = props.geometryType ?? 'lines';
     // Rings of a polygon are offset like closed lines, so the kernel reads them as line offsets.
     this.boundaryOffsets =

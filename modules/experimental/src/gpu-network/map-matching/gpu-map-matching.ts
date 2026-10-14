@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -35,13 +35,21 @@ import {
   getGPUNetworkTopologyViews,
   validateGPUNetworkTopology
 } from '../../analysis-core/network-topology';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUSpatialContext,
+  GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
 import {getNetworkMetricWGSL} from '../network-spatial-context';
 import {
   getWorkgroupCounterKernelSource,
   WORKGROUP_COUNTER_WORKGROUP_SIZE,
   type WorkgroupCounter
 } from '../network-workgroup-counters';
+
+const MAP_MATCHING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 const OPERATION = 'GPUMapMatching';
 /** Bits of `-1.0f`: an out-of-range node ID and a negative (invalid) edge length. */
@@ -70,17 +78,17 @@ export function getGPUMapMatchingMaximumEntryCapacity(device: Device): number {
 export const GPU_MAP_MATCHING_PARAMETER_LENGTH = 8;
 
 /**
- * Per-frame settings of {@link GPUMapMatching}, in the units of the planar coordinates, or in
- * meters with a great-circle `spatialContext`.
+ * Per-frame settings of {@link GPUMapMatching}. Every distance is in the context's length unit
+ * (native planar units, or meters/kilometers for great-circle). `routeFactor` is unitless.
  */
 export type GPUMapMatchingSettings = {
-  /** GPS noise standard deviation of the Gaussian emission model. Must be positive. */
+  /** GPS noise standard deviation in the context's length unit. Must be positive. */
   sigma: number;
-  /** Scale of the exponential transition model, `exp(-|straight - route| / beta)`. Must be positive. */
+  /** Scale in the context's length unit of `exp(-|straight - route| / beta)`. Must be positive. */
   beta: number;
   /**
-   * Candidate search radius. Edges farther than this from a point are not candidates. Values above
-   * `2 * cellSize` are clamped to `2 * cellSize` (on longitude/latitude, to the meters of
+   * Candidate search radius in the context's length unit. Edges farther away are not candidates. Values above
+   * `2 * cellSize` are clamped to `2 * cellSize` (on longitude/latitude, to the context's length unit equivalent of
    * `2 * cellSize` degrees of latitude).
    */
   searchRadius: number;
@@ -89,7 +97,10 @@ export type GPUMapMatchingSettings = {
    * `routeFactor * straightDistance + routeSlack` long; longer routes are infeasible. Defaults to 3.
    */
   routeFactor?: number;
-  /** Additive route allowance, see `routeFactor`. Defaults to 50. */
+  /**
+   * Additive route allowance in the context's length unit, see `routeFactor`. Defaults to 50 (50 m
+   * in meters; pass for example 0.05 with a kilometer context).
+   */
   routeSlack?: number;
 };
 
@@ -110,9 +121,9 @@ export type GPUMapMatchingOutput = {
   matchedEdges: GraphDataView<'uint32'>;
   /** Optional matched position along the edge from source (0) to target (1), or -1. */
   matchedFractions?: GraphDataView<'float32'>;
-  /** Optional matched distance along the edge from its source, in network length units, or -1. */
+  /** Optional matched distance along the edge from its source, in the context's length unit, or -1. */
   matchedOffsets?: GraphDataView<'float32'>;
-  /** Optional distance from the point to its matched edge, or -1. */
+  /** Optional distance from the point to its matched edge in the context's length unit, or -1. */
   snapDistances?: GraphDataView<'float32'>;
   /** Optional snapped position, or the raw point when it is unmatched. */
   snappedPositions?: GraphDataView<'float32x2'>;
@@ -159,9 +170,9 @@ export type GPUMapMatchingRouteTable = {
   offsets: GraphDataView<'uint32'>;
   /** Target node per entry, ascending within each row. */
   targets: GraphDataView<'uint32'>;
-  /** Network cost per entry, aligned with `targets`. */
+  /** Network distance per entry in the context's length unit, aligned with `targets`. */
   costs: GraphDataView<'float32'>;
-  /** One-row cost bound the table was built with: every cost up to it is listed. */
+  /** One-row cost bound in the context's length unit: every cost up to it is listed. */
   costLimit: GraphDataView<'float32'>;
   /** Optional status words of the table. */
   status?: {
@@ -182,7 +193,8 @@ export type GPUMapMatchingProps = {
    * Coordinates of `positions` and `topology.nodePositions`. Omitted means native planar coordinates.
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
    * every distance (emission, straight-line and route lengths, `sigma`, `beta`, `searchRadius`,
-   * `routeSlack`) in great-circle meters; `sphereRadius` defaults to `GPU_EARTH_MEAN_RADIUS_METERS`.
+   * `routeSlack`) in the context's length unit (meters by default, or kilometers).
+   * Local planar frames must be azimuthal-equidistant, not Lambert equal-area.
    */
   spatialContext?: GPUSpatialContext;
   /** GPS positions of every track, concatenated in time order. */
@@ -242,7 +254,7 @@ export type GPUMapMatchingProps = {
    *
    * Build the table with `GPUNetworkCostTable` over the same node numbering, with `weights` equal to
    * the edge lengths this contributor measures from the node positions (`networkDistance` of the
-   * edge endpoints, in meters with a great-circle `spatialContext`) and `costLimit` at least the
+   * edge endpoints, in the context's length unit) and `costLimit` at least the
    * typical bound. Results equal the A*-only results up to f32 rounding of the summed route costs
    * (the table is the f32 fixpoint of the relaxations, A* sums along its own settle order: a few
    * `2^-24` relative per hop of the route), and are identical wherever A* was exact. Omitted, the
@@ -278,7 +290,7 @@ export type GPUMapMatchingProps = {
  * (integer atomics only, ties by index).
  *
  * Distances are planar by default. With a great-circle `spatialContext` positions are longitude and
- * latitude degrees and every distance is great-circle meters: edge lengths and straight-line
+ * latitude degrees and every distance is in the context's length unit: edge lengths and straight-line
  * distances are haversine, the closest point of an edge is found in the local equirectangular frame
  * of the GPS point, the A* heuristic is the great-circle distance (still consistent), and the
  * candidate window widens in longitude by `1 / cos` of the highest latitude it reaches and wraps
@@ -316,7 +328,7 @@ export class GPUMapMatching implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      MAP_MATCHING_SPATIAL_CONTEXT_SUPPORT
     );
     const topologyShape = validateGPUNetworkTopology(id, props.topology, {nodePositions: true});
     validatePackedView(props.positions, ['float32x2'], `${id} positions`);

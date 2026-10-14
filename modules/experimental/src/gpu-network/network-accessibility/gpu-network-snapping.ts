@@ -5,7 +5,7 @@
 import type {Device} from '@luma.gl/core';
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -30,10 +30,18 @@ import {
   type GPUNetworkAdjacency
 } from '../../analysis-core/network-topology';
 import {GPUNearestFeatureJoin} from '../../gpu-spatial-analysis/spatial-join/index';
-import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
+import type {
+  GPUSpatialContext,
+  GPUSpatialContextSupport
+} from '../../analysis-core/contracts/spatial-context';
 import {getNetworkMetricWGSL} from '../network-spatial-context';
 import {ACCESSIBILITY_NONE} from './network-accessibility-passes';
 import {createNetworkEdgeSourceNodes} from './network-edge-sources';
+
+const SNAPPING_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
 
 const OPERATION = 'GPUNetworkSnapping';
 
@@ -71,7 +79,7 @@ export type GPUNetworkSnappingOutput = {
   snappedEdges: GraphDataView<'uint32'>;
   /** Optional fraction along the edge from source (0) to target (1), or -1. */
   snapFractions?: GraphDataView<'float32'>;
-  /** Optional distance from the point to the edge (great-circle meters on longitude/latitude), or -1. */
+  /** Optional distance from the point to the edge in the context's length unit, or -1. */
   snapDistances?: GraphDataView<'float32'>;
   /** Optional cost from the snapped position to the edge source, `fraction * edgeCost`, or -1. */
   sourceCosts?: GraphDataView<'float32'>;
@@ -111,22 +119,24 @@ export type GPUNetworkSnappingProps = {
   /**
    * Coordinates of `positions` and `topology.nodePositions`. Omitted means native planar coordinates.
    * `{coordinateSpace: 'longitude-latitude', metric: 'great-circle'}` takes degrees and measures
-   * snap distances and default edge costs as great-circle meters (`sphereRadius` defaults to
-   * `GPU_EARTH_MEAN_RADIUS_METERS`); `maximumSnapDistance` is then in meters. The context is passed to
-   * `GPUNearestFeatureJoin` on the `candidateCapacity` path.
+   * snap distances, default edge costs and `maximumSnapDistance` in the context's length unit
+   * (meters by default, or kilometers). Local planar frames must be azimuthal-equidistant,
+   * not Lambert equal-area. The context is passed to `GPUNearestFeatureJoin` on the
+   * `candidateCapacity` path.
    */
   spatialContext?: GPUSpatialContext;
   /** Positions to snap (origins, facilities, opportunities), in the coordinates of `spatialContext`. */
   positions: GraphDataView<'float32x2'>;
   /**
    * The network, with node positions in the same coordinates as `positions`. `weights` are optional
-   * travel costs per edge and default to the edge length (great-circle meters on longitude/latitude).
+   * travel costs per edge and default to the edge length in the context's length unit.
    * Edges with an endpoint out of range are skipped, and edge slots past `offsets[nodeCount]` (a
    * topology shorter than its edge capacity) are not part of the network.
    */
   topology: GPUNetworkAdjacency & {nodePositions: GraphDataView<'float32x2'>};
   /**
-   * Optional one-row per-frame maximum snap distance. Points farther from every edge snap to none.
+   * Optional one-row per-frame maximum snap distance in the context's length unit.
+   * Points farther from every edge snap to none.
    * Required with `candidateCapacity`.
    */
   maximumSnapDistance?: GraphDataView<'float32'>;
@@ -160,7 +170,7 @@ export type GPUNetworkSnappingProps = {
  *
  * Distances are planar by default. With a great-circle `spatialContext` positions are longitude
  * and latitude degrees, the closest point of an edge is found in the local equirectangular frame
- * of the point, and snap distances and default edge costs are great-circle meters. Edges are
+ * of the point, and snap distances and default edge costs are in the context's length unit. Edges are
  * straight segments between nodes, so they should be road-length. On the `candidateCapacity` path
  * the context is passed to `GPUNearestFeatureJoin`, whose great-circle search ignores the capacity.
  */
@@ -188,7 +198,7 @@ export class GPUNetworkSnapping implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      SNAPPING_SPATIAL_CONTEXT_SUPPORT
     );
     const {output} = props;
     const {nodeCount, edgeCount} = validateGPUNetworkTopology(id, props.topology, {

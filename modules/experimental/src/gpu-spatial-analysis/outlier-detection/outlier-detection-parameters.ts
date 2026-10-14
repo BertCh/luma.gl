@@ -25,7 +25,8 @@ export type GPULocalOutlierFactorSettings = {
    * coincident points (mean reachability 0) gets a large finite density `1 / densityFloor`
    * instead of infinity. Must be positive and finite. Defaults to scikit-learn's `1e-10`.
    * Raise it (for example to the coordinate resolution) to make duplicate-heavy data less
-   * extreme.
+   * extreme. Its unit is the length unit of `neighbors.spatialContext`; declare the context
+   * of this value through `GPULocalOutlierFactorProps.spatialContext` to check compatibility.
    */
   densityFloor?: number;
 };

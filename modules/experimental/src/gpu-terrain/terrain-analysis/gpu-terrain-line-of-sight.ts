@@ -31,10 +31,19 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
   validateRasterGrid,
+  validateRasterGridAxisAligned,
   validateRasterParameters
 } from '../../gpu-raster/raster-band-utils';
-import {getRasterGridGeoreference} from '../../analysis-core/raster-grid';
-import {getTerrainSightLineWGSL, type GPUTerrainSightLineTraversal} from './terrain-sight-line';
+import {
+  getRasterGridGeoreference,
+  type GPURasterCellSizeMode,
+  validateRasterCellSizeMode
+} from '../../analysis-core/raster-grid';
+import {
+  getTerrainSightLineGroundCellWGSL,
+  getTerrainSightLineWGSL,
+  type GPUTerrainSightLineTraversal
+} from './terrain-sight-line';
 
 /**
  * Number of float32 values read from the `parameters` of {@link GPUTerrainLineOfSight} and
@@ -46,8 +55,13 @@ export const GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH = 12;
  * CPU-side description packed by {@link getGPUTerrainLineOfSightParameterValues}; shared by
  * {@link GPUTerrainLineOfSight} and `GPUTerrainCumulativeViewshed`, which read the same layout.
  *
- * Cell-size model: projected metres on a planar grid (Euclidean distance of the pixel offsets
- * scaled by the cell size of the grid passed to the packer). Curvature convention: drop at distance `d` is `c * d^2` with
+ * Cell-size model: `'uniform'` (default) treats grid world units as ground meters on a planar
+ * grid. `'geographic'` and `'web-mercator'` use a WGS84 ground cell evaluated at each ray's middle
+ * row, held constant along that ray. Along-ray scale change is ignored, so range boundaries and
+ * curvature drops are approximate on long rays, especially at high latitudes.
+ * Rays join pixel positions, with row order supplied by the affine; there is no azimuth input,
+ * so no `getPixelDirection` conversion or `rowDirection` prop is needed.
+ * Curvature convention: drop at distance `d` is `c * d^2`, with
  * `c = getGPUTerrainCurvatureCoefficient(k)`; mt-image uses `k = 0.13`, GDAL `-cc 0.85714` is
  * `k = 1 / 7`.
  */
@@ -73,8 +87,10 @@ export type GPUTerrainLineOfSightSettings = {
 /**
  * Packs line-of-sight settings into the 12 float32 values
  * `[observerHeight, targetHeight, maximumDistance, cellSizeX, cellSizeY, curvatureCoefficient,
- * toleranceMeters, tolerancePerKilometer, targetIgnoreDistance, targetIgnoreFraction, 0, 0]`,
- * with the cell size from `grid` (meters per pixel along columns and rows).
+ * toleranceMeters, tolerancePerKilometer, targetIgnoreDistance, targetIgnoreFraction, northEdge, southEdge]`.
+ * Cell sizes and row edges always come from `grid`, in world units (meters or degrees), regardless
+ * of cellSizeMode. Edges are the top of row 0 and bottom of the last row, including point-pixel
+ * half-row offsets. The kernel converts cell sizes to ground meters according to cellSizeMode.
  *
  * @throws If a grid cell size is not finite and positive, a tolerance value is negative or not
  *   finite, or `target` is too short.
@@ -89,7 +105,7 @@ export function getGPUTerrainLineOfSightParameterValues(
     target,
     GPU_TERRAIN_LINE_OF_SIGHT_PARAMETER_LENGTH
   );
-  const {cellSize} = getRasterGridGeoreference(grid);
+  const {cellSize, northEdge, southEdge} = getRasterGridGeoreference(grid);
   if (!cellSize.every(size => Number.isFinite(size) && size > 0)) {
     throw new Error(
       'getGPUTerrainLineOfSightParameterValues grid cell size must be finite and positive'
@@ -114,8 +130,8 @@ export function getGPUTerrainLineOfSightParameterValues(
     cellSize[1],
     settings.curvatureCoefficient ?? 0,
     ...tolerance,
-    0,
-    0
+    northEdge,
+    southEdge
   ]);
   return target;
 }
@@ -197,6 +213,13 @@ export type GPUTerrainLineOfSightProps = {
   id?: string;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
+  /**
+   * Cell-size interpretation. Defaults to `'uniform'`: grid world units are ground meters
+   * (projected planar grid). `'geographic'` uses a degree grid; `'web-mercator'` uses EPSG:3857.
+   * In both non-uniform modes, maximumDistance, curvature drop `c * d^2`, tolerance bands,
+   * targetIgnoreDistance and clearance are in WGS84 ground meters, using the ray's middle row.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture. */
   elevation: GPURasterBand;
   /**
@@ -235,7 +258,7 @@ export type GPUTerrainLineOfSightProps = {
  * the tolerance-aware sight-line model of {@link GPUTerrainViewshed} applies (codes
  * `hidden`, `visible`, `marginal`). One invocation handles one pair.
  *
- * Cell-size model: projected metres (planar), see {@link GPUTerrainLineOfSightSettings}.
+ * Cell-size model: see {@link GPUTerrainLineOfSightSettings} and `cellSizeMode`.
  */
 export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -251,6 +274,8 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     validatePackedView(props.pairs, ['float32x4'], `${id} pairs`);
     const pairCount = props.pairs.length;
     if (props.pairHeights) {
@@ -290,6 +315,9 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
     const {id, props, pyramidLayout} = this;
     const {output} = props;
     const {width, height} = props.grid;
+    const cellSizeMode = props.cellSizeMode ?? 'uniform';
+    const groundCellDeclarations =
+      cellSizeMode === 'uniform' ? '' : getTerrainSightLineGroundCellWGSL(cellSizeMode);
     validateRasterBandBelongsToGraph(id, graph, props.elevation, []);
     validateGraphViewsBelongToGraph(id, graph, [
       props.pyramid?.combined,
@@ -345,7 +373,7 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-line-of-sight`,
         operation: 'GPUTerrainLineOfSight',
-        variant: props.traversal === 'pyramid' ? 'pyramid' : 'march',
+        variant: `${props.traversal === 'pyramid' ? 'pyramid' : 'march'}${cellSizeMode === 'uniform' ? '' : `-${cellSizeMode}`}`,
         bindings,
         invocationCount: props.pairs.length,
         declarations: `${getTerrainSightLineWGSL({
@@ -354,7 +382,7 @@ export class GPUTerrainLineOfSight implements GPUCommandNodeProducer {
           traversal: props.traversal ?? 'march',
           layout: pyramidLayout,
           clearance: Boolean(output.clearance)
-        })}
+        })}${groundCellDeclarations}
 fn isInsideGrid(position: vec2<f32>) -> bool {
   return isFiniteValue(position.x) && isFiniteValue(position.y) &&
     position.x >= 0.0 && position.y >= 0.0 &&
@@ -371,7 +399,11 @@ fn isInsideGrid(position: vec2<f32>) -> bool {
   let targetHeight = settings[settingsOffset + 1u];`
   }
   let maxDistance = settings[settingsOffset + 2u];
-  let cellSize = vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u]);
+  let cellSize = ${
+    cellSizeMode === 'uniform'
+      ? 'vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u])'
+      : 'getRayGroundCell(vec2<f32>(settings[settingsOffset + 3u], settings[settingsOffset + 4u]), settings[settingsOffset + 10u], settings[settingsOffset + 11u], 0.5 * (observer.y + targetPosition.y) + 0.5)'
+  };
   let curvature = settings[settingsOffset + 5u];
   let tolerance = vec4<f32>(
     settings[settingsOffset + 6u], settings[settingsOffset + 7u],

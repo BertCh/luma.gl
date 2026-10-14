@@ -20,6 +20,7 @@ import {
   type GPUSpatialWeights,
   validateGPUSpatialWeights
 } from '../spatial-weights/spatial-weights';
+import {assertCompatibleGPUSpatialContexts} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPUCatchmentAccessibility';
 
@@ -105,6 +106,8 @@ export type GPUCatchmentAccessibilityProps = {
  * Network costs: `GPUNetworkCostWeights` turns a network cost matrix into the facility weights and
  * their transpose, which is how the `catchment` option of `GPUNetworkAccessibility` runs.
  *
+ * When both weights declare spatial contexts, they must be compatible.
+ *
  * Spatial context: this operator reads no positions, only the weights, so it has no
  * `spatialContext` prop. Distance units and the coordinate space (planar, or great-circle meters)
  * are those of the weights' producer (`GPUNeighborSearch`, a network cost kernel); the operator is
@@ -133,6 +136,13 @@ export class GPUCatchmentAccessibility implements GPUCommandNodeProducer {
       : this.facilityCount;
     if (!props.demandWeights && props.supply.length !== props.demand.length) {
       throw new Error(`${id} needs demandWeights unless supply and demand have equal length`);
+    }
+    if (props.demandWeights?.spatialContext && props.facilityWeights?.spatialContext) {
+      assertCompatibleGPUSpatialContexts(
+        id,
+        props.demandWeights.spatialContext,
+        props.facilityWeights.spatialContext
+      );
     }
     const {output} = props;
     for (const [name, view] of [

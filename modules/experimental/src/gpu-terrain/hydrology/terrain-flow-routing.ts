@@ -113,7 +113,7 @@ fn computeRouting(cell: u32) {
     let d1 = getD8Distance(cardinal, row);
     let diagonalDistance = getD8Distance(diagonal, row);
     let diagonalRow = f32(row) + f32(getD8RowOffset(diagonal));
-    let ground = getGroundCellSize((f32(row) + diagonalRow + 1.0) * 0.5);
+    let ground = getGroundCellSizeAtRowCoordinate((f32(row) + diagonalRow + 1.0) * 0.5);
     let d2 = select(ground.x, ground.y, cardinal == 0u || cardinal == 4u);
     var slope = 0.0;
     var fractionDiagonal = 0.0;
@@ -184,7 +184,7 @@ fn getMultipleFlowScore(drop: f32, direction: u32, row: u32) -> f32 {
   let tangent = drop / getD8Distance(direction, row);
   ${
     quinn
-      ? `let ground = getGroundCellSize(f32(row) + 0.5);
+      ? `let ground = getGroundCellSizeAtRowCoordinate(f32(row) + 0.5);
   var contourLength = 0.25 * getD8Distance(direction, row);
   if (direction == 0u || direction == 4u) { contourLength = 0.5 * ground.y; }
   if (direction == 2u || direction == 6u) { contourLength = 0.5 * ground.x; }
@@ -361,7 +361,7 @@ fn getWeight(cell: u32) -> f32 {
   }
   ${
     props.area
-      ? `let ground = getGroundCellSize(f32(cell / GRID_WIDTH) + 0.5);
+      ? `let ground = getGroundCellSizeAtRowCoordinate(f32(cell / GRID_WIDTH) + 0.5);
   weight = weight * (ground.x * ground.y);`
       : ''
   }

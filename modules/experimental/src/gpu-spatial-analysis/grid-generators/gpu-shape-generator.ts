@@ -30,6 +30,12 @@ import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
 const OPERATION = 'GPUShapeGenerator';
 
+// Shape radii and ellipse semi-axes measure distance.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+});
+
 /** Number of float32 elements in a {@link GPUShapeGenerator} parameter buffer. */
 export const GPU_SHAPE_GENERATOR_PARAMETER_LENGTH = 2;
 
@@ -212,7 +218,7 @@ export class GPUShapeGenerator implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.coordinateSystem =
       this.spatialContext.coordinateSpace === 'longitude-latitude' ? 'geodesic' : 'planar';

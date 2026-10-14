@@ -34,10 +34,16 @@ import type {SpatialSortCurve} from './spatial-join-passes';
 import {GPU_SPATIAL_JOIN_NO_FEATURE, type GPUNearestFeatureSource} from './spatial-join-types';
 
 import {
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   resolveGPUSpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
+
+/** Planar or great-circle contexts suitable for distance measurements in their length unit. */
+const BUFFER_SELECTION_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 const OPERATION = 'GPUBufferSelection';
 
@@ -58,7 +64,7 @@ export type GPUBufferSelectionOutput = {
    * Requires `matches`.
    */
   drawInstanceCount?: GraphDataView<'uint32'>;
-  /** Optional per-point distance to the nearest feature (planar, or meters when great-circle), or -1 outside. Chunked like the points. */
+  /** Optional per-point distance to the nearest feature (in the spatial context length unit), or -1 outside. Chunked like the points. */
   distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   /** Optional per-point nearest feature row, or `GPU_SPATIAL_JOIN_NO_FEATURE`. Chunked like the points. */
   nearestFeatureIds?: GPUUint32Rows;
@@ -83,8 +89,8 @@ export type GPUBufferSelectionProps = {
    * Coordinate space and metric of the points and features, forwarded to
    * {@link GPUNearestFeatureJoin}. Omitted means native planar coordinates, with `distance` and
    * `distances` in coordinate units. `{coordinateSpace: 'longitude-latitude', metric:
-   * 'great-circle'}` selects points within a great-circle distance in meters (mean Earth sphere,
-   * or `sphereRadius` of the context; kilometers are rejected), with segment features straight in
+   * 'great-circle'}` selects points within a great-circle distance in the context length unit
+   * (meters by default, or kilometers; `sphereRadius` overrides the mean Earth radius), with segment features straight in
    * longitude/latitude; `candidateCapacity` is then ignored. Other longitude/latitude metrics
    * throw at construction.
    */
@@ -145,7 +151,7 @@ export type GPUBufferSelectionProps = {
  * results are deterministic and can drive highlighting or draw-call instancing directly.
  *
  * Non-goals: polygon buffers and per-feature distances. Distances are planar in the units of the
- * input coordinates, or great-circle meters with a longitude/latitude `spatialContext`.
+ * input coordinates, or great-circle distances in the length unit of the longitude/latitude `spatialContext`.
  */
 export class GPUBufferSelection implements GPUCommandNodeProducer {
   /** Prefix for every node and transient ID. */
@@ -164,7 +170,7 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      BUFFER_SELECTION_SPATIAL_CONTEXT_SUPPORT
     );
     const points = props.points.positions;
     const {sourceIds} = props.points;

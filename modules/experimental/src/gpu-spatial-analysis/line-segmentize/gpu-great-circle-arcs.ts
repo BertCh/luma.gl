@@ -34,6 +34,13 @@ import {getLineGeometryOutputViews, validateLineGeometryOutput} from './line-geo
 
 const OPERATION = 'GPUGreatCircleArcs';
 
+// Arc subdivision uses great-circle distance.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  coordinateSpaces: ['longitude-latitude'] as const,
+  metrics: ['great-circle'] as const,
+  measure: 'distance'
+});
+
 /** Default compile-time cap on segments per arc. */
 export const GPU_GREAT_CIRCLE_ARCS_DEFAULT_MAXIMUM_SEGMENT_COUNT = 256;
 
@@ -106,7 +113,7 @@ export class GPUGreatCircleArcs implements GPUCommandNodeProducer {
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext ?? GPU_GREAT_CIRCLE_SPATIAL_CONTEXT,
-      {coordinateSpaces: ['longitude-latitude'], metrics: ['great-circle']}
+      SPATIAL_CONTEXT_SUPPORT
     );
     this.radius = getGPUSphereRadius(this.spatialContext);
     this.maximumSegmentCount =

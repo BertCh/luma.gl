@@ -52,8 +52,15 @@ import {getSortedSegmentSumNodes} from '../../utils/sorted-segment-sums';
 const OPERATION = 'GPUZonalStatistics';
 /** Planar points and polygons, or longitude/latitude degrees with caller-supplied areas. */
 const SUPPORT: GPUSpatialContextSupport = Object.freeze({
-  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const)
+  coordinateSpaces: Object.freeze(['planar', 'longitude-latitude'] as const),
+  metricsByCoordinateSpace: Object.freeze({
+    planar: Object.freeze(['none', 'native'] as const),
+    'longitude-latitude': Object.freeze(['none'] as const)
+  })
 });
+
+/** Planar polygon areas require an area-compatible frame. */
+const AREA_SUPPORT = Object.freeze({...SUPPORT, measure: 'area'} as const);
 
 /**
  * Feature membership from polygon features (the four-level `GPUPolygonGeometryPort` layout, one
@@ -230,13 +237,16 @@ export type GPUZonalStatisticsProps = {
   features: GPUZonalStatisticsFeatures;
   /**
    * Coordinate context of the points and polygons. Omitted means native planar. Planar and
-   * `longitude-latitude` are accepted; other spaces throw. Membership is a point-in-polygon test
-   * in the coordinates as given, so in longitude/latitude it is topological with straight edges
+   * `longitude-latitude` with the `none` metric are accepted; other spaces throw.
+   * Membership is a point-in-polygon test in the coordinates as given, so in longitude/latitude
+   * it is topological with straight edges
    * in degrees (not geodesics) and polygons crossing the antimeridian must be split. Areas are
    * where the space matters: planar polygon area in degrees squared is wrong, so with a
    * longitude/latitude context `densities`, `weightedDensities` and `featureAreas` from the GPU
    * area are rejected at construction; pass spherical `areas` (square meters from
-   * `GPUGeometryMeasures`) instead. Counts, sums, means, extrema and variances are unaffected.
+   * `GPUGeometryMeasures`) instead. GPU-computed planar areas reject azimuthal-equidistant
+   * frames; use a Lambert equal-area frame or a projected CRS. Caller-supplied areas bypass
+   * this area-frame restriction. Counts, sums, means, extrema and variances are unaffected.
    */
   spatialContext?: GPUSpatialContext;
   /** Point positions. Required for `kind: 'polygons'`, ignored for `kind: 'feature-rows'`. */
@@ -362,7 +372,6 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
     const {features, output, values, weights, areas} = props;
     this.sumOrder = props.sumOrder ?? getDefaultZonalSumOrder(props);
     const {id} = this;
-    this.spatialContext = resolveGPUSpatialContext(id, props.spatialContext, SUPPORT);
     if (this.sumOrder !== 'atomic' && this.sumOrder !== 'sorted') {
       throw new Error(`${id} sumOrder must be atomic or sorted`);
     }
@@ -511,6 +520,11 @@ export class GPUZonalStatistics implements GPUCommandNodeProducer {
       hasAreas: Boolean(areas),
       sorted: this.sumOrder === 'sorted'
     });
+    this.spatialContext = resolveGPUSpatialContext(
+      id,
+      props.spatialContext,
+      features.kind === 'polygons' && this.plan.needGPUAreas ? AREA_SUPPORT : SUPPORT
+    );
     if (this.plan.needValueStatistics && !values) {
       throw new Error(`${id} value statistics require values`);
     }

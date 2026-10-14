@@ -8,6 +8,12 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {
+  getRasterGridGeoreference,
+  getRasterGroundCellSize,
+  validateRasterCellSizeMode,
+  type GPURasterCellSizeMode
+} from '../../analysis-core/raster-grid';
 import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
@@ -19,6 +25,7 @@ import {
   validateParameterTarget,
   validateRasterBuffersDistinct,
   validateRasterGrid,
+  validateRasterGridAxisAligned,
   validateRasterParameters
 } from '../../gpu-raster/raster-band-utils';
 import {
@@ -28,6 +35,7 @@ import {
 import {
   createReliefMeanFilterSetup,
   GPU_RELIEF_DEFAULT_QUANTUM,
+  type ReliefGroundRadius,
   validateReliefMeanFilter,
   validateReliefMeanFilterRadius
 } from './relief-visualization-utils';
@@ -37,7 +45,7 @@ export const GPU_MULTI_SCALE_RELIEF_PARAMETER_LENGTH = 4;
 
 /** Feature-size description shared by {@link getGPUMultiScaleReliefRadii} and the contributor. */
 export type GPUMultiScaleReliefScales = {
-  /** Pixel size in projected metres. Positive. */
+  /** Ground metres per pixel for the RVT index ladder. Positive; also sets each ground filter radius. */
   resolution: number;
   /** Smallest feature to detect in metres; values below `resolution` are raised to it. */
   featureMinimum: number;
@@ -155,18 +163,24 @@ export type GPUMultiScaleReliefOutput = {
 /**
  * Properties for {@link GPUMultiScaleRelief}.
  *
- * Topology: grid size, elevation format and calibration, the feature-size scales, and which
- * outputs exist. Per-frame: `parameters` (vertical exaggeration) and elevation contents.
+ * Topology: grid size and georeference, cell size mode, elevation format and calibration, the
+ * feature-size scales, and which outputs exist. Per-frame: `parameters` (vertical exaggeration) and elevation contents.
  *
- * Cell size model: projected metres. `resolution` and the feature sizes are metres and are
- * converted to pixel radii once at construction; geographic or Web Mercator grids with
- * latitude-dependent spacing are not supported (pass a representative metres-per-pixel).
+ * Cell size model: see {@link GPUMultiScaleRelief}; `resolution` and feature sizes are ground metres.
  */
 export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
   /** Prefix for node and transient IDs. Defaults to `'multi-scale-relief'`. */
   id?: string;
   /** Raster grid: its width and height size the kernels. */
   grid: GPURasterMetadata;
+  /**
+   * Ground cell size model. Defaults to `'uniform'`, preserving square pixel windows.
+   * `'geographic'` (degrees) and `'web-mercator'` (EPSG:3857 metres) require an axis-aligned
+   * grid and use WGS84 ground metres per cell at each row center. Each RVT radius `k^s`
+   * becomes `k^s * resolution` ground metres, rounded to at least one pixel on each axis.
+   * The unfiltered radius 0 stays unfiltered. This is a topology property.
+   */
+  cellSizeMode?: GPURasterCellSizeMode;
   /** Elevation band, buffer or texture; scale, offset, nodata, and validity are honored. */
   elevation: GPURasterBand;
   /** Per-frame parameters with at least 4 float32 values, see {@link getGPUMultiScaleReliefParameterValues}. */
@@ -196,10 +210,20 @@ export type GPUMultiScaleReliefProps = GPUMultiScaleReliefScales & {
  * the number of scales, and with `d_r = z - lpf_r` (the mean filters return that precise
  * deviation directly) `msrm = ve * (d_last - d_first) / (n - i)`. The test
  * oracle runs RVT's loop literally and proves the equality. Invalid centers receive NaN.
- * `requiredHalo` is the coarsest radius.
+ * `requiredHalo` is the largest half-width of the coarsest window over all rows.
  *
- * Two mean filter paths, chosen at declaration by grid size and device limit only, both matching RVT's float64
- * mean filter within their bound. Grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells
+ * Cell size model: `'uniform'` uses the original square pixel windows. In `'geographic'` or
+ * `'web-mercator'` mode, `resolution` remains ground metres per pixel in the unchanged RVT
+ * index ladder; each nonzero radius `k^s` becomes `k^s * resolution` ground metres. WGS84
+ * ground cell sizes at each row center convert it to rectangular pixel half-widths, rounded
+ * and clamped to at least 1 and to float64 setup maxima over every row. The summed-area path
+ * evaluates these rectangles exactly. The separable path approximates them: its vertical pass
+ * averages rows filtered with their own horizontal radius, whose ground scales typically
+ * differ by a fraction of a percent across a window.
+ *
+ * Two mean filter paths, chosen at declaration by grid size and device limit only. Uniform
+ * windows match RVT's float64 mean filter within their bound; ground windows additionally have
+ * the separable approximation above. Grids up to `getGPUTerrainSummedAreaMaximumCellCount` cells
  * use one exact 64-bit summed-area table (built once for both filters) of elevations quantized to
  * `quantum`: O(1) per pixel, error at most `quantum / 2` per filter (zero for `|z| >= 128` at the
  * default) plus a few float32 ULP of the deviation; the coarsest radius is then at most 23170.
@@ -213,8 +237,11 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
   readonly props: GPUMultiScaleReliefProps;
   /** Filter radii derived from the feature sizes. */
   readonly radii: GPUMultiScaleReliefRadii;
-  /** Receptive field in pixels: the coarsest filter radius. */
+  /** Receptive field in pixels: the largest coarsest-filter half-width over all rows. */
   readonly requiredHalo: number;
+
+  private readonly firstGroundRadius?: ReliefGroundRadius;
+  private readonly lastGroundRadius?: ReliefGroundRadius;
 
   constructor(props: GPUMultiScaleReliefProps) {
     this.id = props.id ?? 'multi-scale-relief';
@@ -222,8 +249,14 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
     const {id} = this;
     const {output} = props;
     const pixelCount = validateRasterGrid(id, props.grid);
+    validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     this.radii = getGPUMultiScaleReliefRadii(props);
-    this.requiredHalo = this.radii.lastRadius;
+    this.firstGroundRadius = getReliefGroundRadius(props, this.radii.firstRadius);
+    this.lastGroundRadius = getReliefGroundRadius(props, this.radii.lastRadius);
+    this.requiredHalo = this.lastGroundRadius
+      ? Math.max(...this.lastGroundRadius.maximumRadius)
+      : this.radii.lastRadius;
     validateReliefMeanFilter(id, props.quantum ?? GPU_RELIEF_DEFAULT_QUANTUM);
     if (!output.relief && !output.outputValidity) {
       throw new Error(`${id} requires at least one output`);
@@ -258,7 +291,7 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
       output.outputValidity
     ]);
     const pixelCount = width * height;
-    validateReliefMeanFilterRadius(id, graph.device, pixelCount, this.radii.lastRadius);
+    validateReliefMeanFilterRadius(id, graph.device, pixelCount, this.requiredHalo);
     const source = getRasterBufferBandNodes(graph, id, props.elevation, props.grid, true);
     const filter = createReliefMeanFilterSetup(graph, {
       id,
@@ -274,6 +307,7 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
         id: `${id}-last`,
         operation: 'GPUMultiScaleRelief',
         radius: radii.lastRadius,
+        groundRadius: this.lastGroundRadius,
         deviation: coarse
       })
     );
@@ -287,6 +321,7 @@ export class GPUMultiScaleRelief implements GPUCommandNodeProducer {
           id: `${id}-first`,
           operation: 'GPUMultiScaleRelief',
           radius: radii.firstRadius,
+          groundRadius: this.firstGroundRadius,
           deviation: fine
         })
       );
@@ -329,4 +364,24 @@ const SCALE_COUNT: f32 = ${radii.lastIndex - radii.firstIndex}.0;`,
     );
     return nodes;
   }
+}
+
+/** Computes compile-time radius bounds in float64; all filtering stays on the GPU. */
+function getReliefGroundRadius(
+  props: GPUMultiScaleReliefProps,
+  pixelRadius: number
+): ReliefGroundRadius | undefined {
+  const mode = props.cellSizeMode ?? 'uniform';
+  if (mode === 'uniform' || pixelRadius === 0) {
+    return undefined;
+  }
+  const georeference = getRasterGridGeoreference(props.grid);
+  const radius = pixelRadius * props.resolution;
+  const maximumRadius: [number, number] = [1, 1];
+  for (let row = 0; row < props.grid.height; row++) {
+    const groundCell = getRasterGroundCellSize(mode, georeference, row + 0.5, props.grid.height);
+    maximumRadius[0] = Math.max(maximumRadius[0], Math.round(radius / groundCell[0]));
+    maximumRadius[1] = Math.max(maximumRadius[1], Math.round(radius / groundCell[1]));
+  }
+  return {...georeference, mode, radius, maximumRadius};
 }

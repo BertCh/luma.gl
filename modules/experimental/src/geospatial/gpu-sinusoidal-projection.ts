@@ -27,9 +27,7 @@ import {
   validateSeparateBuffers
 } from './geospatial-utils';
 import {captureGraphCommandNodes} from '../utils/gpu-contributor-utils';
-
-const CUSPATIAL_EARTH_CIRCUMFERENCE_KILOMETRES = 40_000;
-const CUSPATIAL_KILOMETRES_PER_DEGREE = CUSPATIAL_EARTH_CIRCUMFERENCE_KILOMETRES / 360;
+import {GPU_SINUSOIDAL_KILOMETERS_PER_DEGREE} from '../analysis-core/contracts/earth';
 
 /** Properties for a cuSpatial-compatible sinusoidal projection. */
 export type GPUSinusoidalProjectionProps = {
@@ -137,7 +135,7 @@ const ORIGIN_LATITUDE: f32 = ${getFloat32Literal(this.origin[1])};
 const ORIGIN_LONGITUDE_BITS: vec2u = ${getRawBinary64Literal(this.origin[0])};
 const ORIGIN_LATITUDE_BITS: vec2u = ${getRawBinary64Literal(this.origin[1])};
 const DEGREES_TO_RADIANS: f32 = ${getFloat32Literal(Math.PI / 180)};
-const KILOMETRES_PER_DEGREE: f32 = ${getFloat32Literal(CUSPATIAL_KILOMETRES_PER_DEGREE)};
+const KILOMETRES_PER_DEGREE: f32 = ${getFloat32Literal(GPU_SINUSOIDAL_KILOMETERS_PER_DEGREE)};
 ${inputSource.declaration}
 @group(0) @binding(auto) var<storage, read_write> outputPositions: array<vec2f>;
 

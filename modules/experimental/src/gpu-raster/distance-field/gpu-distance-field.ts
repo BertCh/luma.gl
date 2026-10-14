@@ -118,6 +118,10 @@ export type GPUDistanceFieldProps = {
  * approximate preview with the same outputs. Every encoding recomputes from scratch, and
  * rewriting seeds or parameters never recompiles the graph.
  *
+ * Distances use grid units (world units of the affine), so degree grids yield degree distances,
+ * not meters; ground-meter conversion is a non-goal—use `GPUCostDistance` with
+ * `cellSizeMode: 'geographic' | 'web-mercator'` and unit friction for ground-meter distances.
+ *
  * Distances are between cell centers; a seed point's position inside its cell is not used.
  * Non-goals: cost-weighted (non-Euclidean) allocation, which `GPUCostDistance` covers, geodesic
  * distances on longitude/latitude grids, and polygon or line seeds (rasterize them into

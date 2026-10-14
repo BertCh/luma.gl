@@ -173,10 +173,11 @@ export type GPUHotSpotDistanceBand = {
 };
 
 /** Contexts {@link GPUHotSpotDistanceBand} accepts. */
-const DISTANCE_BAND_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = {
-  coordinateSpaces: ['longitude-latitude'],
-  metrics: ['great-circle']
-};
+const DISTANCE_BAND_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  coordinateSpaces: Object.freeze(['longitude-latitude'] as const),
+  metrics: Object.freeze(['great-circle'] as const),
+  measure: 'distance'
+});
 
 /** Input rows: a dense raster of values on a regular lattice (row-major `y * width + x`). */
 export type GPUHotSpotLatticeSource = {

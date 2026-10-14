@@ -4,9 +4,10 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 
 import type {ProjectionProvider} from './types';
+import {GPU_WGS84_SEMI_MAJOR_AXIS_METERS} from '../analysis-core/contracts/earth';
 
 /** WGS84 equatorial radius used by EPSG:3857, in metres. */
-export const WEB_MERCATOR_EARTH_RADIUS = 6_378_137;
+export const WEB_MERCATOR_EARTH_RADIUS = GPU_WGS84_SEMI_MAJOR_AXIS_METERS;
 
 /** Latitude where the square Web Mercator world reaches its northern or southern edge. */
 export const WEB_MERCATOR_MAX_LATITUDE = 85.05112877980659;

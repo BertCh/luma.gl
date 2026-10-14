@@ -10,6 +10,10 @@ import type {
   GPUStatusScalar,
   GPUSpatialContext
 } from '../../analysis-core/contracts/index';
+import {
+  GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  resolveGPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import {GPUGeometryMeasures} from '../geometry-measures/index';
 import {GPUGroupConvexHull, GPUGroupGeometry} from '../group-geometry/index';
 import {GPUSpatialClustering} from '../spatial-clustering/index';
@@ -23,6 +27,12 @@ import {
 } from './recipe-utils';
 
 const ID = 'GPUClusterAndOutlineRecipe';
+
+/** Planar only: the group summaries and convex hulls are planar operators. */
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  ...GPU_PLANAR_SPATIAL_CONTEXT_SUPPORT,
+  measure: 'distance'
+} as const);
 
 /** Properties for {@link addClusterAndOutlineRecipe}. */
 export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
@@ -62,11 +72,13 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
   points: GPUPackedGeometryPort<GPUPointGeometryPort>;
   /**
    * Canonical coordinate and metric contract of `points`, used by the clustering and by hull
-   * measurement. Planar contexts cluster with a Euclidean `epsilon`; a longitude/latitude
-   * great-circle context clusters with `epsilon` in meters (see `GPUSpatialClustering`, including
-   * its antimeridian rule). Other metrics throw at graph construction.
+   * measurement. Omitted means native planar; `epsilon` uses the context's length unit. Planar
+   * only, because the group summaries and convex hulls are planar: project longitude/latitude
+   * points first (`createGPULocalFrame` azimuthal-equidistant frame). A lambert-equal-area frame
+   * throws (clustering measures distance). The resolved context is returned as
+   * `result.spatialContext`.
    */
-  spatialContext: GPUSpatialContext;
+  spatialContext?: GPUSpatialContext;
   /** `getGPUSpatialClusteringParameterValues` view: bounds, epsilon, minimum points. */
   clusteringParameters: GraphDataView<'float32'>;
   /** Maximum neighbor-search lattice of the clustering. */
@@ -86,6 +98,8 @@ export type GPUClusterAndOutlineRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addClusterAndOutlineRecipe}. */
 export type GPUClusterAndOutlineRecipeResult = GPURecipeResult & {
+  /** Resolved coordinate and metric context shared by all spatial stages. */
+  spatialContext: GPUSpatialContext;
   /** Cluster capacity: the row count of every per-cluster output. */
   maximumClusterCount: number;
   labels: GraphDataView<'uint32'>;
@@ -132,6 +146,11 @@ export function addClusterAndOutlineRecipe<Parameters>(
   props: GPUClusterAndOutlineRecipeProps
 ): GPUClusterAndOutlineRecipeResult {
   const id = props.id ?? 'cluster-outline-recipe';
+  const spatialContext = resolveGPUSpatialContext(
+    id,
+    props.spatialContext,
+    SPATIAL_CONTEXT_SUPPORT
+  );
   const positions = props.points.positions;
   const pointCount = positions.length;
   const groupCount = props.maximumClusterCount;
@@ -171,7 +190,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   builder.add(
     new GPUSpatialClustering({
       id: `${id}-clustering`,
-      spatialContext: props.spatialContext,
+      spatialContext,
       positions,
       sourceIds: props.points.sourceIds,
       parameters: props.clusteringParameters,
@@ -199,6 +218,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   builder.add(
     new GPUGroupGeometry({
       id: `${id}-group-geometry`,
+      spatialContext,
       positions,
       labels,
       groupCount,
@@ -245,6 +265,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   builder.add(
     new GPUGroupConvexHull({
       id: `${id}-convex-hull`,
+      spatialContext,
       positions,
       labels,
       groupCount,
@@ -286,7 +307,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
   const identityOffsets = createIdentityOffsetsNode(graph, `${id}-hull-identity`, groupCount);
   builder.add(
     new GPUGeometryMeasures({
-      spatialContext: props.spatialContext,
+      spatialContext,
       id: `${id}-hull-measures`,
       geometryType: 'polygons',
       positions: hullPositions,
@@ -299,6 +320,7 @@ export function addClusterAndOutlineRecipe<Parameters>(
 
   return {
     contributors: builder.contributors,
+    spatialContext,
     maximumClusterCount: groupCount,
     labels,
     clusterCount,

@@ -8,7 +8,7 @@ import {validateCapacity} from '../../utils/gpu-contributor-utils';
 export const GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH = 8;
 
 /**
- * Largest size of each of the two per-center neighbor tables (zone indices and squared distances),
+ * Largest size of each of the two per-center neighbor tables (zone indices and separation keys),
  * in words: `zones * listLength <= 2^24`, so 64 MiB per table. All zones fit up to 4096 zones; beyond
  * that the compile-time `maximumWindowZones` capacity shrinks and truncated windows are reported.
  */
@@ -110,7 +110,7 @@ export const GPU_SPATIAL_SCAN_STATISTIC_CLUSTER = {
   expectedCases: 2,
   /** Monte Carlo p-value `(1 + #{replicate maxima >= LLR}) / (P + 1)`. */
   pValue: 3,
-  /** Radius of the window: the distance from the center to its farthest zone. */
+  /** Radius from the center to its farthest zone, in the spatial context's length unit. */
   radius: 4,
   /** `observedCases / expectedCases`. */
   observedOverExpected: 5,

@@ -38,7 +38,8 @@ const STATUS_GAP: u32 = ${GPU_TRAJECTORY_PLAYHEAD_STATUS.gap}u;
 `;
 
 /**
- * Sphere radius in meters when positions are `(longitude, latitude)` degrees interpolated along
+ * Sphere radius in the context's length unit when positions are `(longitude, latitude)` degrees
+ * interpolated along
  * great circles, or `undefined` for planar linear interpolation. @internal
  */
 export type TrajectoryInterpolationRadius = number | undefined;
@@ -344,7 +345,7 @@ export type TrajectoryGeometryProps = {
   currentElevations?: GraphDataView<'float32'>;
   headings?: GraphDataView<'float32'>;
   speeds?: GraphDataView<'float32'>;
-  /** Sphere radius in meters for great-circle interpolation; omitted for planar. */
+  /** Sphere radius in the context's length unit for great-circle interpolation; omitted for planar. */
   geodesicRadius?: TrajectoryInterpolationRadius;
   trackCount: number;
 };
@@ -493,7 +494,7 @@ export type TrajectoryArcLengthProps = {
   trackOffsets: GraphDataView<'uint32'>;
   /** One f32 per row; rows outside every track are left untouched. */
   cumulativeLengths: GraphDataView<'float32'>;
-  /** Sphere radius in meters for great-circle lengths; omitted for planar. */
+  /** Sphere radius in the context's length unit for great-circle lengths; omitted for planar. */
   geodesicRadius?: TrajectoryInterpolationRadius;
   rowCount: number;
   trackCount: number;
@@ -564,7 +565,7 @@ export type TrajectoryResampleNodeProps = {
    * `[startLow, startHigh, startFraction, stepBits]` for word timestamps.
    */
   clock?: GraphDataView<'float32'> | GraphDataView<'uint32'>;
-  /** Sphere radius in meters for great-circle interpolation; omitted for planar. */
+  /** Sphere radius in the context's length unit for great-circle interpolation; omitted for planar. */
   geodesicRadius?: TrajectoryInterpolationRadius;
   rowCount: number;
   trackCount: number;

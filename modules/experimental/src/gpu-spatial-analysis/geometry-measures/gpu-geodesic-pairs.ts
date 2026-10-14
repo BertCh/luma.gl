@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import {getGPUSphereRadius} from '../../analysis-core/contracts/spatial-context';
+import {
+  getGPUEllipsoid,
+  getGPUSphereRadius,
+  type GPUSpatialEllipsoid
+} from '../../analysis-core/contracts/spatial-context';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,
@@ -38,7 +42,7 @@ const OPERATION = 'GPUGeodesicPairs';
 
 /** Per-pair outputs of {@link GPUGeodesicPairs}; each optional, one row per pair. */
 export type GPUGeodesicPairsOutput = {
-  /** Geodesic distance in radius units (`'sphere'`, `'rhumb'`) or meters (`'wgs84'`). */
+  /** Geodesic distance in the context's length unit. */
   distances?: GraphDataView<'float32'>;
   /** Initial bearing at the origin, degrees clockwise from north in `(-180, 180]` (turf `bearing`). */
   initialBearings?: GraphDataView<'float32'>;
@@ -60,7 +64,7 @@ export type GPUGeodesicPairsOutput = {
  * Properties for {@link GPUGeodesicPairs}.
  *
  * Per-frame (no recompile): the contents of `origins` and `targets`. Compile-time: the pair count,
- * `model`, `radius`, `maximumIterations`, and which outputs are present.
+ * `spatialContext`, `maximumIterations`, and which outputs are present.
  */
 export type GPUGeodesicPairsProps = {
   /** Prefix for generated node IDs. Defaults to `'geodesic-pairs'`. */
@@ -97,8 +101,10 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
   readonly spatialContext: GPUSpatialContext;
   /** Resolved model. */
   readonly model: GPUGeodesicModel;
-  /** Resolved radius. */
+  /** Resolved sphere radius in the context's length unit. */
   readonly radius: number;
+  /** Ellipsoid in the context's length unit, used by the 'wgs84'/ellipsoidal model. */
+  readonly ellipsoid: GPUSpatialEllipsoid;
   /** Resolved Vincenty iteration cap. */
   readonly maximumIterations: number;
 
@@ -109,6 +115,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
     const metric = resolveGeodesicSpatialContext(this.id, this.spatialContext);
     this.model = metric.model;
     this.radius = metric.radius;
+    this.ellipsoid = metric.ellipsoid;
     this.maximumIterations = props.maximumIterations ?? GPU_GEODESIC_DEFAULT_ITERATIONS;
     validateGeodesicOptions(this.id, this.model, this.radius, this.maximumIterations);
     const {id} = this;
@@ -196,7 +203,7 @@ export class GPUGeodesicPairs implements GPUCommandNodeProducer {
         bindings,
         invocationCount: props.origins.length,
         declarations: `${GEODESIC_WGSL}
-${wgs84 ? getVincentyWGSL(this.maximumIterations) : ''}
+${wgs84 ? getVincentyWGSL(this.maximumIterations, this.ellipsoid) : ''}
 ${SPHERE_PAIR_WGSL}
 ${rhumb ? RHUMB_WGSL : ''}
 const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
@@ -233,6 +240,7 @@ const RADIUS: f32 = ${getWGSLFloatLiteral(this.radius)};`,
 
 /** Longitude/latitude with a great-circle, rhumb or ellipsoidal metric. */
 const GEODESIC_SPATIAL_CONTEXT_SUPPORT: GPUSpatialContextSupport = Object.freeze({
+  measure: 'distance',
   coordinateSpaces: Object.freeze(['longitude-latitude'] as const),
   metricsByCoordinateSpace: Object.freeze({
     'longitude-latitude': Object.freeze(['great-circle', 'rhumb', 'ellipsoidal'] as const)
@@ -248,18 +256,23 @@ const GEODESIC_MODELS = {
 /**
  * Resolves a canonical spatial context to the kernel model shared by geodesic contributors. A thin
  * wrapper over `resolveGPUSpatialContext`: the support table checks the space and metric, and the
- * wrapper maps the metric to its kernel model.
+ * wrapper maps the metric to its kernel model. Radius and ellipsoid use the context's length unit.
  */
 export function resolveGeodesicSpatialContext(
   id: string,
   spatialContext: GPUSpatialContext
-): {model: GPUGeodesicModel; radius: number} {
+): {model: GPUGeodesicModel; radius: number; ellipsoid: GPUSpatialEllipsoid} {
   const resolved = resolveGPUSpatialContext(id, spatialContext, GEODESIC_SPATIAL_CONTEXT_SUPPORT);
   const model: GPUGeodesicModel = GEODESIC_MODELS[resolved.metric as keyof typeof GEODESIC_MODELS];
-  if (model === 'wgs84' && spatialContext.units === 'kilometers') {
-    throw new Error(`${id} ellipsoidal kernels currently publish meters`);
-  }
-  return {model, radius: getGPUSphereRadius(spatialContext)};
+  const ellipsoid = getGPUEllipsoid(resolved);
+  return {
+    model,
+    radius: getGPUSphereRadius(resolved),
+    ellipsoid:
+      resolved.units === 'kilometers'
+        ? {...ellipsoid, semiMajorAxis: ellipsoid.semiMajorAxis / 1000}
+        : ellipsoid
+  };
 }
 
 /** Validates the shared model options of the geodesic column contributors. @internal */

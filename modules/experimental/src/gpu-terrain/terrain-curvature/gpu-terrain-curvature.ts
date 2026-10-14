@@ -25,6 +25,7 @@ import {
   validateRasterBandBelongsToGraph,
   validateRasterBuffersDistinct,
   validateRasterGrid,
+  validateRasterGridAxisAligned,
   validateParameterTarget,
   validateRasterParameters,
   type RasterBufferBandSource
@@ -297,6 +298,7 @@ export class GPUTerrainCurvature implements GPUCommandNodeProducer {
     }
     validateRasterParameters(id, props.parameters, GPU_TERRAIN_CURVATURE_PARAMETER_LENGTH);
     validateRasterCellSizeMode(id, props.cellSizeMode);
+    validateRasterGridAxisAligned(id, props.grid, props.cellSizeMode);
     validateRasterRowDirection(id, props.rowDirection);
     if (!['clamp', 'nodata'].includes(props.borderMode ?? 'clamp')) {
       throw new Error(`${id} borderMode must be clamp or nodata`);

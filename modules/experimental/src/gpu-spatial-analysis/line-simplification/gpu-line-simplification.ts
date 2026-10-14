@@ -4,7 +4,7 @@
 
 import {
   resolveGPUSpatialContext,
-  GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT,
+  GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
   getGPUGreatCircleRadius
 } from '../../analysis-core/contracts/spatial-context';
 import {
@@ -51,6 +51,18 @@ import {
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 const OPERATION = 'GPULineSimplification';
+
+// Douglas-Peucker compares distances; Visvalingam compares effective triangle areas.
+const SPATIAL_CONTEXT_SUPPORT = Object.freeze({
+  'douglas-peucker': Object.freeze({
+    ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+    measure: 'distance'
+  }),
+  visvalingam: Object.freeze({
+    ...GPU_PLANAR_OR_GREAT_CIRCLE_SPATIAL_CONTEXT_SUPPORT,
+    measure: 'area'
+  })
+});
 
 /** Splits `output` into the row selection (present when `ids` is given) and the status bag. */
 function getOutputParts(props: GPULineSimplificationProps): {
@@ -145,15 +157,17 @@ export type GPULineSimplificationProps = GPULineGeometryFields & {
   /**
    * Native planar coordinates (default), or `{coordinateSpace: 'longitude-latitude', metric:
    * 'great-circle'}`: positions are `[longitude, latitude]` degrees, the Douglas-Peucker distances
-   * (and so `tolerance` and `importance`) are great-circle meters on a sphere of `sphereRadius`
-   * (default `GPU_EARTH_MEAN_RADIUS_METERS`), and chords are straight in longitude/latitude, as in
-   * the rest of the package. The distance from a vertex to its chord is the haversine distance to
-   * the closest point of the chord, found in the local equirectangular frame of the vertex (exact
-   * to first order for chords of kilometers; simplify long edges after densifying them). Kilometers
-   * and other metrics throw. `method: 'visvalingam'` is planar only and throws in a great-circle
-   * context: its tolerance is an area, its parallel rounds mirror a bit-exact planar triangle
-   * area, and no spherical-excess variant is implemented; project to a planar frame first, for
-   * example with `createGPULocalFrame` (`contracts/local-frame`) and `GPULocalFrameProjection`
+   * (and so `tolerance` and `importance`) use the context's length unit on a sphere of `sphereRadius`
+   * (mean Earth radius in meters or kilometers by default), and chords are straight in
+   * longitude/latitude, as in the rest of the package. The distance from a vertex to its chord is
+   * the haversine distance to the closest point of the chord, found in the vertex's local
+   * equirectangular frame (exact
+   * to first order for chords of kilometers; simplify long edges after densifying them).
+   * `units: 'kilometers'` is honored; other metrics throw. `method: 'visvalingam'` is planar only and throws in a
+   * great-circle context: its tolerance and importance use the context's length unit squared, its
+   * parallel rounds mirror a bit-exact planar triangle area, and no spherical-excess variant is
+   * implemented; project to a planar frame first, for example with `createGPULocalFrame`
+   * (`contracts/local-frame`) and `GPULocalFrameProjection`
    * (`geometry-measures`), and pass the frame's context. Great-circle distances use f32
    * transcendental functions, so the bit-exactness described on {@link GPULineSimplification}
    * holds for planar contexts only.
@@ -305,15 +319,17 @@ export class GPULineSimplification implements GPUCommandNodeProducer {
 
   constructor(props: GPULineSimplificationProps) {
     this.id = props.id ?? 'line-simplification';
+    this.method = props.method ?? 'douglas-peucker';
     this.spatialContext = resolveGPUSpatialContext(
       this.id,
       props.spatialContext,
-      GPU_PLANAR_OR_GREAT_CIRCLE_METERS_SPATIAL_CONTEXT_SUPPORT
+      this.method === 'visvalingam'
+        ? SPATIAL_CONTEXT_SUPPORT.visvalingam
+        : SPATIAL_CONTEXT_SUPPORT['douglas-peucker']
     );
     this.sphereRadius = getGPUGreatCircleRadius(this.spatialContext);
     this.props = props;
     this.metric = props.metric ?? 'segment';
-    this.method = props.method ?? 'douglas-peucker';
     this.neighborhoodRadius =
       props.neighborhoodRadius ?? GPU_LINE_SIMPLIFICATION_DEFAULT_NEIGHBORHOOD_RADIUS;
     this.maximumIterations =

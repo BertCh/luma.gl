@@ -4,6 +4,10 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 
 import type {PROJParameter, PROJStringAst} from '@math.gl/crs';
+import {
+  GPU_WGS84_INVERSE_FLATTENING,
+  GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+} from '../analysis-core/contracts/earth';
 import {invertProjectionProgram, type ProjectionOperation} from './projection-program';
 import {getConicParameters, type ConicOperation} from './projection-conic';
 
@@ -201,7 +205,9 @@ export function lowerProjectionPipeline(
           step
         );
       }
-      const radius = values.has('ellps') ? 6378137 : getNumber(values.get('a'), NaN);
+      const radius = values.has('ellps')
+        ? GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+        : getNumber(values.get('a'), NaN);
       const longitude = (getNumber(values.get('lon_0'), 0) * Math.PI) / 180;
       const easting = getNumber(values.get('x_0'), 0);
       const northing = getNumber(values.get('y_0'), 0);
@@ -255,8 +261,12 @@ export function lowerProjectionPipeline(
           step
         );
       }
-      const semiMajorAxis = namedEllipsoid ? 6378137 : getNumber(values.get('a'), NaN);
-      const inverseFlattening = namedEllipsoid ? 298.257223563 : getNumber(values.get('rf'), NaN);
+      const semiMajorAxis = namedEllipsoid
+        ? GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+        : getNumber(values.get('a'), NaN);
+      const inverseFlattening = namedEllipsoid
+        ? GPU_WGS84_INVERSE_FLATTENING
+        : getNumber(values.get('rf'), NaN);
       const longitude =
         ((method === 'utm' ? zone * 6 - 183 : getNumber(values.get('lon_0'), 0)) * Math.PI) / 180;
       const latitudeOrigin = (getNumber(values.get('lat_0'), 0) * Math.PI) / 180;
@@ -323,8 +333,12 @@ export function lowerProjectionPipeline(
           step
         );
       }
-      const semiMajorAxis = namedEllipsoid ? 6378137 : getNumber(values.get('a'), NaN);
-      const inverseFlattening = namedEllipsoid ? 298.257223563 : getNumber(values.get('rf'), NaN);
+      const semiMajorAxis = namedEllipsoid
+        ? GPU_WGS84_SEMI_MAJOR_AXIS_METERS
+        : getNumber(values.get('a'), NaN);
+      const inverseFlattening = namedEllipsoid
+        ? GPU_WGS84_INVERSE_FLATTENING
+        : getNumber(values.get('rf'), NaN);
       const longitude = (getNumber(values.get('lon_0'), 0) * Math.PI) / 180;
       const easting = getNumber(values.get('x_0'), 0);
       const northing = getNumber(values.get('y_0'), 0);

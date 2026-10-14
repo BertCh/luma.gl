@@ -16,6 +16,10 @@ import {
   GPUEmergingHotSpots,
   type GPUEmergingHotSpotsSettings
 } from '../emerging-hot-spots/index';
+import {
+  resolveGPUSpatialContext,
+  type GPUSpatialContext
+} from '../../analysis-core/contracts/spatial-context';
 import type {GPUStatusScalar} from '../../analysis-core/contracts/status';
 import {GPUParameterBuffer} from '../../utils/gpu-contributor-utils';
 import {
@@ -145,8 +149,10 @@ export type GPUSpaceTimeCellIds = {
 /** Cells given as a regular lattice over planar event positions (lattice neighborhood). */
 export type GPUSpaceTimeLattice = {
   kind: 'lattice';
-  /** Planar position per event. */
+  /** Planar position per event in the coordinates of `spatialContext`. */
   positions: GraphDataView<'float32x2'>;
+  /** Planar context of positions and bounds. Omitted means native planar. */
+  spatialContext?: GPUSpatialContext;
   /** Lattice columns. */
   width: number;
   /** Lattice rows. */
@@ -269,6 +275,8 @@ export type GPUSpaceTimeHotSpotsRecipeProps = GPURecipeOverrides<
 
 /** Named outputs of {@link addSpaceTimeHotSpotsRecipe}. */
 export type GPUSpaceTimeHotSpotsRecipeResult = GPURecipeResult & {
+  /** Resolved lattice context, or the supplied weights context when it is declared. */
+  spatialContext?: GPUSpatialContext;
   cellCount: number;
   sliceCount: number;
   cube: GraphDataView<'uint32'>;
@@ -332,6 +340,10 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
   const outputOverrides = props.outputs ?? {};
   const scratch = props.scratch ?? {};
   const {slices, cells} = props;
+  const spatialContext =
+    cells.kind === 'lattice'
+      ? resolveGPUSpatialContext(id, cells.spatialContext)
+      : cells.weights.spatialContext;
   const eventCount = props.timestamps.length;
   const sliceCount = slices.count;
   assertRecipe(
@@ -733,6 +745,7 @@ export function addSpaceTimeHotSpotsRecipe<Parameters>(
 
   const result: GPUSpaceTimeHotSpotsRecipeResult = {
     contributors: builder.contributors,
+    spatialContext,
     cellCount,
     sliceCount,
     cube,
