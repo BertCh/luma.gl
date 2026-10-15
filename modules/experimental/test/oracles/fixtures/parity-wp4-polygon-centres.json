@@ -1,0 +1,46 @@
+{
+  "versions": {
+    "python": "3.14.5",
+    "numpy": "2.5.4"
+  },
+  "reference": "fractions.Fraction exact line intersection; IEEE-754 round-to-nearest half-ULP interval",
+  "sources": [
+    {
+      "path": "modules/experimental/test/oracles/fixtures/parity-wp4-polygons.json",
+      "sha256": "30fc1baaedd67f1b497388e305e3235d13d78718d3b05518fd412051af6ea032"
+    },
+    {
+      "path": "examples/deck/spatial-analysis-showcase/public/data/chicago-tracts/tracts.geojson",
+      "sha256": "c83c5a5e23a7bab14692ab2cbe3e3b9979872145df22237557291a4155b90e76"
+    }
+  ],
+  "case": "chicago-all-791-tracts-512-square",
+  "cells": [
+    {
+      "index": 76206,
+      "row": 148,
+      "column": 430,
+      "centre": [
+        430.5,
+        148.5
+      ],
+      "crossing": 430.50000062350733,
+      "exactMargin": "291/466714624",
+      "halfUlp": 1.52587890625e-05,
+      "edge": [
+        [
+          430.49798583984375,
+          148.3773651123047
+        ],
+        [
+          430.5015563964844,
+          148.59469604492188
+        ]
+      ],
+      "features": [
+        709,
+        710
+      ]
+    }
+  ]
+}
