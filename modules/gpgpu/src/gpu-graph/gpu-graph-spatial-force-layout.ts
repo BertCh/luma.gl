@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import type {GPUGraphForceLayout} from './gpu-graph-force-layout';
 import {addGPUGraphSpatialForceLayoutToGraphWithDispatchLimit} from './gpu-graph-spatial-force-layout-internals';
 import type {GPUGraphAdjacency} from './gpu-graph-topology';
@@ -133,11 +134,13 @@ export class GPUGraphSpatialForceLayout {
 
   /** Declares bounded index construction and approximate force work without implicit submission. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphSpatialForceLayoutToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphSpatialForceLayout', this.id, () => {
+      addGPUGraphSpatialForceLayoutToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

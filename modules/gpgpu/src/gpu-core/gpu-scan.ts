@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
 import {type Binding, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
@@ -424,6 +425,19 @@ function addScanLevels<Parameters>(
     );
   }
 
+  if (graph.recording) {
+    for (const node of nodes) {
+      const iteration = Number(/^-level-(\d+)-/.exec(node.id.slice(props.id.length))?.[1]);
+      if (node.annotation) {
+        node.annotation.loop = {
+          id: `${props.id}/levels`,
+          iteration,
+          phase: 'unconditional',
+          maximumIterations: levels.length
+        };
+      }
+    }
+  }
   return nodes;
 }
 
@@ -694,6 +708,32 @@ ${props.segmentFlags ? `var<workgroup> segmentScratch: array<u32, ${SCAN_WORKGRO
     })
   );
 
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUScan',
+    moduleId: `GPUScan/level-scan/${strategy}`,
+    source,
+    workgroupSize: [SCAN_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.length,
+    dedupName: 'level-scan',
+    formula: 'gpu-core.scan',
+    bindings: [
+      {name: 'inputValues', view: props.input, access: 'read'},
+      {name: 'outputValues', view: props.output, access: 'read_write'},
+      ...(sumOutput ? [{name: 'sumValues', view: sumOutput, access: 'read_write' as const}] : []),
+      ...(props.segmentFlags
+        ? [{name: 'segmentFlags', view: props.segmentFlags, access: 'read' as const}]
+        : []),
+      ...(props.segmentPrefixes
+        ? [{name: 'segmentPrefixes', view: props.segmentPrefixes, access: 'read_write' as const}]
+        : []),
+      ...(segmentFlagOutput
+        ? [{name: 'summarySegmentFlags', view: segmentFlagOutput, access: 'read_write' as const}]
+        : [])
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
+
   return nodes;
 }
 
@@ -930,6 +970,40 @@ ${props.offsetSegmentPrefixes ? '@group(0) @binding(3) var<storage, read> offset
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUScan',
+    moduleId: 'GPUScan/add-offsets',
+    source,
+    workgroupSize: [SCAN_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.length,
+    dedupName: 'add-offsets',
+    formula: 'gpu-core.scan',
+    bindings: [
+      {name: 'outputValues', view: props.output, access: 'read_write'},
+      {name: 'offsets', view: props.offsets, access: 'read'},
+      ...(props.segmentPrefixes
+        ? [
+            {
+              name: 'segmentPrefixes',
+              view: props.segmentPrefixes,
+              access: props.offsetSegmentPrefixes ? ('read_write' as const) : ('read' as const)
+            }
+          ]
+        : []),
+      ...(props.offsetSegmentPrefixes
+        ? [
+            {
+              name: 'offsetSegmentPrefixes',
+              view: props.offsetSegmentPrefixes,
+              access: 'read' as const
+            }
+          ]
+        : [])
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

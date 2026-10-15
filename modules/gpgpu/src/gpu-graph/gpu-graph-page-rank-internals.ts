@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -17,6 +18,10 @@ import {
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
 import {getGPUReductionStrategy} from '../gpu-core/gpu-reduction';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphPageRank} from './gpu-graph-page-rank';
 import {
   importGPUGraphColumn,
@@ -51,6 +56,10 @@ type PageRankBinding = {
 };
 
 type PageRankPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, PageRankBinding>;
@@ -90,14 +99,16 @@ export function addGPUGraphPageRankToGraphWithDispatchLimit<Parameters>(
     overflow: importGPUGraphOverflow(
       commandGraph,
       `${pageRank.id}-forward-overflow`,
-      pageRank.topology.forward.overflow
+      pageRank.topology.forward.overflow,
+      'GPUGraphPageRank'
     ),
     ...(directed
       ? {
           reverseOverflow: importGPUGraphOverflow(
             commandGraph,
             `${pageRank.id}-incoming-overflow`,
-            incoming.overflow
+            incoming.overflow,
+            'GPUGraphPageRank'
           )
         }
       : {}),
@@ -140,31 +151,42 @@ export function addGPUGraphPageRankToGraphWithDispatchLimit<Parameters>(
   const reductionLevels = createReductionLevels(commandGraph, state);
 
   for (let iteration = 0; iteration < pageRank.iterations; iteration++) {
-    addDanglingGatherPass(commandGraph, {state, workspace, iteration});
-    const danglingMass = addReduction(commandGraph, {
-      id: `${state.id}-iteration-${iteration}-dangling`,
-      state,
-      input: workspace,
-      levels: reductionLevels
-    });
-    addPullPass(commandGraph, {state, workspace, danglingMass, iteration});
-    const rankSum = addReduction(commandGraph, {
-      id: `${state.id}-iteration-${iteration}-sum`,
-      state,
-      input: workspace,
-      levels: reductionLevels
-    });
-    const collectResidual = Boolean(state.residual && iteration === pageRank.iterations - 1);
-    addNormalizationPass(commandGraph, {state, workspace, rankSum, iteration, collectResidual});
-    if (collectResidual) {
-      addReduction(commandGraph, {
-        id: `${state.id}-residual`,
-        state,
-        input: workspace,
-        levels: reductionLevels,
-        output: state.residual!
-      });
-    }
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
+        iteration,
+        maximumIterations: pageRank.iterations,
+        gated: false
+      },
+      () => {
+        addDanglingGatherPass(commandGraph, {state, workspace, iteration});
+        const danglingMass = addReduction(commandGraph, {
+          id: `${state.id}-iteration-${iteration}-dangling`,
+          state,
+          input: workspace,
+          levels: reductionLevels
+        });
+        addPullPass(commandGraph, {state, workspace, danglingMass, iteration});
+        const rankSum = addReduction(commandGraph, {
+          id: `${state.id}-iteration-${iteration}-sum`,
+          state,
+          input: workspace,
+          levels: reductionLevels
+        });
+        const collectResidual = Boolean(state.residual && iteration === pageRank.iterations - 1);
+        addNormalizationPass(commandGraph, {state, workspace, rankSum, iteration, collectResidual});
+        if (collectResidual) {
+          addReduction(commandGraph, {
+            id: `${state.id}-residual`,
+            state,
+            input: workspace,
+            levels: reductionLevels,
+            output: state.residual!
+          });
+        }
+      }
+    );
   }
 }
 
@@ -220,6 +242,10 @@ fn main(
 }`;
 
   addPageRankPass(commandGraph, {
+    operation: 'GPUGraphPageRank',
+    workgroupSize: PAGE_RANK_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -305,6 +331,10 @@ fn main(
 }`;
 
   addPageRankPass(commandGraph, {
+    operation: 'GPUGraphPageRank',
+    workgroupSize: PAGE_RANK_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-gather-dangling`,
     source,
     bindings,
@@ -401,6 +431,10 @@ fn main(
 }`;
 
   addPageRankPass(commandGraph, {
+    operation: 'GPUGraphPageRank',
+    workgroupSize: PAGE_RANK_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-pull`,
     source,
     bindings,
@@ -475,6 +509,10 @@ fn main(
 }`;
 
   addPageRankPass(commandGraph, {
+    operation: 'GPUGraphPageRank',
+    workgroupSize: PAGE_RANK_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-normalize`,
     source,
     bindings,
@@ -576,7 +614,15 @@ fn main(
   }
 }`;
 
-  addPageRankPass(commandGraph, {id: props.id, source, bindings, dispatchLayout});
+  addPageRankPass(commandGraph, {
+    operation: 'GPUGraphPageRank',
+    workgroupSize: PAGE_RANK_WORKGROUP_SIZE,
+    invocationCount: props.input.length,
+    id: props.id,
+    source,
+    bindings,
+    dispatchLayout
+  });
 }
 
 /** Declares packed uint32 and float32 storage views in generated binding-layout order. */
@@ -595,7 +641,19 @@ function addPageRankPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: PageRankPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

@@ -5,6 +5,7 @@
 import {alignGraphVectorViews} from './graph-vector-view-utils';
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -332,7 +333,8 @@ const OUTPUT_OFFSET: u32 = ${getViewElementOffset(output)}u;
       source,
       resources: [{buffer: output, usage: 'storage-write'}],
       bindings: {outputCounts: output},
-      dispatchLayout
+      dispatchLayout,
+      record: {moduleId: 'GPUHistogram/clear', invocationCount: output.length}
     })
   );
 
@@ -384,7 +386,8 @@ const VALIDITY_OFFSET: u32 = ${getViewElementOffset(validity)}u;
         {buffer: validity, usage: 'storage-write'}
       ],
       bindings: {edgeValues: edges, edgeValidity: validity},
-      dispatchCount: 1
+      dispatchCount: 1,
+      record: {moduleId: 'GPUHistogram/validate-edges', invocationCount: edges.length}
     })
   );
 
@@ -524,7 +527,12 @@ ${useSubgroups ? getSubgroupBallotHelpersWGSL() : ''}
       ...(props.mask ? {selectionMask: props.mask} : {}),
       outputCounts: props.output
     },
-    dispatchLayout
+    dispatchLayout,
+    record: {
+      moduleId: `GPUHistogram/accumulate-edges/${local ? 'local' : 'global'}`,
+      invocationCount: props.input.length,
+      formula: 'gpu-core.histogram'
+    }
   });
 }
 
@@ -688,7 +696,12 @@ ${useSubgroups ? getSubgroupBallotHelpersWGSL() : ''}
       ...(props.mask ? {selectionMask: props.mask} : {}),
       outputCounts: props.output
     },
-    dispatchLayout
+    dispatchLayout,
+    record: {
+      moduleId: `GPUHistogram/accumulate/${local ? 'local' : 'global'}`,
+      invocationCount: props.input.length,
+      formula: 'gpu-core.histogram'
+    }
   });
 }
 
@@ -702,6 +715,8 @@ function addKernelPass<Parameters>(
     bindings: Record<string, GraphDataView>;
     dispatchCount?: number;
     dispatchLayout?: GPUBoundedDispatchLayout;
+    /** Kernel facts recorded on recording graphs only. */
+    record: {moduleId: string; invocationCount: number; formula?: string};
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -754,6 +769,32 @@ function addKernelPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUHistogram',
+    moduleId: props.record.moduleId,
+    source: props.source,
+    workgroupSize: [HISTOGRAM_WORKGROUP_SIZE, 1, 1],
+    workgroups: props.dispatchLayout
+      ? [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z]
+      : [props.dispatchCount ?? 1, 1, 1],
+    invocationCount: props.record.invocationCount,
+    formula: props.record.formula,
+    bindings: Object.entries(props.bindings).map(([name, view]) => {
+      const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+      return {
+        name,
+        view,
+        access:
+          usage === 'storage-read'
+            ? ('read' as const)
+            : usage === 'storage-read-write'
+              ? ('read_write' as const)
+              : ('write' as const)
+      };
+    })
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

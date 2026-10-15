@@ -5,6 +5,7 @@
 
 import {Buffer, type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {
   GPUCommandGraph,
   GPUCommandGraphGPUIndirectCondition,
@@ -18,6 +19,10 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphBreadthFirstSearch} from './gpu-graph-breadth-first-search';
 import type {GPUGraphAdjacency} from './gpu-graph-topology';
 
@@ -58,6 +63,10 @@ type BreadthFirstSearchBinding = {
 };
 
 type BreadthFirstSearchPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, BreadthFirstSearchBinding>;
@@ -167,32 +176,43 @@ export function addGPUGraphBreadthFirstSearchToGraphWithDispatchLimit<Parameters
   });
 
   for (let depth = 0; depth < search.maxDepth; depth++) {
-    const currentFrontierIndex = depth % 2;
-    const nextFrontierIndex = (depth + 1) % 2;
-    addExpansionPass(commandGraph, {
-      state,
-      adjacency: state.primaryAdjacency,
-      depth,
-      direction: useIncoming ? 'incoming' : 'outgoing',
-      currentFrontierIndex,
-      nextFrontierIndex
-    });
-    if (state.secondaryAdjacency) {
-      addExpansionPass(commandGraph, {
-        state,
-        adjacency: state.secondaryAdjacency,
-        depth,
-        direction: 'incoming',
-        currentFrontierIndex,
-        nextFrontierIndex
-      });
-    }
-    addFrontierDispatchPass(commandGraph, {
-      state,
-      currentFrontierIndex,
-      nextFrontierIndex,
-      id: `${state.id}-depth-${depth}-frontier`
-    });
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-depths`,
+        iteration: depth,
+        maximumIterations: search.maxDepth,
+        gated: true
+      },
+      () => {
+        const currentFrontierIndex = depth % 2;
+        const nextFrontierIndex = (depth + 1) % 2;
+        addExpansionPass(commandGraph, {
+          state,
+          adjacency: state.primaryAdjacency,
+          depth,
+          direction: useIncoming ? 'incoming' : 'outgoing',
+          currentFrontierIndex,
+          nextFrontierIndex
+        });
+        if (state.secondaryAdjacency) {
+          addExpansionPass(commandGraph, {
+            state,
+            adjacency: state.secondaryAdjacency,
+            depth,
+            direction: 'incoming',
+            currentFrontierIndex,
+            nextFrontierIndex
+          });
+        }
+        addFrontierDispatchPass(commandGraph, {
+          state,
+          currentFrontierIndex,
+          nextFrontierIndex,
+          id: `${state.id}-depth-${depth}-frontier`
+        });
+      }
+    );
   }
 }
 
@@ -247,6 +267,10 @@ fn main(
 }`;
 
   addBreadthFirstSearchPass(commandGraph, {
+    operation: 'GPUGraphBreadthFirstSearch',
+    workgroupSize: BREADTH_FIRST_SEARCH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -311,6 +335,9 @@ fn main() {
 }`;
 
   addBreadthFirstSearchPass(commandGraph, {
+    operation: 'GPUGraphBreadthFirstSearch',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-frontier-initialize`,
     source,
     bindings,
@@ -384,6 +411,10 @@ fn main(
 }`;
 
   addBreadthFirstSearchPass(commandGraph, {
+    operation: 'GPUGraphBreadthFirstSearch',
+    workgroupSize: BREADTH_FIRST_SEARCH_WORKGROUP_SIZE,
+    datum: {keySpace: 'seed'},
+    invocationCount: props.seeds.length,
     id: `${state.id}-seed-${props.chunkIndex}`,
     source,
     bindings,
@@ -473,6 +504,9 @@ fn main(
 }`;
 
   addBreadthFirstSearchPass(commandGraph, {
+    operation: 'GPUGraphBreadthFirstSearch',
+    workgroupSize: BREADTH_FIRST_SEARCH_WORKGROUP_SIZE,
+    datum: {keySpace: 'frontier'},
     id: `${state.id}-depth-${props.depth}-${props.direction}`,
     source,
     bindings,
@@ -533,6 +567,9 @@ fn main() {
 }`;
 
   addBreadthFirstSearchPass(commandGraph, {
+    operation: 'GPUGraphBreadthFirstSearch',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: props.id,
     source,
     bindings,
@@ -561,7 +598,19 @@ function addBreadthFirstSearchPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: BreadthFirstSearchPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     ...(props.condition ? {condition: props.condition} : {}),
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),

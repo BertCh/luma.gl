@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import {addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit} from './gpu-graph-local-clustering-coefficient-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 
@@ -100,11 +101,13 @@ export class GPUGraphLocalClusteringCoefficient {
 
   /** Declares bounded GPU clustering without queue submission or CPU graph synchronization. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphLocalClusteringCoefficient', this.id, () => {
+      addGPUGraphLocalClusteringCoefficientToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

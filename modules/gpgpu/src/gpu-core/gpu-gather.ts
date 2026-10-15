@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -149,80 +150,98 @@ export function getGatherCommandNodes<Parameters>(
         invalidValue,
         dispatchLayout
       });
-      nodes.push(
-        setGPUComputeDispatchWorkgroups(
-          createGPUComputeCommandNode<Parameters>({
-            id,
-            workload: {
-              operation,
-              commandCount: 1,
-              maximumWorkgroupCount: dispatchLayout.x * dispatchLayout.y * dispatchLayout.z,
-              maximumInvocationCount:
-                dispatchLayout.x * dispatchLayout.y * dispatchLayout.z * GATHER_WORKGROUP_SIZE,
-              readByteLength: sourceView
-                ? indices.length * (UINT32_BYTE_LENGTH + sourceView.rowByteLength)
-                : 0,
-              writeByteLength: indices.length * destination.rowByteLength
-            },
-            resources: [
-              ...(sourceView
-                ? [
-                    {buffer: sourceView, usage: 'storage-read' as const},
-                    {buffer: indices, usage: 'storage-read' as const}
-                  ]
-                : []),
-              {buffer: destination, usage: 'storage-write'}
-            ],
-            compile: ({device}) => {
-              const kernel = new Kernel(device, {
-                id,
-                source,
-                shaderLayout: {
-                  bindings: [
-                    {name: 'outputWords', type: 'storage', group: 0, location: 0},
-                    ...(sourceView
-                      ? [
-                          {
-                            name: 'sourceWords',
-                            type: 'read-only-storage' as const,
-                            group: 0,
-                            location: 1
-                          },
-                          {
-                            name: 'indices',
-                            type: 'read-only-storage' as const,
-                            group: 0,
-                            location: 2
-                          }
-                        ]
-                      : [])
-                  ]
+      const node = setGPUComputeDispatchWorkgroups(
+        createGPUComputeCommandNode<Parameters>({
+          id,
+          workload: {
+            operation,
+            commandCount: 1,
+            maximumWorkgroupCount: dispatchLayout.x * dispatchLayout.y * dispatchLayout.z,
+            maximumInvocationCount:
+              dispatchLayout.x * dispatchLayout.y * dispatchLayout.z * GATHER_WORKGROUP_SIZE,
+            readByteLength: sourceView
+              ? indices.length * (UINT32_BYTE_LENGTH + sourceView.rowByteLength)
+              : 0,
+            writeByteLength: indices.length * destination.rowByteLength
+          },
+          resources: [
+            ...(sourceView
+              ? [
+                  {buffer: sourceView, usage: 'storage-read' as const},
+                  {buffer: indices, usage: 'storage-read' as const}
+                ]
+              : []),
+            {buffer: destination, usage: 'storage-write'}
+          ],
+          compile: ({device}) => {
+            const kernel = new Kernel(device, {
+              id,
+              source,
+              shaderLayout: {
+                bindings: [
+                  {name: 'outputWords', type: 'storage', group: 0, location: 0},
+                  ...(sourceView
+                    ? [
+                        {
+                          name: 'sourceWords',
+                          type: 'read-only-storage' as const,
+                          group: 0,
+                          location: 1
+                        },
+                        {
+                          name: 'indices',
+                          type: 'read-only-storage' as const,
+                          group: 0,
+                          location: 2
+                        }
+                      ]
+                    : [])
+                ]
+              }
+            });
+            return {
+              encode: ({computePass, getBuffer}) => {
+                const bindings: Record<string, Binding> = {
+                  outputWords: getViewBinding(destination, getBuffer)
+                };
+                if (sourceView) {
+                  bindings['sourceWords'] = getViewBinding(sourceView, getBuffer);
+                  bindings['indices'] = getViewBinding(indices, getBuffer);
                 }
-              });
-              return {
-                encode: ({computePass, getBuffer}) => {
-                  const bindings: Record<string, Binding> = {
-                    outputWords: getViewBinding(destination, getBuffer)
-                  };
-                  if (sourceView) {
-                    bindings['sourceWords'] = getViewBinding(sourceView, getBuffer);
-                    bindings['indices'] = getViewBinding(indices, getBuffer);
-                  }
 
-                  kernel.dispatch(computePass, {
-                    bindings,
-                    x: dispatchLayout.x,
-                    y: dispatchLayout.y,
-                    z: dispatchLayout.z
-                  });
-                },
-                destroy: () => kernel.destroy()
-              };
-            }
-          }),
-          [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z]
-        )
+                kernel.dispatch(computePass, {
+                  bindings,
+                  x: dispatchLayout.x,
+                  y: dispatchLayout.y,
+                  z: dispatchLayout.z
+                });
+              },
+              destroy: () => kernel.destroy()
+            };
+          }
+        }),
+        [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z]
       );
+      const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+        op: operation,
+        moduleId: `${operation}/${sourceView ? 'copy-rows' : 'fill-invalid'}`,
+        source,
+        workgroupSize: [GATHER_WORKGROUP_SIZE, 1, 1],
+        workgroups: [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z],
+        invocationCount: indices.length,
+        ...(operation === 'GPUGather' && {formula: 'gpu-core.gather'}),
+        bindings: [
+          {name: 'outputWords', view: destination, access: 'write'},
+          ...(sourceView
+            ? [
+                {name: 'sourceWords', view: sourceView, access: 'read' as const},
+                {name: 'indices', view: indices, access: 'read' as const}
+              ]
+            : [])
+        ]
+      }));
+      if (annotation) node.annotation = annotation;
+      nodes.push(node);
     }
   }
   return nodes;

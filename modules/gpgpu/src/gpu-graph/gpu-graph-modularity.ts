@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import type {GPUGraph} from './gpu-graph';
 import {addGPUGraphModularityToGraphWithDispatchLimit} from './gpu-graph-modularity-internals';
 
@@ -101,11 +102,13 @@ export class GPUGraphModularity {
 
   /** Declares chunk-preserving weighted scoring without submitting or reading commands. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphModularityToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphModularity', this.id, () => {
+      addGPUGraphModularityToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

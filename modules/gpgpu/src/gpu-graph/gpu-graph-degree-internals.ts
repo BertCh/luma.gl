@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -12,6 +13,7 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphDegree} from './gpu-graph-degree';
 import {
   importGPUGraphColumn,
@@ -64,13 +66,27 @@ fn main(
     offsets[OFFSETS_OFFSET + index + 1u] - offsets[OFFSETS_OFFSET + index];
 }`;
 
-  addDegreePass(commandGraph, {id: degree.id, offsets, output, source, dispatchLayout});
+  addDegreePass(commandGraph, {
+    operation: 'GPUGraphDegree',
+    workgroupSize: GRAPH_DEGREE_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: degree.topology.graph.vertexCount,
+    id: degree.id,
+    offsets,
+    output,
+    source,
+    dispatchLayout
+  });
 }
 
 /** Compiles one two-binding degree kernel without allocating graph-owned scratch. */
 function addDegreePass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: {
+    operation: string;
+    datum?: GPUComputationDatumBinding;
+    invocationCount?: number;
+    workgroupSize: number;
     id: string;
     offsets: GraphDataView<'uint32'>;
     output: GraphDataView<'uint32'>;
@@ -78,7 +94,22 @@ function addDegreePass<Parameters>(
     dispatchLayout: GPUBoundedDispatchLayout;
   }
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: [
+          {name: 'offsets', view: props.offsets, usage: 'storage-read'},
+          {name: 'output', view: props.output, usage: 'storage-write'}
+        ],
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: [
       {buffer: props.offsets, usage: 'storage-read'},

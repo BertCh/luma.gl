@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {
   GPUCommandGraph,
   GraphBufferUse,
@@ -21,6 +22,10 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphSingleSourceShortestPath} from './gpu-graph-single-source-shortest-path';
 import type {GPUGraphAdjacency} from './gpu-graph-topology';
 
@@ -64,6 +69,10 @@ type ShortestPathBinding = {
 };
 
 type ShortestPathPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, ShortestPathBinding>;
@@ -154,37 +163,48 @@ export function addGPUGraphSingleSourceShortestPathToGraphWithDispatchLimit<Para
   addSourcePass(commandGraph, state);
 
   for (let iteration = 0; iteration < state.maxIterations; iteration++) {
-    addSnapshotPass(commandGraph, state, iteration);
-    addRelaxationPass(commandGraph, {
-      state,
-      adjacency: state.primaryAdjacency,
-      iteration,
-      direction: useIncoming ? 'incoming' : 'outgoing'
-    });
-    if (state.secondaryAdjacency) {
-      addRelaxationPass(commandGraph, {
-        state,
-        adjacency: state.secondaryAdjacency,
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
         iteration,
-        direction: 'incoming'
-      });
-    }
-    addPredecessorResetPass(commandGraph, state, iteration);
-    addPredecessorPass(commandGraph, {
-      state,
-      adjacency: state.primaryAdjacency,
-      iteration,
-      direction: useIncoming ? 'incoming' : 'outgoing'
-    });
-    if (state.secondaryAdjacency) {
-      addPredecessorPass(commandGraph, {
-        state,
-        adjacency: state.secondaryAdjacency,
-        iteration,
-        direction: 'incoming'
-      });
-    }
-    addConvergencePass(commandGraph, state, iteration);
+        maximumIterations: state.maxIterations,
+        gated: false
+      },
+      () => {
+        addSnapshotPass(commandGraph, state, iteration);
+        addRelaxationPass(commandGraph, {
+          state,
+          adjacency: state.primaryAdjacency,
+          iteration,
+          direction: useIncoming ? 'incoming' : 'outgoing'
+        });
+        if (state.secondaryAdjacency) {
+          addRelaxationPass(commandGraph, {
+            state,
+            adjacency: state.secondaryAdjacency,
+            iteration,
+            direction: 'incoming'
+          });
+        }
+        addPredecessorResetPass(commandGraph, state, iteration);
+        addPredecessorPass(commandGraph, {
+          state,
+          adjacency: state.primaryAdjacency,
+          iteration,
+          direction: useIncoming ? 'incoming' : 'outgoing'
+        });
+        if (state.secondaryAdjacency) {
+          addPredecessorPass(commandGraph, {
+            state,
+            adjacency: state.secondaryAdjacency,
+            iteration,
+            direction: 'incoming'
+          });
+        }
+        addConvergencePass(commandGraph, state, iteration);
+      }
+    );
   }
 }
 
@@ -241,6 +261,10 @@ fn main(
   atomicStore(&predecessors[PREDECESSORS_OFFSET + index], ${UNREACHABLE_PREDECESSOR}u);
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -292,6 +316,10 @@ fn main(
   }
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.weights.length,
     id: `${state.id}-validate-weights-${props.chunkIndex}`,
     source,
     bindings,
@@ -331,6 +359,9 @@ fn main() {
   atomicStore(&converged[CONVERGED_OFFSET], ${triviallyConverged ? '1u' : '0u'});
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-source`,
     source,
     bindings,
@@ -372,6 +403,10 @@ fn main(
     bitcast<f32>(atomicLoad(&distances[DISTANCES_OFFSET + index]));
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${iteration}-snapshot`,
     source,
     bindings,
@@ -441,6 +476,10 @@ fn main(
   }
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-relax-${props.direction}`,
     source,
     bindings,
@@ -486,6 +525,10 @@ fn main(
   }
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${iteration}-reset-predecessors`,
     source,
     bindings,
@@ -556,6 +599,10 @@ fn main(
   }
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: SHORTEST_PATH_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-predecessors-${props.direction}`,
     source,
     bindings,
@@ -595,6 +642,9 @@ fn main() {
   }
 }`;
   addShortestPathPass(commandGraph, {
+    operation: 'GPUGraphSingleSourceShortestPath',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-iteration-${iteration}-convergence`,
     source,
     bindings,
@@ -653,7 +703,19 @@ function addShortestPathPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: ShortestPathPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

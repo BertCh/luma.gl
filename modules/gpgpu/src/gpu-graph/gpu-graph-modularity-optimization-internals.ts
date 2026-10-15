@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {
   GPUCommandGraph,
   GraphBufferUse,
@@ -21,6 +22,10 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import {GPUGraphModularity} from './gpu-graph-modularity';
 import type {GPUGraphModularityOptimization} from './gpu-graph-modularity-optimization';
 
@@ -43,6 +48,10 @@ type OptimizationBinding = {
 };
 
 type OptimizationPass = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, OptimizationBinding>;
@@ -272,35 +281,46 @@ export function addGPUGraphModularityOptimizationToGraphWithDispatchLimit<Parame
   }
 
   for (let iteration = 0; iteration < Math.max(optimization.iterations, 1); iteration++) {
-    addIterationResetPass(commandGraph, {state, iteration});
-    if (vertexCount > 0) {
-      addStatisticsInitializationPass(commandGraph, {state, iteration});
-      if (iteration < optimization.iterations) {
-        addCommunityOccupancyPass(commandGraph, {state, iteration});
-        addAvailableCommunitySelectionPass(commandGraph, {state, iteration});
-      }
-    }
-    for (const [chunkIndex, sources] of state.sourceVertices.data.entries()) {
-      if (sources.length === 0) continue;
-      addEdgeStatisticsPass(commandGraph, {
-        state,
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
         iteration,
-        chunkIndex,
-        sources,
-        targets: state.targetVertices.data[chunkIndex],
-        weights: state.edgeWeights?.data[chunkIndex]
-      });
-    }
-    if (iteration < optimization.iterations && vertexCount > 0) {
-      if (hasCommunityAggregation(state)) {
-        addCommunityAggregationPass(commandGraph, {state, iteration});
-        addAggregatedCandidatePass(commandGraph, {state, iteration});
-      } else {
-        addRescanCandidatePass(commandGraph, {state, iteration});
+        maximumIterations: Math.max(optimization.iterations, 1),
+        gated: false
+      },
+      () => {
+        addIterationResetPass(commandGraph, {state, iteration});
+        if (vertexCount > 0) {
+          addStatisticsInitializationPass(commandGraph, {state, iteration});
+          if (iteration < optimization.iterations) {
+            addCommunityOccupancyPass(commandGraph, {state, iteration});
+            addAvailableCommunitySelectionPass(commandGraph, {state, iteration});
+          }
+        }
+        for (const [chunkIndex, sources] of state.sourceVertices.data.entries()) {
+          if (sources.length === 0) continue;
+          addEdgeStatisticsPass(commandGraph, {
+            state,
+            iteration,
+            chunkIndex,
+            sources,
+            targets: state.targetVertices.data[chunkIndex],
+            weights: state.edgeWeights?.data[chunkIndex]
+          });
+        }
+        if (iteration < optimization.iterations && vertexCount > 0) {
+          if (hasCommunityAggregation(state)) {
+            addCommunityAggregationPass(commandGraph, {state, iteration});
+            addAggregatedCandidatePass(commandGraph, {state, iteration});
+          } else {
+            addRescanCandidatePass(commandGraph, {state, iteration});
+          }
+          addWinnerSelectionPass(commandGraph, {state, iteration});
+          addWinnerApplicationPass(commandGraph, {state, iteration});
+        }
       }
-      addWinnerSelectionPass(commandGraph, {state, iteration});
-      addWinnerApplicationPass(commandGraph, {state, iteration});
-    }
+    );
   }
 
   addFailureFinalizationPass(commandGraph, state);
@@ -350,6 +370,9 @@ fn main() {
   ${initializeConvergence}
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-initialize-control`,
     source,
     bindings,
@@ -391,6 +414,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize-communities`,
     source,
     bindings,
@@ -433,6 +460,10 @@ fn main(
   );
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.neighbors.length,
     id: `${props.state.id}-pack-${props.direction}-adjacency`,
     source,
     bindings,
@@ -460,6 +491,9 @@ fn main() {
   atomicStore(&control[4u], ${INVALID_COMMUNITY}u);
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${props.state.id}-iteration-${props.iteration}-reset`,
     source,
     bindings,
@@ -500,6 +534,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-initialize-statistics`,
     source,
     bindings,
@@ -537,6 +575,10 @@ fn main(
   atomicStore(&control[5u + community], 1u);
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-mark-community-occupancy`,
     source,
     bindings,
@@ -570,6 +612,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-select-unused-community`,
     source,
     bindings,
@@ -649,6 +695,10 @@ fn main(
   ${symmetricAccumulation}
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.sources.length,
     id: `${state.id}-iteration-${props.iteration}-accumulate-chunk-${props.chunkIndex}`,
     source,
     bindings,
@@ -768,6 +818,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-aggregate-neighbor-communities`,
     source,
     bindings,
@@ -916,6 +970,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-evaluate-candidates`,
     source,
     bindings,
@@ -1100,6 +1158,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-evaluate-candidates-by-rescan`,
     source,
     bindings,
@@ -1135,6 +1197,10 @@ fn main(
   }
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-select-winner`,
     source,
     bindings,
@@ -1178,6 +1244,9 @@ fn main() {
   ${publishUnconverged}
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-iteration-${props.iteration}-apply-winner`,
     source,
     bindings,
@@ -1228,6 +1297,10 @@ fn main(
   ${clearConvergence}
 }`;
   addOptimizationPass(commandGraph, {
+    operation: 'GPUGraphModularityOptimization',
+    workgroupSize: OPTIMIZATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-finalize-failures`,
     source,
     bindings,
@@ -1314,7 +1387,19 @@ function addOptimizationPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: OptimizationPass
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

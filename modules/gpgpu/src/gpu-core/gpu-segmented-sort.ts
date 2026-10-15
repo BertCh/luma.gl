@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {type GPUCommandGraph, type GraphDataView, GraphVectorView} from './gpu-command-graph';
@@ -400,6 +401,23 @@ ${useSubgroups ? getSubgroupSegmentedBitonicShader(width) : getPortableSegmented
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUSegmentedSort',
+    moduleId: `GPUSegmentedSort/bitonic-local/${width}`,
+    source,
+    workgroupSize: [width, 1, 1],
+    workgroups: [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z],
+    invocationCount: segments.length * width,
+    dedupName: 'bitonic-local',
+    bindings: [
+      {name: 'keys', view: sort.keys, access: 'read'},
+      {name: 'values', view: sort.values, access: 'read'},
+      {name: 'outputKeys', view: sort.outputKeys, access: 'write'},
+      {name: 'outputValues', view: sort.outputValues, access: 'write'}
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

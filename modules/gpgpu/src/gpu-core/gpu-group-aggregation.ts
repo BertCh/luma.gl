@@ -5,6 +5,7 @@
 import {alignGraphVectorViews} from './graph-vector-view-utils';
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -328,7 +329,8 @@ fn main(
       source,
       resources: [{buffer: output, usage: 'storage-write'}],
       bindings: {outputCounts: output},
-      dispatchSize: dispatchLayout
+      dispatchSize: dispatchLayout,
+      record: {moduleId: 'GPUGroupAggregation/clear', invocationCount: output.length}
     })
   );
 
@@ -418,7 +420,12 @@ ${useSubgroups ? getSubgroupBallotHelpersWGSL() : ''}
         ...(props.mask ? {selectionMask: props.mask} : {}),
         outputCounts: props.output
       },
-      dispatchSize: props.dispatchLayout
+      dispatchSize: props.dispatchLayout,
+      record: {
+        moduleId: `GPUGroupAggregation/count/${local ? 'local' : 'global'}${useSubgroups ? '/subgroups' : ''}`,
+        invocationCount: props.keys.length,
+        formula: 'gpu-core.group-aggregation'
+      }
     })
   );
 
@@ -469,7 +476,11 @@ ${countBinding}
         ...(counts ? ([{buffer: counts, usage: 'storage-write'}] as GraphBufferUse[]) : [])
       ],
       bindings: {outputValues: output, ...(counts ? {outputCounts: counts} : {})},
-      dispatchSize: dispatchLayout
+      dispatchSize: dispatchLayout,
+      record: {
+        moduleId: `GPUGroupAggregation/${operation === 'sum' ? 'clear' : 'initialize'}`,
+        invocationCount: output.length
+      }
     })
   );
 
@@ -566,7 +577,12 @@ ${accumulation}
         outputValues: props.output,
         ...(props.counts ? {outputCounts: props.counts} : {})
       },
-      dispatchSize: props.dispatchLayout
+      dispatchSize: props.dispatchLayout,
+      record: {
+        moduleId: `GPUGroupAggregation/accumulate-${props.operation}${useSubgroups ? '/subgroups' : ''}`,
+        invocationCount: props.keys.length,
+        formula: 'gpu-core.group-aggregation'
+      }
     })
   );
 
@@ -635,7 +651,12 @@ ${decodeFunction}
         ...(counts ? ([{buffer: counts, usage: 'storage-read'}] as GraphBufferUse[]) : [])
       ],
       bindings: {outputValues: output, ...(counts ? {outputCounts: counts} : {})},
-      dispatchSize: dispatchLayout
+      dispatchSize: dispatchLayout,
+      record: {
+        moduleId: `GPUGroupAggregation/finalize-${operation}`,
+        invocationCount: output.length,
+        formula: 'gpu-core.group-aggregation'
+      }
     })
   );
 
@@ -737,6 +758,8 @@ function addKernelPass<Parameters>(
     bindings: Record<string, GraphDataView>;
     dispatchCount?: number;
     dispatchSize?: GPUGroupAggregationDispatchLayout;
+    /** Kernel facts recorded on recording graphs only. */
+    record: {moduleId: string; invocationCount: number; formula?: string};
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -789,6 +812,32 @@ function addKernelPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGroupAggregation',
+    moduleId: props.record.moduleId,
+    source: props.source,
+    workgroupSize: [GROUP_AGGREGATION_WORKGROUP_SIZE, 1, 1],
+    workgroups: props.dispatchSize
+      ? [props.dispatchSize.x, props.dispatchSize.y, props.dispatchSize.z]
+      : [props.dispatchCount ?? 1, 1, 1],
+    invocationCount: props.record.invocationCount,
+    formula: props.record.formula,
+    bindings: Object.entries(props.bindings).map(([name, view]) => {
+      const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+      return {
+        name,
+        view,
+        access:
+          usage === 'storage-read'
+            ? ('read' as const)
+            : usage === 'storage-read-write'
+              ? ('read_write' as const)
+              : ('write' as const)
+      };
+    })
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

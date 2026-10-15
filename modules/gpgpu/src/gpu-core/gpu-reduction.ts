@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type Binding, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -354,6 +355,20 @@ function addReductionLevels<Parameters, T extends GPUScalarFormat>(
     levelIndex++;
   }
 
+  if (graph.recording) {
+    // Each level adds exactly one node, so node order is level order.
+    nodes.forEach((node, iteration) => {
+      if (node.annotation) {
+        node.annotation.loop = {
+          id: `${props.id}/levels`,
+          iteration,
+          phase: 'unconditional',
+          maximumIterations: nodes.length
+        };
+      }
+    });
+  }
+
   return {values: currentValues, validity: currentValidity, nodes};
 }
 
@@ -515,7 +530,14 @@ var<workgroup> validityScratch: array<u32, ${REDUCTION_WORKGROUP_SIZE}>;
       source,
       resources,
       bindings,
-      dispatchLayout
+      dispatchLayout,
+      record: {
+        moduleId: `GPUReduction/level/${strategy}`,
+        workgroupSize: REDUCTION_WORKGROUP_SIZE,
+        invocationCount: props.inputLength,
+        dedupName: 'level',
+        formula: 'gpu-core.reduction'
+      }
     })
   );
 
@@ -655,7 +677,13 @@ ${props.inputValidity ? '@group(0) @binding(1) var<storage, read> inputValidity:
         ...(props.inputValidity ? {inputValidity: props.inputValidity} : {}),
         outputValues: props.output
       },
-      dispatchCount: 1
+      dispatchCount: 1,
+      record: {
+        moduleId: 'GPUReduction/finalize',
+        workgroupSize: 1,
+        invocationCount: 1,
+        formula: 'gpu-core.reduction'
+      }
     })
   );
 
@@ -682,7 +710,8 @@ function addClearReductionPass<Parameters>(
 }`,
       resources: [{buffer: output, usage: 'storage-write'}],
       bindings: {outputValues: output},
-      dispatchCount: 1
+      dispatchCount: 1,
+      record: {moduleId: 'GPUReduction/clear', workgroupSize: 1, invocationCount: 1}
     })
   );
 
@@ -699,6 +728,14 @@ function addKernelPass<Parameters>(
     bindings: Record<string, GraphDataView>;
     dispatchCount?: number;
     dispatchLayout?: GPUBoundedDispatchLayout;
+    /** Kernel facts recorded on recording graphs only. */
+    record: {
+      moduleId: string;
+      workgroupSize: number;
+      invocationCount: number;
+      dedupName?: string;
+      formula?: string;
+    };
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -743,6 +780,33 @@ function addKernelPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUReduction',
+    moduleId: props.record.moduleId,
+    source: props.source,
+    workgroupSize: [props.record.workgroupSize, 1, 1],
+    workgroups: props.dispatchLayout
+      ? [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z]
+      : [props.dispatchCount ?? 1, 1, 1],
+    invocationCount: props.record.invocationCount,
+    dedupName: props.record.dedupName,
+    formula: props.record.formula,
+    bindings: Object.entries(props.bindings).map(([name, view]) => {
+      const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+      return {
+        name,
+        view,
+        access:
+          usage === 'storage-read'
+            ? ('read' as const)
+            : usage === 'storage-read-write'
+              ? ('read_write' as const)
+              : ('write' as const)
+      };
+    })
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

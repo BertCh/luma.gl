@@ -6,6 +6,7 @@
 import {addGPUCommandNodes} from '@luma.gl/gpgpu/gpu-core';
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -19,6 +20,10 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphSpatialForceLayout} from './gpu-graph-spatial-force-layout';
 
 const SPATIAL_FORCE_WORKGROUP_SIZE = 256;
@@ -66,6 +71,10 @@ type SpatialBinding = {
 };
 
 type SpatialPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, SpatialBinding>;
@@ -152,31 +161,42 @@ export function addGPUGraphSpatialForceLayoutToGraphWithDispatchLimit<Parameters
 
   const iterationCount = state.vertexCount === 0 ? 1 : layout.iterationsPerFrame;
   for (let iteration = 0; iteration < iterationCount; iteration++) {
-    const index = new GPUGridIndex({
-      id: `${state.id}-iteration-${iteration}-index`,
-      positions: state.positions,
-      gridSize: state.gridSize,
-      bounds: state.bounds,
-      cellOffsets: state.cellOffsets,
-      objectIds: state.vertexIds,
-      count: state.count,
-      overflow: state.overflow
-    });
-    addGPUCommandNodes(
+    withGPUGraphIterationScope(
       commandGraph,
-      getGPUGridIndexCommandNodesWithDispatchLimit(
-        index,
-        commandGraph,
-        state.maxComputeWorkgroupsPerDimension
-      )
+      {
+        loopId: `${state.id}-iterations`,
+        iteration,
+        maximumIterations: iterationCount,
+        gated: false
+      },
+      () => {
+        const index = new GPUGridIndex({
+          id: `${state.id}-iteration-${iteration}-index`,
+          positions: state.positions,
+          gridSize: state.gridSize,
+          bounds: state.bounds,
+          cellOffsets: state.cellOffsets,
+          objectIds: state.vertexIds,
+          count: state.count,
+          overflow: state.overflow
+        });
+        addGPUCommandNodes(
+          commandGraph,
+          getGPUGridIndexCommandNodesWithDispatchLimit(
+            index,
+            commandGraph,
+            state.maxComputeWorkgroupsPerDimension
+          )
+        );
+        addValidityPass(commandGraph, {state, iteration});
+        addCellCenterPass(commandGraph, {state, iteration});
+        if (state.vertexCount > 0) {
+          addRepulsionPass(commandGraph, {state, iteration});
+          addAttractionPass(commandGraph, {state, iteration});
+          addIntegrationPass(commandGraph, {state, iteration});
+        }
+      }
     );
-    addValidityPass(commandGraph, {state, iteration});
-    addCellCenterPass(commandGraph, {state, iteration});
-    if (state.vertexCount > 0) {
-      addRepulsionPass(commandGraph, {state, iteration});
-      addAttractionPass(commandGraph, {state, iteration});
-      addIntegrationPass(commandGraph, {state, iteration});
-    }
   }
 }
 
@@ -245,7 +265,16 @@ fn main(
   positions[positionOffset] = f32(first & 0x00ffffffu) / 16777216.0 * 2.0 - 1.0;
   positions[positionOffset + 1u] = f32(second & 0x00ffffffu) / 16777216.0 * 2.0 - 1.0;
 }`;
-  addSpatialPass(commandGraph, {id: `${state.id}-initialize`, source, bindings, dispatchLayout});
+  addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
+    id: `${state.id}-initialize`,
+    source,
+    bindings,
+    dispatchLayout
+  });
 }
 
 /** Consumes a one-shot reset request only after every initialization invocation completes. */
@@ -270,7 +299,15 @@ fn main(
   ${getBoundedInvocationIndexSource(dispatchLayout, SPATIAL_FORCE_WORKGROUP_SIZE)}
   if (index == 0u) { reset[RESET_OFFSET] = 0u; }
 }`;
-  addSpatialPass(commandGraph, {id: `${state.id}-clear-reset`, source, bindings, dispatchLayout});
+  addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    invocationCount: 1,
+    id: `${state.id}-clear-reset`,
+    source,
+    bindings,
+    dispatchLayout
+  });
 }
 
 /** Combines exact topology and complete in-domain index status into one portable binding. */
@@ -318,6 +355,9 @@ fn main(
   validity[VALIDITY_OFFSET] = select(0u, 1u, isValid);
 }`;
   addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    invocationCount: 1,
     id: `${state.id}-iteration-${props.iteration}-validate`,
     source,
     bindings,
@@ -377,6 +417,10 @@ fn main(
   cellCenters[centerOffset + 1u] = center.y;
 }`;
   addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    datum: {keySpace: 'cell'},
+    invocationCount: state.cellCount,
     id: `${state.id}-iteration-${props.iteration}-cell-centers`,
     source,
     bindings,
@@ -502,6 +546,10 @@ fn main(
   velocities[velocityOffset + 1u] = velocity.y;
 }`;
   addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-repulsion`,
     source,
     bindings,
@@ -598,6 +646,10 @@ fn main(
   velocities[velocityOffset + 1u] = velocity.y;
 }`;
   addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-attraction`,
     source,
     bindings,
@@ -649,6 +701,10 @@ fn main(
   positions[positionOffset + 1u] += velocities[velocityOffset + 1u] * TIME_STEP;
 }`;
   addSpatialPass(commandGraph, {
+    operation: 'GPUGraphSpatialForceLayout',
+    workgroupSize: SPATIAL_FORCE_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-integrate`,
     source,
     bindings,
@@ -672,7 +728,19 @@ function addSpatialPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: SpatialPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -12,6 +13,10 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphConnectedComponents} from './gpu-graph-connected-components';
 import {
   importGPUGraphColumn,
@@ -43,6 +48,10 @@ type ConnectedComponentsBinding = {
 };
 
 type ConnectedComponentsPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, ConnectedComponentsBinding>;
@@ -75,7 +84,8 @@ export function addGPUGraphConnectedComponentsToGraphWithDispatchLimit<Parameter
     overflow: importGPUGraphOverflow(
       commandGraph,
       `${components.id}-overflow`,
-      components.topology.forward.overflow
+      components.topology.forward.overflow,
+      'GPUGraphConnectedComponents'
     ),
     output: importGPUGraphColumn(commandGraph, `${components.id}-output`, components.output),
     ...(components.converged
@@ -106,11 +116,22 @@ export function addGPUGraphConnectedComponentsToGraphWithDispatchLimit<Parameter
   }
 
   for (let iteration = 0; iteration < components.iterations; iteration++) {
-    if (state.converged) {
-      addConvergenceResetPass(commandGraph, {state, iteration});
-    }
-    addHookingPass(commandGraph, {state, iteration});
-    addPointerJumpPass(commandGraph, {state, iteration});
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
+        iteration,
+        maximumIterations: components.iterations,
+        gated: false
+      },
+      () => {
+        if (state.converged) {
+          addConvergenceResetPass(commandGraph, {state, iteration});
+        }
+        addHookingPass(commandGraph, {state, iteration});
+        addPointerJumpPass(commandGraph, {state, iteration});
+      }
+    );
   }
 }
 
@@ -161,6 +182,10 @@ fn main(
 }`;
 
   addConnectedComponentsPass(commandGraph, {
+    operation: 'GPUGraphConnectedComponents',
+    workgroupSize: CONNECTED_COMPONENTS_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -199,6 +224,9 @@ fn main(
 }`;
 
   addConnectedComponentsPass(commandGraph, {
+    operation: 'GPUGraphConnectedComponents',
+    workgroupSize: CONNECTED_COMPONENTS_WORKGROUP_SIZE,
+    invocationCount: 1,
     id: `${state.id}-iteration-${props.iteration}-reset`,
     source,
     bindings,
@@ -264,6 +292,10 @@ fn main(
 }`;
 
   addConnectedComponentsPass(commandGraph, {
+    operation: 'GPUGraphConnectedComponents',
+    workgroupSize: CONNECTED_COMPONENTS_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-hook`,
     source,
     bindings,
@@ -318,6 +350,10 @@ fn main(
 }`;
 
   addConnectedComponentsPass(commandGraph, {
+    operation: 'GPUGraphConnectedComponents',
+    workgroupSize: CONNECTED_COMPONENTS_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-jump`,
     source,
     bindings,
@@ -341,7 +377,19 @@ function addConnectedComponentsPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: ConnectedComponentsPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

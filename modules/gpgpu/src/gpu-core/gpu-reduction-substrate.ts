@@ -6,6 +6,7 @@ import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import type {GPUCommandGraph, GraphDataView} from './gpu-command-graph';
 import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {createTransientView, getViewBinding, getViewElementOffset} from './graph-data-view-utils';
 import {getGPUShaderSubgroupStrategy} from './gpu-subgroup-utils';
 import {
@@ -94,7 +95,7 @@ function createReductionLevel<Parameters>(
   const usesSubgroups =
     getGPUShaderSubgroupStrategy(graph.device, {requiresSubgroupId: true}) === 'subgroups';
   const source = makeReductionLevelSource(props, dispatch, usesSubgroups);
-  return setGPUComputeDispatchWorkgroups(
+  const node = setGPUComputeDispatchWorkgroups(
     createGPUComputeCommandNode<Parameters>({
       id: props.id,
       workload: {
@@ -153,6 +154,28 @@ function createReductionLevel<Parameters>(
     }),
     [dispatch.x, dispatch.y, dispatch.z]
   );
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUDotProductScalar',
+    moduleId: 'gpu-core/gpu-reduction-substrate',
+    source,
+    workgroupSize: [GPU_REDUCTION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: props.input.length,
+    bindings: [
+      {name: 'inputValues', view: props.input, access: 'read'},
+      ...(props.inputB
+        ? [{name: 'inputBValues', view: props.inputB, access: 'read' as const}]
+        : []),
+      ...(props.output
+        ? [{name: 'outputValues', view: props.output, access: 'write' as const}]
+        : []),
+      ...(arenaBuffer
+        ? [{name: 'gpuValues', view: arenaBuffer, access: 'read_write' as const}]
+        : [])
+    ]
+  }));
+  if (annotation) node.annotation = annotation;
+  return node;
 }
 
 function makeReductionLevelSource(

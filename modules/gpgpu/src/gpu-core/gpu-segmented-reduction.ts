@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {GPUCommandGraph, type GraphDataView} from './gpu-command-graph';
@@ -117,6 +118,23 @@ export class GPUSegmentedReduction<T extends GPUScalarFormat = GPUScalarFormat> 
         }
       })
     );
+
+    const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+      op: 'GPUSegmentedReduction',
+      moduleId: 'GPUSegmentedReduction/reduce',
+      source,
+      workgroupSize: [WORKGROUP_SIZE, 1, 1],
+      workgroups: [this.output.length, 1, 1],
+      // One workgroup per segment; its lanes stride over the segment's rows.
+      invocationCount: this.output.length * WORKGROUP_SIZE,
+      formula: 'gpu-core.segmented-reduction',
+      bindings: [
+        {name: 'inputValues', view: this.input, access: 'read'},
+        {name: 'segmentOffsets', view: this.segmentOffsets, access: 'read'},
+        {name: 'outputValues', view: this.output, access: 'write'}
+      ]
+    }));
+    if (annotation) nodes[0].annotation = annotation;
 
     return nodes;
   }

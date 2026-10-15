@@ -91,6 +91,7 @@ export class GPUMatMul {
               dispatch,
               accumulate,
               tiled: true,
+              record: {moduleId: 'GPUMatMul/tile', formula: 'gpu-core.mat-mul'},
               source: makeShaderSource(
                 this,
                 left,

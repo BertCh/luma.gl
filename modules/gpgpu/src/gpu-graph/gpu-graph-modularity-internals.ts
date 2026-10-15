@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {
   GPUCommandGraph,
   GraphBufferUse,
@@ -22,6 +23,7 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphModularity} from './gpu-graph-modularity';
 
 const MODULARITY_WORKGROUP_SIZE = 256;
@@ -55,6 +57,10 @@ type ModularityBinding = {
 };
 
 type ModularityPass = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, ModularityBinding>;
@@ -195,6 +201,9 @@ fn main() {
   ${validityInitialization}
 }`;
   addModularityPass(commandGraph, {
+    operation: 'GPUGraphModularity',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-initialize-status`,
     source,
     bindings,
@@ -241,6 +250,10 @@ fn main(
   }
 }`;
   addModularityPass(commandGraph, {
+    operation: 'GPUGraphModularity',
+    workgroupSize: MODULARITY_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize-communities`,
     source,
     bindings,
@@ -318,6 +331,10 @@ fn main(
   }
 }`;
   addModularityPass(commandGraph, {
+    operation: 'GPUGraphModularity',
+    workgroupSize: MODULARITY_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.sources.length,
     id: `${state.id}-accumulate-chunk-${props.chunkIndex}`,
     source,
     bindings,
@@ -382,6 +399,10 @@ fn main(
   contributions[${getViewElementOffset(state.contributions)}u + index] = contribution;
 }`;
   addModularityPass(commandGraph, {
+    operation: 'GPUGraphModularity',
+    workgroupSize: MODULARITY_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-community-contributions`,
     source,
     bindings,
@@ -433,6 +454,10 @@ fn main(
   }
 }`;
   addModularityPass(commandGraph, {
+    operation: 'GPUGraphModularity',
+    workgroupSize: MODULARITY_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-finalize-validity`,
     source,
     bindings,
@@ -474,7 +499,19 @@ function addModularityPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: ModularityPass
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import {addGPUGraphDegreeToGraphWithDispatchLimit} from './gpu-graph-degree-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 import {
@@ -90,11 +91,13 @@ export class GPUGraphDegree<
 
   /** Declares one bounded GPU degree pass without submitting commands or reading results. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphDegreeToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphDegree', this.id, () => {
+      addGPUGraphDegreeToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

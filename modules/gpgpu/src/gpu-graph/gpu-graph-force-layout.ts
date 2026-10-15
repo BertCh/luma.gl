@@ -7,6 +7,7 @@ import {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import {addGPUGraphForceLayoutToGraphWithDispatchLimit} from './gpu-graph-force-layout-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 
@@ -149,11 +150,13 @@ export class GPUGraphForceLayout {
 
   /** Declares bounded progressive layout passes without submitting commands or reading results. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphForceLayoutToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphForceLayout', this.id, () => {
+      addGPUGraphForceLayoutToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

@@ -8,6 +8,7 @@ import {Kernel} from '@luma.gl/engine';
 import {getGPUVectorFormatInfo, type GPUVectorFormat} from '../gpu-data/gpu-vector-format';
 import {type GPUCommandGraph, type GraphDataView, GraphVectorView} from './gpu-command-graph';
 import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {getGraphVectorData} from './graph-vector-view-utils';
 import {getViewBinding, getViewBindingRange} from './graph-data-view-utils';
 import type {GPUBoundedDispatchLayout} from './gpu-dispatch-utils';
@@ -149,7 +150,7 @@ export function createChunkNode<Parameters>(
       throw new Error('Active chunks must fit a storage binding');
   }
   const count = props.dispatch.x * props.dispatch.y * props.dispatch.z;
-  return setGPUComputeDispatchWorkgroups(
+  const node = setGPUComputeDispatchWorkgroups(
     createGPUComputeCommandNode<Parameters>({
       id: props.id,
       workload: {
@@ -199,4 +200,25 @@ export function createChunkNode<Parameters>(
     }),
     [props.dispatch.x, props.dispatch.y, props.dispatch.z]
   );
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'createChunkNode',
+    moduleId: 'gpu-core/gpu-chunk-utils',
+    source: props.source,
+    workgroupSize: [props.workgroupSize ?? 256, 1, 1],
+    workgroups: [props.dispatch.x, props.dispatch.y, props.dispatch.z],
+    bindings: [
+      ...Object.entries(props.inputs ?? {}).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read' as const
+      })),
+      ...Object.entries(props.outputs).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read_write' as const
+      }))
+    ]
+  }));
+  if (annotation) node.annotation = annotation;
+  return node;
 }

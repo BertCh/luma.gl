@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import type {Binding, Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {GPUCommandGraph, type GraphDataView, GraphVectorView} from './gpu-command-graph';
@@ -183,6 +184,7 @@ export class GPUFFT1D {
       nodes.push(
         ...addGPUFFT1DPass(graph, {
           id: `${this.id}-${pass.kind}-${pass.stage}`,
+          transformId: this.id,
           input: passInput,
           output: passOutput,
           length: this.length,
@@ -238,6 +240,7 @@ function addGPUFFT1DBatchedPasses<Parameters>(
         ...addGPUFFT1DPass(graph, {
           ...common,
           id: `${transform.id}-${blockOffset}-reorder-${index}`,
+          transformId: transform.id,
           input: span.data,
           output: firstScratch,
           inputLogicalOffset: span.offset - blockOffset,
@@ -265,6 +268,7 @@ function addGPUFFT1DBatchedPasses<Parameters>(
           ...addGPUFFT1DPass(graph, {
             ...common,
             id: `${transform.id}-${blockOffset}-stage-${pass.stage}-${index}`,
+            transformId: transform.id,
             input: passInput,
             output: span.data,
             pass,
@@ -481,6 +485,8 @@ export type GPUFFT1DPassProps = {
   /** Logical invocation span in the current block, for split final writes. */
   outputLogicalOffset?: number;
   invocationCount?: number;
+  /** Id of the owning transform; names the recorded stage loop. */
+  transformId?: string;
 };
 
 function addGPUFFT1DPass<Parameters>(
@@ -542,6 +548,33 @@ function addGPUFFT1DPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUFFT1D',
+    moduleId: `GPUFFT1D/${props.pass.kind}${props.useSubgroups ? '/subgroups' : ''}`,
+    source,
+    workgroupSize: [GPU_FFT1D_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z],
+    invocationCount: elementCount,
+    dedupName: props.pass.kind,
+    formula: 'gpu-core.fft1d',
+    bindings: [
+      {name: 'inputValues', view: props.input, access: 'read'},
+      {name: 'outputValues', view: props.output, access: 'write'}
+    ]
+  }));
+  if (annotation) {
+    // Butterfly stages are the unrolled loop; the bit-reversal reorder runs once before it.
+    if (props.pass.kind === 'butterfly') {
+      annotation.loop = {
+        id: `${props.transformId ?? 'gpu-fft1d'}/stages`,
+        iteration: props.pass.stage - 1,
+        phase: 'unconditional',
+        maximumIterations: Math.log2(props.length)
+      };
+    }
+    nodes[0].annotation = annotation;
+  }
 
   return nodes;
 }

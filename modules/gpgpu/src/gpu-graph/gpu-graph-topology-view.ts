@@ -13,6 +13,7 @@ import {
   getViewElementOffset,
   validatePackedView
 } from '../gpu-core/graph-data-view-utils';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphTopology} from './gpu-graph-topology';
 
 const MAXIMUM_UINT32 = 0xffffffff;
@@ -146,7 +147,8 @@ export function importGPUGraphColumn<Format extends 'uint32' | 'float32', Parame
 export function importGPUGraphOverflow<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   id: string,
-  overflow: GPUGraphColumn<'uint32'> | undefined
+  overflow: GPUGraphColumn<'uint32'> | undefined,
+  operation: string
 ): GraphDataView<'uint32'> {
   if (overflow) {
     return importGPUGraphColumn(commandGraph, id, overflow);
@@ -160,7 +162,18 @@ const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(view)}u;
 fn main() {
   overflow[OVERFLOW_OFFSET] = 0u;
 }`;
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation,
+        source,
+        workgroupSize: 1,
+        dispatch: {x: 1, y: 1, z: 1},
+        invocationCount: 1,
+        bindings: [{name: 'overflow', view, usage: 'storage-write'}]
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: `${id}-exact-clear`,
     resources: [{buffer: view, usage: 'storage-write'}],
     compile: ({device}) => {

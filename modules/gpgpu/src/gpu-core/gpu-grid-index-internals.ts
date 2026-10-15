@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type GPUCommandGraph, type GraphDataView} from './gpu-command-graph';
 import {
   getBoundedDispatchLayout,
@@ -26,6 +27,8 @@ import {
 } from './gpu-spatial-utils';
 
 const GRID_INDEX_WORKGROUP_SIZE = 256;
+
+type ChunkNodeProps = Parameters<typeof createChunkNode>[1];
 
 /** Rebuilds counts and global destinations while retaining every source and destination chunk. @internal */
 export function getGPUGridIndexCommandNodesWithDispatchLimit<Parameters>(
@@ -62,10 +65,11 @@ export function getGPUGridIndexCommandNodesWithDispatchLimit<Parameters>(
       const ids = generatedIds?.[chunkIndex];
       const dispatch = getGPUGridIndexDispatchLayout(chunk.length, maximum);
       nodes.push(
-        createChunkNode(graph, {
+        createIndexNode(graph, index, {
           id: `${index.id}-initialize-ranks-${chunkIndex}`,
           outputs: {ranks: rank, ...(ids ? {ids} : {})},
           dispatch,
+          invocationCount: chunk.length,
           source: `
 @group(0) @binding(0) var<storage, read_write> ranks: array<u32>;
 ${ids ? '@group(0) @binding(1) var<storage, read_write> ids: array<u32>;' : ''}
@@ -86,10 +90,11 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
     const cellCursors = cursors.data[cellChunkIndex];
     const dispatch = getGPUGridIndexDispatchLayout(cellCounts.length, maximum);
     nodes.push(
-      createChunkNode(graph, {
+      createIndexNode(graph, index, {
         id: `${index.id}-initialize-${cellChunkIndex}`,
         outputs: {cellCounts, cellCursors},
         dispatch,
+        invocationCount: cellCounts.length,
         source: `
 @group(0) @binding(0) var<storage, read_write> cellCounts: array<u32>;
 @group(0) @binding(1) var<storage, read_write> cellCursors: array<u32>;
@@ -106,11 +111,12 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
       if (!chunk.length) continue;
       const dispatch = getGPUGridIndexDispatchLayout(chunk.length, maximum);
       nodes.push(
-        createChunkNode(graph, {
+        createIndexNode(graph, index, {
           id: `${index.id}-count-${cellChunkIndex}-${positionChunkIndex}`,
           inputs: {positions: chunk, ...getBoundsInput(index)},
           outputs: {cellCounts},
           dispatch,
+          invocationCount: chunk.length,
           source: makePositionPassSource(
             index,
             chunk,
@@ -138,11 +144,12 @@ fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_ind
   const lastOffsets = offsets.data[offsets.data.length - 1];
   const terminal = getGraphDataRange(graph, index.cellOffsets, index.cellCount, 1).data[0];
   nodes.push(
-    createChunkNode(graph, {
+    createIndexNode(graph, index, {
       id: `${index.id}-finalize`,
       inputs: {counts: lastCounts, offsets: lastOffsets},
       outputs: {count: index.count, overflow: index.overflow},
       dispatch: {x: 1, y: 1, z: 1},
+      invocationCount: 1,
       workgroupSize: 1,
       source: `
 @group(0) @binding(0) var<storage, read> counts: array<u32>;
@@ -158,11 +165,12 @@ fn main() {
     })
   );
   nodes.push(
-    createChunkNode(graph, {
+    createIndexNode(graph, index, {
       id: `${index.id}-terminal`,
       inputs: {count: index.count},
       outputs: {terminal},
       dispatch: {x: 1, y: 1, z: 1},
+      invocationCount: 1,
       workgroupSize: 1,
       source: `
 @group(0) @binding(0) var<storage, read> count: array<u32>;
@@ -180,11 +188,12 @@ fn main() {
       if (!chunk.length || !index.objectIds.length) continue;
       const dispatch = getGPUGridIndexDispatchLayout(chunk.length, maximum);
       nodes.push(
-        createChunkNode(graph, {
+        createIndexNode(graph, index, {
           id: `${index.id}-rank-${cellChunkIndex}-${positionChunkIndex}`,
           inputs: {positions: chunk, ...getBoundsInput(index), cellOffsets},
           outputs: {cellCursors, ranks: ranks[positionChunkIndex]},
           dispatch,
+          invocationCount: chunk.length,
           source: makePositionPassSource(
             index,
             chunk,
@@ -223,7 +232,73 @@ fn main() {
       );
     sourceStart += chunk.length;
   }
+  if (graph.recording) {
+    for (const node of nodes) {
+      node.workload = {
+        ...node.workload,
+        operation: 'GPUGridIndex',
+        variant: node.id.slice(index.id.length + 1).replace(/-\d.*$/, ''),
+        readByteLength: (node.resources ?? []).reduce(
+          (total, resource) =>
+            total +
+            ('buffer' in resource &&
+            (resource.usage === 'storage-read' || resource.usage === 'storage-read-write')
+              ? 'length' in resource.buffer
+                ? resource.buffer.length * resource.buffer.rowByteLength
+                : resource.buffer.byteLength
+              : 0),
+          0
+        ),
+        writeByteLength: (node.resources ?? []).reduce(
+          (total, resource) =>
+            total +
+            ('buffer' in resource &&
+            (resource.usage === 'storage-write' || resource.usage === 'storage-read-write')
+              ? 'length' in resource.buffer
+                ? resource.buffer.length * resource.buffer.rowByteLength
+                : resource.buffer.byteLength
+              : 0),
+          0
+        )
+      };
+    }
+  }
   return nodes;
+}
+
+/**
+ * Creates one chunk node and, on recording graphs only, annotates it with its kernel facts. The
+ * module id is the node id without the index prefix and chunk numbers, such as `count`.
+ */
+function createIndexNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  index: GPUGridIndex,
+  props: Omit<ChunkNodeProps, never> & {invocationCount: number}
+): GPUCommandNode<Parameters> {
+  const {invocationCount, ...nodeProps} = props;
+  const node = createChunkNode(graph, nodeProps);
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridIndex',
+    moduleId: `GPUGridIndex/${props.id.slice(index.id.length + 1).replace(/-\d.*$/, '')}`,
+    source: props.source,
+    workgroupSize: [props.workgroupSize ?? GRID_INDEX_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatch.x, props.dispatch.y, props.dispatch.z],
+    invocationCount,
+    bindings: [
+      ...Object.entries(props.inputs ?? {}).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read' as const
+      })),
+      ...Object.entries(props.outputs).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read_write' as const
+      }))
+    ]
+  }));
+  if (annotation) node.annotation = annotation;
+  return node;
 }
 
 function makePositionPassSource(

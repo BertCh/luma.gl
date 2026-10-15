@@ -12,6 +12,7 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphLocalClusteringCoefficient} from './gpu-graph-local-clustering-coefficient';
 
 const WORKGROUP_SIZE = 256;
@@ -108,7 +109,19 @@ export function addDirectLocalClusteringToGraph<Parameters>(
     maximumWorkgroups
   );
   const source = getDirectClusteringSource(state, bindings, dispatchLayout);
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: 'GPUGraphLocalClusteringCoefficient',
+        source,
+        workgroupSize: WORKGROUP_SIZE,
+        dispatch: dispatchLayout,
+        datum: {keySpace: 'vertex'},
+        invocationCount: vertexCount,
+        bindings: Object.entries(bindings).map(([name, binding]) => ({name, ...binding}))
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: `${state.id}-calculate-direct`,
     resources: Object.values(bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

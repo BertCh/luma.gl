@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import {addGPUGraphConnectedComponentsToGraphWithDispatchLimit} from './gpu-graph-connected-components-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 import {
@@ -87,11 +88,13 @@ export class GPUGraphConnectedComponents<
 
   /** Declares bounded weak-component passes without submitting commands or reading results. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphConnectedComponentsToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphConnectedComponents', this.id, () => {
+      addGPUGraphConnectedComponentsToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

@@ -7,6 +7,7 @@ import type {Buffer} from '@luma.gl/core';
 import {DynamicBuffer} from '@luma.gl/engine';
 import type {GPUData, GPUVector} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph} from '../gpu-core/gpu-command-graph';
+import {withGPUGraphRecordScope} from './gpu-graph-computation-record';
 import {addGPUGraphSingleSourceShortestPathToGraphWithDispatchLimit} from './gpu-graph-single-source-shortest-path-internals';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 
@@ -132,11 +133,13 @@ export class GPUGraphSingleSourceShortestPath {
 
   /** Adds bounded weighted-path passes without submitting commands or reading GPU results. */
   addToGraph<Parameters>(commandGraph: GPUCommandGraph<Parameters>): void {
-    addGPUGraphSingleSourceShortestPathToGraphWithDispatchLimit(
-      this,
-      commandGraph,
-      commandGraph.device.limits.maxComputeWorkgroupsPerDimension
-    );
+    withGPUGraphRecordScope(commandGraph, 'GPUGraphSingleSourceShortestPath', this.id, () => {
+      addGPUGraphSingleSourceShortestPathToGraphWithDispatchLimit(
+        this,
+        commandGraph,
+        commandGraph.device.limits.maxComputeWorkgroupsPerDimension
+      );
+    });
   }
 }
 

@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -17,6 +18,10 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphCoreNumber} from './gpu-graph-core-number';
 import {
   importGPUGraphColumn,
@@ -56,6 +61,10 @@ type CoreNumberBinding = {
 };
 
 type CoreNumberPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, CoreNumberBinding>;
@@ -89,7 +98,8 @@ export function addGPUGraphCoreNumberToGraphWithDispatchLimit<Parameters>(
     forwardOverflow: importGPUGraphOverflow(
       commandGraph,
       `${coreNumber.id}-forward-overflow`,
-      coreNumber.topology.forward.overflow
+      coreNumber.topology.forward.overflow,
+      'GPUGraphCoreNumber'
     ),
     ...(reverse
       ? {
@@ -106,7 +116,8 @@ export function addGPUGraphCoreNumberToGraphWithDispatchLimit<Parameters>(
           reverseOverflow: importGPUGraphOverflow(
             commandGraph,
             `${coreNumber.id}-reverse-overflow`,
-            reverse.overflow
+            reverse.overflow,
+            'GPUGraphCoreNumber'
           )
         }
       : {}),
@@ -159,10 +170,21 @@ export function addGPUGraphCoreNumberToGraphWithDispatchLimit<Parameters>(
   addInitializationPass(commandGraph, state);
   if (state.vertexCount > 0) {
     for (let iteration = 0; iteration < state.iterations; iteration++) {
-      addChangeResetPass(commandGraph, state, iteration);
-      addRefinementPass(commandGraph, state, iteration);
-      addPublishPass(commandGraph, state, iteration);
-      addConvergencePass(commandGraph, state, iteration);
+      withGPUGraphIterationScope(
+        commandGraph,
+        {
+          loopId: `${state.id}-iterations`,
+          iteration,
+          maximumIterations: state.iterations,
+          gated: false
+        },
+        () => {
+          addChangeResetPass(commandGraph, state, iteration);
+          addRefinementPass(commandGraph, state, iteration);
+          addPublishPass(commandGraph, state, iteration);
+          addConvergencePass(commandGraph, state, iteration);
+        }
+      );
     }
   }
 
@@ -237,7 +259,16 @@ fn main(
   }
   output[OUTPUT_OFFSET + index] = degree;
 }`;
-  addCoreNumberPass(commandGraph, {id: `${state.id}-initialize`, source, bindings, dispatchLayout});
+  addCoreNumberPass(commandGraph, {
+    operation: 'GPUGraphCoreNumber',
+    workgroupSize: CORE_NUMBER_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
+    id: `${state.id}-initialize`,
+    source,
+    bindings,
+    dispatchLayout
+  });
 }
 
 /** Clears one graph-owned atomic modification flag before the next synchronized round. */
@@ -259,6 +290,9 @@ fn main() {
   atomicStore(&changed[CHANGED_OFFSET], 0u);
 }`;
   addCoreNumberPass(commandGraph, {
+    operation: 'GPUGraphCoreNumber',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-iteration-${iteration}-reset`,
     source,
     bindings,
@@ -342,6 +376,10 @@ fn main(
   if (lower != previous) { atomicStore(&changed[CHANGED_OFFSET], 1u); }
 }`;
   addCoreNumberPass(commandGraph, {
+    operation: 'GPUGraphCoreNumber',
+    workgroupSize: CORE_NUMBER_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${iteration}-refine`,
     source,
     bindings,
@@ -379,6 +417,10 @@ fn main(
   output[OUTPUT_OFFSET + index] = scratch[SCRATCH_OFFSET + index];
 }`;
   addCoreNumberPass(commandGraph, {
+    operation: 'GPUGraphCoreNumber',
+    workgroupSize: CORE_NUMBER_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${iteration}-publish`,
     source,
     bindings,
@@ -416,6 +458,9 @@ fn main() {
   atomicStore(&converged[CONVERGED_OFFSET], select(0u, 1u, !hasOverflow && changed[CHANGED_OFFSET] == 0u));
 }`;
   addCoreNumberPass(commandGraph, {
+    operation: 'GPUGraphCoreNumber',
+    workgroupSize: 1,
+    invocationCount: 1,
     id: `${state.id}-iteration-${iteration}-convergence`,
     source,
     bindings,
@@ -516,7 +561,19 @@ function addCoreNumberPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: CoreNumberPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

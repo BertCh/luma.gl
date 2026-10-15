@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {
   GPUCommandGraph,
   GraphVectorView,
@@ -278,6 +279,19 @@ ${countBinding}
     })
   );
 
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridAggregation',
+    moduleId: `GPUGridAggregation/${operation === 'sum' ? 'clear' : 'initialize'}`,
+    source,
+    workgroupSize: [GRID_AGGREGATION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: output.length,
+    bindings: [
+      {name: 'outputValues', view: output, access: 'write'},
+      ...(counts ? [{name: 'outputCounts', view: counts, access: 'write' as const}] : [])
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
   return nodes;
 }
 
@@ -414,6 +428,33 @@ ${accumulation}
     })
   );
 
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridAggregation',
+    moduleId: `GPUGridAggregation/accumulate-${aggregation.operation}${useSubgroups ? '/subgroups' : ''}`,
+    source,
+    workgroupSize: [GRID_AGGREGATION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: aggregation.positions.length,
+    formula: 'gpu-core.grid-aggregation',
+    bindings: [
+      {name: 'positions', view: aggregation.positions, access: 'read'},
+      {name: 'weights', view: aggregation.weights, access: 'read'},
+      ...(gpuBounds
+        ? [
+            {
+              name: 'boundsValues',
+              view: aggregation.bounds as GraphDataView,
+              access: 'read' as const
+            }
+          ]
+        : []),
+      {name: 'outputValues', view: aggregation.output, access: 'read_write'},
+      ...(aggregation.counts
+        ? [{name: 'outputCounts', view: aggregation.counts, access: 'read_write' as const}]
+        : [])
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
   return nodes;
 }
 
@@ -485,6 +526,20 @@ ${decodeFunction}
     })
   );
 
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridAggregation',
+    moduleId: `GPUGridAggregation/finalize-${operation}`,
+    source,
+    workgroupSize: [GRID_AGGREGATION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: output.length,
+    formula: 'gpu-core.grid-aggregation',
+    bindings: [
+      {name: 'outputValues', view: output, access: 'read_write'},
+      ...(counts ? [{name: 'outputCounts', view: counts, access: 'read' as const}] : [])
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
   return nodes;
 }
 

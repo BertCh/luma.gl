@@ -6,6 +6,7 @@
 import {addGPUCommandNodes} from '@luma.gl/gpgpu/gpu-core';
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {
   GPUCommandGraph,
   GraphBufferUse,
@@ -23,6 +24,7 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphAdjacency, GPUGraphTopology} from './gpu-graph-topology';
 
 const TOPOLOGY_WORKGROUP_SIZE = 256;
@@ -56,6 +58,10 @@ type AdjacencyBuild = {
 };
 
 type TopologyPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   resources: GraphBufferUse[];
@@ -320,6 +326,10 @@ fn main(
     resources.push({buffer: props.invalidEdgeCount, usage: 'storage-write'});
   }
   addTopologyPass(commandGraph, {
+    operation: 'GPUGraphTopology',
+    workgroupSize: TOPOLOGY_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: props.degrees.length,
     id: props.id,
     source,
     bindings,
@@ -399,6 +409,10 @@ fn main(
     resources.push({buffer: props.invalidEdgeCount, usage: 'storage-read-write'});
   }
   addTopologyPass(commandGraph, {
+    operation: 'GPUGraphTopology',
+    workgroupSize: TOPOLOGY_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.sourceVertices.length,
     id: props.id,
     source,
     bindings,
@@ -454,6 +468,10 @@ fn main(
   }
 }`;
   addTopologyPass(commandGraph, {
+    operation: 'GPUGraphTopology',
+    workgroupSize: TOPOLOGY_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: props.vertexCount,
     id: props.id,
     source,
     resources: [
@@ -594,6 +612,10 @@ fn main(
     resources.push({buffer: props.slots, usage: 'storage-write'});
   }
   addTopologyPass(commandGraph, {
+    operation: 'GPUGraphTopology',
+    workgroupSize: TOPOLOGY_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.sourceVertices.length,
     id: props.id,
     source,
     bindings,
@@ -645,6 +667,10 @@ fn main(
   ${secondWeight}
 }`;
   addTopologyPass(commandGraph, {
+    operation: 'GPUGraphTopology',
+    workgroupSize: TOPOLOGY_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: props.sourceWeights.length,
     id: props.id,
     source,
     resources: [
@@ -666,7 +692,23 @@ function addTopologyPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: TopologyPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, view], location) => ({
+          name,
+          view,
+          usage: props.resources[location].usage
+        })),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: props.resources,
     compile: ({device}) => {

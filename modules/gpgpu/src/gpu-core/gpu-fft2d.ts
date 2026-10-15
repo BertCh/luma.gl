@@ -6,6 +6,7 @@ import {Buffer, type Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {GPUCommandGraph, GraphVectorView, type GraphDataView} from './gpu-command-graph';
 import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {setGPUComputeDispatchWorkgroups} from './gpu-command-dispatch-metadata';
 import {
   createTransientView,
@@ -280,6 +281,31 @@ function createFFT2DPasses<Parameters>(
         workgroups
       )
     );
+    const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+      op: 'GPUFFT2D',
+      moduleId: `GPUFFT2D/${plan.axis}-${plan.kind}`,
+      source: GPU_FFT2D_SHADER,
+      workgroupSize: [GPU_FFT2D_WORKGROUP_DIMENSION, GPU_FFT2D_WORKGROUP_DIMENSION, 1],
+      workgroups,
+      invocationCount: transform.stats.elementCount * batchCount,
+      dedupName: `${plan.axis}-${plan.kind}`,
+      formula: 'gpu-core.fft2d',
+      label: `${plan.axis} ${plan.kind} ${plan.stage}`,
+      bindings: [
+        {name: 'inputValues', view: passInput, access: 'read'},
+        {name: 'outputValues', view: destination, access: 'write'}
+      ]
+    }));
+    if (annotation) {
+      // All passes are the unrolled loop: per axis one bit-reversal reorder, then log2(size) butterflies.
+      annotation.loop = {
+        id: `${id}/passes`,
+        iteration: index,
+        phase: 'unconditional',
+        maximumIterations: plans.length
+      };
+      nodes[nodes.length - 1].annotation = annotation;
+    }
     source = destination;
   }
   return nodes;

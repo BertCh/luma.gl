@@ -100,6 +100,15 @@ export type GPUCommandGraphCompilation<Parameters> = {
   bufferTransientAllocations: BufferTransientAllocation[];
   /** Physical texture allocation plan retained for destruction. */
   textureTransientAllocations: TextureTransientAllocation[];
+  /** Transients retained for observation after their final use. */
+  retainedResourceIds?: ReadonlySet<string>;
+  /** Explicit observation nodes, including when annotation recording is disabled. */
+  observationTapIds?: ReadonlySet<string>;
+  /**
+   * Transient buffers whose physical allocation gained `COPY_SRC` only so that a retained capture
+   * or an observation tap can read them (an observer effect; empty for production graphs).
+   */
+  observerCopySourceIds?: ReadonlySet<string>;
   /** Scheduling and allocation statistics. */
   stats: GPUCommandGraphStats;
   /** Static resource and workload report for application-defined soft sanity checks. */
@@ -113,6 +122,8 @@ type GPUCommandGraphCompilerProps<Parameters> = {
   textures: Map<string, GraphTextureHandle>;
   externalTextures: Map<string, GraphExternalTextureHandle>;
   nodes: GPUCommandGraphNode<Parameters>[];
+  retainedResourceIds?: ReadonlySet<string>;
+  observationTapIds?: ReadonlySet<string>;
 };
 
 /**
@@ -128,9 +139,20 @@ type GPUCommandGraphCompilerProps<Parameters> = {
 export function compileGPUCommandGraph<Parameters>(
   props: GPUCommandGraphCompilerProps<Parameters>
 ): GPUCommandGraphCompilation<Parameters> {
+  if (props.retainedResourceIds) validateRetainedResources(props);
   const nodeOrder = getNodeOrder(props.nodes);
-  const bufferPlan = getBufferTransientAllocationPlan(nodeOrder, props.buffers.values());
-  const texturePlan = getTextureTransientAllocationPlan(nodeOrder, props.textures.values());
+  const observerCopySourceIds = getObserverCopySourceIds(props);
+  const bufferPlan = getBufferTransientAllocationPlan(
+    nodeOrder,
+    props.buffers.values(),
+    props.retainedResourceIds,
+    observerCopySourceIds
+  );
+  const texturePlan = getTextureTransientAllocationPlan(
+    nodeOrder,
+    props.textures.values(),
+    props.retainedResourceIds
+  );
   const transientBuffers = new Map<GraphBufferHandle, Buffer>();
   const transientTextures = new Map<GraphTextureHandle, Texture>();
 
@@ -195,9 +217,20 @@ export function compileGPUCommandGraph<Parameters>(
 export async function compileGPUCommandGraphAsync<Parameters>(
   props: GPUCommandGraphCompilerProps<Parameters>
 ): Promise<GPUCommandGraphCompilation<Parameters>> {
+  if (props.retainedResourceIds) validateRetainedResources(props);
   const nodeOrder = getNodeOrder(props.nodes);
-  const bufferPlan = getBufferTransientAllocationPlan(nodeOrder, props.buffers.values());
-  const texturePlan = getTextureTransientAllocationPlan(nodeOrder, props.textures.values());
+  const observerCopySourceIds = getObserverCopySourceIds(props);
+  const bufferPlan = getBufferTransientAllocationPlan(
+    nodeOrder,
+    props.buffers.values(),
+    props.retainedResourceIds,
+    observerCopySourceIds
+  );
+  const texturePlan = getTextureTransientAllocationPlan(
+    nodeOrder,
+    props.textures.values(),
+    props.retainedResourceIds
+  );
   const transientBuffers = new Map<GraphBufferHandle, Buffer>();
   const transientTextures = new Map<GraphTextureHandle, Texture>();
 
@@ -364,6 +397,7 @@ function finishGPUCommandGraphCompilation<Parameters>(
     )
   };
   const preflight = getGPUCommandGraphPreflightReport(props.device, logicalBuffers, nodeOrder);
+  const observerCopySourceIds = getObserverCopySourceIds(props);
 
   return {
     device: props.device,
@@ -374,6 +408,9 @@ function finishGPUCommandGraphCompilation<Parameters>(
     compiledNodes,
     transientBuffers,
     transientTextures,
+    ...(props.retainedResourceIds ? {retainedResourceIds: props.retainedResourceIds} : {}),
+    ...(props.observationTapIds ? {observationTapIds: props.observationTapIds} : {}),
+    ...(observerCopySourceIds.size ? {observerCopySourceIds} : {}),
     bufferTransientAllocations: bufferPlan,
     textureTransientAllocations: texturePlan,
     stats,
@@ -547,8 +584,8 @@ function formatByteRange(range: {offset: number; size: number}): string {
   return `${range.offset}–${range.offset + range.size} bytes`;
 }
 
-/** Returns whether an access observes existing buffer contents. */
-function isBufferReadUsage(usage: GraphBufferUsage): boolean {
+/** Returns whether an access observes existing buffer contents. @internal */
+export function isBufferReadUsage(usage: GraphBufferUsage): boolean {
   return (
     usage === 'storage-read' ||
     usage === 'storage-read-write' ||
@@ -560,15 +597,15 @@ function isBufferReadUsage(usage: GraphBufferUsage): boolean {
   );
 }
 
-/** Returns whether an access changes buffer contents. */
-function isBufferWriteUsage(usage: GraphBufferUsage): boolean {
+/** Returns whether an access changes buffer contents. @internal */
+export function isBufferWriteUsage(usage: GraphBufferUsage): boolean {
   return (
     usage === 'storage-write' || usage === 'storage-read-write' || usage === 'copy-destination'
   );
 }
 
-/** Returns whether an access observes existing texture contents. */
-function isTextureReadUsage(usage: GraphTextureUsage): boolean {
+/** Returns whether an access observes existing texture contents. @internal */
+export function isTextureReadUsage(usage: GraphTextureUsage): boolean {
   return (
     usage === 'sampled' ||
     usage === 'storage-read' ||
@@ -578,8 +615,8 @@ function isTextureReadUsage(usage: GraphTextureUsage): boolean {
   );
 }
 
-/** Returns whether an access may change texture contents. */
-function isTextureWriteUsage(usage: GraphTextureUsage): boolean {
+/** Returns whether an access may change texture contents. @internal */
+export function isTextureWriteUsage(usage: GraphTextureUsage): boolean {
   return (
     usage === 'storage-write' ||
     usage === 'storage-read-write' ||
@@ -588,16 +625,27 @@ function isTextureWriteUsage(usage: GraphTextureUsage): boolean {
   );
 }
 
-/**
- * Infers hazards and returns a stable topological node order.
- *
- * Buffer hazards are conservative at whole-handle granularity. Texture hazards use overlapping
- * aspect, mip, and layer ranges. Explicit dependencies and inferred hazards share the same graph;
- * nodes that are otherwise independent retain insertion order.
- */
-function getNodeOrder<Parameters>(
-  nodes: GPUCommandGraphNode<Parameters>[]
-): GPUCommandGraphNode<Parameters>[] {
+/** Infers explicit dependencies and resource hazards without collecting edges unless requested. @internal */
+export function inferGPUCommandGraphDependencies<Parameters>(
+  nodes: readonly GPUCommandGraphNode<Parameters>[],
+  onEdge?: (edge: {
+    from: string;
+    to: string;
+    kind: 'explicit' | 'raw' | 'war' | 'waw' | 'indirect';
+    resource?: string;
+  }) => void
+): Map<string, Set<string>> {
+  const emittedEdges = onEdge ? new Set<string>() : undefined;
+  const emitEdge: typeof onEdge = onEdge
+    ? edge => {
+        if (edge.from === edge.to) return;
+        const key = JSON.stringify([edge.from, edge.to, edge.kind, edge.resource]);
+        if (!emittedEdges!.has(key)) {
+          emittedEdges!.add(key);
+          onEdge(edge);
+        }
+      }
+    : undefined;
   const nodeById = new Map(nodes.map(node => [node.id, node]));
   const dependencies = new Map<string, Set<string>>();
   const lastBufferWriter = new Map<GraphBufferHandle, string>();
@@ -616,6 +664,11 @@ function getNodeOrder<Parameters>(
         );
       }
     }
+    if (emitEdge) {
+      for (const dependency of nodeDependencies) {
+        emitEdge({from: dependency, to: node.id, kind: 'explicit'});
+      }
+    }
     for (const resource of node.resources ?? []) {
       if (isGraphBufferUse(resource)) {
         const handle = getBufferHandle(resource.buffer);
@@ -623,6 +676,12 @@ function getNodeOrder<Parameters>(
           const writer = lastBufferWriter.get(handle);
           if (writer) {
             nodeDependencies.add(writer);
+            emitEdge?.({
+              from: writer,
+              to: node.id,
+              kind: resource.usage === 'indirect' ? 'indirect' : 'raw',
+              resource: handle.id
+            });
           }
           const readers = activeBufferReaders.get(handle) ?? new Set<string>();
           readers.add(node.id);
@@ -632,10 +691,14 @@ function getNodeOrder<Parameters>(
           const writer = lastBufferWriter.get(handle);
           if (writer) {
             nodeDependencies.add(writer);
+            if (emitEdge && !isBufferReadUsage(resource.usage)) {
+              emitEdge?.({from: writer, to: node.id, kind: 'waw', resource: handle.id});
+            }
           }
           for (const reader of activeBufferReaders.get(handle) ?? []) {
             if (reader !== node.id) {
               nodeDependencies.add(reader);
+              emitEdge?.({from: reader, to: node.id, kind: 'war', resource: handle.id});
             }
           }
           activeBufferReaders.set(handle, new Set());
@@ -654,6 +717,17 @@ function getNodeOrder<Parameters>(
                   isTextureWriteUsage(previous.resource.usage))))
           ) {
             nodeDependencies.add(previous.nodeId);
+            emitEdge?.({
+              from: previous.nodeId,
+              to: node.id,
+              resource: handle.id,
+              kind:
+                isTextureReadUsage(resource.usage) && isTextureWriteUsage(previous.resource.usage)
+                  ? 'raw'
+                  : isTextureWriteUsage(previous.resource.usage)
+                    ? 'waw'
+                    : 'war'
+            });
           }
         }
         history.push({nodeId: node.id, resource});
@@ -664,6 +738,14 @@ function getNodeOrder<Parameters>(
     dependencies.set(node.id, nodeDependencies);
   }
 
+  return dependencies;
+}
+
+/** Returns the existing insertion-ordered topological waves. */
+function getNodeOrder<Parameters>(
+  nodes: GPUCommandGraphNode<Parameters>[]
+): GPUCommandGraphNode<Parameters>[] {
+  const dependencies = inferGPUCommandGraphDependencies(nodes);
   // Visit only outgoing edges when a node completes. Keep the existing insertion-ordered
   // waves: nodes unlocked by this wave are scheduled in the next one.
   const dependents = nodes.map(() => [] as number[]);
@@ -762,7 +844,9 @@ function intervalsOverlap(
  */
 function getBufferTransientAllocationPlan<Parameters>(
   nodes: GPUCommandGraphNode<Parameters>[],
-  buffers: Iterable<GraphBufferHandle>
+  buffers: Iterable<GraphBufferHandle>,
+  retainedResourceIds?: ReadonlySet<string>,
+  observerCopySourceIds?: ReadonlySet<string>
 ): BufferTransientAllocation[] {
   const lifetimes = getResourceLifetimes(nodes, resource =>
     isGraphBufferUse(resource) ? getBufferHandle(resource.buffer) : null
@@ -814,8 +898,11 @@ function getBufferTransientAllocationPlan<Parameters>(
     }
     const {allocation} = candidate;
     allocation.byteLength = Math.max(allocation.byteLength, buffer.byteLength);
-    allocation.usage |= buffer.usage;
-    allocation.lastUse = lifetime.lastUse;
+    allocation.usage |=
+      buffer.usage | (observerCopySourceIds?.has(buffer.id) ? Buffer.COPY_SRC : 0);
+    allocation.lastUse = retainedResourceIds?.has(buffer.id)
+      ? Number.MAX_SAFE_INTEGER
+      : lifetime.lastUse;
     allocation.handles.push(buffer);
     active.push(candidate);
   }
@@ -828,7 +915,8 @@ function getBufferTransientAllocationPlan<Parameters>(
  */
 function getTextureTransientAllocationPlan<Parameters>(
   nodes: GPUCommandGraphNode<Parameters>[],
-  textures: Iterable<GraphTextureHandle>
+  textures: Iterable<GraphTextureHandle>,
+  retainedResourceIds?: ReadonlySet<string>
 ): TextureTransientAllocation[] {
   const lifetimes = getResourceLifetimes(nodes, resource =>
     isGraphTextureUse(resource) ? getTextureHandle(resource.texture) : null
@@ -863,7 +951,9 @@ function getTextureTransientAllocationPlan<Parameters>(
       allocations.push(allocation);
     }
     allocation.descriptor.usage |= texture.usage;
-    allocation.lastUse = lifetime.lastUse;
+    allocation.lastUse = retainedResourceIds?.has(texture.id)
+      ? Number.MAX_SAFE_INTEGER
+      : lifetime.lastUse;
     allocation.handles.push(texture);
   }
   return allocations;
@@ -923,8 +1013,8 @@ function areTextureDescriptorsCompatible(
   );
 }
 
-/** Estimates all mip and sample storage for texture reuse statistics. */
-function getTextureByteLength(texture: GraphTextureHandle): number {
+/** Estimates all mip and sample storage for texture reuse statistics. @internal */
+export function getTextureByteLength(texture: GraphTextureHandle): number {
   let byteLength = 0;
   for (let mipLevel = 0; mipLevel < texture.mipLevels; mipLevel++) {
     byteLength = addSafeByteLengths(
@@ -960,4 +1050,46 @@ function addSafeByteLengths(left: number, right: number, label: string): number 
 /** Sums byte lengths without allowing silent precision loss in memory statistics. */
 function sumSafeByteLengths(values: number[], label: string): number {
   return values.reduce((total, value) => addSafeByteLengths(total, value, label), 0);
+}
+
+/** Rejects retain ids that cannot name graph-owned storage. */
+/**
+ * Transient buffers an observer reads although their descriptor lacks `COPY_SRC`: retained
+ * transients (recording only) and sources of observation taps. Their physical allocation gains
+ * `COPY_SRC`, which `describe()` reports as an observer effect. Production graphs have neither, so
+ * this set is empty and allocation usage is unchanged.
+ */
+function getObserverCopySourceIds<Parameters>(
+  props: Pick<
+    GPUCommandGraphCompilerProps<Parameters>,
+    'buffers' | 'nodes' | 'retainedResourceIds' | 'observationTapIds'
+  >
+): Set<string> {
+  const ids = new Set<string>();
+  const addIfObserved = (id: string) => {
+    const buffer = props.buffers.get(id);
+    if (buffer?.transient && !(buffer.usage & Buffer.COPY_SRC)) ids.add(id);
+  };
+  for (const id of props.retainedResourceIds ?? []) addIfObserved(id);
+  if (props.observationTapIds?.size) {
+    for (const node of props.nodes) {
+      if (!props.observationTapIds.has(node.id)) continue;
+      for (const resource of node.resources ?? []) {
+        if (isGraphBufferUse(resource) && resource.usage === 'copy-source') {
+          addIfObserved(getBufferHandle(resource.buffer).id);
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+function validateRetainedResources<Parameters>(
+  props: GPUCommandGraphCompilerProps<Parameters>
+): void {
+  for (const id of props.retainedResourceIds!) {
+    if (!(props.buffers.get(id) ?? props.textures.get(id))?.transient) {
+      throw new Error(`GPUCommandGraph retain id "${id}" is not a transient resource`);
+    }
+  }
 }

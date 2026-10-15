@@ -49,6 +49,7 @@ export type {
   GPUCommandGraphNodePublication,
   GPUCommandGraphNodeWorkloadEstimate,
   GPUCommandGraphPreflightReport,
+  GPUCommandGraphRecordingOptions,
   GPUCommandGraphRenderExecutable,
   GPUCommandGraphRenderNode,
   GPUCommandGraphStats,
@@ -650,3 +651,11 @@ export type {
   GPUIncrementalExecutionProps,
   GPUIncrementalExecutionStats
 } from './gpu-incremental-execution';
+
+export type {GPUCommandGraphDescription} from './gpu-command-graph-describe';
+export type {GPUOperationIntentDescriber} from './gpu-operation';
+export {describeGPUProgramCompilation, getGPUProgramIntentGraphId} from './gpu-program-describe';
+export type {GPUProgramDescription} from './gpu-program-describe';
+
+export {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
+export type {GPUComputeKernelRecord} from './gpu-command-node-record';

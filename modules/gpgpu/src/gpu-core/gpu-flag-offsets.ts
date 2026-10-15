@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
@@ -160,6 +161,22 @@ fn main(@builtin(local_invocation_index) localInvocationIndex: u32) {
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUFlagOffsets',
+    moduleId: 'GPUFlagOffsets/count',
+    source,
+    workgroupSize: [WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z],
+    invocationCount: 1,
+    formula: 'gpu-core.flag-offsets',
+    bindings: resources.map(({name, view, usage}) => ({
+      name,
+      view,
+      access: usage === 'storage-read' ? 'read' : 'read_write'
+    }))
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

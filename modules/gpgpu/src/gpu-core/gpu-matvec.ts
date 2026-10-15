@@ -80,6 +80,7 @@ export class GPUMatVec {
               output: output.data,
               dispatch,
               accumulate,
+              record: {moduleId: 'GPUMatVec/row-sum', formula: 'gpu-core.mat-vec'},
               source: makeShaderSource(this.columns, matrix, vector, output, dispatch, accumulate)
             })
           );

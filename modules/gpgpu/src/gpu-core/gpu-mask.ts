@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
@@ -242,6 +243,22 @@ fn main(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUMask',
+    moduleId: `GPUMask/${props.operation}`,
+    source,
+    workgroupSize: [MASK_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.output.length,
+    formula: 'gpu-core.mask',
+    bindings: Object.entries(bindings).map(([name, view]) => ({
+      name,
+      view,
+      access: view === props.output ? 'read_write' : 'read'
+    }))
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

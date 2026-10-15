@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -16,6 +17,10 @@ import {
   getViewBinding,
   getViewElementOffset
 } from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphLabelPropagation} from './gpu-graph-label-propagation';
 import {
   importGPUGraphColumn,
@@ -51,6 +56,10 @@ type LabelPropagationBinding = {
 };
 
 type LabelPropagationPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, LabelPropagationBinding>;
@@ -83,7 +92,8 @@ export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
     forwardOverflow: importGPUGraphOverflow(
       commandGraph,
       `${propagation.id}-forward-overflow`,
-      propagation.topology.forward.overflow
+      propagation.topology.forward.overflow,
+      'GPUGraphLabelPropagation'
     ),
     ...(reverse
       ? {
@@ -100,7 +110,8 @@ export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
           reverseOverflow: importGPUGraphOverflow(
             commandGraph,
             `${propagation.id}-reverse-overflow`,
-            reverse.overflow
+            reverse.overflow,
+            'GPUGraphLabelPropagation'
           )
         }
       : {}),
@@ -148,9 +159,20 @@ export function addGPUGraphLabelPropagationToGraphWithDispatchLimit<Parameters>(
   if (vertexCount === 0) return;
 
   for (let iteration = 0; iteration < propagation.iterations; iteration++) {
-    if (state.converged) addConvergenceResetPass(commandGraph, {state, iteration});
-    addVotingPass(commandGraph, {state, iteration});
-    addPublishPass(commandGraph, {state, iteration});
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
+        iteration,
+        maximumIterations: propagation.iterations,
+        gated: false
+      },
+      () => {
+        if (state.converged) addConvergenceResetPass(commandGraph, {state, iteration});
+        addVotingPass(commandGraph, {state, iteration});
+        addPublishPass(commandGraph, {state, iteration});
+      }
+    );
   }
 }
 
@@ -205,6 +227,10 @@ fn main(
   ${initializeConvergence}
 }`;
   addLabelPropagationPass(commandGraph, {
+    operation: 'GPUGraphLabelPropagation',
+    workgroupSize: LABEL_PROPAGATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -250,6 +276,9 @@ fn main(
   atomicStore(&converged[CONVERGED_OFFSET], select(1u, 0u, hasOverflow));
 }`;
   addLabelPropagationPass(commandGraph, {
+    operation: 'GPUGraphLabelPropagation',
+    workgroupSize: LABEL_PROPAGATION_WORKGROUP_SIZE,
+    invocationCount: 1,
     id: `${state.id}-iteration-${props.iteration}-reset`,
     source,
     bindings,
@@ -368,6 +397,10 @@ fn main(
   scratch[SCRATCH_OFFSET + index] = selectedLabel;
 }`;
   addLabelPropagationPass(commandGraph, {
+    operation: 'GPUGraphLabelPropagation',
+    workgroupSize: LABEL_PROPAGATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-vote`,
     source,
     bindings,
@@ -416,6 +449,10 @@ fn main(
   ${markChanged}
 }`;
   addLabelPropagationPass(commandGraph, {
+    operation: 'GPUGraphLabelPropagation',
+    workgroupSize: LABEL_PROPAGATION_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-publish`,
     source,
     bindings,
@@ -439,7 +476,19 @@ function addLabelPropagationPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: LabelPropagationPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

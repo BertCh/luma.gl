@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -12,6 +13,10 @@ import {
   getBoundedInvocationIndexSource
 } from '../gpu-core/gpu-dispatch-utils';
 import {getViewBinding, getViewElementOffset} from '../gpu-core/graph-data-view-utils';
+import {
+  getGPUGraphPassAnnotation,
+  withGPUGraphIterationScope
+} from './gpu-graph-computation-record';
 import type {GPUGraphForceLayout} from './gpu-graph-force-layout';
 
 const FORCE_LAYOUT_WORKGROUP_SIZE = 256;
@@ -48,6 +53,10 @@ type ForceLayoutBinding = {
 };
 
 type ForceLayoutPassProps = {
+  operation: string;
+  datum?: GPUComputationDatumBinding;
+  invocationCount?: number;
+  workgroupSize: number;
   id: string;
   source: string;
   bindings: Record<string, ForceLayoutBinding>;
@@ -126,8 +135,19 @@ export function addGPUGraphForceLayoutToGraphWithDispatchLimit<Parameters>(
   }
 
   for (let iteration = 0; iteration < layout.iterationsPerFrame; iteration++) {
-    addForcePass(commandGraph, {state, iteration});
-    addIntegrationPass(commandGraph, {state, iteration});
+    withGPUGraphIterationScope(
+      commandGraph,
+      {
+        loopId: `${state.id}-iterations`,
+        iteration,
+        maximumIterations: layout.iterationsPerFrame,
+        gated: false
+      },
+      () => {
+        addForcePass(commandGraph, {state, iteration});
+        addIntegrationPass(commandGraph, {state, iteration});
+      }
+    );
   }
 }
 
@@ -202,6 +222,10 @@ fn main(
 }`;
 
   addForceLayoutPass(commandGraph, {
+    operation: 'GPUGraphForceLayout',
+    workgroupSize: FORCE_LAYOUT_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-initialize`,
     source,
     bindings,
@@ -236,6 +260,9 @@ fn main(
 }`;
 
   addForceLayoutPass(commandGraph, {
+    operation: 'GPUGraphForceLayout',
+    workgroupSize: FORCE_LAYOUT_WORKGROUP_SIZE,
+    invocationCount: 1,
     id: `${state.id}-clear-reset`,
     source,
     bindings,
@@ -376,6 +403,10 @@ fn main(
 }`;
 
   addForceLayoutPass(commandGraph, {
+    operation: 'GPUGraphForceLayout',
+    workgroupSize: FORCE_LAYOUT_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-forces`,
     source,
     bindings,
@@ -442,6 +473,10 @@ fn main(
 }`;
 
   addForceLayoutPass(commandGraph, {
+    operation: 'GPUGraphForceLayout',
+    workgroupSize: FORCE_LAYOUT_WORKGROUP_SIZE,
+    datum: {keySpace: 'vertex'},
+    invocationCount: state.vertexCount,
     id: `${state.id}-iteration-${props.iteration}-integrate`,
     source,
     bindings,
@@ -465,7 +500,19 @@ function addForceLayoutPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: ForceLayoutPassProps
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, binding]) => ({name, ...binding})),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: Object.values(props.bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

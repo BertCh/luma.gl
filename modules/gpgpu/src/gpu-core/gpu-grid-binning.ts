@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {
   GPUCommandGraph,
   GraphVectorView,
@@ -223,6 +224,29 @@ const OUTPUT_OFFSET: u32 = ${getViewElementOffset(output)}u;
     })
   );
 
+  const clearAnnotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridBinning',
+    moduleId: 'GPUGridBinning/clear',
+    source,
+    workgroupSize: [GRID_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: output.length,
+    bindings: [{name: 'outputCounts', view: output, access: 'write'}]
+  }));
+  if (clearAnnotation) nodes[0].annotation = clearAnnotation;
+
+  if (graph.recording) {
+    for (const node of nodes) {
+      node.workload = {
+        operation: 'GPUGridBinning',
+        variant: 'clear',
+        commandCount: 1,
+        maximumWorkgroupCount: dispatch.x * dispatch.y * dispatch.z,
+        maximumInvocationCount: dispatch.x * dispatch.y * dispatch.z * GRID_WORKGROUP_SIZE,
+        writeByteLength: output.length * output.rowByteLength
+      };
+    }
+  }
   return nodes;
 }
 
@@ -350,6 +374,40 @@ ${GPU_GRID_COORDINATE_WGSL}
     })
   );
 
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUGridBinning',
+    moduleId: `GPUGridBinning/${local ? 'local' : 'global'}-accumulate${useSubgroups ? '/subgroups' : ''}`,
+    source,
+    workgroupSize: [GRID_WORKGROUP_SIZE, 1, 1],
+    workgroups: [dispatch.x, dispatch.y, dispatch.z],
+    invocationCount: binning.positions.length,
+    formula: 'gpu-core.grid-binning',
+    bindings: [
+      {name: 'positions', view: binning.positions, access: 'read'},
+      ...(gpuBounds
+        ? [{name: 'boundsValues', view: binning.bounds as GraphDataView, access: 'read' as const}]
+        : []),
+      {name: 'outputCounts', view: binning.output, access: 'read_write'}
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
+
+  if (graph.recording) {
+    for (const node of nodes) {
+      node.workload = {
+        operation: 'GPUGridBinning',
+        variant: local ? 'local-accumulate' : 'global-accumulate',
+        commandCount: 1,
+        maximumWorkgroupCount: dispatch.x * dispatch.y * dispatch.z,
+        maximumInvocationCount: dispatch.x * dispatch.y * dispatch.z * GRID_WORKGROUP_SIZE,
+        readByteLength:
+          binning.positions.length * binning.positions.rowByteLength +
+          (gpuBounds ? 16 : 0) +
+          binning.output.length * binning.output.rowByteLength,
+        writeByteLength: binning.output.length * binning.output.rowByteLength
+      };
+    }
+  }
   return nodes;
 }
 

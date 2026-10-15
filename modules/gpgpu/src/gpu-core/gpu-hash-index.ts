@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -397,7 +398,8 @@ const STATISTICS_OFFSET: u32 = ${getViewElementOffset(index.statistics)}u;
         sourceRows,
         statistics: index.statistics
       },
-      dispatchSize: layout
+      dispatchSize: layout,
+      record: {moduleId: 'GPUHashIndex/initialize', invocationCount: index.tableKeys.length}
     })
   );
 
@@ -522,7 +524,8 @@ fn hashKey(key: u32) -> u32 {
         sourceRows,
         statistics: index.statistics
       },
-      dispatchSize: layout
+      dispatchSize: layout,
+      record: {moduleId: 'GPUHashIndex/build', invocationCount: batch.keys.length}
     })
   );
 
@@ -590,7 +593,8 @@ ${valueBinding}
         tableValues: index.tableValues,
         ...(hasExplicitValues ? {inputValues: batch.values!} : {})
       },
-      dispatchSize: layout
+      dispatchSize: layout,
+      record: {moduleId: 'GPUHashIndex/finalize', invocationCount: index.tableKeys.length}
     })
   );
 
@@ -784,6 +788,8 @@ function addKernelPass<Parameters>(
     resources: GraphBufferUse[];
     bindings: Record<string, GraphDataView>;
     dispatchSize: DispatchLayout;
+    /** Kernel facts recorded on recording graphs only; absent for passes outside the lens. */
+    record?: {moduleId: string; invocationCount: number; workgroupSize?: number};
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -823,6 +829,31 @@ function addKernelPass<Parameters>(
       }
     })
   );
+
+  const annotation = props.record
+    ? getGPUComputeKernelAnnotation(graph, () => ({
+        op: 'GPUHashIndex',
+        moduleId: props.record!.moduleId,
+        source: props.source,
+        workgroupSize: [props.record!.workgroupSize ?? HASH_INDEX_WORKGROUP_SIZE, 1, 1],
+        workgroups: [props.dispatchSize.x, props.dispatchSize.y, props.dispatchSize.z],
+        invocationCount: props.record!.invocationCount,
+        bindings: Object.entries(props.bindings).map(([name, view]) => {
+          const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+          return {
+            name,
+            view,
+            access:
+              usage === 'storage-read'
+                ? ('read' as const)
+                : usage === 'storage-read-write'
+                  ? ('read_write' as const)
+                  : ('write' as const)
+          };
+        })
+      }))
+    : undefined;
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
+import type {GPUComputationLoopCoordinate} from '../computation-record/computation-record-types';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -272,9 +274,45 @@ export function getGPUSortCommandNodesWithDispatchLimit<Parameters>(
       view => view instanceof GraphVectorView
     )
   ) {
-    return getChunkedSortNodes(graph, sort, maxComputeWorkgroupsPerDimension);
+    const nodes = getChunkedSortNodes(graph, sort, maxComputeWorkgroupsPerDimension);
+    if (graph.recording) {
+      for (const node of nodes) {
+        if (node.workload?.operation === 'GPUSort') continue;
+        let readByteLength = 0;
+        let writeByteLength = 0;
+        for (const resource of node.resources ?? []) {
+          if (!('buffer' in resource)) continue;
+          const byteLength =
+            'length' in resource.buffer
+              ? resource.buffer.length * resource.buffer.rowByteLength
+              : resource.buffer.byteLength;
+          if (resource.usage === 'storage-read' || resource.usage === 'storage-read-write') {
+            readByteLength += byteLength;
+          }
+          if (resource.usage === 'storage-write' || resource.usage === 'storage-read-write') {
+            writeByteLength += byteLength;
+          }
+        }
+        node.workload = {
+          ...node.workload,
+          operation: 'GPUSort',
+          variant: node.workload?.variant ?? 'chunk-merge',
+          readByteLength,
+          writeByteLength
+        };
+      }
+    }
+    return nodes;
   }
-  return getAtomicSortNodes(sort as AtomicSort, graph, maxComputeWorkgroupsPerDimension);
+  const nodes = getAtomicSortNodes(sort as AtomicSort, graph, maxComputeWorkgroupsPerDimension);
+  if (graph.recording) {
+    for (const node of nodes) {
+      if (node.workload?.operation !== 'GPUSort') {
+        node.workload = {...node.workload, operation: 'GPUSort', variant: 'radix-scan'};
+      }
+    }
+  }
+  return nodes;
 }
 
 type AtomicSort = Omit<GPUSort, 'keys' | 'values' | 'outputKeys' | 'outputValues'> & {
@@ -366,6 +404,8 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-${identifier}`,
+      variant: 'copy-pair',
+      invocationCount: sort.keys.length,
       source,
       resources: [
         {buffer: inputKeys, usage: 'storage-read'},
@@ -423,7 +463,8 @@ function addBitonicSort<Parameters>(
 
   let currentIndices = indicesA;
   let nextIndices = indicesB;
-  for (const stage of getBitonicStages(paddedLength)) {
+  const stages = getBitonicStages(paddedLength);
+  for (const [stageIndex, stage] of stages.entries()) {
     nodes.push(
       ...addBitonicStagePass(
         graph,
@@ -432,7 +473,15 @@ function addBitonicSort<Parameters>(
         nextIndices,
         paddedLength,
         stage,
-        paddedDispatchLayout
+        paddedDispatchLayout,
+        graph.recording
+          ? {
+              id: `${sort.id}/passes`,
+              iteration: stageIndex,
+              phase: 'unconditional',
+              maximumIterations: stages.length
+            }
+          : undefined
       )
     );
     [currentIndices, nextIndices] = [nextIndices, currentIndices];
@@ -487,6 +536,9 @@ ${useSubgroups ? getSubgroupLocalBitonicShader() : getPortableLocalBitonicShader
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-local`,
+      variant: 'bitonic-local',
+      workgroupSize: paddedLength,
+      invocationCount: sort.keys.length,
       source,
       resources: [
         {buffer: sort.keys, usage: 'storage-read'},
@@ -624,6 +676,8 @@ const INDICES_OFFSET: u32 = ${getViewElementOffset(indices)}u;
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-initialize`,
+      variant: 'bitonic-initialize',
+      invocationCount: paddedLength,
       source,
       resources: [{buffer: indices, usage: 'storage-write'}],
       bindings: {indices},
@@ -642,7 +696,8 @@ function addBitonicStagePass<Parameters>(
   indicesOut: GraphDataView<'uint32'>,
   paddedLength: number,
   stage: BitonicStage,
-  dispatchLayout: GPUBoundedDispatchLayout
+  dispatchLayout: GPUBoundedDispatchLayout,
+  loop?: GPUComputationLoopCoordinate
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
   const descending = sort.direction === 'descending';
@@ -696,6 +751,9 @@ fn comes_before(leftIndex: u32, rightIndex: u32) -> bool {
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-${stage.blockWidth}-${stage.compareStride}`,
+      variant: 'bitonic-compare',
+      loop,
+      invocationCount: paddedLength,
       source,
       resources: [
         {buffer: sort.keys, usage: 'storage-read'},
@@ -744,6 +802,8 @@ const OUTPUT_VALUES_OFFSET: u32 = ${getViewElementOffset(sort.outputValues)}u;
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-bitonic-gather`,
+      variant: 'bitonic-gather',
+      invocationCount: sort.keys.length,
       source,
       resources: [
         {buffer: sort.keys, usage: 'storage-read'},
@@ -838,6 +898,14 @@ function addRadixSort<Parameters>(
   let currentValues = sort.values;
 
   for (let digitIndex = 0; digitIndex < plan.passCount; digitIndex++) {
+    const loop: GPUComputationLoopCoordinate | undefined = graph.recording
+      ? {
+          id: `${sort.id}/passes`,
+          iteration: digitIndex,
+          phase: 'unconditional',
+          maximumIterations: plan.passCount
+        }
+      : undefined;
     const bitOffset = digitIndex * plan.digitBits;
     const digitBits = Math.min(plan.digitBits, sort.keyBits - bitOffset);
     const bucketCount = 2 ** digitBits;
@@ -864,7 +932,8 @@ function addRadixSort<Parameters>(
         bitOffset,
         digitBits,
         plan,
-        dispatchLayout
+        dispatchLayout,
+        loop
       })
     );
     const scan = new GPUScan({
@@ -888,7 +957,8 @@ function addRadixSort<Parameters>(
           bitOffset,
           digitBits,
           plan,
-          dispatchLayout
+          dispatchLayout,
+          loop
         }
       )
     );
@@ -904,6 +974,8 @@ type RadixPassOptions = {
   digitBits: number;
   plan: GPUSortRadixPlan;
   dispatchLayout: GPUBoundedDispatchLayout;
+  /** Radix pass coordinate, set on recording graphs only. */
+  loop?: GPUComputationLoopCoordinate;
 };
 
 /** Counts one radix digit per tile into a digit-major histogram suitable for global scan. */
@@ -964,6 +1036,9 @@ var<workgroup> digitCounts: array<atomic<u32>, ${bucketCount}>;
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-radix-digit-${bitOffset}-histogram`,
+      variant: 'radix-histogram',
+      loop: options.loop,
+      invocationCount: sort.keys.length,
       source,
       resources: [
         {buffer: keys, usage: 'storage-read'},
@@ -1081,6 +1156,9 @@ var<workgroup> bucketCursors: array<u32, ${bucketCount}>;
   nodes.push(
     ...addKernelPass(graph, {
       id: `${sort.id}-radix-digit-${bitOffset}-scatter`,
+      variant: 'radix-scatter',
+      loop: options.loop,
+      invocationCount: sort.keys.length,
       source,
       resources: [
         {buffer: keys, usage: 'storage-read'},
@@ -1126,6 +1204,12 @@ function addKernelPass<GraphParameters>(
     resources: GraphBufferUse[];
     bindings: Record<string, GraphDataView>;
     dispatchLayout: GPUBoundedDispatchLayout;
+    variant: string;
+    workgroupSize?: number;
+    /** Unrolled pass coordinate recorded on recording graphs only. */
+    loop?: GPUComputationLoopCoordinate;
+    /** Logical rows handled by the pass, recorded on recording graphs only. */
+    invocationCount?: number;
   }
 ): readonly GPUCommandNode<GraphParameters>[] {
   const nodes: GPUCommandNode<GraphParameters>[] = [];
@@ -1166,5 +1250,65 @@ function addKernelPass<GraphParameters>(
     })
   );
 
+  if (graph.recording) {
+    for (const node of nodes) {
+      node.workload = {
+        operation: 'GPUSort',
+        variant: props.variant,
+        commandCount: 1,
+        maximumWorkgroupCount:
+          props.dispatchLayout.x * props.dispatchLayout.y * props.dispatchLayout.z,
+        maximumInvocationCount:
+          props.dispatchLayout.x *
+          props.dispatchLayout.y *
+          props.dispatchLayout.z *
+          (props.workgroupSize ?? RADIX_WORKGROUP_SIZE),
+        readByteLength: props.resources.reduce(
+          (total, resource) =>
+            total +
+            (resource.usage === 'storage-read' || resource.usage === 'storage-read-write'
+              ? 'length' in resource.buffer
+                ? resource.buffer.length * resource.buffer.rowByteLength
+                : resource.buffer.byteLength
+              : 0),
+          0
+        ),
+        writeByteLength: props.resources.reduce(
+          (total, resource) =>
+            total +
+            (resource.usage === 'storage-write' || resource.usage === 'storage-read-write'
+              ? 'length' in resource.buffer
+                ? resource.buffer.length * resource.buffer.rowByteLength
+                : resource.buffer.byteLength
+              : 0),
+          0
+        )
+      };
+    }
+  }
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUSort',
+    moduleId: `GPUSort/${props.variant}`,
+    source: props.source,
+    workgroupSize: [props.workgroupSize ?? RADIX_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.invocationCount,
+    loop: props.loop,
+    dedupName: props.variant,
+    bindings: Object.entries(props.bindings).map(([name, view]) => {
+      const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+      return {
+        name,
+        view,
+        access:
+          usage === 'storage-read'
+            ? ('read' as const)
+            : usage === 'storage-read-write'
+              ? ('read_write' as const)
+              : ('write' as const)
+      };
+    })
+  }));
+  if (annotation) nodes[0].annotation = annotation;
   return nodes;
 }

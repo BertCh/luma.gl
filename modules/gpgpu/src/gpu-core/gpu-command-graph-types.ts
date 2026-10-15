@@ -19,6 +19,7 @@ import type {
 } from '@luma.gl/core';
 import type {DynamicBuffer, DynamicTexture} from '@luma.gl/engine';
 import type {GPUVectorFormat} from '@luma.gl/gpgpu/gpu-data';
+import type {GPUComputationNodeAnnotation} from '../computation-record/computation-record-types';
 
 /** Internal identity shared by graph-owned handles without importing the graph implementation. */
 export type GPUCommandGraphOwner = {
@@ -560,6 +561,28 @@ type GPUCommandGraphNodeBase<Condition> = {
   publication?: GPUCommandGraphNodePublication;
   /** Optional condition controlling whether this node records or dispatches work. */
   condition?: Condition;
+  /**
+   * Recorded computation metadata. Kept only by graphs created with `recording`; production graphs
+   * drop it at `addNode` so they carry nothing extra.
+   */
+  annotation?: GPUComputationNodeAnnotation;
+};
+
+/**
+ * Compile-time opt-in instrumentation of a `GPUCommandGraph`. Leaving it undefined (production)
+ * adds no nodes, passes, allocations or per-node metadata.
+ */
+export type GPUCommandGraphRecordingOptions = {
+  /**
+   * Keep full shader source text in node annotations for the kernel source view. Default `true`;
+   * `false` keeps only module ids and hashes.
+   */
+  sourceText?: boolean;
+  /**
+   * Transient resource ids that are never aliased after their last use, so a capture helper can
+   * read them after the graph runs. Used by lens graphs only; it raises transient memory.
+   */
+  retain?: readonly string[];
 };
 
 /** A coherent result boundary declared by one graph node. */
@@ -752,6 +775,8 @@ export type GPUCommandGraphNodeEncodingStats = {
   id: string;
   /** Node execution category. */
   type: GPUCommandGraphNodeType;
+  /** Zero-based compute or render pass index within this encoding; absent for copies and skipped nodes. */
+  passIndex?: number;
   /** CPU time spent resolving resources and recording this node. */
   cpuEncodeTimeMilliseconds: number;
   /** Whether the pass recorded a GPU timestamp pair. Copy nodes are currently CPU-only. */
@@ -785,6 +810,10 @@ export type GPUCommandGraphEncodingStats = {
 
 /** CPU and optional GPU duration for one encoded node. */
 export type GPUCommandGraphNodeTiming = GPUCommandGraphNodeEncodingStats & {
+  /** Raw beginning timestamp in nanoseconds, read explicitly after submission. */
+  gpuBeginNanoseconds?: number;
+  /** Raw ending timestamp in nanoseconds, read explicitly after submission. */
+  gpuEndNanoseconds?: number;
   /** GPU execution duration, available only after an explicit timing read. */
   gpuTimeMilliseconds?: number;
 };

@@ -3,6 +3,12 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type Device} from '@luma.gl/core';
+import type {
+  GPUCommandGraphRecordingOptions,
+  GPUCommandGraphComputeNode,
+  GraphBufferDescriptor
+} from './gpu-command-graph-types';
+import {getGPUProgramIntentGraphId, getGPUProgramIntentNodeId} from './gpu-program-describe';
 import type {GPUVectorInput} from '../gpu-data/gpu-vector-like';
 import {type GPUCommandGraph, GraphVectorView} from './gpu-command-graph';
 import {
@@ -30,6 +36,7 @@ import {
 } from './gpu-command-dispatch-metadata';
 import {
   GPUCompositeOperation,
+  getGPUOperationTree,
   isGPUCommandNodeProducer,
   isGPUOperation,
   type GPUProgramOperation,
@@ -43,6 +50,7 @@ import {
 import {
   GPUOperationLoweringRegistry,
   type GPUOperationLoweringDecision,
+  type GPUOperationLoweringContext,
   type GPUProgramBackendCapabilities
 } from './gpu-program-lowering';
 import {validateGPUProgram, type GPUProgramValidationReport} from './gpu-program-validation';
@@ -76,6 +84,7 @@ type LoweringState = {
   vectors: Map<string, GraphVectorView>;
   predicateConjunctions: Map<string, GPUScalar<'uint32'>>;
   commandNodeIds: Set<string>;
+  recording?: {graphId: string; counts: Map<string, number>};
 };
 export class GPUProgramCompiler<Parameters = void> {
   readonly device: Device;
@@ -91,9 +100,11 @@ export class GPUProgramCompiler<Parameters = void> {
     });
     this.registerCoreLowerings();
   }
+  /** Lowers a semantic program, optionally retaining computation provenance. */
   compile(
     program: GPUProgram,
-    bindings: GPUProgramBindings = {}
+    bindings: GPUProgramBindings = {},
+    options: {recording?: GPUCommandGraphRecordingOptions} = {}
   ): GPUProgramCompilation<Parameters> {
     const validation = validateGPUProgram(program, bindings);
     if (!validation.valid)
@@ -103,8 +114,9 @@ export class GPUProgramCompiler<Parameters = void> {
           .map(i => i.message)
           .join('; ')}`
       );
-    const graph = new GPUCommandLoweringGraph<Parameters>(this.device, {
-      id: `${program.id}-commands`
+    const graph = new GPUProgramCommandGraph<Parameters>(this.device, {
+      id: `${program.id}-commands`,
+      recording: options.recording
     });
     const scalars = new Map<string, GPUScalar>();
     for (const scalar of program.scalars)
@@ -168,6 +180,9 @@ export class GPUProgramCompiler<Parameters = void> {
       predicateConjunctions: new Map(),
       commandNodeIds: new Set()
     };
+    if (graph.recording) {
+      state.recording = {graphId: getGPUProgramIntentGraphId(program), counts: new Map()};
+    }
     for (const operation of program.operations) this.lower(graph, operation, state);
     return Object.freeze({
       program,
@@ -290,8 +305,15 @@ export class GPUProgramCompiler<Parameters = void> {
           lowering: 'bounded-unroll',
           reason: o.predicate ? 'explicit unroll preference' : 'loop has no runtime predicate'
         });
-        for (let i = 0; i < o.maximumIterations; i++)
-          for (const child of o.operations) c.lower(child);
+        for (let iteration = 0; iteration < o.maximumIterations; iteration++) {
+          if (c.withLoopIteration) {
+            c.withLoopIteration(iteration, 'unconditional', o.maximumIterations, () => {
+              for (const child of o.operations) c.lower(child);
+            });
+          } else {
+            for (const child of o.operations) c.lower(child);
+          }
+        }
         return;
       }
       c.recordDecision({
@@ -300,10 +322,22 @@ export class GPUProgramCompiler<Parameters = void> {
         lowering: 'gpu-gated-bounded-sequence',
         reason: 'WebGPU has indirect dispatch but no native graph loop'
       });
-      for (let i = 0; i < o.maximumIterations; i++) {
-        const gated = i >= o.minimumIterations;
-        for (const child of o.operations)
-          gated ? c.lowerConditional(o.predicate, child) : c.lower(child);
+      for (let iteration = 0; iteration < o.maximumIterations; iteration++) {
+        const gated = iteration >= o.minimumIterations;
+        if (c.withLoopIteration) {
+          c.withLoopIteration(
+            iteration,
+            gated ? 'gated' : 'unconditional',
+            o.maximumIterations,
+            () => {
+              for (const child of o.operations)
+                gated ? c.lowerConditional(o.predicate!, child) : c.lower(child);
+            }
+          );
+        } else {
+          for (const child of o.operations)
+            gated ? c.lowerConditional(o.predicate, child) : c.lower(child);
+        }
       }
     });
   }
@@ -311,6 +345,33 @@ export class GPUProgramCompiler<Parameters = void> {
     graph: GPUCommandLoweringGraph<Parameters>,
     operation: GPUProgramOperation,
     state: LoweringState
+  ): void {
+    if (state.recording) {
+      const tree = getGPUOperationTree(operation);
+      const intentNodeId = getGPUProgramIntentNodeId(tree.id, state.recording.counts);
+      graph.withRecordScope(
+        {namespace: intentNodeId, derivedFrom: [`${state.recording.graphId}:${intentNodeId}`]},
+        () => {
+          this.lowerOperation(graph, operation, state, intentNodeId);
+        }
+      );
+      // Opaque producers may describe children without lowering them independently.
+      if (tree.children && ('getNodes' in operation || isGPUCommandNodeProducer(operation))) {
+        const visit = (child: GPUOperationTree): void => {
+          getGPUProgramIntentNodeId(child.id, state.recording!.counts);
+          child.children?.forEach(visit);
+        };
+        tree.children.forEach(visit);
+      }
+      return;
+    }
+    this.lowerOperation(graph, operation, state);
+  }
+  private lowerOperation(
+    graph: GPUCommandLoweringGraph<Parameters>,
+    operation: GPUProgramOperation,
+    state: LoweringState,
+    intentNodeId?: string
   ): void {
     const id =
       'id' in operation && typeof operation.id === 'string'
@@ -320,7 +381,7 @@ export class GPUProgramCompiler<Parameters = void> {
     try {
       if (operation instanceof GPUCompositeOperation && operation.type === 'composite') {
         state.decisions.push({
-          operationId: operation.id,
+          operationId: intentNodeId ?? operation.id,
           operationType: operation.type,
           lowering: 'flatten',
           reason: 'WebGPU has no executable child-graph primitive'
@@ -331,23 +392,47 @@ export class GPUProgramCompiler<Parameters = void> {
       if (isGPUOperation(operation)) {
         const lowerer = this.lowerings.get(operation.type);
         if (lowerer) {
-          const invoke = () =>
-            lowerer(operation, {
-              graph,
-              capabilities: this.capabilities,
-              lower: child => this.lower(graph, child, state),
-              lowerConditional: (predicate, child) => {
-                state.predicates.push(predicate);
-                try {
-                  this.lower(graph, child, state);
-                } finally {
-                  state.predicates.pop();
-                }
-              },
-              resolveScalar: s => this.resolveScalar(s, state),
-              resolveVector: v => this.resolveVector(v, state),
-              recordDecision: d => state.decisions.push(d)
-            });
+          const iterationCounts =
+            state.recording && operation.type === 'loop'
+              ? new Map(state.recording.counts)
+              : undefined;
+          const context: GPUOperationLoweringContext<Parameters> = {
+            graph,
+            capabilities: this.capabilities,
+            lower: child => this.lower(graph, child, state),
+            lowerConditional: (predicate, child) => {
+              state.predicates.push(predicate);
+              try {
+                this.lower(graph, child, state);
+              } finally {
+                state.predicates.pop();
+              }
+            },
+            resolveScalar: scalar => this.resolveScalar(scalar, state),
+            resolveVector: vector => this.resolveVector(vector, state),
+            recordDecision: decision =>
+              state.decisions.push(
+                intentNodeId !== undefined ? {...decision, operationId: intentNodeId} : decision
+              )
+          };
+          if (iterationCounts) {
+            context.withLoopIteration = (iteration, phase, maximumIterations, callback) => {
+              state.recording!.counts = new Map(iterationCounts);
+              graph.withRecordScope(
+                {
+                  namespace: `iteration-${iteration}`,
+                  loop: {
+                    id: intentNodeId!,
+                    iteration,
+                    phase,
+                    maximumIterations
+                  }
+                },
+                callback
+              );
+            };
+          }
+          const invoke = () => lowerer(operation, context);
           if (operation instanceof GPUConditionalOperation || operation instanceof GPULoopOperation)
             invoke();
           else this.withNodeDecoration(graph, state, invoke);
@@ -356,7 +441,7 @@ export class GPUProgramCompiler<Parameters = void> {
       }
       if ('getNodes' in operation || isGPUCommandNodeProducer(operation)) {
         state.decisions.push({
-          operationId: id,
+          operationId: intentNodeId ?? id,
           operationType: 'command-node-producer',
           lowering: 'explicit-command-nodes',
           reason: 'execution primitive constructs explicit command nodes'
@@ -408,10 +493,10 @@ export class GPUProgramCompiler<Parameters = void> {
   }
   private decorateComputeNode(
     graph: GPUCommandLoweringGraph<Parameters>,
-    node: any,
+    node: Omit<GPUCommandGraphComputeNode<Parameters>, 'type'>,
     state: LoweringState
-  ): any {
-    node = this.makeCommandNodeIdUnique(node, state);
+  ): Omit<GPUCommandGraphComputeNode<Parameters>, 'type'> {
+    node = this.makeCommandNodeIdUnique(node, state, Boolean(graph.recording));
     if (state.path.length)
       state.nodes.push({nodeId: node.id, nodeType: 'compute', operationPath: [...state.path]});
     if (!state.predicates.length) return node;
@@ -444,22 +529,56 @@ export class GPUProgramCompiler<Parameters = void> {
         output: conjunction!
       })
         .getCommandNodes(graph)
-        .map(n => this.attachDispatch(n, [1, 1, 1]));
+        .map(node =>
+          this.attachDispatch(
+            graph.recording
+              ? {
+                  ...node,
+                  annotation: {
+                    ...node.annotation,
+                    attrs: {...node.annotation?.attrs, role: 'predicate-conjunction'}
+                  }
+                }
+              : node,
+            [1, 1, 1]
+          )
+        );
       graph.withoutComputeLowering(() => addGPUCommandNodes(graph, conjunctionNodes));
       active = conjunction;
     }
     if (!active) throw new Error(`runtime predicate for "${node.id}" could not be resolved`);
     const gate = new GPUScalarDispatchGate(graph, {id: `${node.id}-predicate`, active, workgroups});
-    const gateNodes = gate
-      .getUpdateCommandNodes(graph, `${node.id}-predicate-update`)
-      .map(n => this.attachDispatch(n, [1, 1, 1]));
+    const gateNodes = gate.getUpdateCommandNodes(graph, `${node.id}-predicate-update`).map(node =>
+      this.attachDispatch(
+        graph.recording
+          ? {
+              ...node,
+              annotation: {
+                ...node.annotation,
+                attrs: {...node.annotation?.attrs, role: 'predicate-gate'}
+              }
+            }
+          : node,
+        [1, 1, 1]
+      )
+    );
     graph.withoutComputeLowering(() => addGPUCommandNodes(graph, gateNodes));
+    if (graph.recording && node.annotation?.dispatch) {
+      node = {
+        ...node,
+        annotation: {
+          ...node.annotation,
+          dispatch: {...node.annotation.dispatch, indirect: true}
+        }
+      };
+    }
     return {...node, condition: gate.condition};
   }
   private makeCommandNodeIdUnique(
-    node: GPUCommandNode<Parameters>,
-    state: LoweringState
-  ): GPUCommandNode<Parameters> {
+    node: Omit<GPUCommandGraphComputeNode<Parameters>, 'type'>,
+    state: LoweringState,
+    recording: boolean
+  ): Omit<GPUCommandGraphComputeNode<Parameters>, 'type'> {
     if (!state.commandNodeIds.has(node.id)) {
       state.commandNodeIds.add(node.id);
       return node;
@@ -471,7 +590,9 @@ export class GPUProgramCompiler<Parameters = void> {
       id = `${node.id}-iteration-${iteration}`;
     }
     state.commandNodeIds.add(id);
-    return {...node, id};
+    return recording
+      ? {...node, id, annotation: {...node.annotation, dedupName: node.id}}
+      : {...node, id};
   }
   private resolveScalar<T extends 'float32' | 'uint32' | 'sint32'>(
     s: GPUProgramScalar<T>,
@@ -490,6 +611,26 @@ export class GPUProgramCompiler<Parameters = void> {
     if (!r || r.format !== v.format || r.length !== v.length)
       throw new Error(`GPUProgram vector "${v.id}" is not part of compilation`);
     return r as GraphVectorView<T>;
+  }
+}
+
+/** Assigns distinct scratch storage to each realization of a program operation. */
+class GPUProgramCommandGraph<Parameters> extends GPUCommandLoweringGraph<Parameters> {
+  private readonly transientBufferIds = new Set<string>();
+
+  override createTransientBuffer(descriptor: GraphBufferDescriptor) {
+    let id = descriptor.id;
+    let iteration = 0;
+    while (this.transientBufferIds.has(id)) {
+      id = `${descriptor.id}-iteration-${++iteration}`;
+    }
+    // Producers allocate scratch before the compiler decorates their command nodes. Repeated
+    // loop bodies need distinct logical buffers even when their local scratch names repeat.
+    const buffer = super.createTransientBuffer(
+      id === descriptor.id ? descriptor : {...descriptor, id}
+    );
+    this.transientBufferIds.add(id);
+    return buffer;
   }
 }
 

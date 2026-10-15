@@ -5,6 +5,7 @@
 
 import {type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
+import type {GPUComputationDatumBinding} from '../computation-record/computation-record-types';
 import type {GPUCommandGraph, GraphBufferUse, GraphDataView} from '../gpu-core/gpu-command-graph';
 import {
   type GPUBoundedDispatchLayout,
@@ -18,6 +19,7 @@ import {
 } from '../gpu-core/graph-data-view-utils';
 import {GPUScan} from '../gpu-core/gpu-scan';
 import {GPUSort} from '../gpu-core/gpu-sort';
+import {getGPUGraphPassAnnotation} from './gpu-graph-computation-record';
 import type {GPUGraphLocalClusteringCoefficient} from './gpu-graph-local-clustering-coefficient';
 import {addDirectLocalClusteringToGraph} from './gpu-graph-local-clustering-coefficient-direct';
 
@@ -238,7 +240,23 @@ fn main(
   }
   rows[ROWS_OFFSET + index] = row;
 }`;
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: 'GPUGraphLocalClusteringCoefficient',
+        source,
+        workgroupSize: LOCAL_CLUSTERING_WORKGROUP_SIZE,
+        dispatch: dispatchLayout,
+        datum: {keySpace: 'edge'},
+        invocationCount: capacity,
+        bindings: [
+          {name: 'offsets', view: adjacency.offsets, usage: 'storage-read'},
+          {name: 'sourceNeighbors', view: adjacency.neighbors, usage: 'storage-read'},
+          {name: 'rows', view: inputRows, usage: 'storage-write'}
+        ]
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: `${adjacency.id}-canonical-materialize`,
     resources: [
       {buffer: adjacency.offsets, usage: 'storage-read'},
@@ -345,6 +363,10 @@ const POSITIONS_OFFSET: u32 = ${getViewElementOffset(positions)}u;
 const ROWS_OFFSET: u32 = ${getViewElementOffset(rows)}u;
 const NEIGHBORS_OFFSET: u32 = ${getViewElementOffset(neighbors)}u;`;
   addCanonicalKernelPass(commandGraph, {
+    operation: 'GPUGraphLocalClusteringCoefficient',
+    workgroupSize: LOCAL_CLUSTERING_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: capacity,
     id: `${id}-canonical-unique-flags`,
     source: `${constants}
 @group(0) @binding(0) var<storage, read> sortedRows: array<u32>;
@@ -384,6 +406,10 @@ fn main(
     new GPUScan({id: `${id}-canonical-unique-scan`, input: flags, output: positions})
   );
   addCanonicalKernelPass(commandGraph, {
+    operation: 'GPUGraphLocalClusteringCoefficient',
+    workgroupSize: LOCAL_CLUSTERING_WORKGROUP_SIZE,
+    datum: {keySpace: 'edge'},
+    invocationCount: capacity,
     id: `${id}-canonical-unique-scatter`,
     source: `${constants}
 @group(0) @binding(0) var<storage, read> sortedRows: array<u32>;
@@ -420,6 +446,10 @@ fn main(
 function addCanonicalKernelPass<Parameters>(
   commandGraph: GPUCommandGraph<Parameters>,
   props: {
+    operation: string;
+    datum?: GPUComputationDatumBinding;
+    invocationCount?: number;
+    workgroupSize: number;
     id: string;
     source: string;
     resources: GraphBufferUse[];
@@ -427,7 +457,23 @@ function addCanonicalKernelPass<Parameters>(
     dispatchLayout: GPUBoundedDispatchLayout;
   }
 ): void {
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: props.operation,
+        source: props.source,
+        bindings: Object.entries(props.bindings).map(([name, view], location) => ({
+          name,
+          view,
+          usage: props.resources[location].usage
+        })),
+        workgroupSize: props.workgroupSize,
+        dispatch: props.dispatchLayout,
+        invocationCount: props.invocationCount,
+        datum: props.datum
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: props.id,
     resources: props.resources,
     compile: ({device}) => {
@@ -491,7 +537,19 @@ function addClusteringPass<Parameters>(
   );
   const source = getLocalClusteringSource(state, bindings, forward, reverse, dispatchLayout);
 
+  const annotation = commandGraph.recording
+    ? getGPUGraphPassAnnotation(commandGraph, {
+        operation: 'GPUGraphLocalClusteringCoefficient',
+        source,
+        workgroupSize: LOCAL_CLUSTERING_WORKGROUP_SIZE,
+        dispatch: dispatchLayout,
+        datum: {keySpace: 'vertex'},
+        invocationCount: state.vertexCount,
+        bindings: Object.entries(bindings).map(([name, binding]) => ({name, ...binding}))
+      })
+    : undefined;
   commandGraph.addComputePass({
+    ...(annotation && {annotation}),
     id: `${state.id}-calculate`,
     resources: Object.values(bindings).map(({view, usage}) => ({buffer: view, usage})),
     compile: ({device}) => {

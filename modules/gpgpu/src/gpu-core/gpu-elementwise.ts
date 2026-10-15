@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {setGPUComputeDispatchWorkgroups} from './gpu-command-dispatch-metadata';
 import type {Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
@@ -178,57 +179,71 @@ export class GPUElementwise<T extends GPUScalarFormat = GPUScalarFormat> {
     );
     const source = makeShaderSource({...this, input, inputB, inputC, output}, dispatchLayout);
 
-    nodes.push(
-      setGPUComputeDispatchWorkgroups(
-        createGPUComputeCommandNode<Parameters>({
-          id: this.id,
-          workload: {
-            operation: 'GPUElementwise',
-            commandCount: 1,
-            maximumWorkgroupCount: dispatchLayout.x * dispatchLayout.y * dispatchLayout.z,
-            maximumInvocationCount:
-              dispatchLayout.x * dispatchLayout.y * dispatchLayout.z * WORKGROUP_SIZE,
-            readByteLength:
-              this.input.length *
-              4 *
-              (1 + Number(Boolean(this.inputB)) + Number(Boolean(this.inputC))),
-            writeByteLength: this.output.length * 4
-          },
-          resources: resources.map(resource => ({buffer: resource.view, usage: resource.usage})),
-          compile: ({device}) => {
-            const kernel = new Kernel(device, {
-              id: this.id,
-              source,
-              shaderLayout: {
-                bindings: resources.map((resource, location) => ({
-                  name: resource.name,
-                  type: resource.usage === 'storage-read' ? 'read-only-storage' : 'storage',
-                  group: 0,
-                  location
-                }))
+    const node = setGPUComputeDispatchWorkgroups(
+      createGPUComputeCommandNode<Parameters>({
+        id: this.id,
+        workload: {
+          operation: 'GPUElementwise',
+          commandCount: 1,
+          maximumWorkgroupCount: dispatchLayout.x * dispatchLayout.y * dispatchLayout.z,
+          maximumInvocationCount:
+            dispatchLayout.x * dispatchLayout.y * dispatchLayout.z * WORKGROUP_SIZE,
+          readByteLength:
+            this.input.length *
+            4 *
+            (1 + Number(Boolean(this.inputB)) + Number(Boolean(this.inputC))),
+          writeByteLength: this.output.length * 4
+        },
+        resources: resources.map(resource => ({buffer: resource.view, usage: resource.usage})),
+        compile: ({device}) => {
+          const kernel = new Kernel(device, {
+            id: this.id,
+            source,
+            shaderLayout: {
+              bindings: resources.map((resource, location) => ({
+                name: resource.name,
+                type: resource.usage === 'storage-read' ? 'read-only-storage' : 'storage',
+                group: 0,
+                location
+              }))
+            }
+          });
+          return {
+            encode: ({computePass, getBuffer}) => {
+              const bindings: Record<string, Binding> = {};
+              for (const resource of resources) {
+                bindings[resource.name] = getViewBinding(resource.view, getBuffer);
               }
-            });
-            return {
-              encode: ({computePass, getBuffer}) => {
-                const bindings: Record<string, Binding> = {};
-                for (const resource of resources) {
-                  bindings[resource.name] = getViewBinding(resource.view, getBuffer);
-                }
 
-                kernel.dispatch(computePass, {
-                  bindings,
-                  x: dispatchLayout.x,
-                  y: dispatchLayout.y,
-                  z: dispatchLayout.z
-                });
-              },
-              destroy: () => kernel.destroy()
-            };
-          }
-        }),
-        [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z]
-      )
+              kernel.dispatch(computePass, {
+                bindings,
+                x: dispatchLayout.x,
+                y: dispatchLayout.y,
+                z: dispatchLayout.z
+              });
+            },
+            destroy: () => kernel.destroy()
+          };
+        }
+      }),
+      [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z]
     );
+    const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+      op: 'GPUElementwise',
+      moduleId: `GPUElementwise/${this.operation}`,
+      source,
+      workgroupSize: [WORKGROUP_SIZE, 1, 1],
+      workgroups: [dispatchLayout.x, dispatchLayout.y, dispatchLayout.z],
+      invocationCount: this.output.length,
+      formula: 'gpu-core.elementwise',
+      bindings: resources.map(resource => ({
+        name: resource.name,
+        view: resource.view,
+        access: resource.usage === 'storage-read' ? ('read' as const) : ('write' as const)
+      }))
+    }));
+    if (annotation) node.annotation = annotation;
+    nodes.push(node);
 
     return nodes;
   }

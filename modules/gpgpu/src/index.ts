@@ -63,3 +63,6 @@ export {Operation} from './operation/operation';
 export type {OperationHandler, OperationHandlerResult} from './operation/operation';
 export {cleanEvaluate} from './utils/clean-evaluate';
 export {cleanEvaluateSync} from './utils/clean-evaluate';
+
+// Computation record (computation-visualization schema, exports and capture helpers)
+export * from './computation-record/index';

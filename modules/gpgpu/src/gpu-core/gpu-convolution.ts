@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import type {Binding, Device} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {GPUCommandGraph, type GraphDataView, type GraphVectorView} from './gpu-command-graph';
@@ -381,6 +382,8 @@ function addGPUConvolutionDirectPass<Parameters>(
             dispatchLayout,
             operation: 'GPUConvolution.direct',
             readOutputs: !initializeOutput,
+            invocationCount: destination.length,
+            formula: 'gpu-core.convolution',
             readByteLength:
               destination.length * kernel.length * 8 +
               (initializeOutput ? 0 : destination.length * 4),
@@ -710,6 +713,7 @@ const FFT_WIDTH: u32 = ${convolution.stats.fftWidth}u;
         outputs: {outputValues: output.data},
         dispatchLayout,
         operation: 'GPUConvolution.fft.crop',
+        formula: 'gpu-core.convolution',
         readByteLength: output.length * 2 * Float32Array.BYTES_PER_ELEMENT,
         writeByteLength: output.length * Float32Array.BYTES_PER_ELEMENT
       })
@@ -795,6 +799,10 @@ type ComputePassProps = {
   readByteLength: number;
   writeByteLength: number;
   readOutputs?: boolean;
+  /** Logical invocations when fewer than the dispatched lanes. */
+  invocationCount?: number;
+  /** Formula id recorded on the pass that computes the documented result. */
+  formula?: string;
 };
 
 function addGPUConvolutionComputePass<Parameters>(
@@ -858,6 +866,29 @@ function addGPUConvolutionComputePass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUConvolution',
+    moduleId: props.operation.replace('.', '/').replaceAll('.', '-'),
+    source: props.source,
+    workgroupSize: [GPU_CONVOLUTION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.invocationCount,
+    formula: props.formula,
+    bindings: [
+      ...Object.entries(props.bindings).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read' as const
+      })),
+      ...Object.entries(props.outputs).map(([name, view]) => ({
+        name,
+        view,
+        access: props.readOutputs ? ('read_write' as const) : ('write' as const)
+      }))
+    ]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

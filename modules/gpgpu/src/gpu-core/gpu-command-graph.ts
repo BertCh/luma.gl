@@ -46,6 +46,11 @@ import {
 } from './gpu-command-graph-types';
 import {addGPUCommandNode, addGPUCommandNodes, type GPUNode} from './gpu-command-node';
 import type {GPUCommandGraphAutotuner} from './gpu-command-graph-autotuner';
+import type {
+  GPUComputationGraph,
+  GPUComputationNodeAnnotation,
+  GPUComputationRecordScope
+} from '../computation-record/computation-record-types';
 
 import type {
   GPUCommandGraphComputeExecutable,
@@ -58,9 +63,11 @@ import type {
   GPUCommandGraphEncodingStats,
   GPUCommandGraphNode,
   GPUCommandGraphNodeEncodingStats,
+  GPUCommandGraphNodeTiming,
   GPUCommandGraphNodePreflight,
   GPUCommandGraphNodePublication,
   GPUCommandGraphPreflightReport,
+  GPUCommandGraphRecordingOptions,
   GPUCommandGraphRenderExecutable,
   GPUCommandGraphRenderNode,
   GPUCommandGraphStats,
@@ -79,6 +86,13 @@ import type {
   GraphTextureViewProps,
   NormalizedGraphTextureDescriptor
 } from './gpu-command-graph-types';
+
+import {
+  describeGPUCommandGraph,
+  describeGPUCommandGraphEncoding,
+  type GPUCommandGraphDescription
+} from './gpu-command-graph-describe';
+export type {GPUCommandGraphDescription} from './gpu-command-graph-describe';
 
 const UINT32_BYTE_LENGTH = 4;
 
@@ -111,6 +125,7 @@ export type {
   GPUCommandGraphNodeType,
   GPUCommandGraphNodeWorkloadEstimate,
   GPUCommandGraphPreflightReport,
+  GPUCommandGraphRecordingOptions,
   GPUCommandGraphRenderExecutable,
   GPUCommandGraphRenderNode,
   GPUCommandGraphStats,
@@ -580,6 +595,11 @@ export class GPUCommandGraphEncoding {
     };
   }
 
+  /** Describes the passes and copies actually recorded by this encoding. Pure; no GPU work. */
+  describe(props: {compiledGraphId: string; graphId?: string}): GPUComputationGraph {
+    return describeGPUCommandGraphEncoding(this.stats.nodes, props);
+  }
+
   /**
    * Explicitly reads available per-pass GPU timestamp pairs after submission.
    *
@@ -588,17 +608,23 @@ export class GPUCommandGraphEncoding {
    */
   async readTimings(): Promise<GPUCommandGraphTimingReport> {
     const nodes = await Promise.all(
-      this.nodes.map(async ({stats, timestamp}) => ({
-        ...stats,
-        ...(timestamp
-          ? {
-              gpuTimeMilliseconds: await timestamp.querySet.readTimestampDuration(
-                timestamp.beginIndex,
-                timestamp.endIndex
-              )
-            }
-          : {})
-      }))
+      this.nodes.map(async ({stats, timestamp}): Promise<GPUCommandGraphNodeTiming> => {
+        if (!timestamp) return {...stats};
+        const gpuTimeMilliseconds = await timestamp.querySet.readTimestampDuration(
+          timestamp.beginIndex,
+          timestamp.endIndex
+        );
+        const results = await timestamp.querySet.readResults({
+          firstQuery: timestamp.beginIndex,
+          queryCount: timestamp.endIndex - timestamp.beginIndex + 1
+        });
+        return {
+          ...stats,
+          gpuTimeMilliseconds,
+          gpuBeginNanoseconds: Number(results[0]),
+          gpuEndNanoseconds: Number(results[results.length - 1])
+        };
+      })
     );
     const timestampedNodes = nodes.filter(node => node.gpuTimeMilliseconds !== undefined);
     return {
@@ -629,7 +655,13 @@ export class GPUCommandGraph<Parameters = void> {
   readonly id: string;
   /** Optional adapter-local equivalent-kernel selector shared by graph contributors. */
   readonly autotuner?: GPUCommandGraphAutotuner;
+  /**
+   * Compile-time opt-in computation-record instrumentation, or `undefined` for production graphs.
+   * Node producers check it before building annotations so production graphs pay nothing.
+   */
+  readonly recording?: Readonly<GPUCommandGraphRecordingOptions>;
 
+  private readonly recordScopes: GPUComputationRecordScope[] = [];
   private readonly buffers = new Map<string, GraphBufferHandle>();
   private readonly textures = new Map<string, GraphTextureHandle>();
   private readonly externalTextures = new Map<string, GraphExternalTextureHandle>();
@@ -637,16 +669,25 @@ export class GPUCommandGraph<Parameters = void> {
   private readonly dynamicBufferHandles = new Map<DynamicBuffer, GraphBufferHandle>();
   private readonly nodes: GPUCommandGraphNode<Parameters>[] = [];
   private readonly nodeIds = new Set<string>();
+  private observationTapIds?: Set<string>;
   private compiled = false;
 
   /**
    * Creates a mutable graph definition.
    *
    * @param device WebGPU device used to compile and execute the graph.
-   * @param props Optional graph identity and generic adaptive-kernel selector.
+   * @param props Optional graph identity, generic adaptive-kernel selector and opt-in
+   * computation-record instrumentation.
    * @throws If `device` is not a WebGPU device.
    */
-  constructor(device: Device, props: {id?: string; autotuner?: GPUCommandGraphAutotuner} = {}) {
+  constructor(
+    device: Device,
+    props: {
+      id?: string;
+      autotuner?: GPUCommandGraphAutotuner;
+      recording?: GPUCommandGraphRecordingOptions;
+    } = {}
+  ) {
     if (device.type !== 'webgpu') {
       throw new Error('GPUCommandGraph requires a WebGPU device');
     }
@@ -654,6 +695,26 @@ export class GPUCommandGraph<Parameters = void> {
     this.device = device;
     this.id = props.id ?? 'gpu-command-graph';
     this.autotuner = props.autotuner;
+    if (props.recording) {
+      this.recording = Object.freeze({...props.recording});
+    }
+  }
+
+  /**
+   * Runs `callback` with a computation-record scope whose namespace segment, `derivedFrom`, loop
+   * coordinate, operator and datum binding are stamped on every node added inside it. Scopes nest;
+   * namespaces join with `/`. Without `recording` the callback simply runs.
+   */
+  withRecordScope<Result>(scope: GPUComputationRecordScope, callback: () => Result): Result {
+    if (!this.recording) {
+      return callback();
+    }
+    this.recordScopes.push(scope);
+    try {
+      return callback();
+    } finally {
+      this.recordScopes.pop();
+    }
   }
 
   /**
@@ -866,6 +927,24 @@ export class GPUCommandGraph<Parameters = void> {
   /** Expands groups and primitives, scheduling concrete command nodes in depth-first order. */
   add(node: GPUNode<Parameters>): void {
     this.assertMutable();
+    if (
+      this.recording &&
+      ('getNodes' in node || 'getCommandNodes' in node) &&
+      'id' in node &&
+      typeof node.id === 'string' &&
+      node.id
+    ) {
+      const constructorName = node.constructor.name;
+      this.withRecordScope(
+        {namespace: node.id, ...(constructorName !== 'Object' ? {op: constructorName} : {})},
+        () => this.expandNode(node)
+      );
+      return;
+    }
+    this.expandNode(node);
+  }
+
+  private expandNode(node: GPUNode<Parameters>): void {
     if ('getNodes' in node) {
       for (const child of node.getNodes()) this.add(child);
     } else if ('getCommandNodes' in node) {
@@ -933,6 +1012,70 @@ export class GPUCommandGraph<Parameters = void> {
   }
 
   /**
+   * Inserts a copy immediately after `afterNode` in insertion order, after its existing taps.
+   * Hazards preserve the observed value and make later source writers wait for the tap.
+   * Returns the tap id. Observation taps are an explicit observer effect, even without recording.
+   */
+  addObservationTap(
+    source: GraphBufferHandle | GraphDataView,
+    props: {afterNode: string; sink: GraphBufferHandle | GraphDataView; id?: string}
+  ): string {
+    this.assertMutable();
+    const sourceHandle = getBufferHandle(source);
+    const id = props.id ?? `${props.afterNode}-tap-${sourceHandle.id}`;
+    let insertionIndex = this.nodes.findIndex(node => node.id === props.afterNode);
+    if (insertionIndex < 0) {
+      throw new Error(`GPUCommandGraph tap "${id}" has unknown afterNode "${props.afterNode}"`);
+    }
+    while (
+      this.observationTapIds?.has(this.nodes[insertionIndex + 1]?.id) &&
+      this.nodes[insertionIndex + 1].dependsOn?.[0] === props.afterNode
+    )
+      insertionIndex++;
+    const sourceOffset = source instanceof GraphDataView ? source.byteOffset : 0;
+    const destinationOffset = props.sink instanceof GraphDataView ? props.sink.byteOffset : 0;
+    const size = getGraphBufferRangeByteLength(source);
+    if (
+      sourceOffset % 4 ||
+      destinationOffset % 4 ||
+      size % 4 ||
+      getGraphBufferRangeByteLength(props.sink) < size
+    ) {
+      throw new Error(
+        `GPUCommandGraph tap "${id}" requires aligned offsets and size and a sufficiently large sink`
+      );
+    }
+    const node = this.validateNode(
+      {
+        id,
+        type: 'copy',
+        dependsOn: [props.afterNode],
+        resources: [
+          {buffer: source, usage: 'copy-source'},
+          {buffer: props.sink, usage: 'copy-destination'}
+        ],
+        annotation: {label: `tap ${sourceHandle.id}`, attrs: {observationTap: true}},
+        compile: () => ({
+          encode: ({commandEncoder, getBuffer}) =>
+            commandEncoder.copyBufferToBuffer({
+              sourceBuffer: getBuffer(source),
+              sourceOffset,
+              destinationBuffer: getBuffer(props.sink),
+              destinationOffset,
+              size
+            })
+        })
+      },
+      {observerCopySource: true}
+    );
+    this.nodeIds.add(id);
+    this.nodes.splice(insertionIndex + 1, 0, node);
+    this.observationTapIds ??= new Set();
+    this.observationTapIds.add(id);
+    return id;
+  }
+
+  /**
    * Compiles scheduling, transient allocations, and executable node resources.
    *
    * Compilation freezes this graph. A graph can be compiled only once.
@@ -950,7 +1093,11 @@ export class GPUCommandGraph<Parameters = void> {
         buffers: this.buffers,
         textures: this.textures,
         externalTextures: this.externalTextures,
-        nodes: this.nodes
+        nodes: this.nodes,
+        retainedResourceIds: this.recording?.retain?.length
+          ? new Set(this.recording.retain)
+          : undefined,
+        observationTapIds: this.observationTapIds
       })
     );
   }
@@ -978,12 +1125,25 @@ export class GPUCommandGraph<Parameters = void> {
         buffers: this.buffers,
         textures: this.textures,
         externalTextures: this.externalTextures,
-        nodes: this.nodes
+        nodes: this.nodes,
+        retainedResourceIds: this.recording?.retain?.length
+          ? new Set(this.recording.retain)
+          : undefined,
+        observationTapIds: this.observationTapIds
       })
     );
   }
 
   private addNode(node: GPUCommandGraphNode<Parameters>): void {
+    node = this.validateNode(node);
+    this.nodeIds.add(node.id);
+    this.nodes.push(node);
+  }
+
+  private validateNode(
+    node: GPUCommandGraphNode<Parameters>,
+    options: {observerCopySource?: boolean} = {}
+  ): GPUCommandGraphNode<Parameters> {
     this.assertMutable();
     if (!node.id) {
       throw new Error('GPUCommandGraph node id is required');
@@ -1068,7 +1228,10 @@ export class GPUCommandGraph<Parameters = void> {
       if (isGraphBufferUse(resource)) {
         const buffer = getBufferHandle(resource.buffer);
         this.assertBuffer(buffer);
-        validateBufferUseAgainstDescriptor(buffer, resource.usage);
+        // A tap may read a transient without COPY_SRC: compilation adds it as an observer effect.
+        if (!(options.observerCopySource && buffer.transient && resource.usage === 'copy-source')) {
+          validateBufferUseAgainstDescriptor(buffer, resource.usage);
+        }
       } else if (isGraphTextureUse(resource)) {
         const texture = getTextureHandle(resource.texture);
         this.assertTexture(texture);
@@ -1085,8 +1248,48 @@ export class GPUCommandGraph<Parameters = void> {
       }
     }
     validateGraphNodeBufferBindingAliasing(node);
-    this.nodeIds.add(node.id);
-    this.nodes.push(node);
+    if (this.recording) {
+      node = {...node, annotation: this.getScopedAnnotation(node.annotation)};
+    } else if ('annotation' in node) {
+      // Production graphs carry no record metadata, even from producers that always annotate.
+      const {annotation: _annotation, ...productionNode} = node;
+      node = productionNode as GPUCommandGraphNode<Parameters>;
+    }
+    return node;
+  }
+
+  /** Merges the active record scopes into one node annotation; the node's own values win. */
+  private getScopedAnnotation(
+    annotation: GPUComputationNodeAnnotation = {}
+  ): GPUComputationNodeAnnotation {
+    const segments: string[] = [];
+    let {derivedFrom, loop, op, datum} = annotation;
+    for (const scope of this.recordScopes) {
+      if (scope.namespace) segments.push(scope.namespace);
+    }
+    // The innermost scope that declares a value wins; the node's own values win over every scope.
+    for (let index = this.recordScopes.length - 1; index >= 0; index--) {
+      const scope = this.recordScopes[index];
+      derivedFrom ??= scope.derivedFrom;
+      loop ??= scope.loop;
+      op ??= scope.op;
+      datum ??= scope.datum;
+    }
+    if (annotation.namespace) segments.push(annotation.namespace);
+    const sourceText = this.recording?.sourceText ?? true;
+    const source =
+      annotation.source && !sourceText
+        ? (({text: _text, ...rest}) => rest)(annotation.source)
+        : annotation.source;
+    return {
+      ...annotation,
+      namespace: segments.join('/'),
+      ...(derivedFrom?.length ? {derivedFrom: [...derivedFrom]} : {}),
+      ...(loop ? {loop} : {}),
+      ...(op ? {op} : {}),
+      ...(datum ? {datum} : {}),
+      ...(source ? {source} : {})
+    };
   }
 
   private addBuffer(buffer: GraphBufferHandle): GraphBufferHandle {
@@ -1353,6 +1556,9 @@ export class CompiledGPUCommandGraph<Parameters = void> {
   private readonly writableImportedTextureHandles = new Set<GraphTextureHandle>();
   private readonly transientBuffers: Map<GraphBufferHandle, Buffer>;
   private readonly transientTextures: Map<GraphTextureHandle, Texture>;
+  private readonly retainedResourceIds?: ReadonlySet<string>;
+  private readonly observationTapIds?: ReadonlySet<string>;
+  private readonly observerCopySourceIds?: ReadonlySet<string>;
   private readonly bufferTransientAllocations: BufferTransientAllocation[];
   private readonly textureTransientAllocations: TextureTransientAllocation[];
   private readonly cachedTextureViews: CachedTextureView[] = [];
@@ -1418,11 +1624,72 @@ export class CompiledGPUCommandGraph<Parameters = void> {
     }
     this.transientBuffers = props.transientBuffers;
     this.transientTextures = props.transientTextures;
+    this.retainedResourceIds = props.retainedResourceIds;
+    this.observationTapIds = props.observationTapIds;
+    this.observerCopySourceIds = props.observerCopySourceIds;
     this.bufferTransientAllocations = props.bufferTransientAllocations;
     this.textureTransientAllocations = props.textureTransientAllocations;
     this.stats = props.stats;
     this.preflight = props.preflight;
     this.capabilities = getGPUCommandGraphCapabilities(this.device);
+  }
+
+  /** Describes the compiled graph as the `compiled` form of a computation record. Pure; no GPU work. */
+  describe(options?: {
+    graphId?: string;
+    label?: string;
+    domain?: string;
+  }): GPUCommandGraphDescription {
+    return describeGPUCommandGraph(
+      {
+        id: this.id,
+        compiledNodes: this.compiledNodes,
+        buffers: this.buffers,
+        textures: this.textures,
+        externalTextures: this.externalTextures,
+        bufferTransientAllocations: this.bufferTransientAllocations,
+        textureTransientAllocations: this.textureTransientAllocations,
+        retainedResourceIds: this.retainedResourceIds,
+        observationTapIds: this.observationTapIds,
+        observerCopySourceIds: this.observerCopySourceIds
+      },
+      options
+    );
+  }
+
+  /**
+   * Returns physical storage for observation after submission. Imported overrides precede defaults.
+   * Rejects non-retained transients sharing storage, since later uses may overwrite their contents.
+   */
+  getPhysicalBuffer(
+    buffer: GraphBufferHandle | GraphDataView,
+    buffers?: Record<string, GraphImportedBuffer>
+  ): Buffer {
+    const handle = getBufferHandle(buffer);
+    if (this.destroyed) throw new Error(`CompiledGPUCommandGraph "${this.id}" has been destroyed`);
+    if (this.buffers.get(handle.id) !== handle) {
+      throw new Error(`GPUCommandGraph buffer "${handle.id}" does not belong to this graph`);
+    }
+    if (handle.transient) {
+      const allocation = this.bufferTransientAllocations.find(candidate =>
+        candidate.handles.includes(handle)
+      );
+      if (
+        allocation &&
+        allocation.handles.length > 1 &&
+        !this.retainedResourceIds?.has(handle.id)
+      ) {
+        throw new Error(`GPUCommandGraph buffer "${handle.id}" is aliased and not retained`);
+      }
+      if (allocation?.buffer) return allocation.buffer;
+    } else {
+      const imported = buffers?.[handle.id] ?? handle.defaultBuffer;
+      if (imported) {
+        validateImportedBuffer(imported, handle, this.device);
+        return getCoreBuffer(imported);
+      }
+    }
+    throw new Error(`GPUCommandGraph buffer "${handle.id}" is not bound`);
   }
 
   /**
@@ -1594,6 +1861,7 @@ export class CompiledGPUCommandGraph<Parameters = void> {
     const encodedNodes: EncodedGPUCommandGraphNode[] = [];
     let activeComputePass: ComputePass | undefined;
     let computePassCount = 0;
+    let renderPassCount = 0;
     let coalesceComputePasses =
       options.coalesceComputePasses !== false && commandEncoder.getTimeProfilingQuerySet() === null;
     const endActiveComputePass = (): void => {
@@ -1630,18 +1898,22 @@ export class CompiledGPUCommandGraph<Parameters = void> {
           }
         }
         let timestamp: GPUCommandGraphNodeTimestamp | undefined;
+        let passIndex: number | undefined;
         switch (node.type) {
           case 'compute': {
             if (!activeComputePass) {
               activeComputePass = commandEncoder.beginComputePass({id: node.id});
               computePassCount++;
             }
+            passIndex = computePassCount + renderPassCount - 1;
             const computePass = activeComputePass;
             timestamp = getPassTimestamp(computePass);
             if (timestamp) {
               coalesceComputePasses = false;
             }
-            computePass.pushDebugGroup(node.id);
+            computePass.pushDebugGroup(
+              node.annotation?.namespace ? `${node.annotation.namespace}/${node.id}` : node.id
+            );
             try {
               const gpuCondition = node.condition?.source === 'gpu' ? node.condition : undefined;
               const conditionalPass = gpuCondition
@@ -1692,8 +1964,11 @@ export class CompiledGPUCommandGraph<Parameters = void> {
               ...(framebuffer ? {framebuffer} : {}),
               ...(resolveTargets ? {resolveTargets} : {})
             });
+            passIndex = computePassCount + renderPassCount++;
             timestamp = getPassTimestamp(renderPass);
-            renderPass.pushDebugGroup(node.id);
+            renderPass.pushDebugGroup(
+              node.annotation?.namespace ? `${node.annotation.namespace}/${node.id}` : node.id
+            );
             try {
               renderExecutable.encode({...baseContext, renderPass});
             } finally {
@@ -1728,6 +2003,9 @@ export class CompiledGPUCommandGraph<Parameters = void> {
           },
           timestamp
         });
+        if (passIndex !== undefined) {
+          encodedNodes[encodedNodes.length - 1].stats.passIndex = passIndex;
+        }
       }
     } finally {
       endActiveComputePass();
@@ -2430,4 +2708,13 @@ function isDefaultGraphTextureView(view: GraphTextureView): boolean {
     view.baseArrayLayer === 0 &&
     view.arrayLayerCount === (texture.dimension === '3d' ? 1 : texture.depth)
   );
+}
+
+/** Returns the occupied byte range of a view, including any gaps between rows. */
+function getGraphBufferRangeByteLength(buffer: GraphBufferHandle | GraphDataView): number {
+  return buffer instanceof GraphDataView
+    ? buffer.length === 0
+      ? 0
+      : (buffer.length - 1) * buffer.byteStride + buffer.rowByteLength
+    : buffer.byteLength;
 }

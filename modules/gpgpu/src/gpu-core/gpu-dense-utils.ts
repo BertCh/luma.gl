@@ -6,6 +6,7 @@ import {Kernel} from '@luma.gl/engine';
 import {getGPUVectorChunks} from '@luma.gl/gpgpu/gpu-data';
 import type {GPUCommandGraph, GraphDataView, GraphVectorView} from './gpu-command-graph';
 import {createGPUComputeCommandNode, type GPUCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {getGraphVectorData} from './graph-vector-view-utils';
 import {
   doGraphDataViewsOverlap,
@@ -110,6 +111,8 @@ export function createDenseNode<Parameters>(
     dispatch: DenseDispatch;
     accumulate?: boolean;
     tiled?: boolean;
+    /** Kernel facts recorded on recording graphs only. */
+    record: {moduleId: string; formula?: string};
   }
 ): GPUCommandNode<Parameters> {
   const limits = graph.device.limits;
@@ -125,7 +128,7 @@ export function createDenseNode<Parameters>(
   }
   const bindings = {...props.inputs, outputValues: props.output};
   const workgroups = props.dispatch.x * props.dispatch.y * props.dispatch.z;
-  return createGPUComputeCommandNode<Parameters>({
+  const node = createGPUComputeCommandNode<Parameters>({
     id: props.id,
     workload: {
       operation: props.operation,
@@ -172,6 +175,28 @@ export function createDenseNode<Parameters>(
       };
     }
   });
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: props.operation,
+    moduleId: props.record.moduleId,
+    source: props.source,
+    workgroupSize: props.tiled ? [16, 16, 1] : [256, 1, 1],
+    workgroups: [props.dispatch.x, props.dispatch.y, props.dispatch.z],
+    formula: props.record.formula,
+    bindings: [
+      ...Object.entries(props.inputs).map(([name, view]) => ({
+        name,
+        view,
+        access: 'read' as const
+      })),
+      {
+        name: 'outputValues',
+        view: props.output,
+        access: props.accumulate ? ('read_write' as const) : ('write' as const)
+      }
+    ]
+  }));
+  if (annotation) node.annotation = annotation;
+  return node;
 }
 
 /** A zero inner dimension writes zero each time without binding empty source buffers. */
@@ -188,6 +213,7 @@ export function createDenseZeroNode<Parameters>(
     inputs: {},
     output,
     dispatch,
+    record: {moduleId: `${operation}/zero`},
     source: `@group(0) @binding(0) var<storage, read_write> outputValues: array<f32>;
 @compute @workgroup_size(256)
 fn main(@builtin(workgroup_id) workgroupId: vec3u, @builtin(local_invocation_index) lane: u32) {

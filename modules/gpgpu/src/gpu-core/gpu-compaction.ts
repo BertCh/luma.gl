@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
 import {Kernel} from '@luma.gl/engine';
 import {GPUCommandGraph, GraphVectorView, type GraphDataView} from './gpu-command-graph';
@@ -165,6 +166,9 @@ function addClearCountPass<Parameters>(
   count: GraphDataView<'uint32'>
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const getSource = () => `const COUNT_OFFSET: u32 = ${getViewElementOffset(count)}u;
+@group(0) @binding(0) var<storage, read_write> outputCount: array<u32>;
+@compute @workgroup_size(1) fn main() { outputCount[COUNT_OFFSET] = 0u; }`;
   const passId = `${id}-clear-count`;
   nodes.push(
     createGPUComputeCommandNode<Parameters>({
@@ -173,9 +177,7 @@ function addClearCountPass<Parameters>(
       compile: ({device}) => {
         const kernel = new Kernel(device, {
           id: passId,
-          source: `const COUNT_OFFSET: u32 = ${getViewElementOffset(count)}u;
-@group(0) @binding(0) var<storage, read_write> outputCount: array<u32>;
-@compute @workgroup_size(1) fn main() { outputCount[COUNT_OFFSET] = 0u; }`,
+          source: getSource(),
           shaderLayout: {
             bindings: [{name: 'outputCount', type: 'storage', group: 0, location: 0}]
           }
@@ -192,6 +194,18 @@ function addClearCountPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUCompaction',
+    moduleId: 'GPUCompaction/clear-count',
+    source: getSource(),
+    workgroupSize: [1, 1, 1],
+    workgroups: [1, 1, 1],
+    invocationCount: 1,
+    formula: 'gpu-core.compaction',
+    bindings: [{name: 'outputCount', view: count, access: 'read_write'}]
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }
@@ -414,6 +428,25 @@ function addCompactionPass<Parameters>(
       }
     })
   );
+
+  const annotation = getGPUComputeKernelAnnotation(graph, () => ({
+    op: 'GPUCompaction',
+    moduleId: 'GPUCompaction/scatter',
+    source: props.source,
+    workgroupSize: [COMPACTION_WORKGROUP_SIZE, 1, 1],
+    workgroups: [props.dispatchLayout.x, props.dispatchLayout.y, props.dispatchLayout.z],
+    invocationCount: props.bindings['inputValues'].length,
+    formula: 'gpu-core.compaction',
+    bindings: Object.entries(props.bindings).map(([name, view]) => ({
+      name,
+      view,
+      access:
+        props.resources.find(resource => resource.buffer === view)?.usage === 'storage-read'
+          ? 'read'
+          : 'read_write'
+    }))
+  }));
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

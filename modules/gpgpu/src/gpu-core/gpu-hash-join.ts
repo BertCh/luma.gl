@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {type GPUCommandNode, createGPUComputeCommandNode} from './gpu-command-node';
+import {getGPUComputeKernelAnnotation} from './gpu-command-node-record';
 import {type Binding} from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
@@ -322,7 +323,8 @@ const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(join.overflow)}u;
         {buffer: join.overflow, usage: 'storage-write'}
       ],
       bindings: {count: join.count, overflow: join.overflow},
-      dispatchSize: {x: 1, y: 1, z: 1}
+      dispatchSize: {x: 1, y: 1, z: 1},
+      record: {moduleId: 'GPUHashJoin/empty', invocationCount: 1, workgroupSize: 1}
     })
   );
 
@@ -410,7 +412,8 @@ ${leftRowsBinding}
         outputLeftRows: join.outputLeftRows,
         outputRightRows: join.outputRightRows
       },
-      dispatchSize: layout
+      dispatchSize: layout,
+      record: {moduleId: 'GPUHashJoin/scatter', invocationCount: matchedRightRows.length}
     })
   );
 
@@ -452,7 +455,8 @@ const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(join.overflow)}u;
         {buffer: join.overflow, usage: 'storage-write'}
       ],
       bindings: {found, offsets, count: join.count, overflow: join.overflow},
-      dispatchSize: {x: 1, y: 1, z: 1}
+      dispatchSize: {x: 1, y: 1, z: 1},
+      record: {moduleId: 'GPUHashJoin/count-only', invocationCount: 1, workgroupSize: 1}
     })
   );
 
@@ -485,7 +489,8 @@ const OVERFLOW_OFFSET: u32 = ${getViewElementOffset(overflow)}u;
         {buffer: overflow, usage: 'storage-read-write'}
       ],
       bindings: {indexStatistics, overflow},
-      dispatchSize: {x: 1, y: 1, z: 1}
+      dispatchSize: {x: 1, y: 1, z: 1},
+      record: {moduleId: 'GPUHashJoin/source-overflow', invocationCount: 1, workgroupSize: 1}
     })
   );
 
@@ -535,6 +540,8 @@ function addKernelPass<Parameters>(
     resources: GraphBufferUse[];
     bindings: Record<string, GraphDataView>;
     dispatchSize: DispatchLayout;
+    /** Kernel facts recorded on recording graphs only; absent for passes outside the lens. */
+    record?: {moduleId: string; invocationCount: number; workgroupSize?: number};
   }
 ): readonly GPUCommandNode<Parameters>[] {
   const nodes: GPUCommandNode<Parameters>[] = [];
@@ -574,6 +581,31 @@ function addKernelPass<Parameters>(
       }
     })
   );
+
+  const annotation = props.record
+    ? getGPUComputeKernelAnnotation(graph, () => ({
+        op: 'GPUHashJoin',
+        moduleId: props.record!.moduleId,
+        source: props.source,
+        workgroupSize: [props.record!.workgroupSize ?? HASH_JOIN_WORKGROUP_SIZE, 1, 1],
+        workgroups: [props.dispatchSize.x, props.dispatchSize.y, props.dispatchSize.z],
+        invocationCount: props.record!.invocationCount,
+        bindings: Object.entries(props.bindings).map(([name, view]) => {
+          const usage = props.resources.find(resource => resource.buffer === view)?.usage;
+          return {
+            name,
+            view,
+            access:
+              usage === 'storage-read'
+                ? ('read' as const)
+                : usage === 'storage-read-write'
+                  ? ('read_write' as const)
+                  : ('write' as const)
+          };
+        })
+      }))
+    : undefined;
+  if (annotation) nodes[0].annotation = annotation;
 
   return nodes;
 }

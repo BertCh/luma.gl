@@ -31,6 +31,13 @@ export type GPUOperationLoweringContext<Parameters = void> = {
     vector: GPUProgramVector<T>
   ) => GraphVectorView<T>;
   recordDecision: (decision: GPUOperationLoweringDecision) => void;
+  /** Records a loop iteration, reusing its body intent ids; absent when recording is disabled. */
+  withLoopIteration?: (
+    iteration: number,
+    phase: 'gated' | 'unconditional',
+    maximumIterations: number,
+    callback: () => void
+  ) => void;
 };
 export type GPUOperationLowerer<
   Parameters = void,
