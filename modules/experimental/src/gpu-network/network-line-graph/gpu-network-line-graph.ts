@@ -525,6 +525,10 @@ const ARC_CAPACITY: u32 = ${arcCapacity}u;`,
         id: `${id}-fill-neighbors`,
         operation: OPERATION,
         variant: fuseWeights ? 'fill' : 'fill-neighbors',
+        record: {
+          datum: {keySpace: 'edge'},
+          formula: fuseWeights ? 'gpu-network.line-graph.arc-weight' : undefined
+        },
         bindings: [
           {name: 'offsets', view: props.topology.offsets, type: 'u32', access: 'read'},
           {name: 'neighbors', view: props.topology.neighbors, type: 'u32', access: 'read'},
@@ -596,6 +600,7 @@ ${liveEdgeSource}`,
           id: `${id}-fill-weights`,
           operation: OPERATION,
           variant: 'fill-weights',
+          record: {datum: {keySpace: 'arc'}, formula: 'gpu-network.line-graph.arc-weight'},
           bindings: [
             {name: 'lineOffsets', view: props.output.topology.offsets, type: 'u32', access: 'read'},
             {

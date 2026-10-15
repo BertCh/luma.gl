@@ -151,6 +151,13 @@ export type GPUCostDistanceOutput = {
    */
   costs: GraphDataView<'float32'>;
   /**
+   * Optional diagnostic stamps: per cell, the 1-based gated relaxation round in which its cost last decreased
+   * (0 for source cells and cells whose cost never decreased). For a converged run this is the round in which the
+   * cell settled, so it draws the propagation wavefront. Adds one store per improved cell; omit it in production.
+   * Not supported together with a continuation.
+   */
+  settledAt?: GraphDataView<'uint32'>;
+  /**
    * Optional D8 code (ESRI power of two) of the move from a cell toward the next cell on a
    * least-cost path back to a source. 0 at cells reached as a source,
    * `GPU_COST_DISTANCE_NONE` when unreached or impassable, and `GPU_COST_DISTANCE_UNRESOLVED`
@@ -238,7 +245,8 @@ export type GPUCostDistanceProps = {
    * caller that changes any input (friction, parameters, sources) must set the restart word;
    * between restarts, inputs must stay unchanged. The caller polls `converged` (a readback of its
    * choosing) and submits again until it is 1 or its own budget ends. Not supported with
-   * `output.backLinks`. Absent, behavior is unchanged and every encoding starts from scratch.
+   * `output.backLinks` or `output.settledAt`. Absent, behavior is unchanged and every encoding
+   * starts from scratch.
    */
   continuation?: GPUCostDistanceContinuation;
   /**
@@ -268,7 +276,7 @@ export type GPUCostDistanceProps = {
 
 /**
  * Computes least-accumulated-cost distance over an 8-connected raster friction surface, with
- * optional back-links, isochrone bands, and a GPU convergence flag.
+ * optional back-links, isochrone bands, per-cell settling stamps, and a GPU convergence flag.
  *
  * The edge cost of a D8 move is the ground length of the move times the mean friction of its two
  * cells. Relaxation is tiled min-relaxation: each 16x16 workgroup tile repeats the update in
@@ -312,6 +320,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       ['sourceCount', props.sourceCount],
       ['sourceMask', props.sourceMask],
       ['output.backLinks', output.backLinks],
+      ['output.settledAt', output.settledAt],
       ['output.bands', output.bands],
       ['output.bandCounts', output.bandCounts],
       ['output.status.converged', output.status?.converged],
@@ -334,6 +343,9 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     }
     if (props.continuation) {
       validatePackedView(props.continuation.state, ['uint32'], `${id} continuation.state`);
+      if (output.settledAt) {
+        throw new Error(`${id} continuation does not support output.settledAt`);
+      }
       if (output.backLinks) {
         throw new Error(`${id} continuation does not support output.backLinks`);
       }
@@ -369,6 +381,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
     for (const [name, view] of [
       ['output.costs', output.costs],
       ['output.backLinks', output.backLinks],
+      ['output.settledAt', output.settledAt],
       ['output.bands', output.bands]
     ] as const) {
       if (view && view.length !== cellCount) {
@@ -404,6 +417,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       [
         output.costs,
         output.backLinks,
+        output.settledAt,
         output.bands,
         output.bandCounts,
         output.status?.converged,
@@ -442,6 +456,7 @@ export class GPUCostDistance implements GPUCommandNodeProducer {
       props.sourceMask,
       output.costs,
       output.backLinks,
+      output.settledAt,
       props.costBreaks,
       output.bands,
       output.bandCounts,
@@ -576,6 +591,7 @@ ${GET_QUIET_NAN_WGSL}`,
         relaxation,
         sweepAfterIteration,
         values: working,
+        settledAt: output.settledAt,
         auxiliary,
         settings: props.parameters,
         additiveEdgeCosts: true,

@@ -114,6 +114,9 @@ it('GPURoseStatistic sorts rows into group segments for multiple groups', async 
   // Group 2: rows 3 (west) and 5 (south).
   expect([0, 1, 2].map(group => summary[group * stride])).toEqual([3, 1, 2]);
   expect(bins).toEqual([1, 2, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1]);
+  for (const [group, expected] of [5 / 3, 1, 1].entries()) {
+    expect(summary[group * stride + GPU_ROSE_STATISTIC_SUMMARY.rayleighZ]).toBeCloseTo(expected, 5);
+  }
   expect(summary[stride + GPU_ROSE_STATISTIC_SUMMARY.meanAngle]).toBeCloseTo(Math.PI / 2, 5);
   expect(summary[stride + GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(1, 5);
   expect(summary[GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(Math.sqrt(5) / 3, 5);
@@ -121,4 +124,71 @@ it('GPURoseStatistic sorts rows into group segments for multiple groups', async 
   Object.values(inputs).forEach(buffer => buffer.destroy());
   summaryBuffer.destroy();
   binsBuffer.destroy();
+});
+
+it('GPURoseStatistic keeps Rayleigh z independent of descriptive weight units and excludes invalid rows', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  for (const mode of ['directional', 'axial'] as const) {
+    for (const unitScale of [1, 1000]) {
+      const graph = new GPUCommandGraph(device);
+      // The first four directions are east, east, north, west. Remaining rows are a
+      // masked north, zero-length line, zero-weight north and non-finite-weight north.
+      const starts = createInputBuffer(device, new Float32Array(16));
+      const ends = createInputBuffer(
+        device,
+        Float32Array.from([1, 0, 1, 0, 0, 1, -1, 0, 0, 1, 0, 0, 0, 1, 0, 1])
+      );
+      const weights = createInputBuffer(
+        device,
+        Float32Array.from([1, 2, 4, 8, 1, 1, 0, NaN].map(weight => weight * unitScale))
+      );
+      const mask = createInputBuffer(device, Uint32Array.from([1, 1, 1, 1, 0, 1, 1, 1]));
+      const summaryBuffer = createOutputBuffer(device, 5);
+      const binsBuffer = createOutputBuffer(device, 4);
+      graph.add(
+        new GPURoseStatistic({
+          starts: importGraphBuffer(graph, 'starts', starts, 'float32x2', 8),
+          ends: importGraphBuffer(graph, 'ends', ends, 'float32x2', 8),
+          weights: importGraphBuffer(graph, 'weights', weights, 'float32', 8),
+          mask: importGraphBuffer(graph, 'mask', mask, 'uint32', 8),
+          circular: {
+            mode,
+            angleUnit: 'radians',
+            origin: 'positive-x-counter-clockwise',
+            binCount: 4
+          },
+          output: {
+            summary: importGraphBuffer(graph, 'summary', summaryBuffer, 'float32', 5),
+            bins: importGraphBuffer(graph, 'bins', binsBuffer, 'float32', 4)
+          }
+        })
+      );
+      const compiled = graph.compile();
+      submitGraph(device, compiled, undefined);
+      const summary = await readFloat32(summaryBuffer, 5);
+      const bins = await readFloat32(binsBuffer, 4);
+      expect(summary[GPU_ROSE_STATISTIC_SUMMARY.count]).toBe(4);
+      expect(summary[GPU_ROSE_STATISTIC_SUMMARY.rayleighZ]).toBeCloseTo(
+        mode === 'axial' ? 1 : 0.5,
+        5
+      );
+      expect(summary[GPU_ROSE_STATISTIC_SUMMARY.resultantLength]).toBeCloseTo(
+        mode === 'axial' ? 7 / 15 : Math.sqrt(41) / 15,
+        5
+      );
+      expect(bins).toEqual(
+        (mode === 'axial' ? [11, 0, 4, 0] : [3, 4, 8, 0]).map(weight => weight * unitScale)
+      );
+      mask.write(new Uint32Array(8));
+      submitGraph(device, compiled, undefined);
+      const emptySummary = await readFloat32(summaryBuffer, 5);
+      expect(emptySummary[GPU_ROSE_STATISTIC_SUMMARY.count]).toBe(0);
+      expect(emptySummary[GPU_ROSE_STATISTIC_SUMMARY.rayleighZ]).toBeNaN();
+      expect(await readFloat32(binsBuffer, 4)).toEqual([0, 0, 0, 0]);
+      compiled.destroy();
+      for (const buffer of [starts, ends, weights, mask, summaryBuffer, binsBuffer])
+        buffer.destroy();
+    }
+  }
 });

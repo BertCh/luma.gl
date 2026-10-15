@@ -442,6 +442,7 @@ ${getKrigingWGSL(this.separation)}`;
         id: `${id}-solve`,
         operation: OPERATION,
         variant: 'local-ordinary',
+        record: {formula: 'gpu-spatial-analysis.kriging'},
         bindings: [
           ...sharedBindings,
           {name: 'valuesOut', view: output.values, type: 'f32', access: 'read_write'},

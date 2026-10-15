@@ -218,6 +218,42 @@ it('GPUSpatialWeightsMinimumSpanningTree breaks cost ties by the lowest edge slo
   setup.destroy();
 });
 
+it('GPUSkaterRegions rejects the best SSD cut when either side violates the size floor', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const setup = createRig(
+    device,
+    {offsets: [0, 1, 3, 5, 7, 8], neighbors: [1, 0, 2, 1, 3, 2, 4, 3]},
+    [0, 0, 0, 0, 10],
+    1,
+    {standardize: false, withSkater: true, maximumRegionCount: 2}
+  );
+  const skater = setup.skater!;
+  try {
+    for (const [minimumRegionSize, expectedLabels, expectedGain] of [
+      [1, [0, 0, 0, 0, 1], 80],
+      [2, [0, 0, 0, 1, 1], 30],
+      [3, [0, 0, 0, 0, 0], 0]
+    ] as const) {
+      setup.rig
+        .bufferOf(skater.parameters)
+        .write(getGPUSkaterRegionsParameterValues({regionCount: 2, minimumRegionSize}));
+      setup.encode();
+      const labels = await readUint32(skater.labels.buffer, 5);
+      expect(canonicalizePartition(labels)).toEqual(expectedLabels);
+      expect(await readFloat32(skater.cutGains.buffer, 1)).toEqual([expectedGain]);
+      expect(await readUint32(skater.regionCount.buffer, 1)).toEqual([
+        minimumRegionSize === 3 ? 1 : 2
+      ]);
+      if (minimumRegionSize === 3) {
+        expect(await readUint32(skater.cutEdges.buffer, 1)).toEqual([GPU_SKATER_NO_CUT]);
+      }
+    }
+  } finally {
+    setup.destroy();
+  }
+});
+
 it('GPUSkaterRegions and GPURegionPartitionEvaluation match spopt SpanningForest', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

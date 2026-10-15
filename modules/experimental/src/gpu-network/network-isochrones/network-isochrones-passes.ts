@@ -101,6 +101,11 @@ export function createIsochronesSplatNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: `splat-${props.mode}${labelled ? '-labelled' : ''}`,
+    record: {
+      datum: {keySpace: 'edge'},
+      // The kernel keeps the minimum sampled cost in min mode only.
+      formula: isMin ? 'gpu-network.isochrones.cost' : undefined
+    },
     bindings: [
       {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},

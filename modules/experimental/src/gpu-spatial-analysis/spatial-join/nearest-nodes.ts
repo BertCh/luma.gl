@@ -956,6 +956,10 @@ override CHUNK_QUERY_COUNT: u32;`
         id: `${nodeIdPrefix}-traverse`,
         operation,
         variant: `traverse-${dispatch.kind}-${features.kind}${greatCircle ? '-great-circle' : ''}${dispatch.order ? '-ordered' : ''}`,
+        record:
+          !greatCircle && k === 1 && dispatch.kind === 'points' && features.kind === 'points'
+            ? {formula: 'gpu-spatial-analysis.nearest-feature-join'}
+            : undefined,
         bindings: [
           ...dispatch.bindings,
           nodeDataBinding,

@@ -57,7 +57,10 @@ export const GPU_GLOBAL_SPATIAL_STATISTIC_FIELD = {
   statistic: 0,
   /** Its expectation under the null. */
   expected: 1,
-  /** Variance under the normality assumption (NaN where not defined). */
+  /**
+   * Variance under the normality assumption (NaN where not defined). General G reports esda's
+   * analytical `VG`, also available as `varianceRandomization`; its z and p use a normal approximation.
+   */
   varianceNormality: 2,
   /** `(statistic - expected) / sqrt(varianceNormality)`. */
   zNormality: 3,

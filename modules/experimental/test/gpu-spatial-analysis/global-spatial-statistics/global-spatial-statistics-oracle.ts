@@ -492,6 +492,12 @@ export function computeGlobalSpatialStatisticsOracle(input: {
   const [expectedBlackBlack, rawVarianceBlackBlack, expectedBlackWhite, rawVarianceBlackWhite] =
     getJoinCountMoments(n, blackCount, binarySums.s0, binarySums.s1, binarySums.s2);
   const hasNegative = x.some(value => value < 0);
+  const generalGVariance =
+    !hasNegative && n >= 4 && s0 > 0 && sumX * sumX - sumX2 > 0
+      ? sumSquares === 0
+        ? 0
+        : getGeneralGVariance(x, s0, s1, s2)
+      : NaN;
   const binaryValid = n >= 4 && binarySums.s0 > 0;
   // One colour: every join count is constant.
   const oneColour = blackCount === 0 || blackCount === n;
@@ -535,8 +541,8 @@ export function computeGlobalSpatialStatisticsOracle(input: {
     getisOrdG: getStatistic(
       gCross / (sumX * sumX - sumX2),
       s0 / (n * (n - 1)),
-      NaN,
-      hasNegative ? NaN : orNaN(getGeneralGVariance(x, s0, s1, s2)),
+      generalGVariance,
+      generalGVariance,
       alternative
     ),
     bivariateMoran: getStatistic(

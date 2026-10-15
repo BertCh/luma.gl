@@ -673,6 +673,7 @@ const UNREACHED: f32 = 3.0e38;`,
       id: `${id}-demand-bands-kernel`,
       operation: 'GPURecipeDriveTimeCatchment',
       variant: 'band',
+      record: {datum: {keySpace: 'point'}, formula: 'gpu-network.catchment.band'},
       bindings: [
         {name: 'times', view: demandTimes, type: 'f32', access: 'read'},
         {name: 'bandBreaks', view: props.costBreaks, type: 'f32', access: 'read'},

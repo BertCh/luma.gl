@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
@@ -578,6 +578,10 @@ export class GPUPointInPolygonJoin implements GPUCommandNodeProducer {
           id: `${id}-classify`,
           operation: OPERATION,
           variant: 'classify-exact',
+          record:
+            this.boundaryRule === 'half-open'
+              ? {formula: 'gpu-spatial-analysis.point-in-polygon-join'}
+              : undefined,
           bindings: [
             {name: 'state', view: state, type: 'u32', access: 'read'},
             {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},

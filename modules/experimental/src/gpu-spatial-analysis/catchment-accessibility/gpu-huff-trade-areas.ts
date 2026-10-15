@@ -243,6 +243,7 @@ fn getAttraction(value: f32) -> f32 {
         id: `${id}-trade-area`,
         operation: OPERATION,
         variant: 'trade-area',
+        record: {formula: 'gpu-spatial-analysis.huff-trade-areas'},
         bindings: [
           ...demandBindings,
           {name: 'denominators', view: denominators, type: 'f32', access: 'read_write'},

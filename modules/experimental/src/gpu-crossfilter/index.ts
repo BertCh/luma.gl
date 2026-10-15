@@ -24,3 +24,5 @@ export type {
   GPUCrossfilterViewOptions,
   GPUCrossfilterVisibilityView
 } from './gpu-crossfilter';
+
+export type {GPUCrossfilterExternalDimension} from './gpu-selection';

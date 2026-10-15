@@ -307,6 +307,7 @@ const CAPACITY: u32 = ${capacity}u;`,
         id: `${id}-emit`,
         operation: OPERATION,
         variant: 'emit',
+        record: {formula: 'gpu-spatial-analysis.nearest-feature-weights'},
         bindings: [
           ...inputBindings,
           {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},

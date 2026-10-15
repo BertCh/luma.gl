@@ -23,7 +23,7 @@ import {GPUCellAggregation} from '../cell-aggregation/index';
 import type {GPUCellFamily, GPUCellTable} from '../cell-aggregation/index';
 import {CELL_KEY_WGSL} from '../cell-aggregation/cell-keys';
 import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
-import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons/index';
 import {GPUCellCover} from '../cell-cover/index';
 import {GPUCellGeometry, GPUCellMeasures, GPUPointToCell} from '../cell-indexing/index';
 import {getCellTopologyStride} from '../cell-topology/index';

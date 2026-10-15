@@ -1,0 +1,108 @@
+// luma.gl
+// SPDX-License-Identifier: MIT
+// SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
+
+import {Buffer} from '@luma.gl/core';
+import {
+  createTransientView,
+  type GPUCommandGraph,
+  type GraphDataView
+} from '@luma.gl/gpgpu/gpu-core';
+import {
+  getGPUClassBreaksParameterLength,
+  getGPUClassBreaksParameterValues,
+  GPUClassBreaks
+} from '@luma.gl/experimental/gpu-dataframe';
+import {
+  GPUClassAssignment,
+  GPUParameterBuffer,
+  GPUSpatialMarkov,
+  type GPUSpatialWeights
+} from '@luma.gl/experimental/gpu-spatial-analysis';
+
+/** Inputs the lens scenario uploads from `s2-midwest-counties.json`. */
+export type SpatialMarkovExampleInput = {
+  /** Unemployment rate (%) 2008-2023, period-major: county `i` of year `t` at `t * 437 + i`. */
+  unemployment: GraphDataView<'float32'>;
+  /** Row-standardised queen contiguity of the 437 counties. */
+  queen: GPUSpatialWeights;
+  /** Number of yearly periods (16). */
+  periodCount: number;
+};
+
+/** Class transitions of county unemployment conditioned on the class of the neighbours' mean. */
+export async function runExample(
+  graph: GPUCommandGraph<undefined>,
+  {unemployment, queen, periodCount}: SpatialMarkovExampleInput
+) {
+  const usage = Buffer.STORAGE | Buffer.COPY_SRC;
+  const breaks = createTransientView(graph, 'breaks', 'float32', 6, usage);
+  const classCount = createTransientView(graph, 'classCount', 'uint32', 1, usage);
+  const classes = createTransientView(graph, 'classes', 'uint32', unemployment.length, usage);
+  const counts = createTransientView(graph, 'counts', 'uint32', 125, usage);
+  const probabilities = createTransientView(graph, 'probabilities', 'float32', 125, usage);
+  const rowTotals = createTransientView(graph, 'rowTotals', 'uint32', 25, usage);
+  const lagBreaks = createTransientView(graph, 'lagBreaks', 'float32', 6, usage);
+  const lagClassCount = createTransientView(graph, 'lagClassCount', 'uint32', 1, usage);
+  const homogeneity = createTransientView(graph, 'homogeneity', 'float32', 5, usage);
+  const stateSparsity = createTransientView(graph, 'stateSparsity', 'uint32', 2, usage);
+  const breakParameters = new GPUParameterBuffer(graph.device, {
+    id: 'break-parameters',
+    format: 'float32',
+    length: getGPUClassBreaksParameterLength(5),
+    values: getGPUClassBreaksParameterValues({method: 'quantile', classCount: 5}, 5)
+  });
+  graph.add(
+    new GPUClassBreaks({
+      values: unemployment,
+      parameters: breakParameters.importToGraph(graph),
+      maximumClassCount: 5,
+      methods: ['quantile'],
+      output: {breaks, classCount}
+    })
+  );
+  graph.add(new GPUClassAssignment({values: unemployment, breaks, classCount, output: classes}));
+  const output = {
+    counts,
+    probabilities,
+    rowTotals,
+    lagBreaks,
+    lagClassCount,
+    homogeneity,
+    stateSparsity
+  };
+  // #region example
+  const lagParameters = new GPUParameterBuffer(graph.device, {
+    id: 'lag-parameters',
+    format: 'float32',
+    length: getGPUClassBreaksParameterLength(5),
+    values: getGPUClassBreaksParameterValues({method: 'quantile', classCount: 5}, 5)
+  });
+  graph.add(
+    new GPUSpatialMarkov({
+      values: unemployment,
+      classes,
+      classCount: 5,
+      weights: queen,
+      periodCount,
+      maximumLagClassCount: 5,
+      lagParameters: lagParameters.importToGraph(graph),
+      output
+    })
+  );
+  // counts: lag class * 25 + from * 5 + to; homogeneity: [Q, Q p-value, LR, LR p-value, degrees of freedom]
+  // #endregion example
+  return {
+    breaks,
+    classes,
+    counts,
+    probabilities,
+    rowTotals,
+    lagBreaks,
+    lagClassCount,
+    homogeneity,
+    stateSparsity,
+    breakParameters,
+    lagParameters
+  };
+}

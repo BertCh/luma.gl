@@ -526,6 +526,7 @@ ${constantsWGSL}`;
         operation: OPERATION,
         variant: `local-moran${props.output.localI && fuseLocalI ? '-local-i' : ''}${fuseClassify ? '-classify' : ''}${isAdjusting ? '-p-value' : ''}`,
         bindings: neighborBindings,
+        ...(graph.recording && {record: {formula: 'local-moran'}}),
         invocationCount: rows,
         declarations: fuseClassify ? parameterWGSL : floatWGSL,
         body: `let centered = statistics[statisticsOffset + index];

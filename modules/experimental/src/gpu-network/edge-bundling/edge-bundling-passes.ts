@@ -11,7 +11,8 @@ import {
 import {
   createWGSLKernelNode,
   getWGSLFloatLiteral,
-  type WGSLKernelBinding
+  type WGSLKernelBinding,
+  type WGSLKernelProps
 } from '../../utils/wgsl-kernel-nodes';
 import {IS_FINITE_BITS_WGSL} from '../../utils/wgsl-common';
 
@@ -500,12 +501,19 @@ ${getBoxReadWGSL(props.constants.geographic)}`,
 /** Zeroes the density grid. @internal */
 export function createEdgeBundlingClearNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: {id: string; density: GraphDataView<'uint32'>; gate?: EdgeBundlingGate}
+  props: {
+    id: string;
+    density: GraphDataView<'uint32'>;
+    gate?: EdgeBundlingGate;
+    /** Computation-record metadata, such as the unrolled loop coordinate. */
+    record?: WGSLKernelProps<Parameters>['record'];
+  }
 ): GPUCommandNode<Parameters> {
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
     variant: 'fill',
+    record: props.record,
     bindings: [{name: 'density', view: props.density, type: 'u32', access: 'read_write'}],
     invocationCount: props.density.length,
     body: 'density[densityOffset + index] = 0u;',
@@ -525,6 +533,8 @@ export function createEdgeBundlingSplatNode<Parameters>(
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
     gate?: EdgeBundlingGate;
+    /** Computation-record metadata, such as the unrolled loop coordinate. */
+    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -550,6 +560,7 @@ export function createEdgeBundlingSplatNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'splat',
+    record: props.record,
     bindings,
     invocationCount: constants.edgeCount * constants.pointsPerEdge,
     declarations: `${getConstantsWGSL(constants)}
@@ -606,6 +617,8 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     work: GraphDataView<'float32x2'>;
     density: GraphDataView<'uint32'>;
     gate?: EdgeBundlingGate;
+    /** Computation-record metadata, such as the unrolled loop coordinate. */
+    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const {constants} = props;
@@ -626,6 +639,7 @@ export function createEdgeBundlingUpdateNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'update',
+    record: props.record,
     bindings,
     invocationCount: constants.edgeCount,
     workgroupSize: 64,

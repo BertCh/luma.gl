@@ -218,6 +218,8 @@ export class GPUBoundsFilter implements GPUCommandNodeProducer {
     const nodes: GPUCommandNode<Parameters>[] = [
       createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-mask`,
+        record:
+          this.mode === 'within' ? {formula: 'gpu-spatial-analysis.bounds-filter'} : undefined,
         operation: OPERATION,
         bindings: [
           {name: 'bounds', view: props.bounds, type: 'f32', access: 'read'},

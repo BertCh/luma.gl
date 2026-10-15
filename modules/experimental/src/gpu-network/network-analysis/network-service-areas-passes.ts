@@ -239,6 +239,17 @@ export function createServiceAreasLabelRoundNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'label-round',
+    record: {
+      loop: {
+        id: props.id.replace(/-\d+$/, ''),
+        iteration: props.round,
+        phase: 'gated',
+        maximumIterations: props.phase.maxRounds
+      },
+      datum: {keySpace: 'node'},
+      formula: 'gpu-network.service-areas.label',
+      attrs: {chaotic: true}
+    },
     state: props.state,
     phase: props.phase,
     round: props.round,

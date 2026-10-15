@@ -8,7 +8,7 @@ import {
   resolveGPUSpatialContext,
   resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
-} from '../analysis-core/contracts';
+} from '../analysis-core/contracts/index';
 import {
   type GPUCommandGraph,
   type GPUCommandNode,

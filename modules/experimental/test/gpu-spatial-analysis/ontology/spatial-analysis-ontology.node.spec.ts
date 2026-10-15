@@ -186,7 +186,7 @@ it('registers terrain prominence in its actual package with the independent refe
     evidence: {
       status: 'partial',
       contract: 'GPUTerrainPeakProminenceOutput',
-      documentation: 'docs/api-reference/experimental/gpu-terrain.md',
+      documentation: 'docs/api-reference/experimental/gpu-terrain/operators.md',
       correctnessOracle: 'modules/experimental/test/oracles/terrain-peak-prominence.json'
     }
   });

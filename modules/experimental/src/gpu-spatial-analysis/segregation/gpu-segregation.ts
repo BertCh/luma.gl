@@ -673,6 +673,7 @@ fn getDiversity() -> f32 {
           createWGSLKernelNode<Parameters>(graph, {
             id: `${scaleId}-local`,
             operation: OPERATION,
+            record: local.theil ? {formula: 'gpu-spatial-analysis.segregation'} : undefined,
             variant: `local-${outputs.map(([, view]) => (view ? 1 : 0)).join('')}`,
             bindings: [
               {name: 'groupCounts', view: counts, type: 'f32', access: 'read'},

@@ -435,7 +435,11 @@ function getHeadings(page: string, lines: string[]): DocHeading[] {
 }
 
 /** Pages that index classes without documenting them, so they never hold a subsection. */
-const INDEX_PAGES = new Set(['gpu-spatial-analysis-cross-reference.md']);
+const INDEX_PAGES = new Set([
+  'gpu-spatial-analysis-cross-reference.md',
+  'gpu-spatial-analysis/README.md',
+  'gpu-spatial-analysis/operators.md'
+]);
 
 /**
  * Finds the section that documents a class: the first heading naming it in backticks, else the

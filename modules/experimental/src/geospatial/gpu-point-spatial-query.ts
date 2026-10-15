@@ -46,7 +46,10 @@ import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
 } from '../analysis-core/lon-lat-ring-wgsl';
-import {type GPULonLatPolygonStatusPort, GPU_LINEAR_EDGE_MODELS} from '../analysis-core/contracts';
+import {
+  type GPULonLatPolygonStatusPort,
+  GPU_LINEAR_EDGE_MODELS
+} from '../analysis-core/contracts/index';
 
 // Kept for existing importers; the helper now lives in `utils/wgsl-kernel-nodes`.
 export {createChangedBindingResolver};

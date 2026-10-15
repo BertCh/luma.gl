@@ -4,7 +4,7 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuProj.
 
 import type {Device} from '@luma.gl/core';
-import type {GPURecordBatchSourceInfo} from '../gpu-tables';
+import type {GPURecordBatchSourceInfo} from '../gpu-tables/index';
 import type {PreparedCRSProjectionResult} from './projection-engine';
 import {GPUProjectionTable, type GPUProjectionTableProps} from './gpu-projection-table';
 import type {ProjectionBounds} from './types';

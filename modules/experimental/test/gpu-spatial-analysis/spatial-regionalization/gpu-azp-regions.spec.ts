@@ -386,6 +386,30 @@ async function runAzp(
   return result;
 }
 
+it('GPUAZPRegions distinguishes a final improving round from a no-move convergence check', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const scene = {
+    offsets: Uint32Array.from([0, 1, 3, 5, 6]),
+    neighbors: Uint32Array.from([1, 0, 2, 1, 3, 2]),
+    values: Float32Array.from([0, 10, 11, 20]),
+    initialLabels: Uint32Array.from([0, 0, 1, 1]),
+    regionCapacity: 2,
+    standardize: false
+  };
+  for (const maximumIterations of [1, 2]) {
+    const result = await runAzp(device, {...scene, maximumIterations});
+    expect(result.labels).toEqual([0, 1, 1, 1]);
+    expect(result.objective).toBeCloseTo(182 / 3, 4);
+    expect(result.status[GPU_AZP_STATUS.iterationCount]).toBe(1);
+    expect(result.status[GPU_AZP_STATUS.invalidCount]).toBe(0);
+    expect(result.status[GPU_AZP_STATUS.converged]).toBe(maximumIterations === 2 ? 1 : 0);
+    expect(result.status[GPU_AZP_STATUS.iterationLimitReached]).toBe(
+      maximumIterations === 1 ? 1 : 0
+    );
+  }
+});
+
 it('GPUAZPRegions reports a disconnected initial region through invalidCount', async () => {
   const device = await getWebGPUTestDevice();
   requireTestDevice(device);

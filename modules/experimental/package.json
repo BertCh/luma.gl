@@ -101,6 +101,16 @@
       "types": "./dist/gpu-network/index.d.ts",
       "import": "./dist/gpu-network/index.js",
       "require": "./dist/gpu-network/index.cjs"
+    },
+    "./computation-views": {
+      "types": "./dist/computation-views/index.d.ts",
+      "import": "./dist/computation-views/index.js",
+      "require": "./dist/computation-views/index.cjs"
+    },
+    "./computation-lenses": {
+      "types": "./dist/computation-lenses/index.d.ts",
+      "import": "./dist/computation-lenses/index.js",
+      "require": "./dist/computation-lenses/index.cjs"
     }
   },
   "files": [

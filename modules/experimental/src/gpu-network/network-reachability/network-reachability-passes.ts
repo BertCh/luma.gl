@@ -3,7 +3,11 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  type WGSLKernelBinding,
+  type WGSLKernelProps
+} from '../../utils/wgsl-kernel-nodes';
 import {
   createFrontierRoundNode,
   getFrontierBindings,
@@ -143,6 +147,7 @@ export function createReachabilityInitializeNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'initialize',
+    record: {datum: {keySpace: 'node'}},
     bindings,
     invocationCount: Math.max(
       props.nodeCount,
@@ -232,6 +237,7 @@ export function createReachabilitySeedNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'seed',
+    record: {datum: {keySpace: 'node'}},
     bindings,
     invocationCount: props.sources.length,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
@@ -263,6 +269,7 @@ export function createReachabilityRelaxNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
+    record?: WGSLKernelProps<Parameters>['record'];
     nodeCount: number;
     state: FrontierState;
     phase: FrontierPhase;
@@ -289,6 +296,7 @@ export function createReachabilityRelaxNode<Parameters>(
   return createFrontierRoundNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
+    record: props.record,
     variant: `${laneNodeCount === undefined ? 'relax' : 'relax-lanes'}${isCounting ? '-counted' : ''}`,
     epilogueSource: isCounting ? getCounterFlushSource(counterWordOffset) : undefined,
     state: props.state,
@@ -525,6 +533,7 @@ export function createReachabilityPredecessorsNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: props.labels ? 'predecessors-labelled' : 'predecessors',
+    record: {datum: {keySpace: 'node'}},
     bindings,
     invocationCount: props.nodeCount,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
@@ -569,6 +578,7 @@ export function createReachabilityBandsNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'bands',
+    record: {datum: {keySpace: 'node'}, formula: 'gpu-network.reachability.bands'},
     bindings: [
       {name: 'costs', view: props.costs, type: 'f32', access: 'read'},
       {
@@ -646,6 +656,7 @@ export function createReachabilityTieInitializeNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'tie-initialize',
+    record: {datum: {keySpace: 'node'}},
     bindings,
     invocationCount: Math.max(
       props.nodeCount,
@@ -709,6 +720,7 @@ export function createReachabilityTieRootsNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'tie-roots',
+    record: {datum: {keySpace: 'node'}},
     bindings,
     invocationCount: props.sources.length,
     declarations: `${REACHABILITY_WGSL_CONSTANTS}
@@ -750,6 +762,7 @@ export function createReachabilityTieSeedNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'tie-seed',
+    record: {datum: {keySpace: 'node'}},
     bindings: [
       {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
       {name: 'tieBits', view: props.tieBits, type: 'u32', access: 'read'},
@@ -784,6 +797,7 @@ export function createReachabilityTieLevelNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
   props: {
     id: string;
+    record?: WGSLKernelProps<Parameters>['record'];
     nodeCount: number;
     edgeCount: number;
     state: FrontierState;
@@ -799,6 +813,7 @@ export function createReachabilityTieLevelNode<Parameters>(
   return createFrontierRoundNode<Parameters>(graph, {
     id: props.id,
     operation: OPERATION,
+    record: props.record,
     variant: 'tie-level',
     state: props.state,
     phase: props.tiePhase,
@@ -859,6 +874,7 @@ export function createReachabilityTiePredecessorsNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'tie-predecessors',
+    record: {datum: {keySpace: 'node'}},
     bindings: [
       {name: 'offsets', view: props.offsets, type: 'u32', access: 'read'},
       {name: 'neighbors', view: props.neighbors, type: 'u32', access: 'read'},

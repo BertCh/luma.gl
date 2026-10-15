@@ -28,7 +28,7 @@ import {
 import {getPointInPolygonContainmentContext} from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUSpatialLag} from '../spatial-weights/index';
 import type {GPUSpatialWeights, GPUSpatialWeightsOutput} from '../spatial-weights/index';
-import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons/index';
 import {
   assertRecipe,
   createTransientSpatialWeights,

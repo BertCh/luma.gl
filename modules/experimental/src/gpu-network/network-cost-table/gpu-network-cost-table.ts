@@ -383,6 +383,7 @@ var<workgroup> prefix: array<u32, ${WORKGROUP_SIZE}>;`,
           id: `${id}-batch-${batch}-fill`,
           operation: OPERATION,
           variant: 'fill',
+          record: {formula: 'gpu-network.cost-table.admission'},
           bindings: [
             read('scratch', scratch, 'f32'),
             read('laneBases', laneBases),

@@ -9,7 +9,11 @@ import {
   type GPUCommandNode,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';
+import {
+  createWGSLKernelNode,
+  type WGSLKernelBinding,
+  type WGSLKernelProps
+} from '../../utils/wgsl-kernel-nodes';
 
 /**
  * Compact frontier queues with a round-stamped visited set, shared by the phases of
@@ -307,7 +311,9 @@ export function getFrontierFinalizeSource(phase: FrontierPhase): string {
 }
 
 /** Properties for {@link createFrontierRoundNode}. @internal */
-export type FrontierRoundProps = {
+export type FrontierRoundProps<Parameters = unknown> = {
+  /** Optional computation-record metadata; omitted from production nodes. */
+  record?: WGSLKernelProps<Parameters>['record'];
   /** Graph-wide node ID. */
   id: string;
   /** Operation name reported in the workload estimate. */
@@ -352,7 +358,7 @@ export type FrontierRoundProps = {
  */
 export function createFrontierRoundNode<Parameters>(
   graph: GPUCommandGraph<Parameters>,
-  props: FrontierRoundProps
+  props: FrontierRoundProps<Parameters>
 ): GPUCommandNode<Parameters> {
   const {state, phase, round, localIterations} = props;
   const {nodeCount} = state;
@@ -367,6 +373,7 @@ export function createFrontierRoundNode<Parameters>(
   return createWGSLKernelNode<Parameters>(graph, {
     id: props.id,
     operation: props.operation,
+    record: props.record,
     variant: props.variant,
     bindings,
     invocationCount: nodeCount,

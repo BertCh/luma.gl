@@ -881,6 +881,7 @@ fn classifyPair(index: u32) -> u32 {
         id: `${id}-finalize`,
         operation: OPERATION,
         variant: 'finalize',
+        record: {datum: {keySpace: 'band'}, formula: 'gpu-network.k-function.k'},
         bindings: finalizeBindings,
         invocationCount: patternCount * bandCount,
         declarations: `const BAND_COUNT: u32 = ${bandCount}u;

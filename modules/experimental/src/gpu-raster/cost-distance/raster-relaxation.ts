@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {assert} from '@luma.gl/core';
+import type {GPUComputationNodeAnnotation} from '@luma.gl/gpgpu';
 import {
   getBoundedDispatchLayout,
   type GPUBoundedDispatchLayout,
@@ -12,6 +13,7 @@ import {
   type GraphBufferUse,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
+import {validatePackedView} from '../../utils/gpu-contributor-utils';
 import type {GPURasterCellSizeMode} from '../../analysis-core/raster-grid';
 import {
   createWGSLDispatchGate,
@@ -349,6 +351,22 @@ export type RasterGatedRound<Parameters> = {
   extraResources: GraphBufferUse[];
 };
 
+function annotateLoopNode<Parameters>(
+  graph: GPUCommandGraph<Parameters>,
+  node: GPUCommandNode<Parameters>,
+  loop: GPUComputationNodeAnnotation['loop'],
+  loopRole: 'setup' | 'round' | 'gate'
+): GPUCommandNode<Parameters> {
+  if (graph.recording) {
+    node.annotation = {
+      ...node.annotation,
+      ...(loop ? {loop: node.annotation?.loop ?? loop} : {}),
+      attrs: {...node.annotation?.attrs, loopRole}
+    };
+  }
+  return node;
+}
+
 /**
  * Unrolls `maxIterations` gated iterations with one gate node per `groupSize` iterations.
  *
@@ -385,7 +403,9 @@ export function createRasterGatedLoopNodes<Parameters>(
     operation: props.operation,
     groupSize
   });
-  const nodes: GPUCommandNode<Parameters>[] = [slotTable.writeNode];
+  const nodes: GPUCommandNode<Parameters>[] = [
+    annotateLoopNode(graph, slotTable.writeNode, undefined, 'setup')
+  ];
   for (let start = 0; start < props.maxIterations; start += groupSize) {
     const size = Math.min(groupSize, props.maxIterations - start);
     for (let groupOffset = 0; groupOffset < size; groupOffset++) {
@@ -396,30 +416,45 @@ export function createRasterGatedLoopNodes<Parameters>(
         nodeId
       );
       nodes.push(
-        props.createRound({
-          nodeId,
-          iteration,
-          slotBinding: {
-            name: 'roundSlot',
-            view: slotTable.getSlot(groupOffset),
-            type: 'u32',
-            access: 'read'
-          },
-          roundSlotWGSL: 'roundSlot[roundSlotOffset]',
-          markChangedWGSL: 'atomicOr(&status[statusOffset], 1u << roundSlot[roundSlotOffset]);',
-          condition,
-          extraResources
-        })
+        annotateLoopNode(
+          graph,
+          props.createRound({
+            nodeId,
+            iteration,
+            slotBinding: {
+              name: 'roundSlot',
+              view: slotTable.getSlot(groupOffset),
+              type: 'u32',
+              access: 'read'
+            },
+            roundSlotWGSL: 'roundSlot[roundSlotOffset]',
+            markChangedWGSL: 'atomicOr(&status[statusOffset], 1u << roundSlot[roundSlotOffset]);',
+            condition,
+            extraResources
+          }),
+          {id: props.id, iteration, phase: 'gated', maximumIterations: props.maxIterations},
+          'round'
+        )
       );
     }
     nodes.push(
-      createRasterIterationGroupGateNode<Parameters>(graph, {
-        id: `${gateId}-${start}`,
-        operation: props.operation,
-        state: props.state,
-        maxIterations: props.maxIterations,
-        groupSize: slotTable.getSlot(size)
-      })
+      annotateLoopNode(
+        graph,
+        createRasterIterationGroupGateNode<Parameters>(graph, {
+          id: `${gateId}-${start}`,
+          operation: props.operation,
+          state: props.state,
+          maxIterations: props.maxIterations,
+          groupSize: slotTable.getSlot(size)
+        }),
+        {
+          id: props.id,
+          iteration: start + size - 1,
+          phase: 'gated',
+          maximumIterations: props.maxIterations
+        },
+        'gate'
+      )
     );
   }
   return nodes;
@@ -757,6 +792,8 @@ export function createRasterTiledRelaxationNodes<Parameters>(
     relaxation: RasterTiledRelaxation<Parameters>;
     /** Working values, bound as `atomic<u32>` float bits and updated in place. */
     values: GraphDataView<'float32'>;
+    /** Per-cell 1-based round of the last decrease, or 0; unsupported with continuation. */
+    settledAt?: GraphDataView<'uint32'>;
     /** Per-cell auxiliary input such as friction or elevation; NaN excludes a cell. */
     auxiliary: GraphDataView<'float32'>;
     /** Settings starting with the shared grid prefix. */
@@ -791,6 +828,15 @@ export function createRasterTiledRelaxationNodes<Parameters>(
 ): GPUCommandNode<Parameters>[] {
   const {relaxation} = props;
   const {state} = relaxation;
+  if (props.settledAt) {
+    if (props.continuation || relaxation.continuation) {
+      throw new Error(`${props.id} settledAt is not supported with continuation`);
+    }
+    validatePackedView(props.settledAt, ['uint32'], `${props.id} settledAt`);
+    if (props.settledAt.length !== props.width * props.height) {
+      throw new Error(`${props.id} settledAt must contain one value per cell`);
+    }
+  }
   const tileSize = RASTER_RELAXATION_TILE_SIZE;
   const haloSize = tileSize + 2;
   const tilesX = relaxation.tilesX;
@@ -914,7 +960,7 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
 
   let finalValue = haloValues[haloCenter];
   if (participates && finalValue < originalValue) {
-    atomicStore(&values[valuesOffset + row * GRID_WIDTH + column], bitcast<u32>(finalValue));
+    atomicStore(&values[valuesOffset + row * GRID_WIDTH + column], bitcast<u32>(finalValue));${props.settledAt ? '\n    settledAt[settledAtOffset + row * GRID_WIDTH + column] = iteration + 1u;' : ''}
     atomicStore(&tileChangedAtomic, 1u);
   }
   workgroupBarrier();
@@ -971,6 +1017,21 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
     workgroupBarrier();
   }`;
   const nodes: GPUCommandNode<Parameters>[] = [];
+  const settledAtBindings: WGSLKernelBinding[] = props.settledAt
+    ? [{name: 'settledAt', view: props.settledAt, type: 'u32', access: 'read_write'}]
+    : [];
+  if (props.settledAt) {
+    nodes.push(
+      createWGSLKernelNode<Parameters>(graph, {
+        id: `${props.id}-settled-at-reset`,
+        operation: props.operation,
+        variant: 'settled-at-reset',
+        bindings: settledAtBindings,
+        invocationCount: props.width * props.height,
+        body: 'settledAt[settledAtOffset + index] = 0u;'
+      })
+    );
+  }
   const sweepPasses = [
     {variant: 'sweep-right', body: getSweepBody(false, false)},
     {variant: 'sweep-left', body: getSweepBody(false, true)},
@@ -1015,7 +1076,8 @@ fn relaxTile(tileIndex: u32, localInvocationIndex: u32) {
                   }
                 ]),
             {name: 'status', view: state.status, type: 'atomic<u32>', access: 'read_write'},
-            slotBinding
+            slotBinding,
+            ...settledAtBindings
           ],
           invocationCount: state.invocationCount,
           workgroupSize: WORKGROUP_SIZE,

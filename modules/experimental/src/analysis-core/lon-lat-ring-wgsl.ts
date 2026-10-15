@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GPUCommandNode, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import {validateGPUStatusPort, type GPULonLatPolygonStatusPort} from './contracts';
+import {validateGPUStatusPort, type GPULonLatPolygonStatusPort} from './contracts/index';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../utils/wgsl-kernel-nodes';
 
 /**

@@ -341,6 +341,171 @@ export type GPULocalPermutationTestProps = {
   output: GPULocalPermutationTestOutput;
 };
 
+/** Shared permutation shader inputs, prepared once by the test. @internal */
+type LocalPermutationKernelOptions = {
+  constantsWGSL: string;
+  accessWGSL: string;
+  maximumPermutations: number;
+  maximumNeighbors: number;
+  stopAfter?: number;
+  alternative: ReturnType<typeof resolvePermutationAlternative>;
+  spec: LocalStatisticSpec;
+  neighborLoopWGSL: (action: string) => string;
+  slotWeightWGSL: string;
+};
+
+/** Generates both consumers of the exact same Philox/Fisher–Yates draw loop. @internal */
+export function getLocalPermutationKernelWGSL(
+  options: LocalPermutationKernelOptions,
+  mode: 'test' | 'replay' = 'test'
+): {declarations: string; body: string} {
+  const {
+    constantsWGSL,
+    accessWGSL,
+    maximumPermutations,
+    maximumNeighbors,
+    stopAfter,
+    alternative,
+    spec,
+    neighborLoopWGSL,
+    slotWeightWGSL
+  } = options;
+  const replay = mode === 'replay';
+  const sequential = !replay && stopAfter !== undefined;
+  const folded = !replay && alternative === 'folded';
+  return {
+    declarations: `${constantsWGSL}
+${accessWGSL}
+${getPermutationParameterWGSL(maximumPermutations)}
+${PERMUTATION_RANDOM_WGSL}
+${sequential ? `const STOP_AFTER_EXCEEDANCES: u32 = ${stopAfter}u;\n` : ''}const RANDOM_TAG: u32 = ${LOCAL_PERMUTATION_RANDOM_TAG}u;
+
+// Value at a virtual shuffle position: a recorded swap, or the position itself.
+fn readSwap(
+  swapPositions: ptr<function, array<u32, ${maximumNeighbors}>>,
+  swapValues: ptr<function, array<u32, ${maximumNeighbors}>>,
+  swapCount: u32,
+  position: u32
+) -> u32 {
+  for (var entry = 0u; entry < swapCount; entry++) {
+    if ((*swapPositions)[entry] == position) {
+      return (*swapValues)[entry];
+    }
+  }
+  return position;
+}`,
+    body: `let observed = ${replay ? 'bitcast<f32>(replayInfo[replayInfoOffset])' : 'observedRaw[observedRawOffset + index]'};
+  // The permutation count is never clamped: an invalid one leaves every row untested.
+  // Join counts test only rows with at least one join (esda sets the other p-values to NaN).
+  if (!isFiniteFloat(observed) || !isPermutationCountValid()${spec.joinCount ? ' || observed == 0.0' : ''}) {
+    ${replay ? '' : `exceedances[exceedancesOffset + index] = NOT_TESTED;${sequential ? '\n    exceedances[exceedancesOffset + ROWS + index] = NOT_TESTED;' : ''}`}
+    return;
+  }
+  let position = rowPositions[rowPositionsOffset + index];
+  let others = rowPositions[rowPositionsOffset + ROWS] - 1u;
+  let fx = getX(position);
+  let fy = getY(position);
+  let permutations = readValidPermutationCount();${sequential ? '\n  var permutationsRun = permutations;' : ''}
+  let key = readSeedKey();
+  ${
+    replay
+      ? ''
+      : `var greater = 0u;
+  var lesser = 0u;
+  var folded = 0u;
+  var total = 0.0;
+  var mean = 0.0;`
+  }
+  // The row's active neighbor weights in slot order, read once: a permutation only reassigns
+  // values to slots, so the per-draw work is the random draw and one value gather, not four
+  // CSR gathers (offsets, neighbor, neighbor position, weight) per slot per permutation.
+  var slotWeights: array<f32, ${maximumNeighbors}>;
+  var neighborTotal = 0u;
+  ${neighborLoopWGSL(`if (neighborTotal < MAXIMUM_NEIGHBORS) {
+      slotWeights[neighborTotal] = ${slotWeightWGSL};
+      neighborTotal++;
+    }`)}
+  // Islands (kept) and rows that cannot draw k distinct others are not tested.
+  if (neighborTotal == 0u || neighborTotal > others) {
+    ${replay ? '' : `exceedances[exceedancesOffset + index] = NOT_TESTED;${sequential ? '\n    exceedances[exceedancesOffset + ROWS + index] = NOT_TESTED;' : ''}`}
+    return;
+  }
+  ${
+    replay
+      ? ''
+      : `// 'folded' needs the simulated mean first: sweep 0 sums, sweep 1 counts (same deterministic stream).
+  for (var sweep = 0u; sweep < ${folded ? 2 : 1}u; sweep++) {`
+  }
+  for (var permutation = 0u; permutation < permutations; permutation++) {
+    var stream = createPhiloxStream(key, index, permutation, RANDOM_TAG);
+    var swapPositions: array<u32, ${maximumNeighbors}>;
+    var swapValues: array<u32, ${maximumNeighbors}>;
+    var swapCount = 0u;
+    var lagA = 0.0;
+    var lagB = 0.0;
+    for (var drawn = 0u; drawn < neighborTotal; drawn++) {
+      // Partial Fisher-Yates over the other analysis rows' virtual positions [0, others).
+      let pick = drawn + nextPhiloxBelow(&stream, others - drawn);
+      let chosen = readSwap(&swapPositions, &swapValues, swapCount, pick);
+      if (pick != drawn) {
+        let displaced = readSwap(&swapPositions, &swapValues, swapCount, drawn);
+        var entry = 0u;
+        loop {
+          if (entry == swapCount || swapPositions[entry] == pick) {
+            break;
+          }
+          entry++;
+        }
+        swapPositions[entry] = pick;
+        swapValues[entry] = displaced;
+        swapCount = max(swapCount, entry + 1u);
+      }
+      let drawnPosition = chosen + select(0u, 1u, chosen >= position);
+      let dx = getX(drawnPosition);
+      let dy = getY(drawnPosition);
+      lagA += slotWeights[drawn] * getDrawnA(fx, fy, dx, dy);
+      ${spec.drawnB ? 'lagB += slotWeights[drawn] * getDrawnB(fx, fy, dx, dy);' : ''}
+    }
+    let simulated = getLocalTerm(fx, fy, lagA, lagB);
+    ${
+      replay
+        ? 'nullDistribution[nullDistributionOffset + permutation] = simulated;'
+        : folded
+          ? `if (sweep == 0u) {
+      total += simulated;
+    } else {
+      folded += select(0u, 1u, abs(simulated - mean) >= abs(observed - mean));
+    }`
+          : `greater += select(0u, 1u, simulated >= observed);
+    lesser += select(0u, 1u, simulated <= observed);${
+      sequential
+        ? `
+    // Besag-Clifford: stop at the first permutation whose exceedance count reaches the target.
+    if (${getExceedanceCountWGSL(alternative)} >= STOP_AFTER_EXCEEDANCES) {
+      permutationsRun = permutation + 1u;
+      break;
+    }`
+        : ''
+    }`
+    }
+  }
+  ${
+    replay
+      ? 'replayInfo[replayInfoOffset + 1u] = bitcast<u32>(f32(permutations));'
+      : `mean = total / f32(permutations);
+  }
+  exceedances[exceedancesOffset + index] = ${getExceedanceCountWGSL(alternative)};${sequential ? '\n  exceedances[exceedancesOffset + ROWS + index] = permutationsRun;' : ''}`
+  }`
+  };
+}
+
+/** Prepared views borrowed by a recording-only replay; never separately recomputed. @internal */
+type LocalPermutationReplayInputs = {
+  kernel: LocalPermutationKernelOptions;
+  bindings: readonly WGSLKernelBinding[];
+  observedRaw: GraphDataView<'float32'>;
+};
+
 /**
  * Conditional-permutation (pseudo p-value) inference for local Moran's I, local Geary (with the
  * optional `classes` output), local Getis-Ord G / G*, local bivariate Moran, Lee's local L and the
@@ -393,6 +558,9 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
   readonly id: string;
   /** Validated properties. */
   readonly props: GPULocalPermutationTestProps;
+
+  /** Views from the latest recording graph lowering, for internal lens replay only. @internal */
+  replayInputs?: LocalPermutationReplayInputs;
 
   constructor(props: GPULocalPermutationTestProps) {
     const id = props.id ?? 'local-permutation-test';
@@ -581,7 +749,6 @@ export class GPULocalPermutationTest implements GPUCommandNodeProducer {
     const rows = props.values.length;
     const alternative = resolvePermutationAlternative(id, props.alternative);
     const multiplier = getAlternativeMultiplier(alternative);
-    const folded = alternative === 'folded';
     const stopAfter = props.stopAfterExceedances;
     const sequential = stopAfter !== undefined;
     const keepIslands = resolveGPUIslandPolicy(id, props.islands) === 'keep';
@@ -644,6 +811,31 @@ fn getY(position: u32) -> f32 { return 0.0 * f32(position); }`;
         'rowPositions[rowPositionsOffset + neighbor] != INVALID_POSITION',
         action
       );
+    const kernelOptions = {
+      constantsWGSL,
+      accessWGSL,
+      maximumPermutations,
+      maximumNeighbors,
+      stopAfter,
+      alternative,
+      spec,
+      neighborLoopWGSL,
+      slotWeightWGSL
+    };
+    if (graph.recording) {
+      this.replayInputs = {
+        kernel: kernelOptions,
+        bindings: [
+          {name: 'offsets', view: weights.offsets, type: 'u32', access: 'read'},
+          {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},
+          {name: 'weights', view: effectiveWeights, type: 'f32', access: 'read'},
+          {name: 'rowPositions', view: rowPositions, type: 'u32', access: 'read'},
+          dataBinding,
+          {name: 'parameters', view: parameters, type: 'u32', access: 'read'}
+        ],
+        observedRaw
+      };
+    }
     const weightsOverflow = weights.status?.overflow;
     // Sequential stopping: the permute kernel already binds eight storage buffers, so it writes the
     // exceedance count and the permutation count into one transient (count at `index`, permutation
@@ -805,114 +997,7 @@ ${accessWGSL}`,
           }
         ],
         invocationCount: rows,
-        declarations: `${constantsWGSL}
-${accessWGSL}
-${getPermutationParameterWGSL(maximumPermutations)}
-${PERMUTATION_RANDOM_WGSL}
-${sequential ? `const STOP_AFTER_EXCEEDANCES: u32 = ${stopAfter}u;\n` : ''}const RANDOM_TAG: u32 = ${LOCAL_PERMUTATION_RANDOM_TAG}u;
-
-// Value at a virtual shuffle position: a recorded swap, or the position itself.
-fn readSwap(
-  swapPositions: ptr<function, array<u32, ${maximumNeighbors}>>,
-  swapValues: ptr<function, array<u32, ${maximumNeighbors}>>,
-  swapCount: u32,
-  position: u32
-) -> u32 {
-  for (var entry = 0u; entry < swapCount; entry++) {
-    if ((*swapPositions)[entry] == position) {
-      return (*swapValues)[entry];
-    }
-  }
-  return position;
-}`,
-        body: `let observed = observedRaw[observedRawOffset + index];
-  // The permutation count is never clamped: an invalid one leaves every row untested.
-  // Join counts test only rows with at least one join (esda sets the other p-values to NaN).
-  if (!isFiniteFloat(observed) || !isPermutationCountValid()${spec.joinCount ? ' || observed == 0.0' : ''}) {
-    exceedances[exceedancesOffset + index] = NOT_TESTED;${sequential ? '\n    exceedances[exceedancesOffset + ROWS + index] = NOT_TESTED;' : ''}
-    return;
-  }
-  let position = rowPositions[rowPositionsOffset + index];
-  let others = rowPositions[rowPositionsOffset + ROWS] - 1u;
-  let fx = getX(position);
-  let fy = getY(position);
-  let permutations = readValidPermutationCount();${sequential ? '\n  var permutationsRun = permutations;' : ''}
-  let key = readSeedKey();
-  var greater = 0u;
-  var lesser = 0u;
-  var folded = 0u;
-  var total = 0.0;
-  var mean = 0.0;
-  // The row's active neighbor weights in slot order, read once: a permutation only reassigns
-  // values to slots, so the per-draw work is the random draw and one value gather, not four
-  // CSR gathers (offsets, neighbor, neighbor position, weight) per slot per permutation.
-  var slotWeights: array<f32, ${maximumNeighbors}>;
-  var neighborTotal = 0u;
-  ${neighborLoopWGSL(`if (neighborTotal < MAXIMUM_NEIGHBORS) {
-      slotWeights[neighborTotal] = ${slotWeightWGSL};
-      neighborTotal++;
-    }`)}
-  // Islands (kept) and rows that cannot draw k distinct others are not tested.
-  if (neighborTotal == 0u || neighborTotal > others) {
-    exceedances[exceedancesOffset + index] = NOT_TESTED;${sequential ? '\n    exceedances[exceedancesOffset + ROWS + index] = NOT_TESTED;' : ''}
-    return;
-  }
-  // 'folded' needs the simulated mean first: sweep 0 sums, sweep 1 counts (same deterministic stream).
-  for (var sweep = 0u; sweep < ${folded ? 2 : 1}u; sweep++) {
-  for (var permutation = 0u; permutation < permutations; permutation++) {
-    var stream = createPhiloxStream(key, index, permutation, RANDOM_TAG);
-    var swapPositions: array<u32, ${maximumNeighbors}>;
-    var swapValues: array<u32, ${maximumNeighbors}>;
-    var swapCount = 0u;
-    var lagA = 0.0;
-    var lagB = 0.0;
-    for (var drawn = 0u; drawn < neighborTotal; drawn++) {
-      // Partial Fisher-Yates over the other analysis rows' virtual positions [0, others).
-      let pick = drawn + nextPhiloxBelow(&stream, others - drawn);
-      let chosen = readSwap(&swapPositions, &swapValues, swapCount, pick);
-      if (pick != drawn) {
-        let displaced = readSwap(&swapPositions, &swapValues, swapCount, drawn);
-        var entry = 0u;
-        loop {
-          if (entry == swapCount || swapPositions[entry] == pick) {
-            break;
-          }
-          entry++;
-        }
-        swapPositions[entry] = pick;
-        swapValues[entry] = displaced;
-        swapCount = max(swapCount, entry + 1u);
-      }
-      let drawnPosition = chosen + select(0u, 1u, chosen >= position);
-      let dx = getX(drawnPosition);
-      let dy = getY(drawnPosition);
-      lagA += slotWeights[drawn] * getDrawnA(fx, fy, dx, dy);
-      ${spec.drawnB ? 'lagB += slotWeights[drawn] * getDrawnB(fx, fy, dx, dy);' : ''}
-    }
-    let simulated = getLocalTerm(fx, fy, lagA, lagB);
-    ${
-      folded
-        ? `if (sweep == 0u) {
-      total += simulated;
-    } else {
-      folded += select(0u, 1u, abs(simulated - mean) >= abs(observed - mean));
-    }`
-        : `greater += select(0u, 1u, simulated >= observed);
-    lesser += select(0u, 1u, simulated <= observed);${
-      sequential
-        ? `
-    // Besag-Clifford: stop at the first permutation whose exceedance count reaches the target.
-    if (${getExceedanceCountWGSL(alternative)} >= STOP_AFTER_EXCEEDANCES) {
-      permutationsRun = permutation + 1u;
-      break;
-    }`
-        : ''
-    }`
-    }
-  }
-  mean = total / f32(permutations);
-  }
-  exceedances[exceedancesOffset + index] = ${getExceedanceCountWGSL(alternative)};${sequential ? '\n  exceedances[exceedancesOffset + ROWS + index] = permutationsRun;' : ''}`
+        ...getLocalPermutationKernelWGSL(kernelOptions)
       })
     );
 

@@ -110,6 +110,13 @@ export type GPUMinimumBoundsProps = GPUMinimumBoundsSharedProps &
       }
   );
 
+/** Narrows polygon inputs even when the caller compiles without strict null checks. */
+function isPolygonMinimumBoundsInput(
+  props: GPUMinimumBoundsProps
+): props is Extract<GPUMinimumBoundsProps, GPUPolygonGeometryFields> {
+  return !props.labels;
+}
+
 /**
  * Minimum bounding shapes of every feature (or label group): the minimum-area rotated rectangle
  * (`oriented_envelope`, `minimum_rotated_rectangle`), the minimum bounding circle
@@ -171,7 +178,7 @@ export class GPUMinimumBounds implements GPUCommandNodeProducer {
     if (rows > MAXIMUM_ROWS) {
       throw new Error(`${id} supports fewer than 2^24 rows`);
     }
-    if (props.labels) {
+    if (!isPolygonMinimumBoundsInput(props)) {
       validatePackedView(props.labels, ['uint32'], `${id} labels`);
       if (props.labels.length !== rows) {
         throw new Error(`${id} labels length must equal positions length`);

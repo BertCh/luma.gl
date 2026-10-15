@@ -812,3 +812,70 @@ it('GPUGlobalSpatialStatistics join counts match esda and the exhaustive randomi
     }
   }
 });
+
+it('General G fills both analytical inference triples, including row weights and constant-data variance', async () => {
+  const device = await getWebGPUTestDevice();
+  requireTestDevice(device);
+  const rows: [number, number][][] = [
+    [[1, 1]],
+    [
+      [0, 1],
+      [2, 1],
+      [3, 1]
+    ],
+    [
+      [1, 1],
+      [3, 1]
+    ],
+    [
+      [1, 1],
+      [2, 1]
+    ]
+  ];
+  for (const standardized of [false, true]) {
+    const weights = createWeights(
+      rows.map(row =>
+        row.map(([neighbor, weight]) => [neighbor, standardized ? weight / row.length : weight])
+      )
+    );
+    const harness = createHarness(
+      device,
+      {weights, values: Float32Array.from([2, 3, 5, 8])},
+      ['getisOrdG'],
+      {islands: 'keep', standardized}
+    );
+    for (const values of [
+      [2, 3, 5, 8],
+      [0, 0, 5, 8],
+      [3, 3, 3, 3],
+      [0, 0, 0, 0],
+      [0, 0, 0, 5]
+    ]) {
+      const uploadedValues = Float32Array.from(values);
+      const {results, joinCounts} = await harness.run({values: uploadedValues});
+      const oracle = computeGlobalSpatialStatisticsOracle({
+        weights,
+        values: uploadedValues,
+        islands: 'keep',
+        standardized
+      });
+      expectMatchesOracle(
+        results,
+        joinCounts,
+        oracle,
+        `G standardized=${standardized} values=${values}`,
+        ['getisOrdG']
+      );
+      for (const [normality, randomization] of [
+        [FIELD.varianceNormality, FIELD.varianceRandomization],
+        [FIELD.zNormality, FIELD.zRandomization],
+        [FIELD.pNormality, FIELD.pRandomization]
+      ]) {
+        expect(results[LAYOUT.getisOrdG + normality]).toBe(
+          results[LAYOUT.getisOrdG + randomization]
+        );
+      }
+    }
+    harness.destroy();
+  }
+});

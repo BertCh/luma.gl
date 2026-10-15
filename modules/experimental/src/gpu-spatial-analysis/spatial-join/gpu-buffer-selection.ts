@@ -291,6 +291,10 @@ export class GPUBufferSelection implements GPUCommandNodeProducer {
           id: idChunks.length > 1 ? `${id}-mask-chunk-${chunkIndex}` : `${id}-mask`,
           operation: OPERATION,
           variant: 'mask',
+          record:
+            this.spatialContext.coordinateSpace === 'planar'
+              ? {formula: 'gpu-spatial-analysis.buffer-selection'}
+              : undefined,
           bindings: [
             {name: 'featureIds', view: idChunk, type: 'u32', access: 'read'},
             {name: 'maskOut', view: maskChunks[chunkIndex], type: 'u32', access: 'read_write'}

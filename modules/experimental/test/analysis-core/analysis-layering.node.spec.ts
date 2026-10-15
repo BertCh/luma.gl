@@ -33,6 +33,19 @@ const ENTRY_ORDER = [
 /** Upstream luma entries the analysis entries may also import (they import no analysis entry). */
 const UPSTREAM_ENTRIES = new Set(['gpu-project', 'gpu-tables']);
 
+/**
+ * Visualization adapters are internal to computation-lenses, not analysis entry exports. They
+ * register view packs and may import computation-views (including DOM hosts); exporting them
+ * from analysis barrels would invert the runtime dependency graph.
+ */
+const INTERNAL_SUBDIRECTORIES = new Set([
+  'gpu-dataframe/computation-pack',
+  'gpu-raster/computation-pack',
+  'gpu-terrain/computation-pack',
+  'gpu-spatial-analysis/computation-pack',
+  'gpu-network/computation-pack'
+]);
+
 /** Top-level source files each barrel re-exports explicitly; everything else comes from `export *`. */
 const EXPLICIT_BARREL_SOURCES: Record<(typeof ENTRY_ORDER)[number], RegExp> = {
   geospatial: /^\.\/[a-z0-9-]+$|^@luma\.gl\/gpgpu\/gpu-core$|^\.\.\/utils\//,
@@ -49,9 +62,20 @@ const DOCUMENTED_ENTRIES: Record<string, (typeof ENTRY_ORDER)[number]> = {
   'geospatial.md': 'geospatial',
   'gpu-dataframe-analysis.md': 'gpu-dataframe',
   'gpu-raster/operations-analysis.md': 'gpu-raster',
-  'gpu-terrain.md': 'gpu-terrain',
-  'gpu-spatial-analysis.md': 'gpu-spatial-analysis',
-  'gpu-network.md': 'gpu-network'
+  'gpu-terrain/operators.md': 'gpu-terrain',
+  'gpu-spatial-analysis/operators-weights.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-statistics.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-dynamics.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-accessibility.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-joins.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-validity.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-density.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-cells.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-lines.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-geometry.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/operators-regression.md': 'gpu-spatial-analysis',
+  'gpu-spatial-analysis/recipes.md': 'gpu-spatial-analysis',
+  'gpu-network/operators.md': 'gpu-network'
 };
 
 function listSourceFiles(directory: string): string[] {
@@ -83,6 +107,9 @@ function getRelativeImportLayers(file: string): Set<string> {
 function getLayerImports(layer: string): Map<string, string[]> {
   const imports = new Map<string, string[]>();
   for (const file of listSourceFiles(join(SOURCE_ROOT, layer))) {
+    if (isInternalSource(file)) {
+      continue;
+    }
     for (const target of getRelativeImportLayers(file)) {
       if (target !== layer) {
         imports.set(target, [...(imports.get(target) || []), relative(SOURCE_ROOT, file)]);
@@ -90,6 +117,11 @@ function getLayerImports(layer: string): Map<string, string[]> {
     }
   }
   return imports;
+}
+
+function isInternalSource(file: string): boolean {
+  const directory = relative(SOURCE_ROOT, file).split(sep).slice(0, 2).join('/');
+  return INTERNAL_SUBDIRECTORIES.has(directory);
 }
 
 function getEntryExports(): Map<string, Set<string>> {
@@ -124,6 +156,9 @@ function getSubdirectoryIndexes(entry: string): string[] {
   return readdirSync(join(SOURCE_ROOT, entry))
     .map(name => join(SOURCE_ROOT, entry, name, 'index.ts'))
     .filter(index => {
+      if (isInternalSource(index)) {
+        return false;
+      }
       try {
         return statSync(index).isFile();
       } catch {

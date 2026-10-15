@@ -17,6 +17,9 @@ moments and every neighborhood, and its local outputs are NaN. -0 equals +0 (whi
 With no analysis row every statistic (and E[I], E[C]) is NaN, n is 0 and the join counts are 0 (a
 count of nothing, not an undefined value). The global variances divide by n - 3, so they
 (and z, p) are NaN for n < 4; a statistic whose denominator is zero (constant values) is NaN, never 0.
+Positive constant values are the General G exception: its pair-product denominator is positive,
+G = E[G] and its permutation variance is exactly zero; z and p remain NaN. All-zero values still
+have an undefined General G and variance because the pair-product denominator is zero.
 Join counts treat a nonzero finite value as black (counted on the adjacency like esda.Join_Counts,
 which raises on a one-colour input).
 
@@ -104,13 +107,15 @@ def get_global_expected(values, mask):
     constant = bool(np.all(subset == subset[0]))
     result = {'count': n}
 
-    def block(statistic, expected, variance):
+    def block(statistic, expected, variance, constant_variance=NAN):
         statistic = finite_or_nan(statistic)
         expected = finite_or_nan(expected)
         variance = finite_or_nan(variance)
-        if n < 4 or constant:
-            # Variances divide by n - 3; constant values have a zero variance (policy: NaN).
+        if n < 4:
+            # Variances divide by n - 3, including positive constant General G.
             variance = NAN
+        elif constant:
+            variance = constant_variance
         z = (statistic - expected) / math.sqrt(variance) if variance > 0 else NAN
         return {
             'statistic': statistic,
@@ -125,7 +130,8 @@ def get_global_expected(values, mask):
     getis_ord = esda.G(subset, make_weights(keep), permutations=0)
     result['moran'] = block(moran.I if not constant else NAN, moran.EI, moran.VI_rand)
     result['geary'] = block(geary.C if not constant else NAN, geary.EC, geary.VC_rand)
-    result['getisOrdG'] = block(getis_ord.G, getis_ord.EG, getis_ord.VG)
+    result['getisOrdG'] = block(getis_ord.G, getis_ord.EG, getis_ord.VG,
+                               constant_variance=0.0 if subset[0] > 0 and make_weights(keep).s0 > 0 else NAN)
     black = (subset != 0).astype(np.float64)
     result['blackCount'] = int(black.sum())
     # Halved ordered-link counts, esda's definition; esda itself raises (chi2 table) on one colour.
@@ -175,7 +181,7 @@ CASES = [
     ('mask values other than 1', 'any nonzero mask word includes the row', BASE_VALUES, [7 if row % 2 else 1 for row in range(ROW_COUNT)]),
     ('empty input', 'no finite value: n = 0 and every statistic NaN', [NAN] * ROW_COUNT, None),
     ('three analysis rows', 'n = 3 < 4: the randomization variances, z and p are NaN', [3.0, 1.0, 2.0] + [NAN] * 9, None),
-    ('constant values', 'zero variance: Moran and Geary are NaN, z and p NaN (G is defined)', [2.0] * ROW_COUNT, None),
+    ('constant values', 'Moran and Geary are NaN; G = E[G] with variance 0; z and p are NaN', [2.0] * ROW_COUNT, None),
 ]
 
 global_cases = []

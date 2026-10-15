@@ -6,6 +6,7 @@ import type {Texture} from '@luma.gl/core';
 import {Geometry} from '@luma.gl/engine';
 import {
   DeferredSceneRenderer,
+  getDeferredSceneSupport,
   MAX_DEFERRED_POINT_LIGHTS,
   type SceneMaterial,
   type SceneRenderOptions,
@@ -199,5 +200,103 @@ describe('DeferredSceneRenderer', () => {
         expect.objectContaining({name: 'instanceModelMatrixCol3', location: 11})
       ])
     );
+  });
+});
+
+describe('getDeferredSceneSupport', () => {
+  test.each([
+    [{id: 'opaque'}, undefined],
+    [{id: 'masked', alphaMode: 'MASK'}, undefined],
+    [{id: 'blended', alphaMode: 'BLEND'}, 'alpha-blend'],
+    [{id: 'unlit', uniforms: {unlit: true}}, 'unlit'],
+    [{id: 'transmissive', uniforms: {transmissionFactor: 0.4}}, 'transmission'],
+    [
+      {id: 'diffuse-transmissive', uniforms: {diffuseTransmissionFactor: 0.4}},
+      'diffuse-transmission'
+    ],
+    [{id: 'scattering', uniforms: {multiscatterColorFactor: [0.4, 0, 0]}}, 'volume-scattering'],
+    [{id: 'bump', uniforms: {bumpMapEnabled: true}}, 'bump-map'],
+    [{id: 'bump-binding', bindings: {pbr_bumpSampler: {} as Texture}}, 'bump-map-binding'],
+    [{id: 'volume', uniforms: {thicknessFactor: 0.4}}, 'volume'],
+    [{id: 'clearcoat', uniforms: {clearcoatFactor: 0.4}}, 'clearcoat'],
+    [{id: 'sheen', uniforms: {sheenColorFactor: [0.1, 0, 0]}}, 'sheen'],
+    [{id: 'iridescence', uniforms: {iridescenceFactor: 0.4}}, 'iridescence'],
+    [{id: 'anisotropy', uniforms: {anisotropyStrength: 0.4}}, 'anisotropy'],
+    [{id: 'ior', uniforms: {ior: 1.3}}, 'ior'],
+    [{id: 'specular', uniforms: {specularIntensityFactor: 0.7}}, 'specular-intensity'],
+    [{id: 'specular-color', uniforms: {specularColorFactor: [0.5, 1, 1]}}, 'specular-color'],
+    [{id: 'color-map', uniforms: {specularColorMapEnabled: true}}, 'specular-color-map'],
+    [
+      {id: 'intensity-map', uniforms: {specularIntensityMapEnabled: true}},
+      'specular-intensity-map'
+    ],
+    [
+      {id: 'color-binding', bindings: {pbr_specularColorSampler: {} as Texture}},
+      'specular-color-binding'
+    ],
+    [
+      {id: 'intensity-binding', bindings: {pbr_specularIntensitySampler: {} as Texture}},
+      'specular-intensity-binding'
+    ]
+  ] satisfies [
+    SceneMaterial,
+    string | undefined
+  ][])('reports surface support for %j', (material, feature) => {
+    const options = makeOptions(material);
+    const support = getDeferredSceneSupport(options);
+    expect(support.supported).toBe(supportsDeferredScene(options));
+    if (feature)
+      expect(support).toMatchObject({
+        supported: false,
+        feature: `surface:surface/${feature}`,
+        reason: expect.any(String)
+      });
+    else expect(support).toEqual({supported: true});
+  });
+
+  test.each([
+    [{renderMode: 'debugNormals'}, 'render-mode'],
+    [{lights: [{type: 'spot', position: [0, 1, 0], direction: [0, -1, 0]}]}, 'spot-light'],
+    [
+      {
+        lights: [
+          {type: 'directional', direction: [0, 0, -1]},
+          {type: 'directional', direction: [1, 0, -1]}
+        ]
+      },
+      'directional-light-count'
+    ],
+    [
+      {
+        lights: Array.from({length: MAX_DEFERRED_POINT_LIGHTS + 1}, () => ({
+          type: 'point',
+          position: [0, 0, 0]
+        }))
+      },
+      'point-light-count'
+    ],
+    [{environment: {diffuseTexture: {} as Texture}}, 'image-based-lighting']
+  ] satisfies [
+    Partial<SceneRenderOptions>,
+    string
+  ][])('reports scene support for %j', (overrides, feature) => {
+    const options = {...makeOptions({id: 'opaque'}), ...overrides};
+    expect(getDeferredSceneSupport(options)).toMatchObject({supported: false, feature});
+    expect(getDeferredSceneSupport(options).supported).toBe(supportsDeferredScene(options));
+  });
+
+  test('reports the first failure in the existing check order', () => {
+    const options = makeOptions({id: 'several', alphaMode: 'BLEND', uniforms: {unlit: true}});
+    expect(getDeferredSceneSupport(options)).toMatchObject({
+      feature: 'surface:surface/alpha-blend'
+    });
+    expect(getDeferredSceneSupport({...options, renderMode: 'debugNormals'})).toMatchObject({
+      feature: 'render-mode'
+    });
+    const unnamedSurface = {...options.surfaces[0]};
+    Reflect.deleteProperty(unnamedSurface, 'id');
+    expect(getDeferredSceneSupport({...options, surfaces: [unnamedSurface]})).toMatchObject({
+      feature: 'surface:0/alpha-blend'
+    });
   });
 });

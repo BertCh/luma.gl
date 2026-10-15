@@ -205,8 +205,10 @@ export type GPUGlobalSpatialStatisticsOutput = {
  *   randomization variance equals `esda.G.VG` but is evaluated in centered form,
  *   `Var(x'Wx) = mean^2 Var(d'z) + 2 mean Cov(d'z, z'Wz) + Var(z'Wz)` with `d_i = w_i. + w_.i`,
  *   which avoids the catastrophic cancellation of `E[G^2] - E[G]^2` in f32. G needs non-negative
- *   ratio-scale data: if any analysis value is negative the whole G block is NaN. Only
- *   randomization fields are filled.
+ *   ratio-scale data: if any analysis value is negative the whole G block is NaN. Both inference
+ *   field triples report this same analytical variance and normal approximation (esda names it
+ *   `VG` / `z_norm`); no permutations run here. esda.G binarizes weights: matching it requires
+ *   binary input weights and `islands: 'keep'`. Other weights give the weighted generalization.
  * - Bivariate Moran (`esda.Moran_BV`, which permutes `y`):
  *   `I_BV = (n / S0) sum_ij w_ij zx_i zy_j / sqrt(sum zx^2 sum zy^2)`, which equals esda's value for
  *   row-standardized weights (`S0 = n`). Under randomization of `y`, `E = 0` and the exact
@@ -220,7 +222,8 @@ export type GPUGlobalSpatialStatisticsOutput = {
  *   half-integers.
  *
  * Variances are NaN when `n < 4` (the randomization formulas divide by `n - 3`), `S0 = 0`, or the
- * values are constant; z and p are NaN where the variance is not positive. Constant values center
+ * values are constant (General G has variance zero for positive constant data); z and p are NaN
+ * where the variance is not positive. Constant values center
  * to exactly 0, so Moran's I and Geary's C are NaN for them (not a ratio of rounding residues); the
  * expectations of I and C are NaN below two rows. With no analysis row every statistic is NaN and
  * the join counts are 0.
@@ -1044,6 +1047,8 @@ fn getQuadraticFormVariance(
   n: f32, s0: f32, s1: f32, s2: f32, degreeDeviation: f32, mean: f32,
   sumSquares: f32, sumCubes: f32, sumFourths: f32
 ) -> f32 {
+  // A constant input has an invariant quadratic form under every permutation.
+  if (sumSquares == 0.0) { return 0.0; }
   let kurtosis = n * sumFourths / (sumSquares * sumSquares);
   let moranVariance = getMoranMoments(n, s0, s1, s2, kurtosis).z;
   let scale = s0 * sumSquares / n;
@@ -1146,10 +1151,12 @@ function getFinalizeBody(props: GPUGlobalSpatialStatisticsProps, hasOverflow: bo
     let statistic = divide(readTotal(COLUMN_G_CROSS), denominator);
     let expected = divide(s0, n * (n - 1.0));
     let variance = select(getQuietNaN(1u), getFinite(getQuadraticFormVariance(n, s0, s1, s2,
-      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / (denominator * denominator)), valid);
+      degreeDeviation, mean, sumSquares, sumCubes, sumFourths) / (denominator * denominator)),
+      n >= 4.0 && s0 > 0.0 && denominator > 0.0);
     let z = getZScore(statistic, expected, variance);
-    writeBlock(${layout.getisOrdG}u, array<f32, 8>(statistic, expected, getQuietNaN(2u),
-      getQuietNaN(2u), getQuietNaN(2u), variance, z, getPValue(z)), ${enabled('getisOrdG')});
+    // esda calls these VG / z_norm; retain the randomization aliases for compatibility.
+    writeBlock(${layout.getisOrdG}u, array<f32, 8>(statistic, expected, variance,
+      z, getPValue(z), variance, z, getPValue(z)), ${enabled('getisOrdG')});
   }
   // Bivariate Moran's I, randomization of y.
   {

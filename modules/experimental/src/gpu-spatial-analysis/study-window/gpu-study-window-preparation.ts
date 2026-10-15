@@ -21,11 +21,11 @@ import {
   type GPUPolygonStudyWindow,
   type GPUPolygonStudyWindowViews,
   type GPUSpatialContext
-} from '../../analysis-core/contracts';
+} from '../../analysis-core/contracts/index';
 import {
   GPU_POLYGON_RASTERIZATION_NO_ZONE,
   GPUPolygonRasterization
-} from '../../gpu-raster/polygon-rasterization';
+} from '../../gpu-raster/polygon-rasterization/index';
 import {getOffsetRangeSearchSource} from '../../gpu-raster/polygon-rasterization/polygon-rasterization-parameters';
 import {
   importGraphBuffer,

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import type {GPUCommandGraph, GraphDataView} from '@luma.gl/gpgpu/gpu-core';
-import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts';
+import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts/index';
 import {LON_LAT_RING_WGSL} from '../../analysis-core/lon-lat-ring-wgsl';
 import {GEODESIC_WGSL} from '../geometry-measures/geodesic-wgsl';
 import {createWGSLKernelNode, type WGSLKernelBinding} from '../../utils/wgsl-kernel-nodes';

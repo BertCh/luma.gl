@@ -737,6 +737,7 @@ export function createFlowPairSumNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'pair-sum',
+    record: {formula: 'gpu-network.flow-aggregation.pair-sum'},
     condition: props.condition,
     bindings: [
       {name: 'slotsByPair', view: props.slotsByPair, type: 'u32', access: 'read'},

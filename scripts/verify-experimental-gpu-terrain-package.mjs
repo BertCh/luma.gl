@@ -38,6 +38,7 @@ const contributorExportNames = [
   'GPUTerrainSpikeRepair',
   'GPUTerrainSummits',
   'GPUTerrainPeakSnap',
+  'GPUTerrainPeakProminence',
   'GPUTerrainCriticalPoints',
   'GPUProfilePeaks',
   'GPUTerrainCurvature',
@@ -81,6 +82,8 @@ try {
     `import {
   ${contributorExportNames.join(',\n  ')},
   type GPUCompactOutput,
+  type GPUTerrainPeakProminenceOutput,
+  type GPUTerrainPeakProminenceProps,
   type GPUUint32Rows
 } from '@luma.gl/experimental/gpu-terrain';
 import type {GPUCommandNodeProducer} from '@luma.gl/gpgpu/gpu-core';
@@ -89,10 +92,14 @@ const contributorConstructors = [
   ${contributorExportNames.join(',\n  ')}
 ];
 declare const output: GPUCompactOutput;
+declare const prominenceOutput: GPUTerrainPeakProminenceOutput;
+declare const prominenceProps: GPUTerrainPeakProminenceProps;
 declare const rows: GPUUint32Rows;
 declare const contributor: GPUCommandNodeProducer;
 void contributorConstructors;
 void output;
+void prominenceOutput;
+void prominenceProps;
 void rows;
 void contributor;
 

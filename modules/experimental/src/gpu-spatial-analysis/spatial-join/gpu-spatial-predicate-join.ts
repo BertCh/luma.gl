@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus
@@ -1728,6 +1728,10 @@ ${getSpatialRelateWorkgroupWGSL(sideSpecs)}`,
         id: `${id}-mask`,
         operation: OPERATION,
         variant: 'mask',
+        record:
+          this.props.predicate === 'intersects'
+            ? {formula: 'gpu-spatial-analysis.spatial-predicate-join'}
+            : undefined,
         bindings: [
           {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
           {name: 'matrices', view: matrices, type: 'u32', access: 'read'},

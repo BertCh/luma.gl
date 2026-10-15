@@ -632,6 +632,7 @@ ${binSource}`;
         id: `${id}-degrees`,
         operation,
         variant: 'degrees',
+        record: {datum: {keySpace: 'node'}, formula: 'gpu-network.statistics.degree-histogram'},
         bindings: degreeBindings,
         invocationCount: nodeCount,
         // Privatized: each workgroup folds its vertices into workgroup-memory histograms, maxima

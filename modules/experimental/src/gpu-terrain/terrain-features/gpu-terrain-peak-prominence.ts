@@ -11,7 +11,7 @@ import {
   type GPUCommandNodeProducer,
   type GraphDataView
 } from '@luma.gl/gpgpu/gpu-core';
-import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster';
+import type {GPURasterBand, GPURasterMetadata} from '../../gpu-raster/index';
 import {
   getRasterBandViews,
   getRasterBufferBandNodes,

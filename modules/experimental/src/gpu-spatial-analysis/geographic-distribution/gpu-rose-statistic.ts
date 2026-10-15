@@ -38,6 +38,7 @@ export const GPU_ROSE_STATISTIC_SUMMARY = {
   meanAngle: 1,
   resultantLength: 2,
   circularVariance: 3,
+  /** Standard Rayleigh z of the unweighted valid directions (doubled for axial data). */
   rayleighZ: 4,
   stride: GPU_ROSE_STATISTIC_SUMMARY_STRIDE
 } as const;
@@ -61,6 +62,7 @@ export type GPURoseStatisticProps = {
   spatialContext?: GPUSpatialContext;
   starts: GraphDataView<'float32x2'>;
   ends: GraphDataView<'float32x2'>;
+  /** Positive finite descriptive weights for bins and weighted moments, not frequency counts. */
   weights?: GraphDataView<'float32'>;
   groupIds?: GraphDataView<'uint32'>;
   groupCount?: number;
@@ -76,6 +78,12 @@ export type GPURoseStatisticProps = {
  * use a left-closed/right-open convention. The mean is weighted by `weights` (one by default),
  * zero-length/non-finite lines are excluded, and bins add 256-row tile partials in source-row
  * order. The angular moment sums use a fixed 256-lane tree order (deterministic, not row order).
+ *
+ * Rayleigh z uses each valid segment once: `z = n * Rbar^2`, where `Rbar` is the
+ * unweighted mean resultant length (angles doubled in axial mode). Descriptive weights do not
+ * change z or n, except that non-positive/non-finite weights exclude a segment. In particular,
+ * changing length units cannot change z. No p-value is returned; the usual Rayleigh null assumes
+ * independent uniform directions. This is not giddy Rose's directional-LISA permutation test.
  *
  * With `groupIds` and more than one group, rows are first stably sorted by group (masked rows and
  * out-of-range group IDs sort last), so each group's workgroup reads only its own rows and the
@@ -280,7 +288,9 @@ var<workgroup> tileWeight: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedCount: array<u32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedWeight: array<f32, ${ROSE_WORKGROUP_SIZE}>;
 var<workgroup> sharedCosine: array<f32, ${ROSE_WORKGROUP_SIZE}>;
-var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
+var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;
+var<workgroup> sharedDirectionCosine: array<f32, ${ROSE_WORKGROUP_SIZE}>;
+var<workgroup> sharedDirectionSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
           segmented ? '\nvar<workgroup> segmentBegin: u32;\nvar<workgroup> segmentEnd: u32;' : ''
         }`,
         body: `let group = index / LANES;
@@ -294,6 +304,8 @@ var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
   var weightTotal = 0.0;
   var cosine = 0.0;
   var sine = 0.0;
+  var directionCosine = 0.0;
+  var directionSine = 0.0;
   ${tileLoopWGSL}
     var rowBin = 0xffffffffu;
     var rowWeight = 0.0;
@@ -309,8 +321,12 @@ var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
           if (angle < 0.0) { angle += 2.0 * PI; }
           ${axial ? 'if (angle >= PI) { angle -= PI; }' : ''}
           let circularAngle = ${axial ? '2.0 * angle' : 'angle'};
-          cosine += weight * cos(circularAngle);
-          sine += weight * sin(circularAngle);
+          let cosineAngle = cos(circularAngle);
+          let sineAngle = sin(circularAngle);
+          cosine += weight * cosineAngle;
+          sine += weight * sineAngle;
+          directionCosine += cosineAngle;
+          directionSine += sineAngle;
           weightTotal += weight;
           count++;
           rowBin = min(u32(floor(angle * f32(BIN_COUNT) / PERIOD + 1e-6)), BIN_COUNT - 1u);
@@ -336,6 +352,8 @@ var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
   sharedWeight[lane] = weightTotal;
   sharedCosine[lane] = cosine;
   sharedSine[lane] = sine;
+  sharedDirectionCosine[lane] = directionCosine;
+  sharedDirectionSine[lane] = directionSine;
   workgroupBarrier();
   for (var stride = LANES / 2u; stride > 0u; stride /= 2u) {
     if (lane < stride) {
@@ -343,6 +361,8 @@ var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
       sharedWeight[lane] += sharedWeight[lane + stride];
       sharedCosine[lane] += sharedCosine[lane + stride];
       sharedSine[lane] += sharedSine[lane + stride];
+      sharedDirectionCosine[lane] += sharedDirectionCosine[lane + stride];
+      sharedDirectionSine[lane] += sharedDirectionSine[lane + stride];
     }
     workgroupBarrier();
   }
@@ -358,7 +378,10 @@ var<workgroup> sharedSine: array<f32, ${ROSE_WORKGROUP_SIZE}>;${
       summary[base + 1u] = meanAngle;
       summary[base + 2u] = resultant;
       summary[base + 3u] = 1.0 - resultant;
-      summary[base + 4u] = totalWeight * resultant * resultant;
+      let validCount = f32(sharedCount[0]);
+      let rayleighZ = (sharedDirectionCosine[0] * sharedDirectionCosine[0] +
+        sharedDirectionSine[0] * sharedDirectionSine[0]) / validCount;
+      summary[base + 4u] = rayleighZ;
     } else {
       let nan = bitcast<f32>(0x7fc00000u | (group & 0u));
       for (var slot = 1u; slot < ${GPU_ROSE_STATISTIC_SUMMARY_STRIDE}u; slot++) { summary[base + slot] = nan; }

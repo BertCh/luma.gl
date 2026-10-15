@@ -544,6 +544,17 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
       nodes.push(
         createReachabilityRelaxNode<Parameters>(graph, {
           id: `${id}-relax-${round}`,
+          record: {
+            loop: {
+              id: `${id}-relax`,
+              iteration: round,
+              phase: 'gated',
+              maximumIterations: maximumIterations
+            },
+            datum: {keySpace: 'node', relation: 'frontier-queue'},
+            formula: 'gpu-network.reachability.relax',
+            attrs: {chaotic: true}
+          },
           nodeCount,
           state,
           phase,
@@ -623,6 +634,16 @@ export class GPUNetworkReachability implements GPUCommandNodeProducer {
         nodes.push(
           createReachabilityTieLevelNode<Parameters>(graph, {
             id: `${id}-tie-level-${round}`,
+            record: {
+              loop: {
+                id: `${id}-tie-level`,
+                iteration: round,
+                phase: 'gated',
+                maximumIterations: this.maximumTieIterations
+              },
+              datum: {keySpace: 'node', relation: 'frontier-queue'},
+              attrs: {chaotic: true}
+            },
             nodeCount,
             edgeCount,
             state,

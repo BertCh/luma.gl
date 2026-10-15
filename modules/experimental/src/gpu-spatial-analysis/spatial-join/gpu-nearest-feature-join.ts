@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts';
+import type {GPULonLatPolygonStatusPort} from '../../analysis-core/contracts/index';
 import {
   createLonLatPolygonCheckNode,
   hasLonLatPolygonStatus

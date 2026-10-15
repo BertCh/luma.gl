@@ -87,6 +87,7 @@ export function createAccessibilityColumnGatherNode<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'column-gather',
+    record: {datum: {keySpace: 'node'}, formula: 'gpu-network.accessibility.gravity'},
     bindings,
     invocationCount: props.columnCount,
     declarations: `const ROW_COUNT: u32 = ${props.rowCount}u;

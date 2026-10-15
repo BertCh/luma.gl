@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
-import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts';
+import type {GPUSpatialEdgeModel} from '../../analysis-core/contracts/index';
 
 /** Number of float32 words in the per-frame preparation parameters. */
 export const GPU_LON_LAT_POLYGON_PREPARATION_PARAMETER_LENGTH = 4;

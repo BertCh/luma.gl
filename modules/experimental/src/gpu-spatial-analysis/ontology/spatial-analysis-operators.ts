@@ -11,7 +11,7 @@ import type {
   GPUSpatialAnalysisOperatorQuery
 } from './spatial-analysis-ontology';
 
-const DOCUMENTATION = 'docs/api-reference/experimental/gpu-spatial-analysis.md';
+const DOCUMENTATION = 'docs/api-reference/experimental/gpu-spatial-analysis/operators.md';
 const TEST_ROOT = 'modules/experimental/test/gpu-spatial-analysis';
 
 type OperatorOverride = Partial<
@@ -85,7 +85,7 @@ const OPERATOR_OVERRIDES: Readonly<Record<string, CompleteOperatorOverride>> = {
     contract: 'GPUTerrainPeakProminenceOutput',
     evidence: 'partial',
     tests: 'modules/experimental/test/gpu-terrain/terrain-features/terrain-peak-prominence.spec.ts',
-    documentation: 'docs/api-reference/experimental/gpu-terrain.md'
+    documentation: 'docs/api-reference/experimental/gpu-terrain/operators.md'
   },
   GPUParameterBuffer: {
     inputs: [],

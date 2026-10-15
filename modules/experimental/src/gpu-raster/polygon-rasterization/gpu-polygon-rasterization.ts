@@ -6,7 +6,7 @@ import {
   GPU_LINEAR_EDGE_MODELS,
   resolveGPUSpatialContext,
   type GPUSpatialContext
-} from '../../analysis-core/contracts';
+} from '../../analysis-core/contracts/index';
 import {createSaturatedScanTotalNodes} from '../../utils/scan-total';
 import {
   createTransientView,

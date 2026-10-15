@@ -947,6 +947,10 @@ const CAPACITY: u32 = ${capacity}u;`,
         id: `${id}-weights`,
         operation: OPERATION,
         variant: `weights-${mode}${output.alternateWeights ? '-both' : ''}`,
+        record:
+          mode === 'extensive' && this.extensiveDenominator === 'zone'
+            ? {formula: 'gpu-spatial-analysis.areal-interpolation'}
+            : undefined,
         bindings: [
           {name: 'areas', view: areas, type: 'f32', access: 'read'},
           {name: 'neighbors', view: weights.neighbors, type: 'u32', access: 'read'},

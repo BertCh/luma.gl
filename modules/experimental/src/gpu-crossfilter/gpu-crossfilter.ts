@@ -4,6 +4,7 @@
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuXfilter.
 
 import type {Buffer} from '@luma.gl/core';
+import {createFillNode} from '../utils/wgsl-kernel-nodes';
 import {
   GPUCommandGraph,
   GraphVectorView,
@@ -32,6 +33,7 @@ import {
   createOwnedView,
   GPUCrossfilterSelection,
   type GPUCrossfilterDimension,
+  type GPUCrossfilterExternalDimension,
   type GPUCrossfilterMask,
   type GPUCrossfilterScalarFormat,
   type GPUCrossfilterScalarInput
@@ -141,7 +143,7 @@ export type GPUCrossfilterView =
 export type GPUCrossfilterProps = {
   /** Prefix for generated graph resources and compute passes. */
   id?: string;
-  /** Range and rectangular brush dimensions sharing source row and chunk topology. */
+  /** Brush and external-mask dimensions sharing source row and chunk topology. */
   dimensions: readonly GPUCrossfilterDimension[];
   /** Linked histogram, group, visibility, and mask consumers. */
   views?: readonly GPUCrossfilterView[];
@@ -322,6 +324,15 @@ export class GPUCrossfilter<Parameters = void> {
     return this;
   }
 
+  /** Activates or bypasses a caller-written external mask without uploading data. */
+  setExternalActive(dimensionId: string, active: boolean): this {
+    if (this.getSelection(dimensionId).dimension.kind !== 'external') {
+      throw new Error(`${this.id} dimension "${dimensionId}" is not external`);
+    }
+    this.noteSelectionChange(dimensionId, active);
+    return this;
+  }
+
   /** Disables one selection while retaining its reusable GPU control buffer and graph passes. */
   clear(dimensionId: string): this {
     this.getSelection(dimensionId).clear();
@@ -346,8 +357,8 @@ export class GPUCrossfilter<Parameters = void> {
    *
    * With `skipUnchangedDimensions` or `histogramCubes`, the controller assumes source buffers do
    * not change between encodings. Pass a dimension id after rewriting that dimension's input (its
-   * predicate, every view that includes its brush, and its own histogram refresh), or nothing
-   * after rewriting any other source: group keys or values, a view input that is not a
+   * predicate, every view that includes its brush, and its own histogram refresh), or its external
+   * mask. Pass nothing after rewriting any other source: group keys or values, a view input that is not a
    * dimension's input, `liveMask`, or a `'auto'` domain's data. Without either option this does
    * nothing, because every node runs on every encoding.
    *
@@ -716,6 +727,72 @@ export class GPUCrossfilter<Parameters = void> {
     dependencies: readonly string[],
     options?: ConditionOptions
   ): void {
+    const externalDimensions = this.dimensions.filter(
+      (dimension): dimension is GPUCrossfilterExternalDimension =>
+        dimension.kind === 'external' &&
+        dependencies.includes(selectionKey(dimension.id)) &&
+        inputs.includes(dimension.mask)
+    );
+    if (externalDimensions.length > 0) {
+      const ordinaryInputs = inputs.filter(
+        input => !externalDimensions.some(dimension => dimension.mask === input)
+      );
+      let previous: GPUCrossfilterMask | undefined;
+      if (ordinaryInputs.length > 0) {
+        previous = createMaskLike(this.graph, `${id}/ordinary`, output);
+        this.composeMasks(`${id}/ordinary`, ordinaryInputs, previous, dependencies, options);
+      }
+      for (const [dimensionIndex, dimension] of externalDimensions.entries()) {
+        const stageId = `${id}/external-${dimensionIndex}`;
+        const destination =
+          dimensionIndex === externalDimensions.length - 1
+            ? output
+            : createMaskLike(this.graph, stageId, output);
+        const activeOptions: ConditionOptions = {
+          ...options,
+          gate: () =>
+            (!options?.gate || options.gate()) && this.brushActive.get(dimension.id) === true
+        };
+        const inactiveOptions: ConditionOptions = {
+          ...options,
+          gate: () =>
+            (!options?.gate || options.gate()) && this.brushActive.get(dimension.id) !== true
+        };
+        this.addConditioned(
+          new GPUMask({
+            id: `${stageId}/active`,
+            inputs: previous ? [previous, dimension.mask] : [dimension.mask],
+            output: destination
+          }),
+          dependencies,
+          activeOptions
+        );
+        if (previous) {
+          this.addConditioned(
+            new GPUMask({id: `${stageId}/inactive`, inputs: [previous], output: destination}),
+            dependencies,
+            inactiveOptions
+          );
+        } else {
+          for (const [chunkIndex, chunk] of getChunks(destination).entries()) {
+            if (!chunk.length) continue;
+            this.addConditioned(
+              createFillNode(this.graph, {
+                id: `${stageId}/inactive-${chunkIndex}`,
+                operation: 'GPUCrossfilter',
+                view: chunk,
+                type: 'u32',
+                value: '1u'
+              }),
+              dependencies,
+              inactiveOptions
+            );
+          }
+        }
+        previous = destination;
+      }
+      return;
+    }
     const maximumInputs = Math.max(
       2,
       (this.graph.device.limits.maxStorageBuffersPerShaderStage || 8) - 1
@@ -1031,9 +1108,12 @@ export class GPUCrossfilter<Parameters = void> {
     const options: ConditionOptions = {track: true, gate: () => this.activeViewId === active.id};
 
     let mask: GPUCrossfilterMask | undefined;
-    if (maskInputs.length === 1) {
+    if (
+      maskInputs.length === 1 &&
+      !maskDimensions.some(dimension => dimension.kind === 'external')
+    ) {
       mask = maskInputs[0];
-    } else if (maskInputs.length > 1) {
+    } else if (maskInputs.length > 0) {
       // The composed mask is read only by this cube's build, which shares its condition.
       mask = createMaskLike(this.graph, `${pairId}/mask`, this.mask);
       this.composeMasks(`${pairId}/compose`, maskInputs, mask, dependencies, options);

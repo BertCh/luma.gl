@@ -33,20 +33,32 @@ assert.deepEqual(
   'ESM and CJS operator metadata differ'
 );
 
-// The ontology is the source of truth for contributors and recipes. Keep isolated public helpers
-// explicit because they are functions but not analytical operators.
-const contributorExportNames = [
-  ...new Set([
-    ...ecmaScriptEntryModule.GPU_SPATIAL_ANALYSIS_OPERATORS.map(({exportName}) => exportName),
-    'getGPUGridCornerCount'
-  ])
-].sort();
+// The ontology also describes related entries. Validate each operator against its declared owner,
+// including declaration imports. Helpers that are not analytical operators remain explicit.
+const exportNamesByPackage = new Map([
+  ['@luma.gl/experimental/gpu-spatial-analysis', new Set(['getGPUGridCornerCount'])]
+]);
+for (const operator of ecmaScriptEntryModule.GPU_SPATIAL_ANALYSIS_OPERATORS) {
+  const exportNames = exportNamesByPackage.get(operator.package) ?? new Set();
+  exportNames.add(operator.exportName);
+  exportNamesByPackage.set(operator.package, exportNames);
+}
 
-for (const exportName of contributorExportNames) {
-  assert.equal(typeof ecmaScriptEntryModule[exportName], 'function', exportName);
-  assert.equal(typeof commonJsEntryModule[exportName], 'function', exportName);
-  assert.equal(exportName in ecmaScriptRootModule, false, `${exportName} leaked into the root`);
-  assert.equal(exportName in commonJsRootModule, false, `${exportName} leaked into the root`);
+const contributorImports = [];
+const contributorExportNames = [];
+for (const [packageName, exportNames] of exportNamesByPackage) {
+  const ecmaScriptOwnerModule = await import(packageName);
+  const commonJsOwnerModule = require(packageName);
+  const sortedExportNames = [...exportNames].sort();
+  contributorImports.push(`import {${sortedExportNames.join(', ')}} from '${packageName}';`);
+  contributorExportNames.push(...sortedExportNames);
+  for (const exportName of sortedExportNames) {
+    const qualifiedName = `${packageName}: ${exportName}`;
+    assert.equal(typeof ecmaScriptOwnerModule[exportName], 'function', qualifiedName);
+    assert.equal(typeof commonJsOwnerModule[exportName], 'function', qualifiedName);
+    assert.equal(exportName in ecmaScriptRootModule, false, `${exportName} leaked into the root`);
+    assert.equal(exportName in commonJsRootModule, false, `${exportName} leaked into the root`);
+  }
 }
 
 // Analysis contributors live only here; the upstream geospatial entry stays kernels-only.
@@ -61,8 +73,8 @@ try {
   const contributorTypeTestPath = path.join(temporaryDirectory, 'contributors.mts');
   writeFileSync(
     contributorTypeTestPath,
-    `import {
-  ${contributorExportNames.join(',\n  ')},
+    `${contributorImports.join('\n')}
+import {
   type GPUCompactOutput,
   type GPUGeometryCleanupPointOutput,
   type GPUUint32Rows

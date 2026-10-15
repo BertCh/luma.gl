@@ -17,7 +17,7 @@ import {
   type GPUPolygonGeometryFields,
   type GPUSpatialContext,
   type GPUStatusScalar
-} from '../../analysis-core/contracts';
+} from '../../analysis-core/contracts/index';
 import {
   validateGraphOutputsDisjointFromInputs,
   validateGraphViewsBelongToGraph,

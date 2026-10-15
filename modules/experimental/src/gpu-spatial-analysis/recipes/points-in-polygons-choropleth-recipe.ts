@@ -27,7 +27,7 @@ import {
   type GPUPointInPolygonBoundaryRule
 } from '../spatial-join/gpu-point-in-polygon-join';
 import {GPUZonalStatistics} from '../zonal-statistics/index';
-import {GPULonLatPolygonPreparation} from '../lon-lat-polygons';
+import {GPULonLatPolygonPreparation} from '../lon-lat-polygons/index';
 import {
   assertRecipe,
   getOrCreateView,

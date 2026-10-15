@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuXfilter.
 
-import {Buffer, type Binding} from '@luma.gl/core';
+import {assert, Buffer, type Binding} from '@luma.gl/core';
 import {Computation} from '@luma.gl/engine';
 import {
   GraphVectorView,
@@ -29,7 +29,7 @@ export type GPUCrossfilterScalarInput<
   T extends GPUCrossfilterScalarFormat = GPUCrossfilterScalarFormat
 > = GraphDataView<T> | GraphVectorView<T>;
 
-/** Source-aligned selection flags: zero rejects and one accepts a row. */
+/** Source-aligned selection flags: zero rejects and nonzero accepts a row. */
 export type GPUCrossfilterMask = GraphDataView<'uint32'> | GraphVectorView<'uint32'>;
 
 /** One scalar dimension with an optional caller-owned output mask. */
@@ -74,8 +74,21 @@ export type GPUCrossfilterBoundsDimension = {
   rejectNonFinite?: boolean;
 };
 
-/** Interactive scalar or two-dimensional selection registered with a GPUCrossfilter controller. */
-export type GPUCrossfilterDimension = GPUCrossfilterRangeDimension | GPUCrossfilterBoundsDimension;
+/** A dimension whose uint32 selection flags are written by other GPU work, such as GPUTransferMask. */
+export type GPUCrossfilterExternalDimension = {
+  /** Stable dimension identifier. */
+  id: string;
+  /** Consume caller-written flags without a predicate pass. */
+  kind: 'external';
+  /** Caller-written uint32 flags (nonzero = selected) with matching row and chunk topology. */
+  mask: GPUCrossfilterMask;
+};
+
+/** Interactive selection or caller-written mask registered with a GPUCrossfilter controller. */
+export type GPUCrossfilterDimension =
+  | GPUCrossfilterRangeDimension
+  | GPUCrossfilterBoundsDimension
+  | GPUCrossfilterExternalDimension;
 
 /**
  * Evaluates one interactive dimension into GPU-resident, source-aligned selection flags.
@@ -93,8 +106,8 @@ export class GPUCrossfilterSelection {
 
   private readonly graph: GPUCommandGraph<any>;
   private readonly stateValues = new Uint32Array(SELECTION_STATE_WORD_COUNT);
-  private readonly stateBuffer: Buffer;
-  private readonly stateView: GraphDataView<'uint32'>;
+  private readonly stateBuffer?: Buffer;
+  private readonly stateView?: GraphDataView<'uint32'>;
   private readonly ownedBuffers: Buffer[] = [];
   private destroyed = false;
 
@@ -112,6 +125,15 @@ export class GPUCrossfilterSelection {
     this.graph = graph;
     this.dimension = dimension;
     this.id = props.id ?? `gpu-crossfilter-${dimension.id}`;
+
+    if (dimension.kind === 'external') {
+      if (dimension.mask.format !== 'uint32') {
+        throw new Error(`${this.id} mask must contain uint32 selection flags`);
+      }
+      validateScalarInput(dimension.mask, graph, `${this.id} mask`);
+      this.mask = dimension.mask;
+      return;
+    }
 
     const primaryInput = dimension.kind === 'range' ? dimension.input : dimension.x;
     validateScalarInput(primaryInput, graph, `${this.id} input`);
@@ -165,6 +187,8 @@ export class GPUCrossfilterSelection {
 
   /** Returns the five-word control block read by the predicate passes. @internal */
   getControlView(): GraphDataView<'uint32'> {
+    // External dimensions have no predicate control block.
+    assert(this.stateView);
     return this.stateView;
   }
 
@@ -225,6 +249,8 @@ export class GPUCrossfilterSelection {
       throw new Error(`${this.id} selection belongs to another command graph`);
     }
 
+    if (this.dimension.kind === 'external') return;
+
     const primaryInput = this.dimension.kind === 'range' ? this.dimension.input : this.dimension.x;
     const primaryChunks = getScalarChunks(primaryInput);
     const secondaryChunks =
@@ -245,7 +271,7 @@ export class GPUCrossfilterSelection {
         rejectNonFinite: this.dimension.rejectNonFinite === true,
         exclusiveMaximum:
           this.dimension.kind === 'range' && this.dimension.exclusiveMaximum === true,
-        state: this.stateView,
+        state: this.getControlView(),
         output: outputChunks[chunkIndex]
       });
     }
@@ -257,7 +283,7 @@ export class GPUCrossfilterSelection {
       return;
     }
     this.destroyed = true;
-    this.stateBuffer.destroy();
+    this.stateBuffer?.destroy();
     for (const buffer of this.ownedBuffers) buffer.destroy();
   }
 
@@ -266,7 +292,7 @@ export class GPUCrossfilterSelection {
     if (this.destroyed) {
       throw new Error(`${this.id} selection has been destroyed`);
     }
-    this.stateBuffer.write(this.stateValues);
+    this.stateBuffer?.write(this.stateValues);
   }
 }
 
@@ -505,7 +531,7 @@ function validateMatchingTopology(
 
 /** Keeps selection writes separate from all source buffers, including other source chunks. */
 function validateSeparateOutputBuffers(
-  dimension: GPUCrossfilterDimension,
+  dimension: GPUCrossfilterRangeDimension | GPUCrossfilterBoundsDimension,
   mask: GPUCrossfilterMask,
   id: string
 ): void {

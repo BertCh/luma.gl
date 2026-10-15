@@ -29,22 +29,48 @@ const COLOR_ATTACHMENT_FORMATS = [
   'rgba16float'
 ] satisfies (TextureFormatColor | null)[];
 
+/** Deferred G-buffer support, including the first unsupported scene feature. */
+export type DeferredSceneSupport =
+  | {supported: true}
+  | {supported: false; feature: string; reason: string};
+
 /** Returns whether a scene can be represented by the shared metallic-roughness G-buffer. */
 export function supportsDeferredScene(options: SceneRenderOptions): boolean {
+  return getDeferredSceneSupport(options).supported;
+}
+
+/** Returns whether a scene fits the deferred G-buffer and, if not, the first failing feature. */
+export function getDeferredSceneSupport(options: SceneRenderOptions): DeferredSceneSupport {
   if (options.renderMode && options.renderMode !== 'default') {
-    return false;
+    return {
+      supported: false,
+      feature: 'render-mode',
+      reason: 'Deferred rendering requires the default render mode.'
+    };
   }
   let directionalLightCount = 0;
   let pointLightCount = 0;
   for (const light of options.lights || []) {
     if (light.type === 'spot') {
-      return false;
+      return {
+        supported: false,
+        feature: 'spot-light',
+        reason: 'Spot lights require forward rendering.'
+      };
     }
     if (light.type === 'directional' && ++directionalLightCount > 1) {
-      return false;
+      return {
+        supported: false,
+        feature: 'directional-light-count',
+        reason: 'Deferred rendering supports one directional light.'
+      };
     }
     if (light.type === 'point' && ++pointLightCount > MAX_DEFERRED_POINT_LIGHTS) {
-      return false;
+      return {
+        supported: false,
+        feature: 'point-light-count',
+        reason: 'The point light count exceeds the deferred limit.'
+      };
     }
   }
   if (
@@ -52,34 +78,151 @@ export function supportsDeferredScene(options: SceneRenderOptions): boolean {
     options.environment?.specularTexture ||
     options.environment?.brdfLUTTexture
   ) {
-    return false;
+    return {
+      supported: false,
+      feature: 'image-based-lighting',
+      reason: 'Environment illumination requires forward rendering.'
+    };
   }
 
-  return options.surfaces.every(surface => {
+  for (const [index, surface] of options.surfaces.entries()) {
     const uniforms = surface.material.uniforms || {};
     const bindings = surface.material.bindings || {};
-    return (
-      getSceneAlphaMode(surface.material) !== 'BLEND' &&
-      !uniforms.unlit &&
-      !(uniforms.transmissionFactor && uniforms.transmissionFactor > 0) &&
-      !(uniforms.diffuseTransmissionFactor && uniforms.diffuseTransmissionFactor > 0) &&
-      !(uniforms.multiscatterColorFactor || []).some(component => component > 0) &&
-      !uniforms.bumpMapEnabled &&
-      !bindings.pbr_bumpSampler &&
-      !(uniforms.thicknessFactor && uniforms.thicknessFactor > 0) &&
-      !(uniforms.clearcoatFactor && uniforms.clearcoatFactor > 0) &&
-      !(uniforms.iridescenceFactor && uniforms.iridescenceFactor > 0) &&
-      !(uniforms.anisotropyStrength && uniforms.anisotropyStrength > 0) &&
-      !(uniforms.sheenColorFactor || []).some(component => component > 0) &&
-      (uniforms.ior === undefined || uniforms.ior === 1.5) &&
-      (uniforms.specularIntensityFactor === undefined || uniforms.specularIntensityFactor === 1) &&
-      (uniforms.specularColorFactor || [1, 1, 1]).every(component => component === 1) &&
-      !uniforms.specularColorMapEnabled &&
-      !uniforms.specularIntensityMapEnabled &&
-      !bindings.pbr_specularColorSampler &&
-      !bindings.pbr_specularIntensitySampler
-    );
-  });
+    if (getSceneAlphaMode(surface.material) === 'BLEND') {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/alpha-blend`,
+        reason: 'Alpha blending requires forward rendering.'
+      };
+    }
+    if (uniforms.unlit) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/unlit`,
+        reason: 'Unlit shading requires forward rendering.'
+      };
+    }
+    if (uniforms.transmissionFactor && uniforms.transmissionFactor > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/transmission`,
+        reason: 'Transmission requires forward rendering.'
+      };
+    }
+    if (uniforms.diffuseTransmissionFactor && uniforms.diffuseTransmissionFactor > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/diffuse-transmission`,
+        reason: 'Diffuse transmission requires forward rendering.'
+      };
+    }
+    if ((uniforms.multiscatterColorFactor || []).some(component => component > 0)) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/volume-scattering`,
+        reason: 'Volume scattering requires forward rendering.'
+      };
+    }
+    if (uniforms.bumpMapEnabled) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/bump-map`,
+        reason: 'Bump mapping requires forward rendering.'
+      };
+    }
+    if (bindings.pbr_bumpSampler) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/bump-map-binding`,
+        reason: 'Bump textures requires forward rendering.'
+      };
+    }
+    if (uniforms.thicknessFactor && uniforms.thicknessFactor > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/volume`,
+        reason: 'Volume thickness requires forward rendering.'
+      };
+    }
+    if (uniforms.clearcoatFactor && uniforms.clearcoatFactor > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/clearcoat`,
+        reason: 'Clearcoat requires forward rendering.'
+      };
+    }
+    if (uniforms.iridescenceFactor && uniforms.iridescenceFactor > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/iridescence`,
+        reason: 'Iridescence requires forward rendering.'
+      };
+    }
+    if (uniforms.anisotropyStrength && uniforms.anisotropyStrength > 0) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/anisotropy`,
+        reason: 'Anisotropy requires forward rendering.'
+      };
+    }
+    if ((uniforms.sheenColorFactor || []).some(component => component > 0)) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/sheen`,
+        reason: 'Sheen requires forward rendering.'
+      };
+    }
+    if (uniforms.ior !== undefined && uniforms.ior !== 1.5) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/ior`,
+        reason: 'Non-default index of refraction requires forward rendering.'
+      };
+    }
+    if (uniforms.specularIntensityFactor !== undefined && uniforms.specularIntensityFactor !== 1) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-intensity`,
+        reason: 'Non-default specular intensity requires forward rendering.'
+      };
+    }
+    if (!(uniforms.specularColorFactor || [1, 1, 1]).every(component => component === 1)) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-color`,
+        reason: 'Non-default specular color requires forward rendering.'
+      };
+    }
+    if (uniforms.specularColorMapEnabled) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-color-map`,
+        reason: 'Specular color maps requires forward rendering.'
+      };
+    }
+    if (uniforms.specularIntensityMapEnabled) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-intensity-map`,
+        reason: 'Specular intensity maps requires forward rendering.'
+      };
+    }
+    if (bindings.pbr_specularColorSampler) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-color-binding`,
+        reason: 'Specular color textures requires forward rendering.'
+      };
+    }
+    if (bindings.pbr_specularIntensitySampler) {
+      return {
+        supported: false,
+        feature: `surface:${surface.id ?? index}/specular-intensity-binding`,
+        reason: 'Specular intensity textures requires forward rendering.'
+      };
+    }
+  }
+  return {supported: true};
 }
 
 /**

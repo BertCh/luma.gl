@@ -351,6 +351,7 @@ fn lastAtMost(kind: u32, count: u32, value: u32) -> u32 {
         id: `${id}-probe`,
         operation: OPERATION,
         variant: 'probe',
+        record: {formula: 'gpu-spatial-analysis.minimum-clearance'},
         bindings: [
           {name: 'positions', view: geometry.positions, type: 'f32', access: 'read'},
           {name: 'rightTable', view: table, type: 'u32', access: 'read'},

@@ -672,6 +672,7 @@ ${getPlacedCellAreaWGSL(getGPUAuthalicSphereRadius(this.spatialContext))}`,
           id: `${id}-${label}-restore-apply`,
           operation: OPERATION,
           variant: 'restore-and-clamp',
+          record: {formula: 'gpu-spatial-analysis.pycnophylactic'},
           bindings: [
             {name: 'zones', view: zones, type: 'u32', access: 'read'},
             {name: 'totals', view: totals, type: 'f32', access: 'read'},

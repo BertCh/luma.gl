@@ -11,6 +11,13 @@ import {
 } from '@luma.gl/core';
 import {Kernel} from '@luma.gl/engine';
 import {
+  hashGPUComputationText,
+  type GPUComputationAttributes,
+  type GPUComputationDatumBinding,
+  type GPUComputationLoopCoordinate,
+  type GPUComputationNodeAnnotation
+} from '@luma.gl/gpgpu';
+import {
   createGPUComputeCommandNode,
   createTransientView,
   getBoundedDispatchLayout,
@@ -58,6 +65,8 @@ export function createWGSLActiveCountDispatch<Parameters>(
     workgroupSize?: number;
     invocationsPerItem?: number;
     additionalInvocationCount?: number;
+    /** Computation-record metadata forwarded to the dispatch updater. */
+    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): WGSLActiveCountDispatch<Parameters> {
   const workgroupSize = props.workgroupSize ?? DEFAULT_WORKGROUP_SIZE;
@@ -95,6 +104,7 @@ export function createWGSLActiveCountDispatch<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'active-count-dispatch',
+    record: props.record,
     bindings: [
       {name: 'count', view: props.count, type: 'u32', access: 'read'},
       {name: 'dispatch', view: dispatch, type: 'u32', access: 'read_write'}
@@ -275,6 +285,23 @@ export type WGSLKernelProps<Parameters> = {
   operation: string;
   /** Optional implementation variant reported in the workload estimate. */
   variant?: string;
+  /** Computation-record metadata; used only when the graph records (`graph.recording`). */
+  record?: {
+    /** Display label. */
+    label?: string;
+    /** Namespace below the graph's active record scopes. */
+    namespace?: string;
+    /** Abstract graph nodes realized by this kernel. */
+    derivedFrom?: readonly string[];
+    /** Mapping of invocations to a data key space. */
+    datum?: GPUComputationDatumBinding;
+    /** Unrolled loop coordinate. */
+    loop?: GPUComputationLoopCoordinate;
+    /** Formula reference identifier. */
+    formula?: string;
+    /** Additional recorded attributes. */
+    attrs?: GPUComputationAttributes;
+  };
   /** Storage bindings in `@binding` order. At most 8 for the WebGPU default limit. */
   bindings: readonly WGSLKernelBinding[];
   /**
@@ -433,7 +460,53 @@ fn main(
       writeByteLength += byteLength;
     }
   }
-  return createGPUComputeCommandNode<Parameters>({
+  let annotation: GPUComputationNodeAnnotation | undefined;
+  if (graph.recording) {
+    const hash = hashGPUComputationText(source);
+    annotation = {
+      ...Object.fromEntries(
+        Object.entries(props.record ?? {}).filter(([, value]) => value !== undefined)
+      ),
+      op: props.operation,
+      source: {
+        id: `wgsl:${hash}`,
+        language: 'wgsl',
+        moduleId: props.variant ? `${props.operation}/${props.variant}` : props.operation,
+        hash,
+        bodyHash: hashGPUComputationText(props.body),
+        entryPoint: 'main',
+        text: source,
+        constants: {
+          ...props.constants,
+          INVOCATION_COUNT: props.invocationCount,
+          WGSL_KERNEL_DISPATCH_X: layout.x,
+          WGSL_KERNEL_DISPATCH_Y: layout.y
+        }
+      },
+      workgroupSize: [workgroupSize, 1, 1],
+      dispatch: {
+        workgroups: [layout.x, layout.y, layout.z],
+        invocationCount: props.invocationCount,
+        indirect: props.condition?.source === 'gpu'
+      },
+      bindings: [
+        ...props.bindings.map(binding => ({
+          name: binding.name,
+          resource: binding.view.buffer.id,
+          access: binding.access,
+          elementType: binding.type,
+          elementOffset: getViewElementOffset(binding.view),
+          length: binding.view.length
+        })),
+        ...textures.map(binding => ({
+          name: binding.name,
+          resource: binding.texture.texture.id,
+          access: 'sampled' as const
+        }))
+      ]
+    };
+  }
+  const node = createGPUComputeCommandNode<Parameters>({
     id: props.id,
     resources,
     condition: props.condition,
@@ -521,6 +594,8 @@ fn main(
       };
     }
   });
+  if (annotation) node.annotation = annotation;
+  return node;
 }
 
 /** Returns the WGSL sampled-texture type of one texture binding. */
@@ -597,6 +672,8 @@ export function createTransientUint32Rows<Parameters>(
 
 /** Properties for {@link createPublishNode}. @internal */
 export type PublishNodeProps = {
+  /** Computation-record metadata forwarded to the publication kernel. */
+  record?: WGSLKernelProps<unknown>['record'];
   /** Graph-wide node ID. */
   id: string;
   /** Operation name reported in the workload estimate. */
@@ -687,6 +764,7 @@ export function createPublishNode<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'publish',
+    record: props.record,
     bindings,
     invocationCount: Math.max(copyRowCount, 1),
     // Capacities are overrides so publish nodes with the same binding shape share one module.
@@ -729,6 +807,8 @@ export function createFillNode<Parameters>(
     type: 'u32' | 'i32' | 'f32';
     value: string;
     componentCount?: number;
+    /** Computation-record metadata forwarded to the fill kernel. */
+    record?: WGSLKernelProps<Parameters>['record'];
   }
 ): GPUCommandNode<Parameters> {
   const componentCount = props.componentCount ?? props.view.length;
@@ -736,6 +816,7 @@ export function createFillNode<Parameters>(
     id: props.id,
     operation: props.operation,
     variant: 'fill',
+    record: props.record,
     bindings: [{name: 'fillTarget', view: props.view, type: props.type, access: 'read_write'}],
     invocationCount: componentCount,
     body: `fillTarget[fillTargetOffset + index] = ${props.value};`

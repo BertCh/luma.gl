@@ -46,6 +46,24 @@ export type GPUQueryExpressionOutput = {
   index: number;
 };
 
+/** One WGSL statement pair and all AST paths it realizes. @internal */
+export type GPUQueryExpressionStatement = {
+  index: number;
+  value: string;
+  valid: string;
+  statements: readonly [string, string];
+  format: 'float32' | 'sint32' | 'uint32' | 'boolean';
+  nullable: boolean;
+  operands: readonly number[];
+  astNodeIds: string[];
+  kind: 'column' | 'control' | 'unary' | 'binary';
+  column?: string;
+  columnIndex?: number;
+  control?: number;
+  parameter?: string;
+  operator?: string;
+};
+
 /** Closed WGSL statements and metadata required by a graph-native dataframe predicate. @internal */
 export type GPUQueryExpressionShaderPlan = {
   columns: readonly GPUQueryExpressionColumn[];
@@ -53,6 +71,11 @@ export type GPUQueryExpressionShaderPlan = {
   outputs: readonly GPUQueryExpressionOutput[];
   statements: readonly string[];
   condition: string;
+  expressions: readonly GPUQueryExpressionStatement[];
+  roots: readonly (
+    | {kind: 'predicate'; index: number; astNodeId: string; expression: number}
+    | {kind: 'derived'; name: string; astNodeId: string; expression: number; output?: number}
+  )[];
 };
 
 type GPUQueryValueFormat = GPUQueryScalarFormat | 'boolean';
@@ -104,9 +127,18 @@ export function makeGPUQueryExpressionShaderPlan<T extends GPUTypeMap>(
   });
   outputs.forEach((output, index) => {
     output.index = index;
+    const root = planner.roots.find(root => root.kind === 'derived' && root.name === output.name);
+    if (root?.kind === 'derived') root.output = index;
   });
-  const conditions = predicates.map(predicate => {
-    const expression = planner.emit(predicate.node, 'boolean');
+  const conditions = predicates.map((predicate, index) => {
+    const astNodeId = `predicate-${index}`;
+    const expression = planner.emit(predicate.node, astNodeId, 'boolean');
+    planner.roots.push({
+      kind: 'predicate',
+      index,
+      astNodeId,
+      expression: Number(expression.value.match(/\d+/)![0])
+    });
     if (expression.format !== 'boolean') {
       throw new Error('GPUDataFrame filter expressions must produce boolean values');
     }
@@ -114,6 +146,8 @@ export function makeGPUQueryExpressionShaderPlan<T extends GPUTypeMap>(
   });
 
   return {
+    expressions: planner.expressions,
+    roots: planner.roots,
     columns: planner.columns,
     controls: planner.controls,
     outputs,
@@ -178,6 +212,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
   readonly columns: GPUQueryExpressionColumn[] = [];
   readonly controls: GPUQueryExpressionControl[] = [];
   readonly statements: string[] = [];
+  readonly expressions: GPUQueryExpressionStatement[] = [];
+  readonly roots: Array<GPUQueryExpressionShaderPlan['roots'][number]> = [];
 
   private readonly source: GPUDataFrame<T>;
   private readonly columnsByName = new Map<string, GPUQueryExpressionColumn>();
@@ -209,7 +245,11 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       if (column.format && inferred && column.format !== inferred) {
         throw new Error('GPUDataFrame derived column format does not match its expression');
       }
-      const expression = this.emit(column.expression.node, column.format ?? inferred ?? 'float32');
+      const expression = this.emit(
+        column.expression.node,
+        `derived-${column.name}`,
+        column.format ?? inferred ?? 'float32'
+      );
       if (
         expression.format === 'boolean' ||
         (column.format && expression.format !== column.format)
@@ -217,30 +257,86 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         throw new Error('GPUDataFrame derived column format does not match its expression');
       }
       this.derivedValues.set(column.name, expression);
+      this.roots.push({
+        kind: 'derived',
+        name: column.name,
+        astNodeId: `derived-${column.name}`,
+        expression: Number(expression.value.match(/\d+/)![0])
+      });
       return expression;
     } finally {
       this.resolvingDerived.delete(column.name);
     }
   }
 
-  emit(node: GPUExpressionNode, expected?: GPUQueryValueFormat): GPUQueryExpressionShaderValue {
+  emit(
+    node: GPUExpressionNode,
+    astNodeId: string,
+    expected?: GPUQueryValueFormat
+  ): GPUQueryExpressionShaderValue {
+    let expression: GPUQueryExpressionShaderValue;
     switch (node.kind) {
       case 'column':
-        return this.emitColumn(node.name, expected);
+        expression = this.emitColumn(node.name, astNodeId, expected);
+        break;
       case 'literal':
-        return this.emitControl(node.value, undefined, expected);
+        expression = this.emitControl(node.value, undefined, astNodeId, expected);
+        break;
       case 'parameter':
-        return this.emitControl(node.value, node.name, expected);
+        expression = this.emitControl(node.value, node.name, astNodeId, expected);
+        break;
       case 'unary':
-        return this.emitUnary(node.operator, node.operand, expected);
+        expression = this.emitUnary(node.operator, node.operand, astNodeId, expected);
+        break;
       case 'binary':
-        return this.emitBinary(node.operator, node.left, node.right, expected);
+        expression = this.emitBinary(node.operator, node.left, node.right, astNodeId, expected);
+        break;
       default:
         throw new Error('GPUDataFrame expression contains an unsupported operation');
     }
+    const index = Number(expression.value.match(/\d+/)![0]);
+    const existing = this.expressions[index];
+    if (existing) {
+      if (!existing.astNodeIds.includes(astNodeId)) existing.astNodeIds.push(astNodeId);
+    } else {
+      const statements: [string, string] = [
+        this.statements[index * 2],
+        this.statements[index * 2 + 1]
+      ];
+      const operands = [
+        ...new Set(
+          [...statements.join(' ').matchAll(/expression(\d+)(?:Value|Valid)/g)]
+            .map(match => Number(match[1]))
+            .filter(operand => operand !== index)
+        )
+      ];
+      const column = node.kind === 'column' ? this.columnsByName.get(node.name) : undefined;
+      const control = statements[0].match(/queryControls\[CONTROL_OFFSET \+ (\d+)u\]/);
+      this.expressions[index] = {
+        index,
+        ...expression,
+        statements,
+        operands,
+        astNodeIds: [astNodeId],
+        kind: control
+          ? 'control'
+          : node.kind === 'literal' || node.kind === 'parameter'
+            ? 'control'
+            : node.kind,
+        ...(column ? {column: column.name, columnIndex: column.index} : {}),
+        ...(control ? {control: Number(control[1]) / 2} : {}),
+        ...(node.kind === 'parameter' ? {parameter: node.name} : {}),
+        ...(node.kind === 'unary' || node.kind === 'binary' ? {operator: node.operator} : {})
+      };
+    }
+    return expression;
   }
 
-  private emitColumn(name: string, expected?: GPUQueryValueFormat): GPUQueryExpressionShaderValue {
+  private emitColumn(
+    name: string,
+    astNodeId: string,
+    expected?: GPUQueryValueFormat
+  ): GPUQueryExpressionShaderValue {
     const derived = this.derivedByName.get(name);
     if (derived) {
       const expression = this.emitDerived(derived);
@@ -254,7 +350,7 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
       if (expected && expected !== constant.format && expected !== 'boolean') {
         throw new Error('GPUDataFrame expression combines incompatible scalar column formats');
       }
-      return this.emitControl(constant.value, undefined, constant.format);
+      return this.emitControl(constant.value, undefined, astNodeId, constant.format);
     }
     const column = this.getColumn(name);
     if (expected && expected !== column.format && expected !== 'boolean') {
@@ -270,6 +366,7 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
   private emitControl(
     value: GPUExpressionValue,
     name: string | undefined,
+    _astNodeId: string,
     expected?: GPUQueryValueFormat
   ): GPUQueryExpressionShaderValue {
     const inferred = typeof value === 'boolean' ? 'boolean' : (expected ?? 'float32');
@@ -299,20 +396,29 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
   private emitUnary(
     operator: 'not' | 'is-valid' | 'is-null' | 'negate',
     operandNode: GPUExpressionNode,
+    astNodeId: string,
     expected?: GPUQueryValueFormat
   ): GPUQueryExpressionShaderValue {
     switch (operator) {
       case 'not': {
-        const operand = this.emit(operandNode, 'boolean');
+        const operand = this.emit(operandNode, `${astNodeId}/operand`, 'boolean');
         this.assertBoolean(operand);
         return this.addValue('boolean', `!${operand.value}`, operand.valid, operand.nullable);
       }
       case 'is-valid': {
-        const operand = this.emit(operandNode, this.inferFormat(operandNode));
+        const operand = this.emit(
+          operandNode,
+          `${astNodeId}/operand`,
+          this.inferFormat(operandNode)
+        );
         return this.addValue('boolean', operand.valid, 'true');
       }
       case 'is-null': {
-        const operand = this.emit(operandNode, this.inferFormat(operandNode));
+        const operand = this.emit(
+          operandNode,
+          `${astNodeId}/operand`,
+          this.inferFormat(operandNode)
+        );
         return this.addValue('boolean', `!${operand.valid}`, 'true');
       }
       case 'negate': {
@@ -320,7 +426,7 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
         if (format === 'boolean' || format === 'uint32') {
           throw new Error('GPUDataFrame negation requires a signed numeric expression');
         }
-        const operand = this.emit(operandNode, format);
+        const operand = this.emit(operandNode, `${astNodeId}/operand`, format);
         return this.addValue(format, `-${operand.value}`, operand.valid, operand.nullable);
       }
       default:
@@ -332,11 +438,12 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     operator: GPUExpressionBinaryOperator,
     leftNode: GPUExpressionNode,
     rightNode: GPUExpressionNode,
+    astNodeId: string,
     expected?: GPUQueryValueFormat
   ): GPUQueryExpressionShaderValue {
     if (operator === 'and' || operator === 'or') {
-      const left = this.emit(leftNode, 'boolean');
-      const right = this.emit(rightNode, 'boolean');
+      const left = this.emit(leftNode, `${astNodeId}/left`, 'boolean');
+      const right = this.emit(rightNode, `${astNodeId}/right`, 'boolean');
       this.assertBoolean(left);
       this.assertBoolean(right);
       const value =
@@ -367,8 +474,8 @@ class GPUQueryExpressionShaderPlanner<T extends GPUTypeMap> {
     ) {
       throw new Error('GPUDataFrame comparison requires numeric expressions');
     }
-    const left = this.emit(leftNode, format);
-    const right = this.emit(rightNode, format);
+    const left = this.emit(leftNode, `${astNodeId}/left`, format);
+    const right = this.emit(rightNode, `${astNodeId}/right`, format);
     const symbol = getGPUQueryBinaryOperator(operator);
     const value = `(${left.value} ${symbol} ${right.value})`;
     const valid = `${left.valid} && ${right.valid}`;

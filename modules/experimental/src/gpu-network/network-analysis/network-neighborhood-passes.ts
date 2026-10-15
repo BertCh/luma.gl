@@ -39,6 +39,7 @@ export function createNeighborhoodHopsNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'hops',
+    record: {datum: {keySpace: 'node'}, formula: 'gpu-network.neighborhood.hops'},
     bindings,
     invocationCount: props.nodeCount,
     declarations: `const NONE: u32 = 0xffffffffu;

@@ -23,6 +23,30 @@ import {
 
 const {tolerances} = STATISTICS_EDGE_POLICY;
 
+it('distinguishes zero General G variance from undefined denominators and small samples', () => {
+  const weights = getEdgePolicyWeights();
+  for (const {value, count, variance} of [
+    {value: 2, count: weights.offsets.length - 1, variance: 0},
+    {value: 0, count: weights.offsets.length - 1, variance: NaN},
+    {value: 2, count: 3, variance: NaN}
+  ]) {
+    const values = new Float32Array(weights.offsets.length - 1).fill(NaN);
+    values.fill(value, 0, count);
+    const {getisOrdG} = computeGlobalSpatialStatisticsOracle({weights, values, islands: 'keep'});
+    expect(getisOrdG.varianceNormality).toBe(variance);
+    expect(getisOrdG.varianceRandomization).toBe(variance);
+    expect(getisOrdG.zNormality).toBeNaN();
+    expect(getisOrdG.zRandomization).toBeNaN();
+    expect(getisOrdG.pNormality).toBeNaN();
+    expect(getisOrdG.pRandomization).toBeNaN();
+    if (value === 0) {
+      expect(getisOrdG.statistic).toBeNaN();
+    } else {
+      expect(getisOrdG.statistic).toBeCloseTo(getisOrdG.expected, 14);
+    }
+  }
+});
+
 it('the global oracle follows the edge-policy table', () => {
   const weights = getEdgePolicyWeights();
   for (const testCase of STATISTICS_EDGE_POLICY.global) {

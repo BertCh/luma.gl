@@ -284,6 +284,8 @@ export function createCentralityClosenessNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'closeness',
+    // One workgroup per pivot lane, so the invocations are not one datum each.
+    record: {formula: 'gpu-network.centrality.closeness'},
     bindings,
     invocationCount: props.laneCount * CLOSENESS_WORKGROUP_SIZE,
     workgroupSize: CLOSENESS_WORKGROUP_SIZE,

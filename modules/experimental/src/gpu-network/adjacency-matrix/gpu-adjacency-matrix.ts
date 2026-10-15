@@ -399,6 +399,7 @@ export class GPUAdjacencyMatrix implements GPUCommandNodeProducer {
           id: `${id}-${step}`,
           operation,
           variant: step,
+          record: {datum: {keySpace: 'node'}, formula: 'gpu-network.adjacency-matrix.bin'},
           bindings,
           invocationCount: nodeCount,
           declarations: `const NODE_COUNT: u32 = ${nodeCount}u;

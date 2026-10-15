@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by relational SQL semantics.
 
+import type {GPUComputationEdge, GPUComputationGraph, GPUComputationNode} from '@luma.gl/gpgpu';
 import type {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUDataFrame as LuDataFrame} from '../gpu-dataframe/gpu-data-frame';
 import {GPUDataFrameQuery as LuDataFrameQuery} from '../gpu-dataframe/gpu-data-frame-query';
@@ -30,14 +31,16 @@ export type LuSQLTables = Readonly<Record<string, LuDataFrame>>;
 export type LuSQLQueryOptions = Readonly<{parameters?: LuDataFrameQueryParameters}>;
 
 type LuSQLToken = Readonly<{kind: 'identifier' | 'number' | 'parameter' | 'symbol'; value: string}>;
-type LuSQLSelectItem = Readonly<{
+/** One parsed SELECT item: a source expression, a `COUNT/SUM/MIN/MAX/AVG` aggregate or `*`. */
+export type LuSQLSelectItem = Readonly<{
   expression?: LuExpressionNode;
   aggregate?: 'count' | 'sum' | 'min' | 'max' | 'mean';
   aggregateColumn?: string;
   alias?: string;
   star?: boolean;
 }>;
-type LuSQLStatement = Readonly<{
+/** Parsed, unresolved SELECT statement; names are as written in the SQL text. */
+export type LuSQLStatement = Readonly<{
   items: readonly LuSQLSelectItem[];
   table: string;
   alias?: string;
@@ -114,7 +117,7 @@ export class LuSQLContext {
   query(source: string, options: LuSQLQueryOptions = {}): LuSQLQuery {
     const parser = new LuSQLParser(source, options.parameters ?? {});
     const statement = parser.parse();
-    return new LuSQLQuery(source, buildLuSQLPlan(this.tables, statement));
+    return new LuSQLQuery(source, buildLuSQLPlan(this.tables, statement), statement);
   }
 }
 
@@ -122,19 +125,171 @@ export class LuSQLContext {
 export class LuSQLQuery {
   /** Original application-owned SQL text, retained solely for diagnostics and inspection. */
   readonly sql: string;
+  /** Parsed statement AST (clauses and expression trees) that the plan was built from. */
+  readonly statement: LuSQLStatement;
   private readonly plan: LuSQLCompiledPlan;
 
   /** @internal */
-  constructor(sql: string, plan: LuSQLCompiledPlan) {
+  constructor(sql: string, plan: LuSQLCompiledPlan, statement: LuSQLStatement) {
     this.sql = sql;
     this.plan = plan;
+    this.statement = statement;
     Object.freeze(this);
+  }
+
+  /**
+   * Describes the parsed statement as an `intent` graph with one node per clause and expression
+   * node (FROM, JOIN, WHERE, GROUP BY, SELECT items, ORDER BY, LIMIT) and dataflow edges in SQL
+   * evaluation order. Never touches GPU resources.
+   */
+  describeStatement(): GPUComputationGraph {
+    return describeLuSQLStatement(this.statement);
   }
 
   /** Compiles existing dataframe operations into the caller-owned GPU command graph. */
   compile(graph: GPUCommandGraph<LuDataFrameQueryParameters>): CompiledLuDataFrameQuery {
     return this.plan.compile(graph);
   }
+}
+
+const LUSQL_OPERATOR_TEXT: Readonly<Record<string, string>> = {
+  or: 'OR',
+  and: 'AND',
+  equal: '=',
+  'not-equal': '!=',
+  'greater-than': '>',
+  'greater-than-or-equal': '>=',
+  'less-than': '<',
+  'less-than-or-equal': '<=',
+  add: '+',
+  subtract: '-',
+  multiply: '*',
+  divide: '/',
+  not: 'NOT',
+  negate: '-',
+  'is-valid': 'IS NOT NULL',
+  'is-null': 'IS NULL'
+};
+
+function printLuSQLExpression(expression: LuExpressionNode): string {
+  switch (expression.kind) {
+    case 'column':
+      return expression.name;
+    case 'literal':
+      return expression.value === null ? 'NULL' : String(expression.value);
+    case 'parameter':
+      return `:${expression.name}`;
+    case 'unary':
+      return expression.operator === 'is-valid' || expression.operator === 'is-null'
+        ? `${printLuSQLExpression(expression.operand)} ${LUSQL_OPERATOR_TEXT[expression.operator]}`
+        : `${LUSQL_OPERATOR_TEXT[expression.operator]} ${printLuSQLExpression(expression.operand)}`;
+    case 'binary':
+      return `(${printLuSQLExpression(expression.left)} ${LUSQL_OPERATOR_TEXT[expression.operator]} ${printLuSQLExpression(expression.right)})`;
+  }
+}
+
+/** Builds the clause-level intent graph of a parsed statement; expression paths are `<clause>/expr/left`. */
+function describeLuSQLStatement(statement: LuSQLStatement): GPUComputationGraph {
+  const nodes: GPUComputationNode[] = [];
+  const edges: GPUComputationEdge[] = [];
+  const addNode = (
+    id: string,
+    op: string,
+    label: string,
+    attrs: Record<string, string | number | boolean> = {}
+  ): void => {
+    nodes.push({id, op, label, namespace: '', kind: 'operation', reads: [], writes: [], attrs});
+  };
+  const addEdge = (from: string, to: string): void => {
+    edges.push({from, to, kind: 'dataflow'});
+  };
+  /** Adds an expression tree rooted at `id`; children flow into their parent. */
+  const addExpression = (expression: LuExpressionNode, id: string): void => {
+    const label =
+      expression.kind === 'binary' || expression.kind === 'unary'
+        ? LUSQL_OPERATOR_TEXT[expression.operator]
+        : printLuSQLExpression(expression);
+    addNode(id, 'operator' in expression ? expression.operator : expression.kind, label, {
+      text: printLuSQLExpression(expression)
+    });
+    const children: [string, LuExpressionNode][] =
+      expression.kind === 'binary'
+        ? [
+            ['left', expression.left],
+            ['right', expression.right]
+          ]
+        : expression.kind === 'unary'
+          ? [['operand', expression.operand]]
+          : [];
+    for (const [path, child] of children) {
+      addExpression(child, `${id}/${path}`);
+      addEdge(`${id}/${path}`, id);
+    }
+  };
+
+  // Rows flow through the clauses in SQL evaluation order.
+  const rowClauses: string[] = ['from'];
+  addNode('from', 'from', statement.table, {
+    table: statement.table,
+    ...(statement.alias ? {alias: statement.alias} : {})
+  });
+  if (statement.join) {
+    const {type, table, left, right} = statement.join;
+    addNode('join', 'join', `${type} join ${table}`, {type, table, left, right});
+    rowClauses.push('join');
+  }
+  if (statement.predicate) {
+    addNode('where', 'where', 'WHERE');
+    addExpression(statement.predicate, 'where/expr');
+    addEdge('where/expr', 'where');
+    rowClauses.push('where');
+  }
+  if (statement.groupBy) {
+    addNode('group-by', 'groupBy', statement.groupBy, {column: statement.groupBy});
+    rowClauses.push('group-by');
+  }
+  rowClauses.slice(1).forEach((clause, index) => addEdge(rowClauses[index], clause));
+  const lastRowClause = rowClauses[rowClauses.length - 1];
+
+  const selectIds: string[] = [];
+  statement.items.forEach((item, index) => {
+    const id = `select-${index}`;
+    selectIds.push(id);
+    if (item.star) {
+      addNode(id, 'select', '*');
+    } else if (item.aggregate) {
+      const label = `${item.aggregate}(${item.aggregateColumn ?? '*'})`;
+      addNode(id, 'aggregate', item.alias ? `${label} AS ${item.alias}` : label, {
+        aggregate: item.aggregate,
+        ...(item.aggregateColumn ? {column: item.aggregateColumn} : {}),
+        ...(item.alias ? {alias: item.alias} : {})
+      });
+    } else {
+      addNode(id, 'select', item.alias ?? printLuSQLExpression(item.expression!), {
+        ...(item.alias ? {alias: item.alias} : {})
+      });
+      addExpression(item.expression!, `${id}/expr`);
+      addEdge(`${id}/expr`, id);
+    }
+    addEdge(lastRowClause, id);
+  });
+
+  let sink = selectIds;
+  if (statement.orderBy) {
+    const {column: sortColumn, direction, nulls} = statement.orderBy;
+    addNode('order-by', 'orderBy', `${sortColumn} ${direction}`, {
+      column: sortColumn,
+      direction,
+      ...(nulls ? {nulls} : {})
+    });
+    sink.forEach(id => addEdge(id, 'order-by'));
+    sink = ['order-by'];
+  }
+  if (statement.limit !== undefined) {
+    addNode('limit', 'limit', String(statement.limit), {limit: statement.limit});
+    sink.forEach(id => addEdge(id, 'limit'));
+  }
+  return {id: 'lu-sql-statement', form: 'intent', domain: 'gpu-sql', nodes, edges};
 }
 
 function buildLuSQLPlan(

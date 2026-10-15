@@ -529,3 +529,85 @@ it('the join-count oracle reproduces esda counts and the exhaustive randomizatio
     }
   }
 });
+
+it('General G analytical VG equals exhaustive binary64 permutation variance with binary and row weights', () => {
+  const binary = [
+    [0, 1, 0, 0],
+    [1, 0, 1, 1],
+    [0, 1, 0, 1],
+    [0, 1, 1, 0]
+  ];
+  for (const matrix of [
+    binary,
+    binary.map(row => row.map(weight => weight / row.reduce((sum, value) => sum + value, 0)))
+  ]) {
+    const weights = createWeights(
+      matrix.map(row =>
+        row.flatMap((weight, neighbor): [number, number][] =>
+          weight > 0 ? [[neighbor, weight]] : []
+        )
+      )
+    );
+    // Use the float32-exact weights actually uploaded, with binary64 arithmetic in the oracle.
+    const uploadedMatrix = getDenseMatrix(weights);
+    for (const values of [
+      [2, 3, 5, 8],
+      [0, 0, 5, 8],
+      [3, 3, 3, 3]
+    ]) {
+      const denominator =
+        values.reduce((sum, value) => sum + value, 0) ** 2 -
+        values.reduce((sum, value) => sum + value ** 2, 0);
+      const [expected, variance] = getPermutationMoments(
+        values,
+        permuted => quadraticForm(uploadedMatrix, permuted, permuted) / denominator
+      );
+      const result = computeGlobalSpatialStatisticsOracle({
+        weights,
+        values: Float32Array.from(values),
+        islands: 'keep'
+      }).getisOrdG;
+      expect(result.expected).toBeCloseTo(expected, 14);
+      expect(result.varianceNormality).toBeCloseTo(variance, 14);
+      expect(result.varianceRandomization).toBe(result.varianceNormality);
+      if (values.every(value => value === values[0])) {
+        expect(result.varianceNormality).toBe(0);
+        expect(result.zNormality).toBeNaN();
+      } else {
+        expect(result.varianceNormality).toBeGreaterThan(0);
+        expect(result.zNormality).toBe(result.zRandomization);
+        expect(result.pNormality).toBe(result.pRandomization);
+      }
+    }
+    for (const values of [
+      [0, 0, 0, 0],
+      [0, 0, 0, 5],
+      [-1, 2, 3, 4]
+    ]) {
+      const result = computeGlobalSpatialStatisticsOracle({
+        weights,
+        values: Float32Array.from(values),
+        islands: 'keep'
+      }).getisOrdG;
+      expect(result.varianceNormality).toBeNaN();
+      expect(result.varianceRandomization).toBeNaN();
+    }
+  }
+});
+
+it('General G writes its analytical moments to both inference triples in the GPU finalize kernel', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const nodes = new GPUGlobalSpatialStatistics(
+    createProps(graph, {statistics: ['getisOrdG']})
+  ).getCommandNodes(graph);
+  const source = getGPUCommandNodeKernelSources(nodes).find(kernel =>
+    kernel.id.endsWith('-finalize')
+  )!.source;
+  device.destroy();
+  expect(source).toContain(
+    'array<f32, 8>(statistic, expected, variance,\n      z, getPValue(z), variance, z, getPValue(z))'
+  );
+  expect(source).toContain('n >= 4.0 && s0 > 0.0 && denominator > 0.0');
+  expect(source).toContain('if (sumSquares == 0.0) { return 0.0; }');
+});

@@ -55,7 +55,7 @@ import {
   type GPURegionStatisticsOutput
 } from './region-statistics-types';
 
-import {validateGPUStatusPort} from '../../analysis-core/contracts';
+import {validateGPUStatusPort} from '../../analysis-core/contracts/index';
 import type {GPUSpatialContext} from '../../analysis-core/contracts/spatial-context';
 
 /** Workgroup size of the counting kernel: lane 0 publishes one global atomic per workgroup. */

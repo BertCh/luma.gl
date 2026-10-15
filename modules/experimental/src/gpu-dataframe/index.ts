@@ -3,8 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 // SPDX-FileComment: Independently implemented for WebGPU; inspired by NVIDIA RAPIDS cuDF.
 
-// Every subdirectory index is re-exported whole, so the entry cannot drift from its parts and a
-// name exported by two subdirectories is a compile error.
+// Every analysis subdirectory index is re-exported whole, so the entry cannot drift from its parts
+// and a name exported by two subdirectories is a compile error. Visualization packs stay internal.
 
 export * from './calendar-buckets/index';
 export * from './column-classification/index';
@@ -80,3 +80,8 @@ export {CompiledGPUDataFrameJoin, CompiledGPUDataFrameLookup} from './gpu-join-c
 export type {GPUCompactOutput, GPUUint32Rows} from '../utils/gpu-contributor-types';
 export {GPUParameterBuffer} from '../utils/gpu-contributor-utils';
 export type {GPUParameterBufferProps, GPUParameterFormat} from '../utils/gpu-contributor-utils';
+
+export type {
+  GPUDataFrameQueryDescription,
+  GPUDataFrameExpressionStatement
+} from './gpu-query-describe';

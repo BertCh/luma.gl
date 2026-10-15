@@ -520,6 +520,7 @@ ${segmentHelpers}`,
           id: `${id}-scan`,
           operation: OPERATION,
           variant: 'scan',
+          record: {datum: {keySpace: 'point'}, formula: 'gpu-network.snapping.nearest'},
           bindings: scanBindings,
           invocationCount: pointCount,
           declarations: `${nodeDeclarations}

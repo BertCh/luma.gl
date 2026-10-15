@@ -210,6 +210,8 @@ export function createPointDensityFinalizeNode<Parameters>(
     id: props.id,
     operation: OPERATION,
     variant: 'finalize',
+    record:
+      props.statistic === 'count' ? {formula: 'gpu-spatial-analysis.point-density'} : undefined,
     bindings,
     invocationCount: props.values.length,
     body: `let count = counts[countsOffset + index];
