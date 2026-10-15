@@ -87,7 +87,7 @@ export type GPUSpatialJoinCandidatesProps = {
   right: GPUSpatialJoinGeometry;
   /**
    * Optional prepared right-hand side over the same views as `right`. It must be added to the
-   * graph before this contributor, and must not use `spatialSort` (that breaks the sorted order).
+   * graph before this contributor. Spatially sorted candidates are restored to source row order.
    */
   prepared?: GPUSpatialJoinPrepared;
   /**
@@ -181,9 +181,6 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
       if (!isSameSpatialJoinGeometry(prepared.geometry, props.right)) {
         throw new Error(`${id} prepared must index the same geometry views as right`);
       }
-      if (prepared.spatialSort) {
-        throw new Error(`${id} prepared.spatialSort leaves candidates unsorted; disable it`);
-      }
     }
     validateDisjointOutputs(
       id,
@@ -266,7 +263,8 @@ export class GPUSpatialJoinCandidates implements GPUCommandNodeProducer {
         nodeMinima: prepared.storage.nodeMinima,
         nodeMaxima: prepared.storage.nodeMaxima,
         leafIds: prepared.storage.leafIds,
-        internalNodeCount: prepared.bvhInternalNodeCount
+        internalNodeCount: prepared.bvhInternalNodeCount,
+        spatialSort: prepared.spatialSort
       };
       bvhOverflow = prepared.storage.overflow;
     } else {

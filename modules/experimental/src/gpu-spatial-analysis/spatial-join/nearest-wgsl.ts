@@ -384,6 +384,8 @@ export type NearestTraversalOptions = {
   k: number;
   /** Result slots per query, at least `k`; larger than `k` only in all-ties mode. */
   capacity: number;
+  /** Report dropped k-th-distance ties even when capacity equals k. */
+  ties?: 'all' | 'lowest-id';
   /** Number of features. */
   featureCount: number;
   /** Number of internal BVH nodes. */
@@ -637,7 +639,7 @@ fn boxLower(node: u32, queryMinimum: vec2f, queryMaximum: vec2f) -> f32 {
     if (count >= K) { bound = min(bound, listDistance[K - 1u]); }
   }
   var overflowFlag = 0u;
-  if (CAPACITY > K && count >= K && droppedMinimum <= listDistance[K - 1u]) { overflowFlag = 1u; }
+  if (${options.ties === 'all' ? 'true' : 'CAPACITY > K'} && count >= K && droppedMinimum <= listDistance[K - 1u]) { overflowFlag = 1u; }
   for (var slot = 0u; slot < count; slot++) {
     topk[header + 3u + slot * 2u] = listRow[slot];
     topk[header + 4u + slot * 2u] = bitcast<u32>(listDistance[slot]);

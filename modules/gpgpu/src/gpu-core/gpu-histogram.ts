@@ -100,6 +100,9 @@ export type GPUHistogramProps<T extends GPUScalarFormat = GPUScalarFormat> =
  * larger outputs accumulate directly with global atomics. Values rejected by an optional
  * source-aligned GPU mask, outside the inclusive domain or edge range, and non-finite
  * floating-point values are ignored. Automatic domains are inferred from the complete input.
+ * Equal-width float bins compare the original value against `minimum + i * width`, with
+ * `width = (maximum - minimum) / binCount` in f32. The ratio only estimates the bin; rounded
+ * subtraction must not move a value across an otherwise representable interval edge.
  */
 export class GPUHistogram<T extends GPUScalarFormat = GPUScalarFormat> {
   /** Prefix for generated graph node and transient resource IDs. */
@@ -606,7 +609,32 @@ function addHistogramPass<Parameters, T extends GPUScalarFormat>(
   const binCalculation =
     props.input.format === 'float32'
       ? `let ratio = (value - minimum) / (maximum - minimum);
-          binIndex = min(u32(ratio * f32(BIN_COUNT)), BIN_COUNT - 1u);`
+          binIndex = min(u32(ratio * f32(BIN_COUNT)), BIN_COUNT - 1u);
+          let width = (maximum - minimum) / f32(BIN_COUNT);
+          // Subtraction can erase which side of an edge value occupies: for [-1, 8],
+          // nextDown(1) - (-1) rounds to 2. Compare the original value against the
+          // interval edges, not the rounded difference. Usually no correction is needed.
+          if (width > 0.0 && (bitcast<u32>(width) & 0x7f800000u) != 0x7f800000u) {
+            var lower = binIndex;
+            var upper = binIndex + 1u;
+            if (value < minimum + f32(binIndex) * width) {
+              lower = 0u;
+              upper = binIndex;
+            } else if (binIndex + 1u < BIN_COUNT && value >= minimum + f32(binIndex + 1u) * width) {
+              lower = binIndex + 1u;
+              upper = BIN_COUNT;
+            }
+            // Binary correction bounds the work even when adjacent f32 edges coincide.
+            while (lower + 1u < upper) {
+              let middle = lower + (upper - lower) / 2u;
+              if (value < minimum + f32(middle) * width) {
+                upper = middle;
+              } else {
+                lower = middle;
+              }
+            }
+            binIndex = lower;
+          }`
       : props.input.format === 'uint32'
         ? 'binIndex = multiplyDivideFloor(value - minimum, BIN_COUNT, maximum - minimum);'
         : `let orderedValue = bitcast<u32>(value) ^ 0x80000000u;

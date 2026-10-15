@@ -46,7 +46,8 @@ export const GPU_GEODESIC_WGS84_FLATTENING = GPU_WGS84_FLATTENING;
  *   the local equirectangular frame at the point; the distance is a haversine of coordinate
  *   differences, so short distances keep their precision near +-180. Exact to first order for
  *   segments of road length (kilometers); densify long edges.
- * - Helpers: `geodesicWrapLongitudeDelta(delta)` (wrap to [-180, 180]), `geodesicCosLatitude(lat)`,
+ * - Helpers: `geodesicWrapLongitudeDelta(delta)` (wrap to [-180, 180]),
+ *   `geodesicLongitudeDelta(source, destination)` (preserve short seam separations), `geodesicCosLatitude(lat)`,
  *   `geodesicUnitVector(lngLat)`, `geodesicFromUnitVector(v)`, `geodesicLocalOffset(origin, p)`,
  *   `geodesicSinLatitudeDelta(lat, lat0)` (`sin(lat) - sin(lat0)` without cancellation).
  *
@@ -73,6 +74,29 @@ fn geodesicWrapLongitudeDelta(delta: f32) -> f32 {
   return delta - 360.0 * round(delta / 360.0);
 }
 
+// Subtract near the shared antimeridian before forming the small angular separation.
+// Wrapping (destination - source) afterward cannot recover bits lost by that large subtraction:
+// 179.341 -> -179.877 loses about 1.6 meters on the OpenFlights sphere fixture.
+fn geodesicLongitudeDelta(source: f32, destination: f32) -> f32 {
+  // WGSL permits floating-point reassociation: the two seam-relative subtractions below
+  // can become (destination - source) - 2 * halfTurn, restoring the cancellation.
+  // For opposite seam quadrants, every f32 endpoint is exactly a multiple of 2^-17
+  // degrees (the smallest ulp on [90, 180]). Scale by that power of two and wrap in
+  // i32: magnitudes stay below 2^26, with no quantization or integer overflow. Only
+  // the final, small difference is converted back to f32, so reassociation cannot
+  // reintroduce a large floating-point subtraction.
+  if (abs(source) > 90.0 && abs(source) <= 180.0 &&
+      abs(destination) > 90.0 && abs(destination) <= 180.0 &&
+      ((source < 0.0) != (destination < 0.0))) {
+    let sourceUnits = i32(source * 131072.0);
+    let destinationUnits = i32(destination * 131072.0);
+    let turnUnits = select(-47185920, 47185920, source > 0.0);
+    return f32(destinationUnits - sourceUnits + turnUnits) * 0.00000762939453125;
+  }
+  let halfTurn = 180.0 * round((destination - source) / 360.0);
+  return (destination - halfTurn) - (source + halfTurn);
+}
+
 // cos(latitude) as sin(colatitude): 90 - |lat| is exact in f32, so the cosine keeps its relative
 // precision near the poles where cos(lat * pi / 180) would not.
 fn geodesicCosLatitude(latitudeDegrees: f32) -> f32 {
@@ -96,7 +120,7 @@ fn geodesicFromUnitVector(vector: vec3<f32>) -> vec2<f32> {
 
 fn geodesicHaversineTerm(a: vec2<f32>, b: vec2<f32>) -> f32 {
   let deltaPhi = (b.y - a.y) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicWrapLongitudeDelta(b.x - a.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let deltaLambda = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   let sinHalfPhi = sin(0.5 * deltaPhi);
   let sinHalfLambda = sin(0.5 * deltaLambda);
   let term = sinHalfPhi * sinHalfPhi +
@@ -111,7 +135,7 @@ fn geodesicCentralAngle(a: vec2<f32>, b: vec2<f32>) -> f32 {
   let phi1 = a.y * GEODESIC_DEGREES_TO_RADIANS;
   let phi2 = b.y * GEODESIC_DEGREES_TO_RADIANS;
   let deltaPhi = (b.y - a.y) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicWrapLongitudeDelta(b.x - a.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let deltaLambda = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   let sinPhi1 = sin(phi1);
   let cosPhi1 = geodesicCosLatitude(a.y);
   let cosPhi2 = geodesicCosLatitude(b.y);
@@ -127,12 +151,17 @@ fn geodesicInitialBearingDegrees(a: vec2<f32>, b: vec2<f32>) -> f32 {
   let phi1 = a.y * GEODESIC_DEGREES_TO_RADIANS;
   let phi2 = b.y * GEODESIC_DEGREES_TO_RADIANS;
   let deltaPhi = (b.y - a.y) * GEODESIC_DEGREES_TO_RADIANS;
-  let deltaLambda = geodesicWrapLongitudeDelta(b.x - a.x) * GEODESIC_DEGREES_TO_RADIANS;
+  let deltaLambda = geodesicLongitudeDelta(a.x, b.x) * GEODESIC_DEGREES_TO_RADIANS;
   let sinHalfLambda = sin(0.5 * deltaLambda);
   let cosPhi2 = geodesicCosLatitude(b.y);
   let y = sin(deltaLambda) * cosPhi2;
   // cos(phi1) sin(phi2) - sin(phi1) cos(phi2) cos(deltaLambda), without cancellation.
   let x = sin(deltaPhi) + 2.0 * sin(phi1) * cosPhi2 * sinHalfLambda * sinHalfLambda;
+  // Coincident points have no azimuth. Pin the conventional zero bearing instead of
+  // evaluating atan2(0, 0), whose result is unbounded by WGSL (and can be NaN).
+  if (x == 0.0 && y == 0.0) {
+    return 0.0;
+  }
   return atan2(y, x) * GEODESIC_RADIANS_TO_DEGREES;
 }
 

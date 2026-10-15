@@ -86,6 +86,7 @@ export type NearestNeighborNodeProps = {
   featureCount: number;
   k: number;
   capacity: number;
+  ties?: 'all' | 'lowest-id';
   leafCapacity: number;
   spatialSort: boolean;
   spatialSortCurve?: SpatialSortCurve;
@@ -928,6 +929,7 @@ override CHUNK_QUERY_COUNT: u32;`
       ? [{name: 'queryOrder', view: dispatch.order, type: 'u32', access: 'read'}]
       : [];
     const traversal = getNearestTraversalWGSL({
+      ties: props.ties,
       k,
       capacity,
       featureCount,

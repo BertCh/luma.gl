@@ -555,7 +555,8 @@ export function createEncounterReduceNodes<Parameters>(
   var end = start;
   if (isLive) {
     end = hitTotal;
-    if (index + 1u < min(runCount[runCountOffset], PAIR_CAPACITY)) { end = runStarts[runStartsOffset + index + 1u]; }
+    // Run boundaries belong to the complete hit scratch, even when output pairs are truncated.
+    if (index + 1u < runCount[runCountOffset]) { end = runStarts[runStartsOffset + index + 1u]; }
   }
   // Hits of one pair are in bucket order, so the run start is the first encounter.
   var minimumDistance = sortedDistances[sortedDistancesOffset + start];

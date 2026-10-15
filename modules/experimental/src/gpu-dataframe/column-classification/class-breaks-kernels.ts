@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import {
+  createTransientView,
   getBoundedDispatchLayout,
   type GPUCommandGraph,
   type GPUCommandGraphNodeCondition,
@@ -19,8 +20,8 @@ export const MOMENT_WORKGROUP_SIZE = 256;
 export const MOMENT_ROWS_PER_INVOCATION = 8;
 /** Rows reduced by one workgroup tile. */
 export const MOMENT_TILE_SIZE = MOMENT_WORKGROUP_SIZE * MOMENT_ROWS_PER_INVOCATION;
-/** Floats per moment record: `[count, mean, M2, minimum, maximum]`. */
-export const MOMENT_STRIDE = 5;
+/** Floats per moment record: `[count, mean, M2, minimum, maximum, origin]`. */
+export const MOMENT_STRIDE = 6;
 
 /**
  * Indices into the `state` transient written by the prepare kernel. `layerCursor` is the
@@ -61,7 +62,10 @@ export const CLASS_BREAKS_HEAD_TAIL = {
  * WGSL moment record and the Chan merge used by every fixed-order moment kernel.
  *
  * The merge is the pairwise update of Chan, Golub and LeVeque; adding one row is a merge with
- * `(1, x, 0, x, x)`. Both kernels fold in a fixed order, so results are bitwise reproducible.
+ * `(1, x - origin, 0, x, x)`. All tiles use the same GPU-selected origin. The tile
+ * kernel materializes shifted values in workgroup memory before another invocation consumes
+ * them: reassociation cannot reconstruct an absolute mean inside the Chan delta. Only the
+ * final record restores the absolute mean. Both kernels fold in a fixed order.
  */
 const MOMENTS_WGSL = /* wgsl */ `
 struct Moments {
@@ -168,7 +172,7 @@ export function getClassBreaksDispatchWGSL<Parameters>(
 }
 
 /**
- * Returns the tile and merge nodes of one fixed-order `(count, mean, M2, min, max)` reduction over
+ * Returns the origin, tile and merge nodes of one fixed-order `(count, mean, M2, min, max)` reduction over
  * the unmasked finite values, optionally restricted to values whose ordered key is above the
  * head/tail threshold key. The merged record is written to `moments[slot]`.
  *
@@ -201,11 +205,68 @@ export function getClassBreaksMomentNodes<Parameters>(
     gate.kind === 'head-tail'
       ? `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] == ${gate.methodCode}u && headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.done}u] == 0u`
       : `state[stateOffset + ${CLASS_BREAKS_STATE.method}u] == ${gate.methodCode}u`;
+  const origin = createTransientView(graph, `${id}-origin`, 'float32', 1);
+  const inputBindings: WGSLKernelBinding[] = [
+    {name: 'values', view: values, type: 'f32', access: 'read'},
+    ...(mask ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'} as const] : []),
+    {name: 'state', view: state, type: 'u32', access: 'read'},
+    ...(headTail ? [{name: 'headTail', view: headTail, type: 'u32', access: 'read'} as const] : [])
+  ];
+  // One workgroup selects a common origin for every tile, including a masked first tile.
+  // Recomputed on every encoding/head-tail round; no CPU value or persistent cache is used.
+  const originNode = createWGSLKernelNode<Parameters>(graph, {
+    id: `${id}-origin`,
+    operation,
+    variant: 'moments-origin',
+    bindings: [...inputBindings, {name: 'origin', view: origin, type: 'f32', access: 'read_write'}],
+    invocationCount: MOMENT_WORKGROUP_SIZE,
+    workgroupSize: MOMENT_WORKGROUP_SIZE,
+    guardIndex: false,
+    ...indirectGates?.merge,
+    declarations: `const ROW_COUNT: u32 = ${rowCount}u;
+${COLUMN_ORDERED_KEY_WGSL}
+var<workgroup> firstRows: array<u32, ${MOMENT_WORKGROUP_SIZE}>;
+var<workgroup> gateShared: u32;`,
+    body: `let local = localInvocationIndex;
+  if (local == 0u) {
+    gateShared = select(0u, 1u, ${gateExpression});
+  }
+  if (workgroupUniformLoad(&gateShared) == 0u) {
+    return;
+  }
+  ${headTail ? `let thresholdKey = headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.thresholdKey}u];` : ''}
+  var firstRow = ROW_COUNT;
+  for (var row = local; row < ROW_COUNT; row += ${MOMENT_WORKGROUP_SIZE}u) {
+    let value = values[valuesOffset + row];
+    var include = (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
+    ${mask ? 'include = include && rowMask[rowMaskOffset + row] != 0u;' : ''}
+    ${headTail ? 'include = include && getOrderedKey(value) > thresholdKey;' : ''}
+    if (include) {
+      firstRow = row;
+      break;
+    }
+  }
+  firstRows[local] = firstRow;
+  for (var stride = ${MOMENT_WORKGROUP_SIZE / 2}u; stride > 0u; stride >>= 1u) {
+    workgroupBarrier();
+    if (local < stride) {
+      firstRows[local] = min(firstRows[local], firstRows[local + stride]);
+    }
+  }
+  if (local == 0u) {
+    var pivot = 0.0;
+    if (firstRows[0] < ROW_COUNT) {
+      pivot = values[valuesOffset + firstRows[0]];
+    }
+    origin[originOffset] = pivot;
+  }`
+  });
   const tileBindings: WGSLKernelBinding[] = [
     {name: 'values', view: values, type: 'f32', access: 'read'},
     ...(mask ? [{name: 'rowMask', view: mask, type: 'u32', access: 'read'} as const] : []),
     {name: 'state', view: state, type: 'u32', access: 'read'},
     ...(headTail ? [{name: 'headTail', view: headTail, type: 'u32', access: 'read'} as const] : []),
+    {name: 'origin', view: origin, type: 'f32', access: 'read'},
     {name: 'partials', view: partials, type: 'f32', access: 'read_write'}
   ];
   const tileNode = createWGSLKernelNode<Parameters>(graph, {
@@ -221,7 +282,8 @@ export function getClassBreaksMomentNodes<Parameters>(
 const TILE_SIZE: u32 = ${MOMENT_TILE_SIZE}u;
 const ROWS_PER_INVOCATION: u32 = ${MOMENT_ROWS_PER_INVOCATION}u;
 ${COLUMN_ORDERED_KEY_WGSL}
-${MOMENTS_WGSL}`,
+${MOMENTS_WGSL}
+var<workgroup> centeredValueBits: array<u32, ${MOMENT_TILE_SIZE}>;`,
     body: `let local = localInvocationIndex;
   if (local == 0u) {
     gateShared = select(0u, 1u, ${gateExpression});
@@ -231,7 +293,7 @@ ${MOMENTS_WGSL}`,
   }
   let tile = workgroupIndex;
   ${headTail ? `let thresholdKey = headTail[headTailOffset + ${CLASS_BREAKS_HEAD_TAIL.thresholdKey}u];` : ''}
-  var accumulated = emptyMoments();
+  let pivot = origin[originOffset];
   for (var step = 0u; step < ROWS_PER_INVOCATION; step = step + 1u) {
     // Uniform trip count: rows past the end are skipped by a predicate, never by a break, so
     // the barriers after the loop stay in uniform control flow.
@@ -241,8 +303,19 @@ ${MOMENTS_WGSL}`,
     var include = inRange && (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
     ${mask ? 'include = include && rowMask[rowMaskOffset + row] != 0u;' : ''}
     ${headTail ? 'include = include && getOrderedKey(value) > thresholdKey;' : ''}
-    if (include) {
-      accumulated = mergeMoments(accumulated, Moments(1.0, value, 0.0, value, value));
+    centeredValueBits[step * ${MOMENT_WORKGROUP_SIZE}u + local] = select(0x7fc00000u, bitcast<u32>(value - pivot), include);
+  }
+  workgroupBarrier();
+  var accumulated = emptyMoments();
+  for (var step = 0u; step < ROWS_PER_INVOCATION; step += 1u) {
+    // Read another invocation's materialized subtraction, so the optimizer cannot reassociate
+    // (value - pivot) - mean into value - (pivot + mean) at the original large offset.
+    let tileRow = step * ${MOMENT_WORKGROUP_SIZE}u + (local ^ ${MOMENT_WORKGROUP_SIZE / 2}u);
+    let shifted = bitcast<f32>(centeredValueBits[tileRow]);
+    // Only the NaN sentinel excludes a row; an overflowing finite difference still counts.
+    if ((bitcast<u32>(shifted) & 0x7fffffffu) <= 0x7f800000u) {
+      let value = values[valuesOffset + tile * TILE_SIZE + tileRow];
+      accumulated = mergeMoments(accumulated, Moments(1.0, shifted, 0.0, value, value));
     }
   }
   sharedMoments[local] = accumulated;
@@ -255,12 +328,14 @@ ${MOMENTS_WGSL}`,
     partials[base + 2u] = record.m2;
     partials[base + 3u] = record.minimum;
     partials[base + 4u] = record.maximum;
+    partials[base + 5u] = select(0.0, pivot, record.count > 0.0);
   }`
   });
 
   const mergeBindings: WGSLKernelBinding[] = [
     {name: 'state', view: state, type: 'u32', access: 'read'},
     ...(headTail ? [{name: 'headTail', view: headTail, type: 'u32', access: 'read'} as const] : []),
+    {name: 'origin', view: origin, type: 'f32', access: 'read'},
     {name: 'partials', view: partials, type: 'f32', access: 'read'},
     {name: 'moments', view: moments, type: 'f32', access: 'read_write'}
   ];
@@ -300,13 +375,14 @@ ${MOMENTS_WGSL}`,
     let record = sharedMoments[0];
     let base = momentsOffset + ${slot * MOMENT_STRIDE}u;
     moments[base] = record.count;
-    moments[base + 1u] = record.mean;
+    moments[base + 1u] = select(0.0, origin[originOffset] + record.mean, record.count > 0.0);
     moments[base + 2u] = record.m2;
     moments[base + 3u] = record.minimum;
     moments[base + 4u] = record.maximum;
+    moments[base + 5u] = 0.0;
   }`
   });
-  return [tileNode, mergeNode];
+  return [originNode, tileNode, mergeNode];
 }
 
 /** Returns the number of moment tile partials for `rowCount` rows. @internal */

@@ -44,7 +44,7 @@ export type SolarTimeParameter = {
  * Splits a timestamp into whole days since J2000.0 and a day fraction.
  *
  * Both values survive float32 storage with sub-second precision, unlike a single day count, so
- * GPU kernels can rebuild the hour angle exactly.
+ * GPU kernels retain the time of day to float32 precision.
  */
 export function getSolarTimeParameter(timestamp: number | Date): SolarTimeParameter {
   const milliseconds = typeof timestamp === 'number' ? timestamp : timestamp.getTime();
@@ -82,8 +82,13 @@ export function getSolarRefractionDegrees(elevationDegrees: number): number {
 /**
  * Computes the sun position with the NOAA solar calculator algorithm (Meeus, low precision).
  *
- * Accuracy is about 0.01 degree for years 1800-2100 before refraction. The computation runs in
- * float64 on the CPU; pass `azimuthDegrees` and `altitudeDegrees` to per-frame contributor settings
+ * Uses the NOAA daily spreadsheet equations derived from Meeus (geocentric, without observer
+ * parallax). NOAA describes the approximation as very good for 1800-2100, but publishes no
+ * universal angular error bound. Its sunrise/set timing accuracy is approximately one minute
+ * within +/-72 degrees latitude and ten minutes outside. This is not NREL SPA accuracy;
+ * azimuth error is amplified near zenith/nadir and refraction depends on the atmosphere.
+ * See https://gml.noaa.gov/grad/solcalc/calcdetails.html . Computation runs in float64 on the CPU;
+ * pass `azimuthDegrees` and `altitudeDegrees` to per-frame contributor settings
  * such as `getGPUSolarShadowMaskParameterValues`, or use `GPUSolarPosition` for many locations.
  *
  * @param timestamp Unix epoch milliseconds (UTC) or a `Date`.

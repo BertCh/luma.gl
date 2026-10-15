@@ -384,8 +384,8 @@ export type GPUSpatialPredicateJoinProps = {
   /**
    * A prepared (static) right-hand side over the same views as `right`: its BVH is reused across
    * encodings until the handle is invalidated, instead of being rebuilt every encoding. The handle
-   * must be added to the graph before the join and must not use `spatialSort`. Its `leafCapacity`
-   * wins over this join's.
+   * must be added to the graph before the join. Spatially sorted candidates are restored to source
+   * row order before refinement. Its `leafCapacity` wins over this join's.
    */
   prepared?: GPUSpatialJoinPrepared;
   /** Caller-owned outputs. */
@@ -689,9 +689,6 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
       if (!isSameSpatialJoinGeometry(views.prepared.geometry, views.right)) {
         throw new Error(`${id} prepared must index the same geometry views as right`);
       }
-      if (views.prepared.spatialSort) {
-        throw new Error(`${id} prepared.spatialSort leaves candidates unsorted; disable it`);
-      }
     }
     if (this.how === 'anti') {
       if (!views.unmatched) {
@@ -923,7 +920,8 @@ export class GPUSpatialPredicateJoin implements GPUCommandNodeProducer {
         nodeMinima: prepared.storage.nodeMinima,
         nodeMaxima: prepared.storage.nodeMaxima,
         leafIds: prepared.storage.leafIds,
-        internalNodeCount: prepared.bvhInternalNodeCount
+        internalNodeCount: prepared.bvhInternalNodeCount,
+        spatialSort: prepared.spatialSort
       };
       bvhOverflow = prepared.storage.overflow;
     } else {

@@ -99,8 +99,10 @@ export type GPUSolarPositionProps = {
  * per-frame instant, with the NOAA solar calculator formulas evaluated in float32.
  *
  * Use it for per-feature daylight, sun-angle styling, or day/night terminators on point layers;
- * a time slider writes two floats and never recompiles. Results match `getSolarPosition` within
- * about 0.02 degree for dates within a few decades of 2000. Rows with non-finite coordinates or
+ * a time slider writes two floats and never recompiles. Split day/fraction inputs preserve time
+ * of day; orbital-angle rounding still grows with distance from J2000, and azimuth becomes
+ * ill-conditioned near zenith/nadir. NOAA model accuracy is separate from float32 error (see
+ * `getSolarPosition`); this is not the NREL SPA algorithm. Rows with non-finite coordinates or
  * `|latitude| > 90` receive NaN and daylight 0.
  */
 export class GPUSolarPosition implements GPUCommandNodeProducer {
@@ -201,7 +203,7 @@ fn getRefractionDegrees(elevation: f32) -> f32 {
   let dayFraction = settings[settingsOffset + 1u];
   let isValid = isFiniteValue(longitude) && isFiniteValue(latitude) && abs(latitude) <= 90.0;
   // Angles that grow by ~1 degree per day are reduced from the whole-day part first so float32
-  // keeps sub-arcsecond resolution: 0.98564736 deg/day is 36000.76983 deg per Julian century.
+  // preserves the fractional-day contribution. The rate is 36000.76983 degrees per Julian century.
   let julianCentury = (dayNumber + dayFraction) / 36525.0;
   let meanLongitude = wrapDegrees(
     wrapDegrees(280.46646 + 0.98564736 * dayNumber, 360.0) + 0.98564736 * dayFraction +

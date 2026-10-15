@@ -815,11 +815,13 @@ fn writeVertex(outputRow: u32, vertex: vec2<f32>, measure: f32, sourceRow: u32) 
     writeVertex(index, source, 0.0, pair);
     return;
   }
-  var destination = getTarget(pair);
-  destination.x = source.x + geodesicWrapLongitudeDelta(destination.x - source.x);
+  let destination = getTarget(pair);
+  // Measure and interpolate from the original endpoints. Reconstructing an unwrapped
+  // target first rounds away short antimeridian separations even with a stable angle.
   let angle = geodesicCentralAngle(source, destination);
   if (vertex == segments) {
-    writeVertex(index, destination, angle * RADIUS, pair);
+    let unwrapped = vec2<f32>(source.x + geodesicLongitudeDelta(source.x, destination.x), destination.y);
+    writeVertex(index, unwrapped, angle * RADIUS, pair);
     return;
   }
   let fraction = f32(vertex) / f32(segments);

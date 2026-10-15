@@ -15,9 +15,13 @@ type CapturedKernel = {
 
 const captured: CapturedKernel[] = [];
 
-const {GPUNearestFeatureJoin, GPUPointInPolygonJoin, GPUSpatialPredicateJoin} = await import(
-  '../../../src/gpu-spatial-analysis/spatial-join'
-);
+const {
+  GPUNearestFeatureJoin,
+  GPUPointInPolygonJoin,
+  GPUSpatialPredicateJoin,
+  GPUSpatialJoinPrepared,
+  GPUSpatialJoinCandidates
+} = await import('../../../src/gpu-spatial-analysis/spatial-join');
 const {createNullWebGPUDevice, getGPUCommandNodeKernelSources} = await import(
   '../../utils/gpu-contributor-test-utils'
 );
@@ -335,4 +339,49 @@ it('planar GPUNearestFeatureJoin kernels carry no great-circle code', () => {
 
 afterAll(() => {
   captured.length = 0;
+});
+
+it('default spatial sorting supports prepared self joins within the eight-binding limit', () => {
+  const device = createNullWebGPUDevice();
+  const graph = new GPUCommandGraph(device);
+  const geometry = {
+    kind: 'points' as const,
+    positions: createTransientView(graph, 'positions', 'float32x2', 256)
+  };
+  const prepared = new GPUSpatialJoinPrepared({geometry});
+  expect(prepared.spatialSort).toBe(true);
+  graph.add(prepared);
+  const output = {
+    leftIds: createTransientView(graph, 'left-ids', 'uint32', 32),
+    rightIds: createTransientView(graph, 'right-ids', 'uint32', 32),
+    status: {
+      count: createTransientView(graph, 'count', 'uint32', 1),
+      overflow: createTransientView(graph, 'overflow', 'uint32', 1)
+    }
+  };
+  const common = {left: geometry, right: geometry, prepared};
+  const contributors = [
+    new GPUSpatialPredicateJoin({
+      ...common,
+      id: 'predicate',
+      predicate: 'intersects',
+      candidateCapacity: 32,
+      output: {pairs: output}
+    }),
+    new GPUSpatialJoinCandidates({
+      ...common,
+      id: 'candidates',
+      distance: createTransientView(graph, 'margin', 'float32', 1),
+      output
+    })
+  ];
+  for (const contributor of contributors) {
+    const kernels = getGPUCommandNodeKernelSources(contributor.getCommandNodes(graph));
+    const writer = kernels.find(kernel => kernel.source.includes('fn siftCandidateDown'));
+    expect(writer).toBeDefined();
+    const reflection = new WgslReflect(writer!.source);
+    expect(reflection.storage.length).toBeLessThanOrEqual(8);
+  }
+  prepared.destroy();
+  device.destroy();
 });

@@ -27,6 +27,8 @@ export type SpatialJoinCandidateTree = {
   leafIds: GraphDataView<'uint32'>;
   /** Number of internal nodes. */
   internalNodeCount: number;
+  /** Whether leaf traversal needs restoring to source-row order. */
+  spatialSort?: boolean;
 };
 
 /** Formats a float as a WGSL literal. @internal */
@@ -224,6 +226,34 @@ const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
       total: state
     })
   );
+  // One invocation owns each left row's candidate segment. A bounded max heap retains the
+  // smallest source IDs even when capacity cuts through that row; sorting only the first visited
+  // leaves would return a different overflow prefix from the unsorted tree. No extra scratch or
+  // storage bindings are needed. The ordinary source-ordered traversal keeps its fast path.
+  const sortedDeclarations = tree.spatialSort
+    ? `
+fn readCandidateRight(start: u32, slot: u32) -> u32 {
+  return candidatePairs[candidatePairsOffset + (start + slot) * 2u + 1u];
+}
+fn writeCandidateRight(start: u32, slot: u32, value: u32) {
+  candidatePairs[candidatePairsOffset + (start + slot) * 2u + 1u] = value;
+}
+fn siftCandidateDown(start: u32, size: u32, value: u32) {
+  var parent = 0u;
+  loop {
+    var child = parent * 2u + 1u;
+    if (child >= size) { break; }
+    if (child + 1u < size && readCandidateRight(start, child + 1u) > readCandidateRight(start, child)) {
+      child = child + 1u;
+    }
+    let childValue = readCandidateRight(start, child);
+    if (childValue <= value) { break; }
+    writeCandidateRight(start, parent, childValue);
+    parent = child;
+  }
+  writeCandidateRight(start, parent, value);
+}`
+    : '';
   nodes.push(
     createWGSLKernelNode<Parameters>(graph, {
       id: `${id}-write-candidates`,
@@ -234,16 +264,32 @@ const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
         {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read_write'}
       ]),
       invocationCount: leftCount,
-      declarations: probeDeclarations,
+      declarations: probeDeclarations + sortedDeclarations,
       body: probeBody(
-        `let slot = slotStart + found;
+        tree.spatialSort
+          ? `if (found < slotEnd - slotStart) {
+            var child = found;
+            found = found + 1u;
+            loop {
+              if (child == 0u) { break; }
+              let parent = (child - 1u) / 2u;
+              let parentValue = readCandidateRight(slotStart, parent);
+              if (parentValue >= rightRow) { break; }
+              writeCandidateRight(slotStart, child, parentValue);
+              child = parent;
+            }
+            writeCandidateRight(slotStart, child, rightRow);
+          } else if (rightRow < readCandidateRight(slotStart, 0u)) {
+            siftCandidateDown(slotStart, found, rightRow);
+          }`
+          : `let slot = slotStart + found;
           candidatePairs[candidatePairsOffset + slot * 2u] = index;
           candidatePairs[candidatePairsOffset + slot * 2u + 1u] = rightRow;
           found = found + 1u;
           if (slot + 1u >= slotEnd) { break; }`,
         // Left features with no candidates, or whose slots all fall past the capacity, skip the
-        // second traversal; the rest stop at their last counted candidate. The last row's end comes
-        // from the capacity, which keeps this pass within 8 storage bindings.
+        // second traversal; source-ordered probes stop at their last retained candidate. The last
+        // row's end comes from the capacity, keeping this pass within 8 storage bindings.
         `var found = 0u;
   let slotStart = leftOffsets[leftOffsetsOffset + index];
   var slotEnd = CANDIDATE_CAPACITY;
@@ -251,7 +297,20 @@ const WRAP_SHIFT: vec2f = vec2f(360.0, 0.0);`
     slotEnd = min(leftOffsets[leftOffsetsOffset + index + 1u], CANDIDATE_CAPACITY);
   }
   if (slotStart >= slotEnd) { return; }`,
-        ''
+        tree.spatialSort
+          ? `var remaining = found;
+  loop {
+    if (remaining <= 1u) { break; }
+    remaining = remaining - 1u;
+    let largest = readCandidateRight(slotStart, 0u);
+    let replacement = readCandidateRight(slotStart, remaining);
+    writeCandidateRight(slotStart, remaining, largest);
+    siftCandidateDown(slotStart, remaining, replacement);
+  }
+  for (var slot = 0u; slot < found; slot = slot + 1u) {
+    candidatePairs[candidatePairsOffset + (slotStart + slot) * 2u] = index;
+  }`
+          : ''
       )
     })
   );

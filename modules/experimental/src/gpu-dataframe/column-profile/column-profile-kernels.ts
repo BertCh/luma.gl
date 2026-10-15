@@ -30,8 +30,8 @@ export const COLUMN_PROFILE_ROWS_PER_INVOCATION = 8;
 /** Rows reduced by one workgroup tile. */
 export const COLUMN_PROFILE_TILE_SIZE =
   COLUMN_PROFILE_WORKGROUP_SIZE * COLUMN_PROFILE_ROWS_PER_INVOCATION;
-/** Floats per moment record: `[count, nullCount, finiteCount, mean, m2, sum]`. */
-const RECORD_STRIDE = 6;
+/** Floats per moment record: `[count, nullCount, finiteCount, mean, m2, sum, origin]`. */
+const RECORD_STRIDE = 7;
 /** Keys per column: `[minimumKey, maximumKey, finiteMinimumKey, finiteMaximumKey]`. */
 const KEY_STRIDE = 4;
 /** Floats per resolved domain: `[lo, hi, width, mode]`; mode 0 invalid, 1 regular, 2 `lo == hi`. */
@@ -70,7 +70,10 @@ export type ColumnProfileNodeProps = {
 /**
  * Moment record merged by a fixed-order tree: `count` and `nullCount` are integers held in f32
  * (exact below 2^24), `(finiteCount, mean, m2)` follow the Chan, Golub and LeVeque pairwise
- * update, and `sum` is a plain fixed-order sum. Category columns carry their overflow count in
+ * update with the mean stored relative to the first finite value (`origin`). Keeping the
+ * origin separate avoids rounding small mean updates at the scale of an offset such as an
+ * epoch timestamp. Only the public mean adds the origin back; M2 never does.
+ * `sum` is a plain fixed-order sum. Category columns carry their overflow count in
  * `finiteCount` with `mean = m2 = sum = 0`.
  */
 const MOMENTS_WGSL = /* wgsl */ `
@@ -81,10 +84,11 @@ struct Moments {
   mean: f32,
   m2: f32,
   sum: f32,
+  origin: f32,
 }
 
 fn emptyMoments() -> Moments {
-  return Moments(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+  return Moments(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 }
 
 fn mergeMoments(left: Moments, right: Moments) -> Moments {
@@ -94,15 +98,18 @@ fn mergeMoments(left: Moments, right: Moments) -> Moments {
   result.sum = left.sum + right.sum;
   if (right.finiteCount == 0.0) {
     result.finiteCount = left.finiteCount;
+    result.origin = left.origin;
     result.mean = left.mean;
     result.m2 = left.m2;
   } else if (left.finiteCount == 0.0) {
     result.finiteCount = right.finiteCount;
+    result.origin = right.origin;
     result.mean = right.mean;
     result.m2 = right.m2;
   } else {
     let count = left.finiteCount + right.finiteCount;
-    let delta = right.mean - left.mean;
+    let delta = (right.origin - left.origin) + (right.mean - left.mean);
+    result.origin = left.origin;
     result.finiteCount = count;
     result.mean = left.mean + delta * (right.finiteCount / count);
     result.m2 = left.m2 + right.m2 + delta * delta * (left.finiteCount * right.finiteCount / count);
@@ -419,7 +426,7 @@ ${MOMENTS_WGSL}`,
       let base = partialsOffset + (column * TILE_COUNT + tile) * ${RECORD_STRIDE}u;
       accumulated = mergeMoments(
         accumulated,
-        Moments(partials[base], partials[base + 1u], partials[base + 2u], partials[base + 3u], partials[base + 4u], partials[base + 5u])
+        Moments(partials[base], partials[base + 1u], partials[base + 2u], partials[base + 3u], partials[base + 4u], partials[base + 5u], partials[base + 6u])
       );
     }
   }
@@ -434,6 +441,7 @@ ${MOMENTS_WGSL}`,
     records[base + 3u] = record.mean;
     records[base + 4u] = record.m2;
     records[base + 5u] = record.sum;
+    records[base + 6u] = record.origin;
   }`
     })
   );
@@ -676,11 +684,15 @@ function getMomentTileNode<Parameters>(
         if ((bits & 0x7fffffffu) != 0x7f800000u) {
           finiteMinimumKey = min(finiteMinimumKey, key);
           finiteMaximumKey = max(finiteMaximumKey, key);
+          if (accumulated.finiteCount == 0.0) {
+            accumulated.origin = value;
+          }
+          let shiftedValue = value - accumulated.origin;
           let count = accumulated.finiteCount + 1.0;
-          let delta = value - accumulated.mean;
+          let delta = shiftedValue - accumulated.mean;
           accumulated.finiteCount = count;
           accumulated.mean = accumulated.mean + delta / count;
-          accumulated.m2 = accumulated.m2 + delta * (value - accumulated.mean);
+          accumulated.m2 = accumulated.m2 + delta * (shiftedValue - accumulated.mean);
           accumulated.sum = accumulated.sum + value;
         }
       }`
@@ -753,6 +765,7 @@ var<workgroup> sharedKeys: array<atomic<u32>, ${KEY_STRIDE}>;`,
     partials[base + 3u] = record.mean;
     partials[base + 4u] = record.m2;
     partials[base + 5u] = record.sum;
+    partials[base + 6u] = record.origin;
     let keyBase = keysOffset + column * ${KEY_STRIDE}u;
     atomicMin(&keys[keyBase], atomicLoad(&sharedKeys[0]));
     atomicMax(&keys[keyBase + 1u], atomicLoad(&sharedKeys[1]));
@@ -960,7 +973,7 @@ var<workgroup> sharedZeroCounts: array<u32, ${COLUMN_PROFILE_WORKGROUP_SIZE}>;`,
     let count = records[recordBase];
     let nullCount = records[recordBase + 1u];
     let finiteCount = records[recordBase + 2u];
-    let mean = records[recordBase + 3u];
+    let mean = records[recordBase + 6u] + records[recordBase + 3u];
     let m2 = records[recordBase + 4u];
     let sum = records[recordBase + 5u];
     let keyBase = keysOffset + column * ${KEY_STRIDE}u;

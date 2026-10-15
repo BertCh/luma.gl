@@ -122,7 +122,7 @@ export type GPUInverseDistanceWeightingProps = {
  * `minimumNeighborCount` defaults to 1, so a single distant sample inside the radius paints a
  * constant plateau equal to its value; raise it (3 or more) to turn sparse cells into nodata.
  * Positions are planar (see `spatialContext`), and distances are computed from offsets relative
- * to the grid's first corner so large absolute coordinates (UTM northings) do not quantize them.
+ * to the grid's minimum corner so large absolute coordinates (UTM northings) do not quantize them.
  *
  *
  * Gather form, one invocation per output cell, so no atomics touch values. Every encoding rebuilds
@@ -530,13 +530,17 @@ function getGatherBody(
   let minimumNeighborValue = params[paramsOffset + 7u];
   let neighborLimit = u32(clamp(select(0.0, neighborLimitValue, isFiniteValue(neighborLimitValue)), 0.0, f32(MAX_NEIGHBORS)));
   let minimumNeighbors = max(u32(clamp(select(1.0, minimumNeighborValue, isFiniteValue(minimumNeighborValue)), 0.0, 4294967040.0)), 1u);
-  let cellSize = (gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
-  // Distances are differences of offsets from the grid start corner, so they stay accurate at large
-  // absolute coordinates; center (absolute) is used only to find index cells.
-  let cellOffset = (vec2f(f32(column), f32(rasterRow)) + vec2f(0.5)) * cellSize;
-  let center = gridStart + cellOffset;
+  // Use the same positive offsets for either row order. Computing southward offsets from the
+  // opposite corner can round a coincident sample away from zero, averaging duplicate hits and
+  // applying the minimum-neighbor gate instead of the exact-hit rule.
+  let gridMinimum = min(gridStart, gridEnd);
+  let cellSize = abs(gridEnd - gridStart) / vec2f(f32(WIDTH), f32(HEIGHT));
+  let sampleColumn = select(column, WIDTH - 1u - column, gridEnd.x < gridStart.x);
+  let sampleRow = select(rasterRow, HEIGHT - 1u - rasterRow, gridEnd.y < gridStart.y);
+  let cellOffset = (vec2f(f32(sampleColumn), f32(sampleRow)) + vec2f(0.5)) * cellSize;
+  let center = gridMinimum + cellOffset;
   // Great-circle distances take absolute lon/lat, so the origin is zero there.
-  let origin = ${geographic ? 'vec2f(0.0)' : 'gridStart'};
+  let origin = ${geographic ? 'vec2f(0.0)' : 'gridMinimum'};
   let localCenter = ${geographic ? 'center' : 'cellOffset'};
   let useTaper = params[paramsOffset + 8u] > 0.5;
   let radiusSquared = getRadiusKey(radius);

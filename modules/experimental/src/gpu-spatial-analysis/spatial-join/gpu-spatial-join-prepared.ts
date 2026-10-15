@@ -64,9 +64,8 @@ export type GPUSpatialJoinPreparedProps = {
   leafCapacity?: number;
   /**
    * Reorder features along a Hilbert curve before the build. Tightens the tree for large,
-   * spatially incoherent right-hand sides. Candidate order is then unspecified, so it is only
-   * accepted by joins that do not promise sorted output. Defaults on from 256 features; pass false
-   * when using the handle with a contributor that requires source-ordered candidates.
+   * spatially incoherent right-hand sides. Joins that promise sorted output restore candidate
+   * source-row order after probing. Defaults on from 256 features.
    */
   spatialSort?: boolean;
   /**

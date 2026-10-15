@@ -713,6 +713,7 @@ export class GPUNearestFeatureJoin implements GPUCommandNodeProducer {
           featureCount: this.featureCount,
           k: this.k,
           capacity: this.neighborCapacity,
+          ties: this.ties,
           leafCapacity: this.leafCapacity,
           spatialSort: this.spatialSort,
           spatialSortCurve: views.spatialSortCurve,

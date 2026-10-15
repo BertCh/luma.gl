@@ -74,12 +74,41 @@ fn getNormalPValue(z: f32, alternative: u32) -> f32 {
 /**
  * `getChiSquarePValue(x, degreesOfFreedom, alternative)`: chi-square p-value. Exact regularized
  * incomplete gamma function (series below `x < a + 1`, Lentz continued fraction above, with
- * `a = df / 2`) for `df <= 100`; the Wilson-Hilferty cube-root normal approximation above, where
- * f32 evaluation of the gamma prefactor is no longer accurate. The tail that is computed directly
+ * `a = df / 2`). A centered Stirling prefactor avoids cancellation at large df without replacing
+ * the distribution with a normal approximation. The tail that is computed directly
  * keeps full relative precision; its complement is `1 - tail`. Alternative codes as in
- * `getNormalPValue`. Needs `erfcValue` and `getNormalPValue`.
+ * `getNormalPValue`.
  */
-const CHI_SQUARE_P_VALUE_WGSL = /* wgsl */ `
+const GAMMA_PREFIX_WGSL = /* wgsl */ `// Stirling's log-gamma expansion (DLMF 5.11.1), centered at x = a to avoid subtracting
+// terms of order a * log(a). The log1p(delta) - delta series also avoids cancellation.
+fn getGammaPrefix(shape: f32, value: f32) -> f32 {
+  if (shape <= 50.0) {
+    return exp(shape * log(value) - value - getLogGamma(shape));
+  }
+  let delta = (value - shape) / shape;
+  var centeredLog: f32;
+  if (abs(delta) <= 0.25) {
+    var power = -delta * delta;
+    centeredLog = 0.5 * power;
+    for (var order = 3; order <= 20; order++) {
+      power *= -delta;
+      centeredLog += power / f32(order);
+    }
+  } else {
+    centeredLog = log(value / shape) - delta;
+  }
+  let inverse = 1.0 / shape;
+  let correction = inverse * (0.08333333333333 - inverse * inverse * 0.00277777777778);
+  return exp(shape * centeredLog + 0.5 * log(shape) - 0.91893853320467 - correction);
+}
+
+`;
+
+function getChiSquarePValueWGSL(quadratCount: number): string {
+  // Preserve the established small-df kernels, including their byte-level regression contract.
+  // Polygon grids may have fewer active quadrats; getGammaPrefix also handles those small df.
+  const useStableGamma = quadratCount > 101;
+  return /* wgsl */ `
 fn getLogGamma(value: f32) -> f32 {
   var x = value;
   var shift = 0.0;
@@ -94,17 +123,17 @@ fn getLogGamma(value: f32) -> f32 {
     inverse * (0.08333333333333 - inverseSquared * (0.00277777777778 - inverseSquared * 0.00079365079365)) - shift;
 }
 
-// Returns (lower tail P(a, x), upper tail Q(a, x)) of the regularized incomplete gamma function.
+${useStableGamma ? GAMMA_PREFIX_WGSL : ''}// Returns (lower tail P(a, x), upper tail Q(a, x)) of the regularized incomplete gamma function.
 fn getGammaTails(a: f32, x: f32) -> vec2<f32> {
   if (x <= 0.0) {
     return vec2<f32>(0.0, 1.0);
   }
-  let prefix = exp(a * log(x) - x - getLogGamma(a));
+  let prefix = ${useStableGamma ? 'getGammaPrefix(a, x)' : 'exp(a * log(x) - x - getLogGamma(a))'};
   if (x < a + 1.0) {
     var term = 1.0 / a;
     var sum = term;
     var denominator = a;
-    for (var iteration = 0; iteration < 500; iteration++) {
+    for (var iteration = 0; iteration < ${useStableGamma ? 2048 : 500}; iteration++) {
       denominator += 1.0;
       term *= x / denominator;
       sum += term;
@@ -134,7 +163,12 @@ fn getGammaTails(a: f32, x: f32) -> vec2<f32> {
 }
 
 fn getChiSquarePValue(x: f32, degreesOfFreedom: f32, alternative: u32) -> f32 {
-  var lower: f32;
+${
+  useStableGamma
+    ? `  let tails = getGammaTails(0.5 * degreesOfFreedom, 0.5 * x);
+  let lower = tails.x;
+  let upper = tails.y;`
+    : `  var lower: f32;
   var upper: f32;
   if (degreesOfFreedom <= 100.0) {
     let tails = getGammaTails(0.5 * degreesOfFreedom, 0.5 * x);
@@ -145,12 +179,14 @@ fn getChiSquarePValue(x: f32, degreesOfFreedom: f32, alternative: u32) -> f32 {
     let z = (pow(x / degreesOfFreedom, 1.0 / 3.0) - (1.0 - scale)) / sqrt(scale);
     lower = getNormalPValue(z, 2u);
     upper = getNormalPValue(z, 1u);
-  }
+  }`
+}
   if (alternative == 1u) { return upper; }
   if (alternative == 2u) { return lower; }
   return min(1.0, 2.0 * min(lower, upper));
 }
 `;
+}
 
 /** Id written to `nearestNeighborIds` when a row has no nearest neighbor. */
 export const GPU_NO_NEAREST_NEIGHBOR = 0xffffffff;
@@ -929,7 +965,7 @@ const QUADRAT_ROWS: u32 = ${quadratRows}u;`,
             declarations: `${PAIR_STATISTICS_FLOAT_WGSL}
 ${ERFC_VALUE_WGSL}
 ${NORMAL_P_VALUE_WGSL}
-${CHI_SQUARE_P_VALUE_WGSL}
+${getChiSquarePValueWGSL(quadratCount)}
 const CELL_COUNT: u32 = ${cellCount}u;
 const QUADRAT_COUNT: u32 = ${quadratCount}u;`,
             body: studyWindow

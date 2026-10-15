@@ -126,8 +126,9 @@ export type GPUColumnProfileProps = {
  * rows per invocation sequentially, reduces them with a binary tree of Chan merges, then one
  * workgroup merges the tile partials in a second fixed tree. No float atomics are used, so the
  * float statistics are bitwise identical from run to run and independent of GPU thread order,
- * and are accurate to a few f32 ULP of an f64 two-pass oracle even for large offsets (the
- * pairwise update does not cancel). Histogram counts, registers, and category counts are integer
+ * with partial means stored relative to separately retained first-value origins. This keeps
+ * mean updates at the scale of the deviations when the column has a large common offset.
+ * Histogram counts, registers, and category counts are integer
  * atomics and are exact. Histogram bins use `width = fround(range * fround(1 / binCount))`, the
  * estimate `floor(d / width)` and one correction step each way against correctly rounded
  * products, which a CPU mirror reproduces with `Math.fround`.

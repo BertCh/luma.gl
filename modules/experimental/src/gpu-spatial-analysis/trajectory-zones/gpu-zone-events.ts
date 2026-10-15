@@ -260,6 +260,10 @@ export type GPUZoneEventsProps = {
  * edge) and on a vertical edge as just west of it. Segments can still produce several events at
  * one time (a track passing a vertex that connects edges on both sides of it).
  *
+ * Equal-time crossings toggle in polygon edge-row order, including zero-duration segments and
+ * boundary touches. Enter/exit labels describe the ordered event stream, so at a tied time they
+ * need not describe the spatial direction at that particular edge. Dwell uses the same order.
+ *
  * Composition: bounds and BVH build, one probe kernel per row, an exact crossing kernel, a ray
  * parity kernel, an event-time kernel, three stable `GPUSort` passes (edge row, time, track) giving
  * `(track, time, edge row)` order, then a fourth stable sort by `(track, zone)` cell so the events

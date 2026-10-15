@@ -1091,6 +1091,14 @@ validity outputs are named `outputValidity`.
   column at one per-frame instant. It has no grid (it takes positions): `parameters` holds the time
   and `output` the azimuth, altitude (with optional refraction), and a daylight flag.
   `getSolarPosition` is the float64 CPU version used to drive the shadow mask.
+  Both use the **NOAA daily spreadsheet's Meeus-based approximation**, without observer parallax,
+  rather than NREL SPA. [NOAA's published accuracy](https://gml.noaa.gov/grad/solcalc/calcdetails.html)
+  is about one minute for sunrise/set within ±72° latitude and ten minutes outside; NOAA does
+  not give a universal 0.01° angular guarantee. Float32 orbital-angle error increases with time
+  from J2000, and azimuth is ill-conditioned near zenith/nadir. Time is transported as separate
+  whole days and day fraction. `daylight` compares **geometric sun-center altitude** with a strict
+  `>` threshold (default −0.833°), independently of the optional refraction applied to `altitude`.
+  Near that threshold, NOAA and SPA can legitimately produce different daylight flags.
 
 ```ts
 const sun = getSolarPosition(Date.now(), longitude, latitude);

@@ -501,7 +501,7 @@ const HEADER: u32 = ${GPU_CLASS_BREAKS_PARAMETER_HEADER_LENGTH}u;`,
     }
 
     // 5. Head/tail rounds: the mean of the current head, then a one-thread split decision. Every
-    // round compiles to the same three pipelines: the round index lives in the head/tail state
+    // round compiles to the same four pipelines: the round index lives in the head/tail state
     // (rule 12), and the split kernel disarms the moment kernels' dispatch once done (rule 13).
     if (moments && partials && headTail && headTailDispatch) {
       for (let round = 0; round < headTailRounds; round++) {

@@ -261,21 +261,24 @@ fn reduceLanes(lane: u32, value: f32) -> f32 {
 }`,
           body: `let column = index / LANES;
   let lane = localInvocationIndex;
+  // Center before reducing: a rounded mean of a constant column can otherwise
+  // create a nonzero deviation and normalize every row to +1 or -1.
+  let origin = values[valuesOffset + column];
   var sum = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
-    sum += values[valuesOffset + row * COLUMNS + column];
+    sum += values[valuesOffset + row * COLUMNS + column] - origin;
   }
   let mean = reduceLanes(lane, sum) / f32(ROWS);
   var squares = 0.0;
   for (var row = lane; row < ROWS; row += LANES) {
-    let delta = values[valuesOffset + row * COLUMNS + column] - mean;
+    let delta = (values[valuesOffset + row * COLUMNS + column] - origin) - mean;
     squares += delta * delta;
   }
   let deviation = sqrt(reduceLanes(lane, squares) / f32(ROWS));
   let inverse = select(0.0, 1.0 / deviation, deviation > 1e-20);
   for (var row = lane; row < ROWS; row += LANES) {
     scaled[scaledOffset + row * COLUMNS + column] =
-      (values[valuesOffset + row * COLUMNS + column] - mean) * inverse;
+      ((values[valuesOffset + row * COLUMNS + column] - origin) - mean) * inverse;
   }`
         })
       );
