@@ -61,7 +61,7 @@ export default defineScene<LocalRelationshipsOptions>({
       step: 1,
       default: 0,
       format: value => (value <= 0 ? 'auto (lowest AICc)' : `ladder step ${value} of 8`),
-      help: 'Auto searches the 8-step ladder and keeps the bandwidth with the lowest AICc. A step fixes it. Adaptive ladder: 24, 36, 48, 64, 80, 96, 112, 128 nearest counties. Fixed ladder: 150, 250, 350, 500, 700, 1000, 1400, 2000 km. A small bandwidth is local but noisy; a large one approaches the national model.'
+      help: 'Auto searches the 8-step ladder, refines between steps and keeps the bandwidth with the lowest AICc. A step fixes it. Adaptive ladder: 24, 36, 48, 64, 80, 96, 112, 128 nearest counties. Fixed ladder: 150, 250, 350, 500, 700, 1000, 1400, 2000 km. A small bandwidth is local but noisy; a large one approaches the national model.'
     },
     {
       kind: 'select',
@@ -202,7 +202,7 @@ export default defineScene<LocalRelationshipsOptions>({
     },
     {
       id: 'scores',
-      label: 'AICc per ladder step',
+      label: 'AICc for evaluated ladder candidates',
       help: 'Corrected Akaike criterion of each candidate bandwidth, smallest first step first. Lower is better.'
     },
     {
@@ -411,7 +411,7 @@ permutationParameters.write(getGPUPermutationParameterValues({seed: ${state.seed
       headline: 'Small bandwidths produce noisier coefficient surfaces',
       textAlternative:
         'The income-coefficient map breaks into smaller patches when each local regression uses only 24 nearby counties.',
-      body: 'Slide **Bandwidth (ladder step)** from auto to *ladder step 1* (the 24 nearest counties). Local fits become more local and noisier: patches break up. Step 8 (128 counties) approaches a regional average. Auto picks the step with the lowest **AICc**; the **AICc per ladder step** readout lists all eight.\n\nChanging the bandwidth only writes the 8-value ladder into a parameter buffer, so the compiled graph is simply encoded again. **Kernel** (bisquare or Gaussian) and **Bandwidth type** (adaptive or fixed distance) are parameters too.',
+      body: 'Slide **Bandwidth (ladder step)** from auto to *ladder step 1* (the 24 nearest counties). Local fits become more local and noisier: patches break up. Step 8 (128 counties) approaches a regional average. Auto searches the ladder and refines between steps to minimize **AICc**. The candidate readout lists the eight initial ladder scores in auto mode; manual mode evaluates and displays just the one selected candidate.\n\nChanging the bandwidth writes the eight-candidate ladder or the single manual candidate into a parameter buffer, so the compiled graph is simply encoded again. **Kernel** (bisquare or Gaussian) and **Bandwidth type** (adaptive or fixed distance) are parameters too.',
       options: {center: 'global', bandwidth: 1},
       controls: ['bandwidth', 'mode', 'kernel'],
       readouts: ['bandwidth', 'scores']

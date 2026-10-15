@@ -73,7 +73,6 @@ export type StormOutageExposureOptions = {
 };
 
 const STATUS_STEP_SECONDS = 300;
-const OUTAGE_WINDOW_SECONDS = 899;
 const REGION = {west: -104.2, south: 24, east: -70.8, north: 48.8};
 const BIVARIATE_COLORS = [
   [238, 232, 229, 255],
@@ -184,6 +183,10 @@ export async function createStormOutageExposure(
   }
   const snapshotTimes = Float32Array.from(outageData.column<Uint32Array>('timestamp'));
   const snapshotValues = Float32Array.from(outageData.column<Uint32Array>('customersOut'));
+  const availableSnapshotTimes = [...new Set(snapshotTimes)].sort(
+    (first, second) => first - second
+  );
+  const snapshotTimeBuffer = resources.createBuffer('selected-snapshot-time', 4);
 
   // Total customers out in the study region at each snapshot time (static, for the chart).
   const totalByTime = new Map<number, number>();
@@ -841,6 +844,7 @@ export async function createStormOutageExposure(
     outageNow: Float32Array;
     trackLengths: Float32Array;
     flashSums: Float32Array;
+    snapshotTime: number;
   } | null = null;
   let valueRange: [number, number] = fixedValueRanges.outageNow;
   let hoveredCounty = -1;
@@ -883,11 +887,15 @@ export async function createStormOutageExposure(
     const limit = options.exposureWindow === 'so-far' ? quantized : 1e9;
     flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: Math.min(limit, 1e7)}));
     clipLimit.write(Float32Array.of(Math.min(limit, 1e7), 0, 0, 0));
+    // Retain the latest report; an absent later snapshot is not an observed zero.
+    let snapshotTime = -1;
+    for (const timestamp of availableSnapshotTimes) {
+      if (timestamp > playhead) break;
+      snapshotTime = timestamp;
+    }
+    snapshotTimeBuffer.write(Float32Array.of(snapshotTime));
     snapshotWindow.write(
-      getGPUTimeWindowFilterParameterValues({
-        start: quantized - OUTAGE_WINDOW_SECONDS,
-        end: quantized
-      })
+      getGPUTimeWindowFilterParameterValues({start: snapshotTime, end: snapshotTime})
     );
   }
   writeComposeParameters();
@@ -973,7 +981,8 @@ export async function createStormOutageExposure(
       {buffer: trackLengths, size: countyCount * 4},
       {buffer: flashSums, size: countyCount * 4},
       {buffer: flashSelected, size: 4},
-      {buffer: lineOverflow, size: 4}
+      {buffer: lineOverflow, size: 4},
+      {buffer: snapshotTimeBuffer, size: 4}
     ],
     bytes => {
       if (destroyed) return;
@@ -982,7 +991,8 @@ export async function createStormOutageExposure(
         values: new Float32Array(bytes, 0, stride).slice(),
         outageNow: new Float32Array(bytes, stride * 4, stride).slice(),
         trackLengths: new Float32Array(bytes, stride * 8, stride).slice(),
-        flashSums: new Float32Array(bytes, stride * 12, stride).slice()
+        flashSums: new Float32Array(bytes, stride * 12, stride).slice(),
+        snapshotTime: new Float32Array(bytes, stride * 16 + 8, 1)[0]
       };
       const tail = new Uint32Array(bytes, stride * 16, 2);
       ctx.setReadout('flashesCounted', formatInteger(tail[0] * flashScale));
@@ -1022,7 +1032,9 @@ export async function createStormOutageExposure(
     ctx.requestLayers();
     ctx.setReadout(
       'customersNow',
-      `${formatInteger(sumNow())} customers without power (storm-region counties)`
+      latest.snapshotTime < 0
+        ? 'No snapshot available at or before this time'
+        : `${formatInteger(sumNow())} customers reported without power at ${formatStormClock(latest.snapshotTime)} (storm-region counties)`
     );
     if (!peakPerThousand) return;
     const threshold = ctx.options.exposureThreshold;
@@ -1090,7 +1102,11 @@ export async function createStormOutageExposure(
     const label = `${names.name[county]} County, ${names.state[county]}`;
     if (!latest) return label;
     const parts = [
-      `${formatInteger(latest.outageNow[county])} customers without power now`,
+      latest.snapshotTime < 0
+        ? 'no snapshot available'
+        : latest.outageNow[county] > 0
+          ? `${formatInteger(latest.outageNow[county])} customers reported without power at ${formatStormClock(latest.snapshotTime)}`
+          : `no nonzero report at ${formatStormClock(latest.snapshotTime)} (zero or missing)`,
       `peak ${peakPerThousand ? peakPerThousand[county].toFixed(1) : 'n/a'} per 1,000 residents`,
       `${(latest.trackLengths[county] / 1000).toFixed(0)} km of cell track`,
       `${(((latest.flashSums[county] * flashScale) / Math.max(0.001, countyStatic[county * 4 + 1])) * 1000).toFixed(0)} flashes per 1,000 km2`

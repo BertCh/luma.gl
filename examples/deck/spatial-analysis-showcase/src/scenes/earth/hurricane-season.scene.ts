@@ -77,7 +77,7 @@ export default defineScene<HurricaneSeasonOptions>({
       help: 'Show the selected record as active storms, or divide the same stacked totals by the number of selected seasons. Both modes retain the same storms and calendar.',
       options: [
         {value: 'active', label: 'Storms active'},
-        {value: 'share', label: 'Share of selected seasons active'}
+        {value: 'share', label: 'Mean active storms per season'}
       ]
     },
     {
@@ -235,7 +235,7 @@ export default defineScene<HurricaneSeasonOptions>({
     {id: 'storms', label: 'Storms'},
     {id: 'seasonsShown', label: 'Selected seasons'},
     {id: 'peakActive', label: 'Peak active total'},
-    {id: 'peakShare', label: 'Peak season share'},
+    {id: 'peakShare', label: 'Peak mean active storms per season'},
     {id: 'categoryComposition', label: 'Peak category composition'}
   ],
 
@@ -287,7 +287,7 @@ windowParameters.write(getGPUTimeWindowFilterParameterValues({
     what: 'Each storm is re-based to the 1 January of its own year, so the 46 seasons of 1980 to 2025 share one calendar. `GPUTrajectoryPlayhead` finds, for every storm at once, the two fixes either side of the playhead day and interpolates its position. `GPUTimeWindowFilter` keeps the track segments inside a window behind the playhead and fades them toward the tail.',
     why: 'A single season is anecdote; the stack shows the seasonal clock. Forecasters and planners ask when the first storm usually appears, when the peak is, and where storms are on a given date, and the overlay answers them from 46 years instead of one.',
     howToRead:
-      'Every dot is a different storm from a different year, alive on the same calendar day. A dot is colored by its wind now; its trail shows where it has been. The campfire stacks active strength bands with the playhead rule. Counts are summed over all chosen seasons, while share divides that same total by the selected season count.'
+      'Every dot is a different storm from a different year, alive on the same calendar day. A dot is colored by its wind now; its trail shows where it has been. The campfire stacks active strength bands with the playhead rule. Counts are summed over all chosen seasons, while the mean divides that same total by the selected season count.'
   },
 
   basemap: ground('abyss', {labels: 'none'}),
@@ -345,12 +345,12 @@ windowParameters.write(getGPUTimeWindowFilterParameterValues({
     },
     {
       id: 'denominator',
-      title: 'Counts and season shares differ',
+      title: 'Counts and per-season means differ',
       headline: 'The denominator changes the unit',
       textAlternative:
-        'The same stacked campfire switches between storms active and the share of selected seasons active.',
+        'The same stacked campfire switches between storms active and mean active storms per season.',
       optionsMode: 'fresh',
-      body: 'Choose **Campfire denominator**. *Storms active* stacks every selected season; *share of selected seasons active* divides the identical bands by selected season N. Neither mode changes the map or the selected record.\n\nThis makes the denominator explicit: a stacked calendar can contain many storms from different years, while a season share is bounded by the selected years.',
+      body: 'Choose **Campfire denominator**. *Storms active* stacks every selected season; *Mean active storms per season* divides the identical bands by selected season N. Neither mode changes the map or the selected record.\n\nThis makes the denominator explicit: a stacked calendar can contain many storms from different years, and more than one storm can be active in a season on the same day. The per-season mean can therefore exceed one; it is not the fraction of seasons with activity.',
       options: {playing: false, time: 250, denominator: 'share'},
       controls: ['denominator', 'seasons'],
       readouts: ['seasonsShown', 'peakActive', 'peakShare', 'categoryComposition']

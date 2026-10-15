@@ -503,7 +503,11 @@ export async function createSatelliteGroundTracks(
   );
 
   // ---- Results to readouts, legend and chart -----------------------------------------------------
-  const valueScale = 1e6 / hours;
+  // m/m² × (10,000 km² in m²) / (1,000 m/km) = km per 10,000 km².
+  const DENSITY_UNIT_SCALE = 10_000_000;
+  function getDensityScale(): number {
+    return DENSITY_UNIT_SCALE / hours / Math.max(1, active.satelliteCount);
+  }
 
   function bandIndex(latitude: number): number {
     return Math.min(
@@ -516,7 +520,15 @@ export async function createSatelliteGroundTracks(
     const result = active.result;
     if (!result) return;
     const options = ctx.options;
-    ctx.setLegendExtent('density', [0, result.maximumDensity * valueScale]);
+    let maximumRawLength = 0;
+    for (const length of result.lengths)
+      maximumRawLength = Math.max(maximumRawLength, length / 1000);
+    ctx.setLegendExtent('density', [
+      0,
+      options.densityMode === 'normalised'
+        ? result.maximumDensity * getDensityScale()
+        : maximumRawLength
+    ]);
     ctx.setReadout('trackLength', `${formatCount(Math.round(result.totalLengthKm))} km`);
     ctx.setReadout('touched', `${(result.touchedFraction * 100).toFixed(0)}% of cells`);
     ctx.setReadout(
@@ -537,11 +549,11 @@ export async function createSatelliteGroundTracks(
     const highArea = cellAreaKm2(active.grid.cell, 80);
     ctx.setReadout(
       'cellAreaRatio',
-      `${(equatorArea / highArea).toFixed(1)}× (${Math.round(equatorArea).toLocaleString()} / ${Math.round(highArea).toLocaleString()} km²)`
+      `${active.grid.cell}° cells: ${(equatorArea / highArea).toFixed(1)}× (${Math.round(equatorArea).toLocaleString()} / ${Math.round(highArea).toLocaleString()} km²)`
     );
     ctx.setReadout(
       'peak',
-      `${(result.maximumDensity * (10000 / hours / Math.max(1, active.satelliteCount))).toFixed(1)} km track per 10,000 km² per satellite-hour near ${formatLatitude(result.maximumDensityLatitude)}`
+      `${(result.maximumDensity * getDensityScale()).toFixed(1)} km track per 10,000 km² per satellite-hour near ${formatLatitude(result.maximumDensityLatitude)}`
     );
     let rawPeak = 0;
     for (const value of result.lengths) rawPeak = Math.max(rawPeak, value / 1000);
@@ -681,10 +693,7 @@ export async function createSatelliteGroundTracks(
       const dark = ctx.ground() === 'dark';
       const result = active.result;
       const grid = active.grid;
-      const valueScale =
-        options.densityMode === 'normalised'
-          ? 10000 / hours / Math.max(1, active.satelliteCount)
-          : 0.001;
+      const valueScale = options.densityMode === 'normalised' ? getDensityScale() : 0.001;
       let maximumRawLength = 1;
       if (result)
         for (const value of result.lengths)
@@ -757,9 +766,7 @@ export async function createSatelliteGroundTracks(
       if (column < 0 || column >= grid.columns || row < 0 || row >= grid.rows) {
         return null;
       }
-      const value =
-        result.densities[row * grid.columns + column] *
-        (10000 / hours / Math.max(1, active.satelliteCount));
+      const value = result.densities[row * grid.columns + column] * getDensityScale();
       const band = bandIndex(latitude);
       return `${formatLatitude(latitude)}: ${value.toFixed(1)} km track per 10,000 km² per satellite-hour, ${(result.enters[band] / hours).toFixed(1)} band entries per hour`;
     },

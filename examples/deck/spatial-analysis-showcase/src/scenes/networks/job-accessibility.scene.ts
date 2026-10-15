@@ -378,6 +378,20 @@ export default defineScene<JobAccessibilityOptions>({
         note: table.method
       })
     ];
+    if (state.showSnaps) {
+      legends.push({
+        kind: 'categories',
+        id: 'selected-row-time',
+        title: 'Selected matrix row: street travel time',
+        entries: [
+          {color: [80, 155, 190, 70], label: 'Under 10 minutes'},
+          {color: [55, 125, 175, 100], label: '10–20 minutes'},
+          {color: [30, 95, 155, 145], label: '20–30 minutes'},
+          {color: [15, 65, 120, 190], label: '30 minutes or more'}
+        ],
+        note: 'Blue street overlay from the selected opportunity; unreachable streets are transparent. The jobs legend describes the access-score layer.'
+      });
+    }
     legends.push({
       kind: 'categories',
       title: 'CTA rail lines',

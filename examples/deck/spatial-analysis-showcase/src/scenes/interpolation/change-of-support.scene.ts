@@ -322,7 +322,7 @@ export default defineScene<ChangeOfSupportOptions>({
               ? 'Largest group in the tract'
               : 'Group with the largest overlap area',
           entries: COS_GROUPS.map(group => ({color: group.color, label: group.label})),
-          note: 'Census 2020 / ACS counts from the CDC SVI 2022 file.'
+          note: 'ACS 2018–2022 estimates from CDC SVI 2022 on 2020 tract geography.'
         }
       ];
     }
@@ -407,7 +407,7 @@ compiled.encode(commandEncoder, {parameters: undefined});
       textAlternative:
         'A tract choropleth shows Chicago population before transfer to a regular hexagon grid.',
       title: 'How many people live in each hexagon?',
-      body: 'Chicago’s 2020 census counts are published for **791 tracts**: irregular zones drawn to hold about 4,000 people, so a tract in the Loop is tiny and one on the Southwest Side is huge. A planner wants the same numbers on a **regular hexagon grid**, or for the 77 **community areas** the city uses for reporting. The boundaries do not line up, so someone has to decide how to cut a tract in two.\n\nThat is **change of support**. Here are the raw tract populations (2.7 million residents), with the tract outlines; **Tract variable**, **Target zones** and **Show** below choose what is moved, where to and what is drawn. Hover a tract for its identifier and population.',
+      body: 'Chicago’s ACS 2018–2022 population estimates, from CDC SVI 2022, are published on **2020 geography for 791 tracts**: irregular zones drawn to hold about 4,000 people, so a tract in the Loop is tiny and one on the Southwest Side is huge. A planner wants the same numbers on a **regular hexagon grid**, or for the 77 **community areas** the city uses for reporting. The boundaries do not line up, so someone has to decide how to cut a tract in two.\n\nThat is **change of support**. Here are the published tract population estimates, with the tract outlines; **Tract variable**, **Target zones** and **Show** below choose what is moved, where to and what is drawn. Hover a tract for its identifier and population.',
       camera: {longitude: -87.78, latitude: 41.84, zoom: 9.9, transitionMs: 1500},
       options: {view: 'source', variable: 'population', target: 'hexagon'},
       controls: ['variable', 'target', 'view'],

@@ -16,6 +16,15 @@ export type {GreatCirclesOptions};
 export async function createGreatCircles(
   ctx: SceneContext<GreatCirclesOptions>
 ): Promise<SceneInstance<GreatCirclesOptions>> {
+  const resultReadouts = [
+    'worldInputs',
+    'worldArcVertices',
+    'worldFarthest',
+    'worldMean',
+    'worldInside'
+  ];
+  for (const id of resultReadouts) ctx.setReadout(id, 'Loading GPU analysis…');
+  ctx.setStatus('Loading airport data and compiling the great-circle analysis');
   const flows = ctx.datasets.get('openflights');
   // IATA code to airport row for the hub list.
   const airportRows = new Map<string, number>();
@@ -29,7 +38,14 @@ export async function createGreatCircles(
   } catch (error) {
     if (ctx.signal.aborted) throw error;
   }
-  const view = await createWorldView({ctx, flows, airportRows});
+  const view = await createWorldView({ctx, flows, airportRows}).catch(error => {
+    if (!ctx.signal.aborted) {
+      for (const id of resultReadouts) ctx.setReadout(id, 'Unavailable: GPU analysis failed');
+      ctx.setStatus(`Great-circle analysis could not start: ${String(error)}`);
+    }
+    throw error;
+  });
+  ctx.setStatus('');
   return {
     getCompiledGraphs: () => view.getCompiledGraphs(),
     setOption(id, _value, options) {

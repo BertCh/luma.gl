@@ -849,11 +849,14 @@ export async function createNearestFacility(
         ? `${formatInteger(percentile(0.5))} m median, ${formatInteger(percentile(0.9))} m at the 90th percentile`
         : 'n/a'
     );
+    const searchRadius = source.mode === 'nearest' ? state.radius : state.maxDistance;
+    const formatCoverage = (limit: number) =>
+      searchRadius < limit
+        ? `unknown within ${limit} m (search limited to ${formatInteger(searchRadius)} m)`
+        : `${((100 * within(limit)) / shown).toFixed(1)}% within ${limit} m`;
     ctx.setReadout(
       'walkable',
-      shown
-        ? `${((100 * within(400)) / shown).toFixed(1)}% within 400 m, ${((100 * within(800)) / shown).toFixed(1)}% within 800 m (of all shown places)`
-        : 'n/a'
+      shown ? `${formatCoverage(400)}, ${formatCoverage(800)} (of all shown places)` : 'n/a'
     );
     const tailOffset = placeCount * 4;
     if (source.mode === 'nearest') {

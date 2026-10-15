@@ -322,9 +322,10 @@ async function createRegionalPolygonMeasures(
     const {featureCount, ringCount, vertexCount, partCount} = layout;
     const resources = new SpatialAnalysisResources(device, `polygon-measures-${id}`);
     const origin = dataset.defaultOrigin;
-    const projection = dataset.getProjection(origin);
-
-    const planarProjection = spec.space === 'mercator' ? WEB_MERCATOR_PROJECTION : projection;
+    // Counties deliberately compare Web Mercator with geodesic measures. Do not request an
+    // unused local metric frame: WGS84 areas below drive the default classes and group totals.
+    const planarProjection =
+      spec.space === 'mercator' ? WEB_MERCATOR_PROJECTION : dataset.getProjection(origin);
 
     // Planar space: Web Mercator for the continental layer, local meters for city layers.
     const planar =
@@ -497,8 +498,8 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(p.x / r * 57.29578, (2.0 * atan(exp(p.y / r)) - 1.5707963) * 57.29578);
 }`;
       }
-      const [metersPerDegreeX] = projection.project(origin[0] + 1, origin[1]);
-      const [, metersPerDegreeY] = projection.project(origin[0], origin[1] + 1);
+      const [metersPerDegreeX] = planarProjection.project(origin[0] + 1, origin[1]);
+      const [, metersPerDegreeY] = planarProjection.project(origin[0], origin[1] + 1);
       return /* wgsl */ `
 fn toLngLat(p: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(${origin[0]}, ${origin[1]}) + p / vec2<f32>(${metersPerDegreeX.toFixed(3)}, ${metersPerDegreeY.toFixed(3)});
@@ -1344,7 +1345,10 @@ fn toLngLat(p: vec2<f32>) -> vec2<f32> {
     ctx.setReadout('centroidOutside', `${formatCount(outside)} of ${formatCount(featureCount)}`);
     if (active.labelFeature >= 0) {
       const feature = active.labelFeature;
-      ctx.setReadout('labelClearance', `${formatNumber(table.radius[feature], 1)} m`);
+      ctx.setReadout(
+        'labelClearance',
+        `${formatNumber(table.radius[feature], 1)} m (${DATASET_SPECS[active.id].space === 'mercator' ? 'Web Mercator' : 'Mercator-local'})`
+      );
       ctx.setReadout(
         'labelSearch',
         `${options.initialGridSize} × ${options.initialGridSize}; ${options.refinementCandidates} candidates`

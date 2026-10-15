@@ -195,6 +195,9 @@ export async function createHorizon(
 ): Promise<SceneInstance<HorizonOptions>> {
   const {device} = ctx;
   ctx.setStatus('Loading the wide terrain and the OpenStreetMap peaks');
+  ctx.setReadout('viewSummary', 'Loading terrain and the summit catalogue…');
+  ctx.setReadout('peaksInRange', 'Loading summit catalogue…');
+  ctx.setReadout('highestPeak', 'Loading summit catalogue…');
   const context = await loadAlpsContext(ctx.datasets.get('alps-context'), ctx.signal);
   ctx.signal.throwIfAborted();
   const dataset = ctx.datasets.get('alps-dem-wide');
@@ -1313,6 +1316,12 @@ export async function createHorizon(
         ? `${catalogue[highest].displayName} ${formatElevationMeters(catalogue[highest].publishedElevationMeters)}`
         : null
     );
+    ctx.setReadout(
+      'viewSummary',
+      highest >= 0
+        ? `${inRange.length} named peaks above ${formatCount(MINIMUM_PEAK_ELEVATION_METERS)} m lie in range; the highest is ${catalogue[highest].displayName} at ${formatElevationMeters(catalogue[highest].publishedElevationMeters)}.`
+        : 'No catalogue peaks lie within the current range.'
+    );
     if (visibilityReady) {
       let visible = 0;
       let marginal = 0;
@@ -1578,6 +1587,8 @@ export async function createHorizon(
     setupDone = true;
   }
   await requestRebuild();
+  // Publish the catalogue summary before activation, without waiting for the debounced GPU UI.
+  publishReadouts();
   schedulePublish();
 
   const COMPILE_OPTIONS = new Set([

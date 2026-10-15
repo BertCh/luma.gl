@@ -191,6 +191,8 @@ export async function createNycTaxiCrossfilter(
   const fareSums = makeBuffer('fare-sums', PASSENGER_GROUPS * 4);
   const distanceSums = makeBuffer('distance-sums', PASSENGER_GROUPS * 4);
   const selectedCount = makeBuffer('selected-count', 4);
+  const funnelDimensions = ['hour', 'distance', 'fare', 'passengers'] as const;
+  const funnelCounts = funnelDimensions.map(dimension => makeBuffer(`count-${dimension}`, 4));
   const summarySources = [
     {buffer: hourBins, size: HOUR_BINS * 4},
     {buffer: distanceBins, size: DISTANCE_BINS * 4},
@@ -199,7 +201,8 @@ export async function createNycTaxiCrossfilter(
     {buffer: selectedPassengers, size: PASSENGER_GROUPS * 4},
     {buffer: fareSums, size: PASSENGER_GROUPS * 4},
     {buffer: distanceSums, size: PASSENGER_GROUPS * 4},
-    {buffer: selectedCount, size: 4}
+    {buffer: selectedCount, size: 4},
+    ...funnelCounts.map(buffer => ({buffer, size: 4}))
   ];
   const readbackBytes = summarySources.reduce((total, source) => total + source.size, 0);
 
@@ -270,6 +273,13 @@ export async function createNycTaxiCrossfilter(
       // Rows of the day that is switched off are dead: they leave every view below.
       liveMask: view('live-mask', liveMaskBuffer, 'uint32'),
       views: [
+        ...funnelDimensions.map((dimension, index) => ({
+          id: `count-${dimension}`,
+          kind: 'count' as const,
+          dimension,
+          output: view(`count-${dimension}`, funnelCounts[index], 'uint32', 1),
+          ...own
+        })),
         {
           id: 'hour-bins',
           kind: 'histogram',
@@ -603,6 +613,7 @@ export async function createNycTaxiCrossfilter(
     const fareSumStart = take(PASSENGER_GROUPS);
     const distanceSumStart = take(PASSENGER_GROUPS);
     const countStart = take(1);
+    const funnelStart = take(funnelDimensions.length);
     const options = ctx.options;
     const selected = words[countStart];
     const shouldLink = selected < LINK_LIMIT;
@@ -610,12 +621,6 @@ export async function createNycTaxiCrossfilter(
       linksOn = shouldLink;
       ctx.requestLayers();
     }
-
-    const sum = (start: number, length: number) => {
-      let total = 0;
-      for (let index = start; index < start + length; index++) total += words[index];
-      return total;
-    };
 
     // Hour chart: bars take the cyclic ramp when the map is coloured by hour, the brush is a band.
     const hourBrushed = Boolean(toBrush(options.hours, HOUR_DOMAIN));
@@ -710,13 +715,11 @@ export async function createNycTaxiCrossfilter(
           })
     });
 
-    // The selectivity funnel: each bar is the trips that pass every brush except one (the self-
-    // excluding chart's own count), so the distance between a bar and the last is what that brush
-    // alone removes.
-    const exceptHours = sum(hourStart, HOUR_BINS);
-    const exceptDistance = sum(distanceStart, DISTANCE_BINS);
-    const exceptFare = sum(fareStart, FARE_BINS);
-    const exceptParty = sum(paxStart + 1, PASSENGER_GROUPS - 1);
+    // Count the complete GPU masks, including values outside the chart domains.
+    const [exceptHours, exceptDistance, exceptFare, exceptParty] = words.subarray(
+      funnelStart,
+      funnelStart + funnelDimensions.length
+    );
     ctx.setChart('funnelChart', {
       kind: 'bars',
       horizontal: true,

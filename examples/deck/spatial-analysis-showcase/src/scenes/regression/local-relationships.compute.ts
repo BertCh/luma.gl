@@ -594,16 +594,17 @@ export async function createLocalRelationships(
       ctx.setReadout(
         'bandwidth',
         valid
-          ? `${formatNumber(shown, 0)} ${unit} (${selected[0] < LADDER_LENGTH ? `ladder step ${selected[0] + 1}` : 'refined between ladder steps'})`
+          ? `${formatNumber(shown, 0)} ${unit} (${selected[0] < LADDER_LENGTH ? `ladder step ${ctx.options.bandwidth > 0 ? ctx.options.bandwidth : selected[0] + 1}` : 'refined between ladder steps'})`
           : 'no valid candidate (all singular)'
       );
       const ladderCount = ctx.options.bandwidth <= 0 ? LADDER_LENGTH : 1;
       ctx.setReadout(
         'scores',
-        Array.from(scores)
-          .slice(0, ladderCount)
-          .map(value => (Number.isFinite(value) ? value.toFixed(0) : 'invalid'))
-          .join(' / ')
+        `${ladderCount === 1 ? 'Single manual candidate: ' : 'Initial ladder: '}` +
+          Array.from(scores)
+            .slice(0, ladderCount)
+            .map(value => (Number.isFinite(value) ? value.toFixed(0) : 'invalid'))
+            .join(' / ')
       );
       const aicc = gwrResult.correctedAkaikeInformationCriterion ?? NaN;
       // OLS AICc from the shared model result (the same Gaussian likelihood and parameter count).

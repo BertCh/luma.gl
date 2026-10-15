@@ -227,166 +227,168 @@ export async function createTopologicalRelations(
   ): Promise<Variant> {
     const key = `${getKey(state)}${idSuffix}`;
     const own = new SpatialAnalysisResources(device, `tr-${key}`);
-    const graph = new GPUCommandGraph<void>(device, {id: `tr-${key}`});
-    const sides = getSides(state.combo);
-    const leftViews: GPUSpatialJoinGeometry = sides.leftIsLines
-      ? importLines(graph, 'left', sides.left as LineBuffers)
-      : importPolygons(graph, 'left', sides.left as PolygonBuffers);
-    const rightViews: GPUSpatialJoinGeometry =
-      state.combo === 'tracts-self'
-        ? leftViews
-        : importPolygons(graph, 'right', sides.right as PolygonBuffers);
-    const leftCount = getLeftCount(state.combo);
-    const rightCount = getRightCount(state.combo);
-    const predicate = state.predicate;
-    const hasMatrix = state.matrix && predicate !== 'dwithin';
-    const self = state.combo === 'tracts-self';
-    const pairCapacity = Math.max(1024, leftCount * (sides.leftIsLines ? 6 : 24));
-    const candidateCapacity = pairCapacity * 2;
-    const engine = engineOverride ?? state.engine;
-
-    const prepared = new GPUSpatialJoinPrepared({id: 'right-index', geometry: rightViews});
-    graph.add(prepared);
-
-    const leftIds = own.createBuffer('left-ids', pairCapacity * 4);
-    const rightIds = own.createBuffer('right-ids', pairCapacity * 4);
-    const pairCount = own.createBuffer('pair-count', 4);
-    const pairOverflow = own.createBuffer('pair-overflow', 4);
-    const pairTotal = own.createBuffer('pair-total', 4);
-    const relateBuffer = own.createBuffer('relate', pairCapacity * 4);
-    const uncertain = own.createBuffer('uncertain', 4);
-    const candidates = own.createBuffer('candidates', 4);
-    const antiIds = own.createBuffer('anti-ids', leftCount * 4);
-    const antiCount = own.createBuffer('anti-count', 4);
-    const antiOverflow = own.createBuffer('anti-overflow', 4);
-    const csrOffsets = own.createBuffer('csr-offsets', (leftCount + 1) * 4);
-    const csrNeighbors = own.createBuffer('csr-neighbors', pairCapacity * 4);
-    const csrWeights = own.createBuffer('csr-weights', pairCapacity * 4);
-
-    const common = {
-      left: leftViews,
-      right: rightViews,
-      predicate,
-      ...(predicate === 'relate' ? {pattern: patternParameters.importToGraph(graph)} : {}),
-      ...(predicate === 'dwithin' ? {distance: distanceParameters.importToGraph(graph)} : {}),
-      ...(PREDICATES_WITH_FAST_ENGINE.includes(predicate) ? {engine} : {}),
-      ...(self ? {excludeSameRow: true} : {}),
-      candidateCapacity,
-      prepared
-    };
-    const innerJoin = new GPUSpatialPredicateJoin({
-      spatialContext: projection.spatialContext,
-      ...common,
-      id: 'inner',
-      output: {
-        pairs: {
-          leftIds: importGraphBuffer(graph, 'left-ids', leftIds, 'uint32', pairCapacity),
-          rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
-          status: {
-            count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
-            requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
-          }
-        },
-        ...(hasMatrix
-          ? {relate: importGraphBuffer(graph, 'relate', relateBuffer, 'uint32', pairCapacity)}
-          : {}),
-        ...(self
-          ? {
-              weights: {
-                offsets: importGraphBuffer(
-                  graph,
-                  'csr-offsets',
-                  csrOffsets,
-                  'uint32',
-                  leftCount + 1
-                ),
-                neighbors: importGraphBuffer(
-                  graph,
-                  'csr-neighbors',
-                  csrNeighbors,
-                  'uint32',
-                  pairCapacity
-                ),
-                weights: importGraphBuffer(
-                  graph,
-                  'csr-weights',
-                  csrWeights,
-                  'float32',
-                  pairCapacity
-                )
-              }
-            }
-          : {}),
-        status: {
-          uncertainCount: importGraphBuffer(graph, 'uncertain', uncertain, 'uint32', 1),
-          candidateCount: importGraphBuffer(graph, 'candidates', candidates, 'uint32', 1)
-        }
-      }
-    });
-    graph.add(innerJoin);
-    const antiJoin = new GPUSpatialPredicateJoin({
-      spatialContext: projection.spatialContext,
-      ...common,
-      id: 'anti',
-      how: 'anti',
-      output: {
-        unmatched: {
-          ids: importGraphBuffer(graph, 'anti-ids', antiIds, 'uint32', leftCount),
-          status: {
-            count: importGraphBuffer(graph, 'anti-count', antiCount, 'uint32', 1),
-            overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1)
-          }
-        }
-      }
-    });
-    graph.add(antiJoin);
-
-    const sources = [
-      {buffer: pairCount, size: 4},
-      {buffer: pairOverflow, size: 4},
-      {buffer: pairTotal, size: 4},
-      {buffer: uncertain, size: 4},
-      {buffer: candidates, size: 4},
-      {buffer: antiCount, size: 4},
-      {buffer: antiOverflow, size: 4},
-      {buffer: leftIds, size: pairCapacity * 4},
-      {buffer: rightIds, size: pairCapacity * 4},
-      {buffer: relateBuffer, size: pairCapacity * 4},
-      {buffer: antiIds, size: leftCount * 4},
-      {buffer: csrOffsets, size: (leftCount + 1) * 4}
-    ];
-    const result: Variant = {
-      key,
-      combo: state.combo,
-      resources: own,
-      compiled: undefined as never,
-      prepared,
-      reader: undefined as never,
-      pairCapacity,
-      hasMatrix,
-      engineText: `inner ${describeEngine(innerJoin)}${hasMatrix ? ' (matrix output)' : ''}, anti ${describeEngine(antiJoin)}`,
-      leftCount,
-      rightCount,
-      withWeights: self,
-      pairCount,
-      frames: 0,
-      predicate
-    };
-    // The handle is destroyed once, by `own`, after the compiled graph that imports it.
-    own.track({destroy: () => prepared.destroy()});
+    let reader: SummaryReader | undefined;
     try {
-      result.reader = new SummaryReader(own, `summary-${key}`, sources, bytes => {
+      const graph = new GPUCommandGraph<void>(device, {id: `tr-${key}`});
+      const sides = getSides(state.combo);
+      const leftViews: GPUSpatialJoinGeometry = sides.leftIsLines
+        ? importLines(graph, 'left', sides.left as LineBuffers)
+        : importPolygons(graph, 'left', sides.left as PolygonBuffers);
+      const rightViews: GPUSpatialJoinGeometry =
+        state.combo === 'tracts-self'
+          ? leftViews
+          : importPolygons(graph, 'right', sides.right as PolygonBuffers);
+      const leftCount = getLeftCount(state.combo);
+      const rightCount = getRightCount(state.combo);
+      const predicate = state.predicate;
+      const hasMatrix = state.matrix && predicate !== 'dwithin';
+      const self = state.combo === 'tracts-self';
+      const pairCapacity = Math.max(1024, leftCount * (sides.leftIsLines ? 6 : 24));
+      const candidateCapacity = pairCapacity * 2;
+      const engine = engineOverride ?? state.engine;
+
+      // Track before graph.add or join construction can throw. Destroy after compiled graphs.
+      const prepared = own.track(
+        new GPUSpatialJoinPrepared({id: 'right-index', geometry: rightViews})
+      );
+      graph.add(prepared);
+
+      const leftIds = own.createBuffer('left-ids', pairCapacity * 4);
+      const rightIds = own.createBuffer('right-ids', pairCapacity * 4);
+      const pairCount = own.createBuffer('pair-count', 4);
+      const pairOverflow = own.createBuffer('pair-overflow', 4);
+      const pairTotal = own.createBuffer('pair-total', 4);
+      const relateBuffer = own.createBuffer('relate', pairCapacity * 4);
+      const uncertain = own.createBuffer('uncertain', 4);
+      const candidates = own.createBuffer('candidates', 4);
+      const antiIds = own.createBuffer('anti-ids', leftCount * 4);
+      const antiCount = own.createBuffer('anti-count', 4);
+      const antiOverflow = own.createBuffer('anti-overflow', 4);
+      const csrOffsets = own.createBuffer('csr-offsets', (leftCount + 1) * 4);
+      const csrNeighbors = own.createBuffer('csr-neighbors', pairCapacity * 4);
+      const csrWeights = own.createBuffer('csr-weights', pairCapacity * 4);
+
+      const common = {
+        left: leftViews,
+        right: rightViews,
+        predicate,
+        ...(predicate === 'relate' ? {pattern: patternParameters.importToGraph(graph)} : {}),
+        ...(predicate === 'dwithin' ? {distance: distanceParameters.importToGraph(graph)} : {}),
+        ...(PREDICATES_WITH_FAST_ENGINE.includes(predicate) ? {engine} : {}),
+        ...(self ? {excludeSameRow: true} : {}),
+        candidateCapacity,
+        prepared
+      };
+      const innerJoin = new GPUSpatialPredicateJoin({
+        spatialContext: projection.spatialContext,
+        ...common,
+        id: 'inner',
+        output: {
+          pairs: {
+            leftIds: importGraphBuffer(graph, 'left-ids', leftIds, 'uint32', pairCapacity),
+            rightIds: importGraphBuffer(graph, 'right-ids', rightIds, 'uint32', pairCapacity),
+            status: {
+              count: importGraphBuffer(graph, 'pair-count', pairCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'pair-overflow', pairOverflow, 'uint32', 1),
+              requiredCount: importGraphBuffer(graph, 'pair-total', pairTotal, 'uint32', 1)
+            }
+          },
+          ...(hasMatrix
+            ? {relate: importGraphBuffer(graph, 'relate', relateBuffer, 'uint32', pairCapacity)}
+            : {}),
+          ...(self
+            ? {
+                weights: {
+                  offsets: importGraphBuffer(
+                    graph,
+                    'csr-offsets',
+                    csrOffsets,
+                    'uint32',
+                    leftCount + 1
+                  ),
+                  neighbors: importGraphBuffer(
+                    graph,
+                    'csr-neighbors',
+                    csrNeighbors,
+                    'uint32',
+                    pairCapacity
+                  ),
+                  weights: importGraphBuffer(
+                    graph,
+                    'csr-weights',
+                    csrWeights,
+                    'float32',
+                    pairCapacity
+                  )
+                }
+              }
+            : {}),
+          status: {
+            uncertainCount: importGraphBuffer(graph, 'uncertain', uncertain, 'uint32', 1),
+            candidateCount: importGraphBuffer(graph, 'candidates', candidates, 'uint32', 1)
+          }
+        }
+      });
+      graph.add(innerJoin);
+      const antiJoin = new GPUSpatialPredicateJoin({
+        spatialContext: projection.spatialContext,
+        ...common,
+        id: 'anti',
+        how: 'anti',
+        output: {
+          unmatched: {
+            ids: importGraphBuffer(graph, 'anti-ids', antiIds, 'uint32', leftCount),
+            status: {
+              count: importGraphBuffer(graph, 'anti-count', antiCount, 'uint32', 1),
+              overflow: importGraphBuffer(graph, 'anti-overflow', antiOverflow, 'uint32', 1)
+            }
+          }
+        }
+      });
+      graph.add(antiJoin);
+
+      const sources = [
+        {buffer: pairCount, size: 4},
+        {buffer: pairOverflow, size: 4},
+        {buffer: pairTotal, size: 4},
+        {buffer: uncertain, size: 4},
+        {buffer: candidates, size: 4},
+        {buffer: antiCount, size: 4},
+        {buffer: antiOverflow, size: 4},
+        {buffer: leftIds, size: pairCapacity * 4},
+        {buffer: rightIds, size: pairCapacity * 4},
+        {buffer: relateBuffer, size: pairCapacity * 4},
+        {buffer: antiIds, size: leftCount * 4},
+        {buffer: csrOffsets, size: (leftCount + 1) * 4}
+      ];
+      const result: Variant = {
+        key,
+        combo: state.combo,
+        resources: own,
+        compiled: undefined as never,
+        prepared,
+        reader: undefined as never,
+        pairCapacity,
+        hasMatrix,
+        engineText: `inner ${describeEngine(innerJoin)}${hasMatrix ? ' (matrix output)' : ''}, anti ${describeEngine(antiJoin)}`,
+        leftCount,
+        rightCount,
+        withWeights: self,
+        pairCount,
+        frames: 0,
+        predicate
+      };
+      reader = result.reader = new SummaryReader(own, `summary-${key}`, sources, bytes => {
         if (destroyed || variant !== result) return;
         handleSummary(result, bytes);
       });
       result.compiled = own.track(await graph.compileAsync());
+      return result;
     } catch (error) {
-      result.reader?.stop();
+      reader?.stop();
       own.destroy();
       throw error;
     }
-    return result;
   }
 
   function describeEngine(join: GPUSpatialPredicateJoin): string {

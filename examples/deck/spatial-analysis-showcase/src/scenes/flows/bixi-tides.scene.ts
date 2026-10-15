@@ -319,7 +319,7 @@ export default defineScene<BixiTidesOptions>({
     {
       id: 'busiestFlow',
       label: 'Busiest flow',
-      help: 'The heaviest station-to-station flow of the window.'
+      help: 'The heaviest retained station-to-station pair in the ranked window output; residual other-stations aggregates are excluded.'
     },
     {
       id: 'dayCounts',

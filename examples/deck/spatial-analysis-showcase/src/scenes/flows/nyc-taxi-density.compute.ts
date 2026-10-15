@@ -88,7 +88,8 @@ type DensityGraph = {
   compiled: CompiledGPUCommandGraph<void>;
   gridSize: readonly [number, number];
   values: Buffer;
-  reader: SummaryReader;
+  counts: Buffer;
+  extent: Buffer;
 };
 
 /** One read-back field: the cell values, the raw ride counts and what the camera looked at. */
@@ -154,9 +155,9 @@ export async function createNycTaxiDensity(
   let settleStale = true;
   let lastChangeTime = performance.now();
   let lastBounds: Float32Array | null = null;
-  /** Bounds and cell area of the frame whose field the readers copied. */
-  let readBounds: Float32Array | null = null;
-  let readAreaKm2 = 1;
+  let summaryReader: SummaryReader | null = null;
+  let revision = 0;
+  let readMetadata: {bounds: Float32Array; cellAreaKm2: number; revision: number} | null = null;
   /** Cell of the current frame (follows the camera). */
   let cellAreaKm2 = 1;
   let cellWidthMeters = 1;
@@ -188,6 +189,25 @@ export async function createNycTaxiDensity(
     densityDirty = true;
     settleStale = true;
     lastChangeTime = performance.now();
+    revision++;
+    snapshots.primary = null;
+    snapshots.secondary = null;
+    for (const id of [
+      'cellSize',
+      'cellArea',
+      'peakCount',
+      'peakDensity',
+      'peakPlace',
+      'peakPlaceB',
+      'jfkFare',
+      'lgaFare',
+      'hiddenCells'
+    ]) {
+      ctx.setReadout(id, 'updating grid…');
+    }
+    ctx.setAnnotations('peaks', null);
+    ctx.setLegendData('histogram', null);
+    ctx.setChart('valueChart', null);
   };
 
   // ---- Which graphs the current options need ------------------------------------------------------
@@ -268,46 +288,31 @@ export async function createNycTaxiDensity(
         }
       })
     );
-    const built: DensityGraph = {
+    return {
       compiled: resources.track(await graph.compileAsync()),
       gridSize,
       values,
-      reader: undefined as unknown as SummaryReader
+      counts,
+      extent
     };
-    built.reader = new SummaryReader(
-      resources,
-      `${id}-field`,
-      [
-        {buffer: values, size: cellCount * 4},
-        {buffer: counts, size: cellCount * 4},
-        {buffer: extent, size: 8}
-      ],
-      bytes => {
-        if (destroyed || !readBounds) return;
-        const snapshot = parseField(bytes, gridSize, options.binning);
-        if (built === primary) snapshots.primary = snapshot;
-        else if (built === secondary) snapshots.secondary = snapshot;
-        else return;
-        processFields();
-      }
-    );
-    return built;
   }
 
   function parseField(
     bytes: ArrayBuffer,
-    gridSize: readonly [number, number],
-    binning: 'grid' | 'hexagon'
+    graph: DensityGraph,
+    binning: 'grid' | 'hexagon',
+    metadata: NonNullable<typeof readMetadata>,
+    offset = 0
   ): FieldSnapshot {
-    const cells = gridSize[0] * gridSize[1];
+    const cells = graph.gridSize[0] * graph.gridSize[1];
     return {
-      values: new Float32Array(bytes.slice(0, cells * 4)),
-      counts: new Uint32Array(bytes.slice(cells * 4, cells * 8)),
-      extentMaximum: new Float32Array(bytes, cells * 8, 2)[1],
-      gridSize,
-      bounds: readBounds ?? new Float32Array(4),
+      values: new Float32Array(bytes.slice(offset, offset + cells * 4)),
+      counts: new Uint32Array(bytes.slice(offset + cells * 4, offset + cells * 8)),
+      extentMaximum: new Float32Array(bytes, offset + cells * 8, 2)[1],
+      gridSize: graph.gridSize,
+      bounds: metadata.bounds,
       binning,
-      cellAreaKm2: readAreaKm2
+      cellAreaKm2: metadata.cellAreaKm2
     };
   }
 
@@ -334,6 +339,38 @@ export async function createNycTaxiDensity(
     const options = ctx.options;
     primary = next.primary;
     secondary = next.secondary;
+    summaryReader?.release();
+    readMetadata = null;
+    const binning = options.binning;
+    const fields = [next.primary, ...(next.secondary ? [next.secondary] : [])];
+    // One copy ticket publishes both fare means and counts from the same encoding.
+    summaryReader = new SummaryReader(
+      resources,
+      'active-density-fields',
+      fields.flatMap(field => {
+        const cells = field.gridSize[0] * field.gridSize[1];
+        return [
+          {buffer: field.values, size: cells * 4},
+          {buffer: field.counts, size: cells * 4},
+          {buffer: field.extent, size: 8}
+        ];
+      }),
+      bytes => {
+        const metadata = readMetadata;
+        if (destroyed || !metadata || metadata.revision !== revision) return;
+        snapshots.primary = parseField(bytes, next.primary, binning, metadata);
+        snapshots.secondary = next.secondary
+          ? parseField(
+              bytes,
+              next.secondary,
+              binning,
+              metadata,
+              next.primary.gridSize[0] * next.primary.gridSize[1] * 8 + 8
+            )
+          : null;
+        processFields();
+      }
+    );
     snapshots.primary = null;
     snapshots.secondary = null;
     ctx.setAnnotations('peaks', null);
@@ -532,12 +569,19 @@ export async function createNycTaxiDensity(
   /** Re-derives everything the settled fields teach: readouts, legend strip, notes, charts. */
   function processFields(): void {
     const a = snapshots.primary;
-    if (!a || !readBounds) return;
+    if (!a) return;
     const needsSecond = secondary !== null;
     if (needsSecond && !snapshots.secondary) return;
     const options = ctx.options;
     if (options.measure === 'rides') processRides(a, snapshots.secondary);
     else if (snapshots.secondary) processFare(a, snapshots.secondary);
+    const width = (a.bounds[2] - a.bounds[0]) / a.gridSize[0];
+    publishCell(
+      a.binning === 'grid'
+        ? `${formatDistance(width)} across`
+        : `${formatDistance(Math.sqrt((a.cellAreaKm2 * 1e6) / (1.5 * SQRT3)))} hexagon radius`,
+      `${(a.cellAreaKm2 * 100).toFixed(a.cellAreaKm2 < 0.01 ? 2 : 1)} ha`
+    );
     updateScaleTick(a);
     updateHalo();
   }
@@ -679,7 +723,7 @@ export async function createNycTaxiDensity(
     }
     ctx.setReadout(
       'hiddenCells',
-      nonEmpty > 0 ? `${formatCount(hidden)} of ${formatCount(nonEmpty)} cells` : null
+      `${formatCount(hidden)} of ${formatCount(nonEmpty)} occupied cells`
     );
     const notes: MapAnnotation[] = [];
     for (const [readout, placeId] of [
@@ -689,7 +733,7 @@ export async function createNycTaxiDensity(
       const lngLat = NYC.places[placeId].lngLat as LngLat;
       const cell = findPlaceCell(means, tally, lngLat, minimum);
       if (cell < 0) {
-        ctx.setReadout(readout, null);
+        ctx.setReadout(readout, 'unavailable: no nearby cell meets the ride threshold');
         continue;
       }
       const fare = means.values[cell];
@@ -751,11 +795,8 @@ export async function createNycTaxiDensity(
     scaleBar: {units: 'metric'}
   };
   ctx.setFurniture(runtimeFurniture);
-  let lastCellText = '';
-  /** Publishes the cell readouts only when their text changes (the cell follows the camera). */
+  /** Publishes geometry from the same settled snapshot as its count and density. */
   function publishCell(size: string, area: string): void {
-    if (size === lastCellText) return;
-    lastCellText = size;
     ctx.setReadout('cellSize', size);
     ctx.setReadout('cellArea', area || null);
   }
@@ -840,6 +881,7 @@ export async function createNycTaxiDensity(
         case 'measure':
         case 'show':
         case 'swipe':
+          markChanged();
           if (id === 'show') writeMasks();
           void requestGraphs();
           break;
@@ -1003,15 +1045,10 @@ export async function createNycTaxiDensity(
         cellWidthMeters = radius * SQRT3;
         cellHeightMeters = radius * 1.5;
         cellAreaKm2 = (1.5 * SQRT3 * radius * radius) / 1e6;
-        publishCell(`${formatDistance(radius)} hexagon radius`, '');
       } else {
         cellWidthMeters = (viewBounds[2] - viewBounds[0]) / columns;
         cellHeightMeters = (viewBounds[3] - viewBounds[1]) / rows;
         cellAreaKm2 = (cellWidthMeters * cellHeightMeters) / 1e6;
-        publishCell(
-          `${formatDistance(cellWidthMeters)} across`,
-          `${(cellAreaKm2 * 100).toFixed(cellAreaKm2 < 0.01 ? 2 : 1)} ha`
-        );
       }
       // The colours are per km2, so the layers need the new cell area whenever the zoom changes it.
       if (Math.abs(cellAreaKm2 - lastLayerArea) > 0.002 * lastLayerArea) {
@@ -1030,16 +1067,13 @@ export async function createNycTaxiDensity(
         densityDirty = false;
       }
       const settled = performance.now() - lastChangeTime > SETTLE_MILLISECONDS;
-      const busy = primary.reader.isPending || Boolean(secondary?.reader.isPending);
-      if (settleStale && settled && !busy) {
-        readBounds = boundsData;
-        readAreaKm2 = cellAreaKm2;
-        primary.reader.request(commandEncoder);
-        secondary?.reader.request(commandEncoder);
+      const busy = summaryReader?.isPending;
+      if (settleStale && settled && !busy && !graphSwap.pending && summaryReader) {
+        readMetadata = {bounds: boundsData, cellAreaKm2, revision};
+        summaryReader.request(commandEncoder);
         settleStale = false;
       } else {
-        primary.reader.flush(commandEncoder);
-        secondary?.reader.flush(commandEncoder);
+        summaryReader?.flush(commandEncoder);
       }
     },
 
@@ -1160,7 +1194,7 @@ export async function createNycTaxiDensity(
 
     destroy() {
       destroyed = true;
-      for (const entry of graphs.values()) entry.reader.stop();
+      summaryReader?.stop();
       resources.destroy();
     }
   };

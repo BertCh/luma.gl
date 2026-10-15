@@ -14,7 +14,7 @@ import {
   type AnalysisFrame,
   createAnalysisFrameProjection
 } from '../../engine/analysis-frame';
-import {LocalMetricProjection} from '../../engine/projection';
+import {projectLngLatArray} from '../../engine/projection';
 import {projectRows} from '../regression/b6-polygons';
 import type {ResolvedDatasets} from '../scene';
 
@@ -390,7 +390,9 @@ export async function loadGeography(
   const dataset = datasets.get(id);
   const isCounty = id === 'us-counties';
   const origin = dataset.defaultOrigin;
-  const meters = dataset.projectColumn('vertices', origin);
+  // Drawing and exact shared-edge contiguity only; metric operators use analysisFrame below.
+  const displayProjection = dataset.getDisplayProjection(origin);
+  const meters = projectLngLatArray(displayProjection, dataset.column('vertices'));
   const layout = readPartLayout(dataset);
   const {featureCount, partFeature, partRingOffsets, ringOffsets, featureRingOffsets} = layout;
   const partCount = partRingOffsets.length - 1;
@@ -439,7 +441,6 @@ export async function loadGeography(
   // Analysis frame. Counties span the continent, where the Mercator-local display frame is off by
   // -14.7%..+20.7%, so the operators get Albers equal-area coordinates instead. The display
   // geometry above and below stays in the display frame (it is drawn with METER_OFFSETS).
-  const displayProjection = new LocalMetricProjection(origin);
   // The Albers projection is bit-identical to `projectAlbers` (b6-polygons.ts).
   const albersProjection = createAnalysisFrameProjection(ALBERS_CONUS_FRAME);
   const tractProjection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});

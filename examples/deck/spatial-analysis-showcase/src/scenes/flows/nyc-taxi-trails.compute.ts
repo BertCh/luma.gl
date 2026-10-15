@@ -601,7 +601,7 @@ export async function createNycTaxiTrails(
       xLabel: 'Fare (USD)',
       yLabel: 'trips',
       height: 110,
-      formatX: value => `$${value}`,
+      formatX: value => `$${value.toFixed(2)}`,
       table: false,
       description:
         'Histogram of the fares of the sampled trips with the four quintile breaks marked and the five classes in the map colours.'

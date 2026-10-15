@@ -730,7 +730,7 @@ export async function createRegionalization(
       );
       ctx.setReadout(
         'explained',
-        `SKATER ${formatNumber(explained(summary), 1)}% vs k-means ${formatNumber(explained(kSummary), 1)}% of variance`
+        `SKATER ${formatNumber(explained(summary), 1)}% vs k-means ${formatNumber(explained(kSummary), 1)}% of variance (${formatNumber(explained(kSummary) - explained(summary), 1)} percentage points, k-means minus SKATER)`
       );
       ctx.setReadout(
         'pseudoF',

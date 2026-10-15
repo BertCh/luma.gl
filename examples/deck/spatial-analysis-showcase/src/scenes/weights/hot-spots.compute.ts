@@ -62,7 +62,7 @@ import {sampleRamp, type RampName} from '../../engine/ramps';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
 import type {SceneContext, SceneInstance, TooltipContent, TooltipRow} from '../scene';
-import {formatNumber, formatPValue, runGuarded} from './b4-format';
+import {formatNumber, formatPValue} from './b4-format';
 import {
   getVariableInfo,
   loadGeography,
@@ -268,6 +268,7 @@ export async function createHotSpots(
   let destroyed = false;
   let world: HotWorld | null = null;
   let switchToken = 0;
+  let switching = false;
   /** Serializes the compiles of the variants a `setOption` needs. */
   const graphSwap = new GraphSwap();
   /** Counts option changes, so a world that finishes loading can catch up with them. */
@@ -281,12 +282,46 @@ export async function createHotSpots(
   /** Row under the pointer, so the linked chart marker only updates when it changes. */
   let hoverRow = -1;
 
+  const resultReadouts = [
+    'places',
+    'cellSize',
+    'hot',
+    'cold',
+    'notSignificant',
+    'outliers',
+    'hotTotal',
+    'coldTotal',
+    'notSignificantShare',
+    'confirmed',
+    'permutation',
+    'moments',
+    'capacity',
+    'scale',
+    'gvfNatural',
+    'gvfEqual'
+  ];
+  const publishPending = (message: string) => {
+    ctx.setStatus(message);
+    ctx.setReadout('analysisStatus', message);
+    for (const id of resultReadouts) ctx.setReadout(id, 'pending');
+    ctx.setChart('resultBalance', null);
+    ctx.setChart('zHistogram', null);
+  };
+  const publishFailure = (error: unknown) => {
+    if (destroyed || ctx.signal.aborted) return;
+    const message = `Analysis failed: ${error instanceof Error ? error.message : String(error)}`;
+    ctx.setStatus(message);
+    ctx.setReadout('analysisStatus', message);
+    for (const id of resultReadouts) ctx.setReadout(id, 'unavailable');
+  };
+  publishPending('Loading analysis inputs; results are not ready.');
+
   /** The standing sample line of the cartouche, counted from the data of the active source. */
   const publishSample = (source: HotSpotSource, geography?: Geography) => {
     if (source === 'nature-cells') {
       const observations = ctx.datasets.get('chicago-nature');
       const year = new Date(
-        observations.column<Uint32Array>('timestamp')[0] * 1000
+        Date.UTC(2023, 0, 1) + observations.column<Uint32Array>('timestamp')[0] * 1000
       ).getUTCFullYear();
       ctx.setFurniture({
         title: {sample: `${formatCount(observations.count)} iNaturalist records, Chicago, ${year}`}
@@ -893,6 +928,8 @@ export async function createHotSpots(
     updateHotSpotLabels();
     publishZChart(null);
     ctx.setCost({records: analysed, passes: target.getPassCount()});
+    ctx.setStatus('');
+    ctx.setReadout('analysisStatus', 'Ready: analysis and readback complete.');
   };
 
   const makeReader = (
@@ -903,9 +940,13 @@ export async function createHotSpots(
     cells: boolean,
     onWorld: (snapshot: StatSnapshot) => void
   ) =>
-    new SummaryReader(resources, id, sources, bytes =>
-      runGuarded('hot-spot snapshot', () => onWorld(parseSnapshot(bytes, rows, cells)))
-    );
+    new SummaryReader(resources, id, sources, bytes => {
+      try {
+        onWorld(parseSnapshot(bytes, rows, cells));
+      } catch (error) {
+        publishFailure(error);
+      }
+    });
 
   // ---------------------------------------------------------------------------------------
   // Nature cells: addHotSpotAnalysisRecipe
@@ -1233,6 +1274,7 @@ export async function createHotSpots(
       rows,
       true,
       snapshot => {
+        if (world !== created || switching || graphSwap.pending) return;
         created.snapshot = snapshot;
         updateReadouts();
         ctx.requestLayers();
@@ -1505,6 +1547,7 @@ export async function createHotSpots(
       rows,
       false,
       snapshot => {
+        if (world !== created || switching || graphSwap.pending) return;
         created.snapshot = snapshot;
         updateReadouts();
         ctx.requestLayers();
@@ -1685,51 +1728,73 @@ export async function createHotSpots(
 
   const activate = async (source: HotSpotSource) => {
     const token = ++switchToken;
-    ctx.setStatus('Loading...');
-    const next = await buildWorldFor(source);
-    if (token !== switchToken || destroyed) {
-      next.reader.stop();
-      next.resources.destroy();
-      return;
+    let next: HotWorld | null = null;
+    try {
+      publishPending('Loading and compiling the selected source; results are not ready.');
+      switching = true;
+      valueClasses = null;
+      ctx.setFurniture({title: {sample: 'Loading selected source…'}});
+      ctx.setAnnotations('hot-spots', null);
+      ctx.setAnnotations('band', null);
+      ctx.requestLayers();
+      next = await buildWorldFor(source);
+      if (token !== switchToken || destroyed) {
+        next.reader.stop();
+        next.resources.destroy();
+        return;
+      }
+      // The world becomes live only once its variants exist, because `encode` runs while it compiles.
+      let revision: number;
+      do {
+        revision = optionRevision;
+        await next.prepare();
+      } while (revision !== optionRevision && token === switchToken && !destroyed);
+      if (token !== switchToken || destroyed) {
+        next.reader.stop();
+        next.resources.destroy();
+        return;
+      }
+      const previous = world;
+      world = next;
+      if (previous) {
+        previous.reader.stop();
+        setTimeout(() => previous.resources.destroy(), 200);
+      }
+      publishSample(source, source === 'nature-cells' ? undefined : await getGeography(source));
+      next.writeInputs();
+      next.writeParameters();
+      dirty = true;
+      stale = true;
+      switching = false;
+      publishPending('Computing selected source; waiting for GPU readback.');
+      ctx.requestLayers();
+    } catch (error) {
+      if (next && world !== next) {
+        next.reader.stop();
+        next.resources.destroy();
+      }
+      if (token === switchToken) publishFailure(error);
     }
-    // The world becomes live only once its variants exist, because `encode` runs while it compiles.
-    let revision: number;
-    do {
-      revision = optionRevision;
-      await next.prepare();
-    } while (revision !== optionRevision && token === switchToken && !destroyed);
-    if (token !== switchToken || destroyed) {
-      next.reader.stop();
-      next.resources.destroy();
-      return;
-    }
-    const previous = world;
-    world = null;
-    ctx.requestLayers();
-    if (previous) {
-      previous.reader.stop();
-      setTimeout(() => previous.resources.destroy(), 200);
-    }
-    world = next;
-    publishSample(source, source === 'nature-cells' ? undefined : await getGeography(source));
-    next.writeInputs();
-    next.writeParameters();
-    dirty = true;
-    stale = true;
-    ctx.setStatus('');
-    ctx.requestLayers();
   };
 
-  world = await buildWorldFor(ctx.options.source);
-  if (ctx.signal.aborted) throw new Error('aborted');
-  publishSample(
-    ctx.options.source,
-    ctx.options.source === 'nature-cells' ? undefined : await getGeography(ctx.options.source)
-  );
-  world.writeInputs();
-  await world.prepare();
-  world.writeParameters();
-  ctx.setStatus('');
+  try {
+    world = await buildWorldFor(ctx.options.source);
+    if (ctx.signal.aborted) throw new Error('aborted');
+    publishSample(
+      ctx.options.source,
+      ctx.options.source === 'nature-cells' ? undefined : await getGeography(ctx.options.source)
+    );
+    world.writeInputs();
+    publishPending('Compiling analysis; results are not ready.');
+    await world.prepare();
+    world.writeParameters();
+    publishPending('Computing analysis; waiting for GPU readback.');
+  } catch (error) {
+    publishFailure(error);
+    world?.reader.stop();
+    world?.resources.destroy();
+    throw error;
+  }
 
   return {
     getCompiledGraphs: () => world?.getGraphs() ?? [],
@@ -1754,7 +1819,7 @@ export async function createHotSpots(
         return;
       }
       const target = world;
-      if (!target) return;
+      if (!target || switching) return;
       if (
         id === 'classification' ||
         id === 'classCount' ||
@@ -1774,21 +1839,26 @@ export async function createHotSpots(
       }
       if (['category', 'hours', 'variable'].includes(id)) target.writeInputs();
       // `encode` waits for the swap: the variants the new options need may not exist yet.
-      void graphSwap.request({
-        build: () => target.prepare(),
-        commit: () => {
-          if (world !== target) return;
-          target.writeParameters();
-          dirty = true;
-          stale = true;
-          ctx.requestLayers();
-        }
-      });
+      publishPending('Updating analysis; waiting for GPU readback.');
+      void graphSwap
+        .request({
+          build: () => target.prepare(),
+          commit: () => {
+            if (world !== target || switching) return;
+            target.writeParameters();
+            dirty = true;
+            stale = true;
+            ctx.requestLayers();
+          }
+        })
+        .catch(error => {
+          if (world === target && !switching) publishFailure(error);
+        });
     },
 
     encode(commandEncoder, frame) {
       const target = world;
-      if (!target || graphSwap.pending) return;
+      if (!target || switching || graphSwap.pending) return;
       if (dirty || frame.frameIndex < 2) {
         target.encode(commandEncoder);
         dirty = false;
@@ -1800,7 +1870,7 @@ export async function createHotSpots(
       }
     },
 
-    getLayers: () => world?.getLayers() ?? [],
+    getLayers: () => (switching ? [] : (world?.getLayers() ?? [])),
 
     // The class tables are authored per ground, so a ground flip rebuilds them.
     onGroundChange: () => {
@@ -1822,7 +1892,7 @@ export async function createHotSpots(
       ctx.requestLayers();
     },
 
-    getTooltip: event => world?.getTooltip(event) ?? null,
+    getTooltip: event => (switching ? null : (world?.getTooltip(event) ?? null)),
 
     destroy() {
       destroyed = true;

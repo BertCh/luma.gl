@@ -428,7 +428,7 @@ export async function createOceanDriftersPlayback(
     yLabel: 'first records',
     height: 92,
     description:
-      'First retained daily position of each drifter by week. Uneven bars show the archive’s release and record effort.'
+      'First retained fix of each drifter by week. Uneven bars show the archive’s record availability.'
   });
   ctx.setReadout(
     'tracks',

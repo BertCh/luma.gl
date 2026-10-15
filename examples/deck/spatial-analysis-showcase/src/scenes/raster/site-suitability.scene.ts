@@ -609,7 +609,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       textAlternative:
         'The weighted overlay brightens cells where multiple normalized criteria score highly.',
       title: 'The weighted overlay combines them',
-      body: '`GPUWeightedOverlay` computes `score = sum(weight_i x score_i)`, divided by the sum of the weights when **Normalize weights** is on. The loop runs in a fixed layer order in float32, so the result is repeatable. The readout shows the exact range of the defined scores.\n\nMove **Slope weight** to 1 and the map becomes a slope map; move **Burn severity weight** to 1 and it becomes a severity map. Negative weights are allowed by the contributor (they subtract), but the sliders here stay positive. The method matches the ArcGIS Weighted Overlay tool.',
+      body: '`GPUWeightedOverlay` computes `score = sum(weight_i x score_i)`, divided by the sum of the weights when **Normalize weights** is on. The loop runs in a fixed layer order in float32, so the result is repeatable. The readout shows the exact range of the defined scores.\n\nIncreasing **Slope weight** or **Burn severity weight** increases that criterion’s contribution. To isolate one criterion, set its weight to 1 and every other weight to 0 in All controls, or select the individual criterion under **Map shows**. Negative weights are allowed by the contributor (they subtract), but the sliders here stay positive. The method matches the ArcGIS Weighted Overlay tool.',
       options: {layer: 'score'},
       controls: ['normalizeWeights', 'weightSlope', 'weightSeverity'],
       readouts: ['scoreRange']

@@ -168,6 +168,7 @@ export default defineScene<HealthRegressionOptions>({
   ],
 
   readouts: [
+    {id: 'localInference', label: 'Local test threshold'},
     {
       id: 'rows',
       label: 'Tracts in the model',
@@ -412,13 +413,13 @@ errorGraph.add(new GPUSpatialErrorGM({weights, predictors, response, predictorCo
     {
       id: 'diagnostics',
       title: 'Is the leftover spatial?',
-      headline: 'OLS residual clusters remain statistically significant',
+      headline: 'Local residual patterns require a multiple-testing caveat',
       textAlternative:
-        'Red and blue tract groups mark significant high-high and low-low clusters of economic-model residuals.',
-      body: 'Ordinary least squares assumes independent errors. **`GPUSpatialRegressionDiagnostics`** tests that against the spatial weights: **LM-lag** (does a neighbour’s outcome matter?), **LM-error** (are the errors correlated?), their **robust** versions and **Moran’s I** of the residuals. The matching spreg tests are `LMtests` and `MoranRes`.\n\n**Map** now shows *OLS residual clusters (local Moran)*: significant **clusters** of OLS residuals from a local Moran run inside the same graph by **`addSpatialRegressionRecipe`**: red clusters are places the model under-predicts, blue clusters where it over-predicts. If the model had absorbed the geography there would be few of them.',
+        'Red and blue tract groups mark high-high and low-low economic-model residual patterns passing uncorrected analytic local tests.',
+      body: 'Ordinary least squares assumes independent errors. **`GPUSpatialRegressionDiagnostics`** tests that against the spatial weights: **LM-lag** (does a neighbour’s outcome matter?), **LM-error** (are the errors correlated?), their **robust** versions and **Moran’s I** of the residuals. The matching spreg tests are `LMtests` and `MoranRes`.\n\n**Map** now shows *OLS residual clusters (local Moran)*: exploratory **clusters** of OLS residuals from a local Moran run inside the same graph by **`addSpatialRegressionRecipe`**: red clusters are places the model under-predicts, blue clusters where it over-predicts. These are analytic local Moran tests at **{{localInference}}**, without multiple-testing correction across tracts; false positives are expected. The **Moran’s I** readout is a separate global residual test and does not establish significance of individual mapped clusters.',
       options: {model: 'economic', ridge: -2, map: 'clusters'},
       controls: ['weights', 'significance', 'map'],
-      readouts: ['moran', 'lmLag', 'lmError']
+      readouts: ['localInference', 'moran', 'lmLag', 'lmError']
     },
     {
       id: 'lag',

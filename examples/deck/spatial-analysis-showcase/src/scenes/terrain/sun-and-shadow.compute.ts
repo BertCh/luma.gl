@@ -393,6 +393,9 @@ export async function createSunAndShadow(
     timeline = getPixelTimeline(daySamples, villageSkyline, state.softness);
     const zone = getZurichZoneName(getUtcFromZurich(state.dayOfYear, 12));
     ctx.setReadout('zermattSunHours', `${timeline.sunHours.toFixed(1)} h`);
+    gpuVillage = null;
+    ctx.setReadout('zermattMapSunHours', 'Computing GPU map…');
+    ctx.setReadout('sunHoursCheck', 'Computing GPU map…');
     ctx.setReadout(
       'firstSun',
       timeline.firstSun === null ? 'none' : `${formatClockHour(timeline.firstSun)} ${zone}`
@@ -470,8 +473,8 @@ export async function createSunAndShadow(
     const breaks = table.breaks;
     const classWidth = breaks[breaks.length - 1] - (breaks[breaks.length - 2] ?? 0);
     const marker = isHours
-      ? timeline
-        ? {value: timeline.sunHours, label: 'Zermatt'}
+      ? gpuVillage
+        ? {value: gpuVillage.sunHours, label: 'Zermatt (GPU map)'}
         : undefined
       : gpuVillage
         ? {value: gpuVillage.insolation / 1000, label: 'Zermatt'}
@@ -992,6 +995,10 @@ export async function createSunAndShadow(
       list.push(
         ...getLightArrows(villageCoordinate, state.light === 'sun', sunNow, MAP_LIGHT_AZIMUTH)
       );
+    } else if (state.product === 'sun-hours' || state.product === 'insolation') {
+      if (gpuVillage) {
+        list.push(getVillageNote(villageCoordinate, gpuVillage.sunHours, state.dayOfYear));
+      }
     } else if (timeline) {
       list.push(getVillageNote(villageCoordinate, timeline.sunHours, state.dayOfYear));
     }
@@ -1050,6 +1057,8 @@ export async function createSunAndShadow(
         if (destroyed) return;
         const values = new Float32Array(bytes, 0, 4);
         gpuVillage = {sunHours: values[0], insolation: values[1]};
+        ctx.setReadout('zermattMapSunHours', `${gpuVillage.sunHours.toFixed(1)} h`);
+        publishAnnotations();
         ctx.setReadout(
           'sunHoursCheck',
           timeline

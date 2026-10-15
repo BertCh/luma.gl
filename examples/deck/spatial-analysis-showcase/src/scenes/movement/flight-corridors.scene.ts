@@ -303,6 +303,7 @@ export default defineScene<FlightCorridorsOptions>({
   ],
 
   readouts: [
+    {id: 'directionStatus', label: 'Direction analysis', layout: 'block'},
     {
       id: 'airborneChart',
       label: 'Flights through the day',
@@ -522,7 +523,31 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
       'Discs are aircraft now, colored by altitude or direction. Trails are where they have just been. In the corridor grid a brighter cell holds more flight track per square kilometre; straight bright lines are airways, bright knots are airports where arrivals and departures converge. In the extruded view height is altitude, multiplied for readability. The data is ADS-B as heard by OpenSky receivers: gaps and a thin west coast are coverage, not an empty sky.'
   },
 
-  create: async ctx => (await import('./flight-corridors.compute')).createFlightCorridors(ctx),
+  create: async ctx => {
+    ctx.setReadout('directionStatus', 'Loading analysis; results are not ready.');
+    for (const id of ['directionCells', 'directionBalance', 'directionPieces'])
+      ctx.setReadout(id, 'Loading analysis…');
+    try {
+      const instance = await (await import('./flight-corridors.compute')).createFlightCorridors(
+        ctx
+      );
+      ctx.setReadout(
+        'directionStatus',
+        'Waiting for GPU results; no result has been confirmed yet.'
+      );
+      return instance;
+    } catch (error) {
+      if (!ctx.signal.aborted) {
+        ctx.setReadout(
+          'directionStatus',
+          `Analysis unavailable: ${error instanceof Error ? error.message : String(error)}`
+        );
+        for (const id of ['directionCells', 'directionBalance', 'directionPieces'])
+          ctx.setReadout(id, 'Analysis unavailable');
+      }
+      throw error;
+    }
+  },
 
   story: [
     {
@@ -593,7 +618,7 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
         'A diverging direction balance map distinguishes eastbound and westbound traffic.',
       optionsMode: 'fresh',
       title: 'The sky is one-way streets',
-      body: 'Pilots fly airways in a set direction and a tailwind makes eastbound flights faster, so eastbound and westbound traffic uses different tracks. This map runs **two independently buffered `GPULineDensity` graphs**, one eastbound and one westbound, then a GPU pass derives `(east - west) / (east + west)` for every cell. Blue is westbound-heavy, red eastbound-heavy, and the pale middle is genuinely balanced rather than low traffic.\n\nSwitch back to *Track density* or set **Flight direction** to *Eastbound* and then *Westbound* to inspect each input. The trails still take the same filter as a predicate mask on the time-window graph. Westbound flights also fly slower over the ground in winter, because of the jet stream: the next scene measures that from the aircraft alone.',
+      body: 'Direction results are pending until the status says Ready. **{{directionStatus}}**.\n\nPilots fly airways in a set direction and a tailwind makes eastbound flights faster, so eastbound and westbound traffic uses different tracks. This map runs **two independently buffered `GPULineDensity` graphs**, one eastbound and one westbound, then a GPU pass derives `(east - west) / (east + west)` for every cell. Blue is westbound-heavy, red eastbound-heavy, and the pale middle is genuinely balanced rather than low traffic.\n\nSwitch back to *Track density* or set **Flight direction** to *Eastbound* and then *Westbound* to inspect each input. The trails still take the same filter as a predicate mask on the time-window graph. Westbound flights also fly slower over the ground in winter, because of the jet stream: the next scene measures that from the aircraft alone.',
       camera: {longitude: -98, latitude: 39, zoom: 4.3, transitionMs: 1400},
       options: {
         direction: 'all',
@@ -603,7 +628,7 @@ playCompiled.encode(commandEncoder, {parameters: undefined});`,
         showMarkers: false
       },
       controls: ['densityView', 'direction', 'cellDegrees'],
-      readouts: ['directionCells', 'directionBalance', 'directionPieces']
+      readouts: ['directionStatus', 'directionCells', 'directionBalance', 'directionPieces']
     },
     {
       id: 'extruded',

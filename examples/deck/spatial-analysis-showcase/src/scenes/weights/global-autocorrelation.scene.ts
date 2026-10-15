@@ -624,7 +624,7 @@ export default defineScene<GlobalAutocorrelationOptions>({
       kind: 'chart',
       help: "Global Moran's I of neighbours within each distance, with the z-score on the right axis."
     },
-    {id: 'peak', label: 'z peak (distance at the focus county)'},
+    {id: 'peak', label: 'Selected z band (distance at the focus county)'},
     {id: 'maxDistance', label: 'Longest distance (at the focus county)'},
     {id: 'bandSpan', label: 'Correlogram span', hood: true},
     {
@@ -885,10 +885,10 @@ export default defineScene<GlobalAutocorrelationOptions>({
       title: 'How far does the clustering reach?',
       headline: 'Clustering fades with distance',
       textAlternative:
-        'Map of US counties with two rings around Cook County: a dashed ring at the longest distance and a solid ring where the correlogram peaks, above a line chart of Moran I falling as the distance grows.',
-      body: "Moran's I for neighbours within growing distances: z peaks near **{{peak}}**, the solid ring around the focus county (click the map to move it); the dashed ring is the longest distance, **{{maxDistance}}**.\n\nWiden **Maximum distance**, switch **Band type**, or set **Geography** to tracts: the zoning changes the answer. Every setting is open in All controls.\n\n*County values are model estimates, so part of the clustering may come from the model.*",
+        'Map of US counties with two rings around Cook County: a dashed ring at the longest distance and a solid ring at the first local z peak or strongest tested band, above a line chart of Moran I falling as the distance grows.',
+      body: "Moran's I for neighbours within growing distances: the selected band is **{{peak}}**, shown by the solid ring around the focus county (click the map to move it); the dashed ring is the longest distance, **{{maxDistance}}**.\n\nWiden **Maximum distance**, switch **Band type**, or set **Geography** to tracts: the zoning changes the answer. Every setting is open in All controls.\n\n*County values are model estimates, so part of the clustering may come from the model.*",
       evidence:
-        'The correlogram traces the statistic over every band: its strongest standardised evidence occurs near **{{peak}}** and is followed to **{{maxDistance}}**.',
+        'The correlogram traces the statistic over every band: the selected band is **{{peak}}**, within a tested range extending to **{{maxDistance}}**.',
       caveat:
         'Distance is planar within the map frame, cumulative bands reuse many pairs and county zoning changes the curve; adjacent points are not independent estimates.',
       optionsMode: 'fresh',

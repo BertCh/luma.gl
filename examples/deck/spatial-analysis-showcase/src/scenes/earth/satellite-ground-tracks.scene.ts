@@ -228,7 +228,7 @@ export default defineScene<SatelliteGroundTracksOptions>({
     {id: 'beltChart', label: 'Family latitude summary', kind: 'chart'},
     {id: 'selectedOrbit', label: 'Selected orbit', layout: 'block'},
     {id: 'rawPeak', label: 'Raw track-km peak'},
-    {id: 'cellAreaRatio', label: '1° cell area: equator / 80°'},
+    {id: 'cellAreaRatio', label: 'Cell area: equator / 80°'},
     {id: 'occupiedShare', label: 'Occupied share'},
     {id: 'peakRank', label: 'Peak-cell rank change'},
     {

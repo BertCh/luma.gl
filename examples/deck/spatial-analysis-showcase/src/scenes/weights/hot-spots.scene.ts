@@ -691,6 +691,7 @@ export default defineScene<HotSpotsOptions>({
   ],
 
   readouts: [
+    {id: 'analysisStatus', label: 'Analysis status'},
     {
       id: 'places',
       label: 'Places analysed',
@@ -794,7 +795,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'Counts show where people look, not wildlife',
       textAlternative:
         'Map of Chicago with square cells shaded in five purple classes by records per square kilometre: the lakefront and the large parks are darkest.',
-      body: '**{{places}}** study-area cells are analysed, each **{{cellSize}}** across, coloured in five classes of records per square kilometre. Cells with no record are part of the study area and count as zero; cells along the lake shore with fewer than four neighbours are left untested. The darkest cells are the lakefront and the large parks.\n\nA count measures observer effort, not nature: more people looking means more records. **Category** and **Hours of the day** change what is counted.\n\n*Counts follow people.*',
+      body: '**Analysis status: {{analysisStatus}}**\n\n**{{places}}** study-area cells are analysed, each **{{cellSize}}** across, coloured in five classes of records per square kilometre. Cells with no record are part of the study area and count as zero; cells along the lake shore with fewer than four neighbours are left untested. The darkest cells are the lakefront and the large parks.\n\nA count measures observer effort, not nature: more people looking means more records. **Category** and **Hours of the day** change what is counted.\n\n*Counts follow people.*',
       optionsMode: 'fresh',
       options: {
         source: 'nature-cells',
@@ -815,7 +816,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'The same counts make two different maps',
       textAlternative:
         'The same cell map split by a divider: equal-interval classes on the left leave most cells in the palest class; natural breaks on the right separate them.',
-      body: 'Drag the divider. On the left, **equal intervals** leave most cells in the lowest class (fit **{{gvfEqual}}**). On the right, **natural breaks** put the breaks at the gaps in the data (fit **{{gvfNatural}}**).\n\nThe legend stays on natural breaks, so only the breaks change between the two sides. **Classes** sets how many.\n\n*Classification is an editorial choice.*',
+      body: '**Analysis status: {{analysisStatus}}**\n\nDrag the divider. On the left, **equal intervals** leave most cells in the lowest class (fit **{{gvfEqual}}**). On the right, **natural breaks** put the breaks at the gaps in the data (fit **{{gvfNatural}}**).\n\nThe legend stays on natural breaks, so only the breaks change between the two sides. **Classes** sets how many.\n\n*Classification is an editorial choice.*',
       optionsMode: 'fresh',
       options: {
         source: 'nature-cells',
@@ -837,7 +838,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'Hot spots beat what their neighbours predict',
       textAlternative:
         'Map of Chicago cells in seven classes from blue cold spots to red hot spots; most cells are faint and not significant, and red cells cluster on the lakefront.',
-      body: "**Gi\\*** compares the sum of counts in each cell's neighbourhood with what random placement would give. **{{hotTotal}}** cells are hot spots and **{{coldTotal}}** cold; **{{notSignificantShare}}** are not significant, drawn as a ghost so the parks show through.\n\nHover a cell for its z-score and p-value, or click a legend class to isolate it. These hot spots still measure observer effort.",
+      body: "**Analysis status: {{analysisStatus}}**\n\n**Gi\\*** compares the sum of counts in each cell's neighbourhood with what random placement would give. Current results: hot cells **{{hotTotal}}**, cold cells **{{coldTotal}}**, not-significant share **{{notSignificantShare}}**, drawn as a ghost so the parks show through.\n\nHover a cell for its z-score and p-value, or click a legend class to isolate it. These hot spots still measure observer effort.",
       evidence:
         'The z-score distribution shows the tested signal, while the result balance counts **{{hotTotal}}** hot, **{{coldTotal}}** cold and the remaining non-significant cells.',
       caveat:
@@ -858,7 +859,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'Change the neighbourhood, change the answer',
       textAlternative:
         'Closer map of the lakefront with a dashed ring around the strongest hot spot showing the neighbourhood that was tested.',
-      body: 'A hot spot is relative to the cells and the neighbourhood you choose. The dashed ring is the neighbourhood of the strongest hot spot; cells are **{{cellSize}}** across and **{{hotTotal}}** are hot. Slide **Neighbourhood radius**: small ones find block-scale pockets, large ones merge them into districts.\n\nCells beside the lake have no neighbours in the water, an edge effect.\n\n*Near things are compared with near things; "near" is your choice.*',
+      body: '**Analysis status: {{analysisStatus}}**\n\nA hot spot is relative to the cells and the neighbourhood you choose. The dashed ring is the neighbourhood of the strongest hot spot; cells are **{{cellSize}}** across and **{{hotTotal}}** are hot. Slide **Neighbourhood radius**: small ones find block-scale pockets, large ones merge them into districts.\n\nCells beside the lake have no neighbours in the water, an edge effect.\n\n*Near things are compared with near things; "near" is your choice.*',
       optionsMode: 'fresh',
       options: {
         source: 'nature-cells',
@@ -880,7 +881,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'Correct for testing thousands of cells at once',
       textAlternative:
         'The same hot-spot map with fewer coloured cells: only cells that survive the false discovery correction and the permutation test keep their colour.',
-      body: 'Every cell is a test, so some pass by chance. The **Benjamini-Hochberg** correction and a **permutation test** (shuffle the other counts and see how often chance beats the cell) raise the bar: **{{hotTotal}}** hot cells survive and **{{confirmed}}** are confirmed.\n\nToggle **Benjamini-Hochberg FDR correction** or change **Permutations** and watch the counts fall.\n\n*The more tests, the stricter the bar.*',
+      body: '**Analysis status: {{analysisStatus}}**\n\nEvery cell is a test, so some pass by chance. The **Benjamini-Hochberg** correction and a **permutation test** (shuffle the other counts and see how often chance beats the cell) raise the bar: **{{hotTotal}}** hot cells survive and **{{confirmed}}** are confirmed.\n\nToggle **Benjamini-Hochberg FDR correction** or change **Permutations** and compare the updated counts; changing the permutation count need not reduce them.\n\n*The more tests, the stricter the bar.*',
       evidence:
         'The balance chart shows how many cells retain a named result; **{{confirmed}}** pass the conditional permutation test.',
       caveat:
@@ -907,7 +908,7 @@ export default defineScene<HotSpotsOptions>({
       headline: 'High diabetes clusters in the South and Appalachia',
       textAlternative:
         'Map of US counties coloured by local Moran quadrant: High-High clusters across the South and Appalachia, Low-Low clusters in the Mountain West and Upper Midwest.',
-      body: 'The same machinery works on areas. Local Moran of diabetes prevalence finds **{{hotTotal}}** High-High counties, mostly across the South and Appalachia, and **{{coldTotal}}** Low-Low counties in the Mountain West and Upper Midwest: the belt that *Is it clustered at all?* measured with one number, now located county by county.\n\nTry **Statistic**, **Variable** or **Neighbours are...** below.\n\n*A cluster describes a pattern, not a cause; county values are model-based.*',
+      body: '**Analysis status: {{analysisStatus}}**\n\nThe same machinery works on areas. Local Moran of diabetes prevalence finds **{{hotTotal}}** High-High counties, mostly across the South and Appalachia, and **{{coldTotal}}** Low-Low counties in the Mountain West and Upper Midwest: the belt that *Is it clustered at all?* measured with one number, now located county by county.\n\nTry **Statistic**, **Variable** or **Neighbours are...** below.\n\n*A cluster describes a pattern, not a cause; county values are model-based.*',
       evidence:
         'The local result profile separates **{{hotTotal}}** High-High counties, **{{coldTotal}}** Low-Low counties and the spatial outliers.',
       caveat:

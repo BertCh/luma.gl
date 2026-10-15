@@ -256,6 +256,7 @@ export default defineScene<VegetationTrendsOptions>({
   ],
 
   readouts: [
+    {id: 'windowMeanSeries', label: 'Selected acquisition means (NDVI)'},
     {
       id: 'meanSeries',
       label: 'Window mean NDVI, 16 dates',
@@ -472,7 +473,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       textAlternative:
         'Restricting the acquisition window recalculates post-fire NDVI trend estimates.',
       title: 'Restrict the dates to see the recovery',
-      body: 'The 2021 step dominates a trend over all dates. To ask about regrowth alone, restrict **Dates used** below to **2021-09-21 or later**. The contributor drops the excluded dates (they become NaN in the stack, one buffer write) and the tests run on what is left.\n\nNow green cells are real recovery: significant greening since the fire. They are fewer and weaker, which matches the window mean rising only from 0.35 to about 0.47 by 2024.',
+      body: 'The 2021 step dominates a trend over all dates. To ask about regrowth alone, restrict **Dates used** below to **2021-09-21 or later**. The contributor drops the excluded dates (they become NaN in the stack, one buffer write) and the tests run on what is left.\n\nGreen cells mark greening that passes the selected trend test in this window; they do not establish ecological recovery. The loaded acquisition means for the selected window are **{{windowMeanSeries}}**.',
       evidence:
         'Within the selected recovery window, **{{analysed}}** and **{{shares}}**; the map and counts use the same valid-date mask.',
       caveat:
@@ -485,7 +486,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
         splitSlice: 12
       },
       controls: ['dateWindow', 'minimumValid'],
-      readouts: ['shares', 'analysed'],
+      readouts: ['shares', 'analysed', 'windowMeanSeries'],
       highlight: {readout: 'shares'}
     },
     {

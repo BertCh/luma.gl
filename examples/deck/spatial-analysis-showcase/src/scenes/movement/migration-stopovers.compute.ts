@@ -420,6 +420,8 @@ export async function createMigrationStopovers(
   } | null = null;
 
   const markChanged = () => {
+    ctx.setReadout('analysisStatus', 'Computing dwells and sites; results are pending.');
+    for (const id of ['stayChart', 'siteChart', 'seasonChart']) ctx.setChart(id, null);
     lastChange = performance.now();
     settleStale = true;
   };
@@ -777,6 +779,12 @@ export async function createMigrationStopovers(
         maxima: floats.slice(maximaStart, maximaStart + trackCount)
       };
       summarize();
+      ctx.setReadout(
+        'analysisStatus',
+        snapshot.stopOverflow || snapshot.clusterOverflow
+          ? 'Incomplete: analysis capacity exceeded; inspect the dwell and site counts.'
+          : 'Ready: dwell and site summaries received.'
+      );
     }
   );
 

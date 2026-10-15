@@ -59,6 +59,7 @@ const CONTINUOUS_SERVICE_MAXIMUM = 60;
 type Variant = {
   key: string;
   compiled: CompiledGPUCommandGraph<void>;
+  comparisonCompiled: CompiledGPUCommandGraph<void>;
 };
 
 /** Imports every buffer once per graph (a graph rejects two imports of one buffer). */
@@ -97,14 +98,6 @@ export async function createTransitFrequency(
     origin: trips.origin
   });
   const densityPositions = projectLngLatToFrame(densityProjection, trips.lngLat);
-  const densitySegments = new Float32Array(segmentCount * 4);
-  for (let segment = 0; segment < segmentCount; segment++) {
-    const endVertex = trips.segmentEndVertices[segment];
-    densitySegments.set(
-      densityPositions.subarray((endVertex - 1) * 2, (endVertex + 1) * 2),
-      segment * 4
-    );
-  }
 
   // Grid center: the middle of the trips' planar bounds.
   let minX = Infinity;
@@ -137,6 +130,26 @@ export async function createTransitFrequency(
   const hoverCellBuffer = resources.createBuffer('hover-cell', 4 * 4 * 4);
 
   // ---- Line density graphs: one per mode filter, compiled on first use --------------------------
+  const comparisonCellSizes = [200, 400, 800];
+  const comparisonLengths = comparisonCellSizes.map(cell =>
+    resources.createBuffer(`comparison-lengths-${cell}`, CELL_COUNT * 4)
+  );
+  const comparisonOverflow = comparisonCellSizes.map(cell =>
+    resources.createBuffer(`comparison-overflow-${cell}`, 4)
+  );
+  const comparisonParameters = comparisonCellSizes.map(cell =>
+    resources.createParameterBuffer(
+      `comparison-grid-${cell}`,
+      'float32',
+      GPU_LINE_DENSITY_PARAMETER_LENGTH,
+      getGPULineDensityParameterValues({
+        minX: center[0] - (COLUMNS * cell) / 2,
+        minY: center[1] - (ROWS * cell) / 2,
+        cellWidth: cell,
+        cellHeight: cell
+      })
+    )
+  );
   const variants = new Map<string, Variant>();
 
   async function createVariant(filter: string): Promise<Variant> {
@@ -187,7 +200,33 @@ export async function createTransitFrequency(
         }
       })
     );
-    const variant = {key: filter, compiled: resources.track(await graph.compileAsync())};
+    // Use the same clipped-length estimator, projection, trip subset and window as the map.
+    const comparisonGraph = new GPUCommandGraph<void>(device, {
+      id: `frequency-comparison-${filter}`
+    });
+    const comparisonView = createImporter(comparisonGraph);
+    comparisonCellSizes.forEach((cell, index) => {
+      comparisonGraph.add(
+        new GPULineDensity({
+          id: `line-density-${cell}`,
+          positions: comparisonView(positions, 'float32x2', rows),
+          lineOffsets: comparisonView(offsets, 'uint32', paths + 1),
+          columns: COLUMNS,
+          rows: ROWS,
+          spatialContext: densityProjection.spatialContext,
+          parameters: comparisonParameters[index].importToGraph(comparisonGraph),
+          output: {
+            lengths: comparisonView(comparisonLengths[index], 'float32', CELL_COUNT),
+            status: {overflow: comparisonView(comparisonOverflow[index], 'uint32', 1)}
+          }
+        })
+      );
+    });
+    const variant = {
+      key: filter,
+      compiled: resources.track(await graph.compileAsync()),
+      comparisonCompiled: resources.track(await comparisonGraph.compileAsync())
+    };
     variants.set(filter, variant);
     return variant;
   }
@@ -263,6 +302,7 @@ export async function createTransitFrequency(
   // ---- State ------------------------------------------------------------------------------------
   let destroyed = false;
   let densityDirty = true;
+  let comparisonDirty = true;
   let statisticsPending = true;
   let activeFilter = ctx.options.modeFilter;
   await createVariant('all');
@@ -272,40 +312,47 @@ export async function createTransitFrequency(
   let hoveredCell = -1;
   let legendGround: 'light' | 'dark' | null = null;
 
-  /** A deterministic, scene-local comparison: each segment contributes to its midpoint cell. */
-  function getBusiestCellSummary(cellMeters: number): number {
-    const minX = center[0] - (COLUMNS * cellMeters) / 2;
-    const minY = center[1] - (ROWS * cellMeters) / 2;
-    const totals = new Map<number, number>();
-    for (let segment = 0; segment < segmentCount; segment++) {
-      const offset = segment * 4;
-      const x0 = densitySegments[offset];
-      const y0 = densitySegments[offset + 1];
-      const x1 = densitySegments[offset + 2];
-      const y1 = densitySegments[offset + 3];
-      const column = Math.floor(((x0 + x1) / 2 - minX) / cellMeters);
-      const row = Math.floor(((y0 + y1) / 2 - minY) / cellMeters);
-      if (column < 0 || column >= COLUMNS || row < 0 || row >= ROWS) continue;
-      const key = row * COLUMNS + column;
-      const length = Math.hypot(x1 - x0, y1 - y0);
-      totals.set(key, (totals.get(key) ?? 0) + length);
+  ctx.setReadout('comparisonStatus', 'Computing clipped-length maxima…');
+  let comparisonReadFilter = activeFilter;
+  const comparisonReader = new SummaryReader(
+    resources,
+    'frequency-comparison',
+    [
+      ...comparisonLengths.map(buffer => ({buffer, size: CELL_COUNT * 4})),
+      ...comparisonOverflow.map(buffer => ({buffer, size: 4}))
+    ],
+    bytes => {
+      if (destroyed || comparisonReadFilter !== ctx.options.modeFilter) return;
+      const overflow = new Uint32Array(bytes, comparisonCellSizes.length * CELL_COUNT * 4);
+      if (overflow.some(value => value !== 0)) {
+        ctx.setReadout(
+          'comparisonStatus',
+          'Comparison unavailable: line-density capacity exceeded.'
+        );
+        ctx.setChart('cellComparison', null);
+        return;
+      }
+      ctx.setReadout('comparisonStatus', 'Ready: clipped-length maxima for the selected mode.');
+      const lengths = new Float32Array(bytes);
+      const maxima = comparisonCellSizes.map((cell, index) => {
+        let maximum = 0;
+        for (let offset = index * CELL_COUNT; offset < (index + 1) * CELL_COUNT; offset++) {
+          maximum = Math.max(maximum, lengths[offset]);
+        }
+        return maximum / cell / WINDOW_HOURS;
+      });
+      ctx.setChart('cellComparison', {
+        kind: 'bars',
+        height: 112,
+        values: maxima,
+        labels: comparisonCellSizes.map(cell => `${cell} m`),
+        yLabel: 'busiest veh/h',
+        formatY: value => value.toFixed(0),
+        description:
+          'Maximum clipped segment length per cell, divided by cell width and the two-hour window, using the same selected transit mode as the map.'
+      });
     }
-    let busiest = 0;
-    for (const length of totals.values()) busiest = Math.max(busiest, length);
-    return busiest / cellMeters / WINDOW_HOURS;
-  }
-
-  const busiestByCellSize = [200, 400, 800].map(getBusiestCellSummary);
-  ctx.setChart('cellComparison', {
-    kind: 'bars',
-    height: 112,
-    values: busiestByCellSize,
-    labels: ['200 m', '400 m', '800 m'],
-    yLabel: 'busiest veh/h',
-    formatY: value => value.toFixed(0),
-    description:
-      'Busiest data-derived grid cell at each size. This deterministic midpoint summary uses the same scheduled segments and fixed two-hour normalisation as the map; the map itself clips every segment exactly.'
-  });
+  );
 
   function getGrid() {
     const cellMeters = ctx.options.cellMeters;
@@ -591,15 +638,19 @@ export async function createTransitFrequency(
   // ---- Instance ---------------------------------------------------------------------------------
   return {
     getCompiledGraphs: () => [
-      ...[...variants.values()].map(variant => variant.compiled),
+      ...[...variants.values()].flatMap(variant => [variant.compiled, variant.comparisonCompiled]),
       statisticsCompiled
     ],
 
     setOption(id, _value, state) {
       switch (id) {
         case 'modeFilter':
+          ctx.setReadout('comparisonStatus', 'Computing clipped-length maxima…');
+          ctx.setChart('cellComparison', null);
           if (variants.has(state.modeFilter)) {
             activeFilter = state.modeFilter;
+            comparisonDirty = true;
+            ctx.setChart('cellComparison', null);
             densityDirty = true;
             ctx.requestLayers();
           } else {
@@ -610,6 +661,8 @@ export async function createTransitFrequency(
                 // A cached variant may have been selected meanwhile; do not override it.
                 if (variant.key !== ctx.options.modeFilter) return;
                 activeFilter = variant.key;
+                comparisonDirty = true;
+                ctx.setChart('cellComparison', null);
                 densityDirty = true;
                 ctx.requestLayers();
               }
@@ -647,6 +700,14 @@ export async function createTransitFrequency(
         statisticsReader.flush(commandEncoder);
       }
       const variant = variants.get(activeFilter);
+      if (!comparisonReader.isPending) comparisonReadFilter = activeFilter;
+      if (comparisonDirty && variant) {
+        variant.comparisonCompiled.encode(commandEncoder, {parameters: undefined});
+        comparisonDirty = false;
+        comparisonReader.request(commandEncoder);
+      } else {
+        comparisonReader.flush(commandEncoder);
+      }
       if (densityDirty && variant) {
         variant.compiled.encode(commandEncoder, {parameters: undefined});
         densityDirty = false;
@@ -761,6 +822,7 @@ export async function createTransitFrequency(
     destroy() {
       destroyed = true;
       densityReader.stop();
+      comparisonReader.stop();
       statisticsReader.stop();
       resources.destroy();
     }

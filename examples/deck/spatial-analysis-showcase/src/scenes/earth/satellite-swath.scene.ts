@@ -227,7 +227,7 @@ export default defineScene<SatelliteSwathOptions>({
       textAlternative:
         'A reach surface remains visible with daylight, cloud, terrain and projection limits stated.',
       optionsMode: 'fresh',
-      body: 'The widths are nominal values at the ground track; real swaths vary with viewing geometry. Daylight, cloud, terrain, pointing and edge effects are omitted. A cell is geometrically reached when this planar buffered-track model touches it—not when it yields a usable observation.\n\nTry instruments one at a time and use the live readouts to compare reach.',
+      body: 'The widths are nominal values at the ground track; real swaths vary with viewing geometry. Daylight, cloud, terrain, pointing and edge effects are omitted. A cell is geometrically reached when this spherical great-circle buffered-track model touches it—not when it yields a usable observation.\n\nTry instruments one at a time and use the live readouts to compare reach.',
       camera: {...FLAT_VIEW, transitionMs: 1200},
       options: {
         play: false,

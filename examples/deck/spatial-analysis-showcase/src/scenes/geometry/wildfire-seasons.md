@@ -4,7 +4,7 @@ Every loaded polygon has an archive **perimeter record date**. The live cartouch
 
 ## Record dates arrive through the seasons {#play}
 
-The docked timeline, map clock and symbols share one playhead. Press **Play** to move through perimeter record dates; reduced motion opens paused. The cumulative agency-acre line is calculated from the loaded rows, while the newest record receives an achromatic halo so size never has to mean age.
+The docked timeline, map clock and symbols share one playhead. Press **Play** to move through perimeter record dates; reduced motion opens paused. The cumulative GPU-measured acreage line sums WGS84 polygon areas from the loaded rows, while the newest record receives an achromatic halo so size never has to mean age.
 
 ## A fading window is GPU state {#window}
 

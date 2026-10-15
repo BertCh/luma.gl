@@ -554,7 +554,9 @@ export async function createHurricaneLandfall(
       ],
       body: /* wgsl */ `
         // Preserve the old +Infinity no-data value, including cells outside the true cutoff.
-        kilometers[kilometersOffset + index] = bitcast<f32>(0x7f800000u);
+        // WGSL forbids non-finite constants, so bitcast a runtime bit pattern.
+        var infinityBits = 0x7f800000u;
+        kilometers[kilometersOffset + index] = bitcast<f32>(infinityBits);
         let nearestCell = nearestCells[nearestCellsOffset + index];
         if (nearestCell == ${GPU_DISTANCE_FIELD_NONE}u) { return; }
         let centerOffset = cellCentersOffset + index * 2u;

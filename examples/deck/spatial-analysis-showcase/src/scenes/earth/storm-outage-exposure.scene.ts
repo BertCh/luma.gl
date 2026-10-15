@@ -368,13 +368,13 @@ flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: ${state.
       textAlternative:
         'County map of raw customers reported without power at one 15-minute snapshot, with a timeline of the regional total and no storm tracks displayed.',
       optionsMode: 'fresh',
-      body: 'The input contains nonzero county outage rows at 15-minute intervals. At the playhead, the GPU windows the rows and sums customers out by county for the map; the CPU prepares the regional timeline and reads small county summaries for the card. Raw counts have no population or customers-served denominator.',
+      body: 'The input contains nonzero county outage rows at 15-minute intervals. At the playhead, the GPU selects the latest available snapshot at or before that time and windows its rows and sums customers out by county for the map; the CPU prepares the regional timeline and reads small county summaries for the card. Raw counts have no population or customers-served denominator.',
       evidence:
-        'At **{{clock}}**, the mapped counties report **{{customersNow}}**; the timeline shows the regional total by snapshot.',
+        'At **{{clock}}**, the latest available snapshot for the mapped counties reports **{{customersNow}}**; the timeline shows the regional total by snapshot.',
       caveat:
         'Absent rows cannot distinguish zero outages from missing reports, and larger populations can produce larger counts without larger per-person burden.',
       camera: {...PLAINS_VIEW, transitionMs: 1400},
-      options: {metric: 'outageNow', time: 43200, play: false, showTracks: false},
+      options: {metric: 'outageCount', time: 43200, play: false, showTracks: false},
       controls: ['play', 'time', 'metric'],
       readouts: ['clock', 'customersNow', 'totalChart']
     },
@@ -387,7 +387,7 @@ flashWindow.write(getGPUTimeWindowFilterParameterValues({start: 0, end: ${state.
       optionsMode: 'fresh',
       body: '**`GPUGroupStatistics`** reduces the long outage table by county. Its live result can show a current snapshot or each county’s event peak.\n\nThe authored map divides customers out by residents and labels the denominator. The data contain no served-account or household denominator.',
       evidence:
-        'The event-wide regional maximum is **{{peakTotal}}**; at the shared playhead the current storm-region total is **{{customersNow}}**.',
+        'The event-wide regional maximum is **{{peakTotal}}**; the latest available snapshot at or before the shared playhead reports **{{customersNow}}**.',
       caveat:
         'The numerator is customers without power, but the available denominator is residents. The resulting rate is not a percentage of customers, meters or households.',
       camera: {...STORM_VIEW, transitionMs: 1400},

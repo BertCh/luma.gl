@@ -253,6 +253,11 @@ export async function createVegetationTrends(
   /** Rewrites the stack for the date window and the mask for the minimum valid dates. */
   const applyWindow = (state: VegetationTrendsOptions) => {
     const [first, last] = [Math.min(...state.dateWindow), Math.max(...state.dateWindow)];
+    const means = ndvi.meanNdvi.slice(first, last + 1);
+    ctx.setReadout(
+      'windowMeanSeries',
+      `${means[0].toFixed(2)} on ${ndvi.dates[first]}, ${Math.min(...means).toFixed(2)} lowest, ${means[means.length - 1].toFixed(2)} on ${ndvi.dates[last]}`
+    );
     const key = `${first}-${last}`;
     if (key !== appliedWindow) {
       appliedWindow = key;

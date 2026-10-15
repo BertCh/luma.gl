@@ -555,6 +555,7 @@ export default defineScene<PolygonMeasuresOptions>({
       camera: {zoom: 9.55, longitude: -87.7, latitude: 41.84, transitionMs: 1200},
       optionsMode: 'fresh',
       options: {
+        dataset: 'chicago-community-areas',
         showLabels: true,
         showInscribed: true,
         showCentroids: true,

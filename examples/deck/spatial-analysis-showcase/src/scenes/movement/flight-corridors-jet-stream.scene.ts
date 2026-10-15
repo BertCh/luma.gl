@@ -250,7 +250,7 @@ compiled.encode(commandEncoder, {parameters: undefined});   // once: the tracks 
         'Each flight step is coloured by position-derived or reported ground speed after the selected altitude filter.',
       optionsMode: 'fresh',
       title: 'One pass measures every step',
-      body: '**`GPUTrajectoryMetrics`** computes the projected distance, elapsed time and heading of the step ending at every row. The result is two float columns that the map reads directly. The graph runs once because the tracks are static; controls change shader filtering and statistical selection.\n\nSet **Cruise altitude from** to 6,000 m to include more climb and descent segments. The 9,000 m default restricts the sample to approximately 30,000 feet and above; it does not equalize altitude or flight phase between directions.',
+      body: '**`GPUTrajectoryMetrics`** computes the great-circle distance, elapsed time and heading of the step ending at every row. The result is two float columns that the map reads directly. The graph runs once because the tracks are static; controls change shader filtering and statistical selection.\n\nSet **Cruise altitude from** to 6,000 m to include more climb and descent segments. The 9,000 m default restricts the sample to approximately 30,000 feet and above; it does not equalize altitude or flight phase between directions.',
       options: {minAltitude: 9000, show: 'all'},
       controls: ['minAltitude', 'speedSource'],
       readouts: ['samples', 'agreement']

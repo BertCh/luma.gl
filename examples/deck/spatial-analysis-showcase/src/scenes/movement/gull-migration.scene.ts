@@ -296,6 +296,7 @@ export default defineScene<GullMigrationOptions>({
   ],
 
   readouts: [
+    {id: 'analysisStatus', label: 'Analysis status', layout: 'block'},
     {
       id: 'latitudeChart',
       label: 'The migration as one curve',
@@ -533,7 +534,57 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       'Each line is one gull. With date coloring the early purple tracks are the departures from the North Sea coast and the yellow ones are birds still moving in November. Pink discs are multi-day stopovers (colonies, estuaries, wintering sites), bigger for longer stays. The bold orange or pink line is the simplified track. Distances in the readouts are true distances; the map is Web Mercator.'
   },
 
-  create: async ctx => (await import('./gull-migration.compute')).createGullMigration(ctx),
+  create: async ctx => {
+    ctx.setReadout('analysisStatus', 'Loading analysis; results are not ready.');
+    for (const id of [
+      'selected',
+      'stops',
+      'longestStop',
+      'simplified',
+      'rounds',
+      'tolerance',
+      'families',
+      'routes',
+      'snapshot',
+      'snapshotBirds',
+      'snapshotLatitude',
+      'birds',
+      'period'
+    ])
+      ctx.setReadout(id, 'Loading analysis…');
+    try {
+      const instance = await (await import('./gull-migration.compute')).createGullMigration(ctx);
+      ctx.setReadout(
+        'analysisStatus',
+        'Waiting for GPU results; no result has been confirmed yet.'
+      );
+      return instance;
+    } catch (error) {
+      if (!ctx.signal.aborted) {
+        ctx.setReadout(
+          'analysisStatus',
+          `Analysis unavailable: ${error instanceof Error ? error.message : String(error)}`
+        );
+        for (const id of [
+          'selected',
+          'stops',
+          'longestStop',
+          'simplified',
+          'rounds',
+          'tolerance',
+          'families',
+          'routes',
+          'snapshot',
+          'snapshotBirds',
+          'snapshotLatitude',
+          'birds',
+          'period'
+        ])
+          ctx.setReadout(id, 'Analysis unavailable');
+      }
+      throw error;
+    }
+  },
 
   story: [
     {
@@ -542,7 +593,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Date-classed gull routes leave the North Sea for Iberia and Africa.',
       optionsMode: 'fresh',
       title: "Where do Zeebrugge's gulls spend the winter?",
-      body: 'In summer 2015, 31 adult lesser black-backed gulls from the Belgian and Dutch coast carried GPS tags that logged a fix every hour. From July to the end of November they left the North Sea and spread south: **18 of the 31 reached south of 38 N** (Iberia and Morocco) and four crossed 30 N into the Sahara coast, the furthest to 14.0 N off Senegal.\n\nLines are colored by **date** (**Color tracks by**, below): purple tracks are the first miles in July, yellow the last in November. The thick line is the bird that went furthest. Do they all follow one route, or are there several? The next steps build the tools to answer it.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nIn summer 2015, 31 adult lesser black-backed gulls from the Belgian and Dutch coast carried GPS tags that logged a fix every hour. The tracks span July to the end of November, covering routes from the North Sea toward Iberia and West Africa. The selected-bird readout describes one retained route.\n\nLines are colored by **date** (**Color tracks by**, below): purple tracks are the first miles in July, yellow the last in November. The thick line is the bird that went furthest. Do they all follow one route, or are there several? The next steps build the tools to answer it.',
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
       highlight: {readout: 'selected'},
       controls: ['colorBy'],
@@ -554,7 +605,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Gull routes and stop discs distinguish movement from rest.',
       optionsMode: 'fresh',
       title: 'Measuring a journey, and finding the stopovers',
-      body: '**`GPUTrajectoryMetrics`** gives every bird its path length, duration and average and maximum speed, and a speed for every hourly step, which colors the tracks now: gulls cruise at 30 to 60 km per hour in a migration push and almost stand still the rest of the time.\n\nIt also finds **stopovers**: runs of slow steps that last at least the minimum stay. The discs mark where the birds stayed 72 hours or more within a few kilometers: breeding colonies at the start, estuaries on the way and wintering sites at the end. The numbers are great-circle distances on the sphere, measured on longitude and latitude, not on flat map units.\n\nChange **Stopover speed threshold** and **Minimum stopover** below to see how the definition decides where the discs appear.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUTrajectoryMetrics`** gives every bird its path length, duration and average and maximum speed, and a speed for every hourly step, which colors the tracks now: gulls cruise at 30 to 60 km per hour in a migration push and almost stand still the rest of the time.\n\nIt also finds **stopovers**: runs of slow steps that last at least the minimum stay. The discs mark runs that satisfy the selected minimum duration and slow-step threshold: breeding colonies at the start, estuaries on the way and wintering sites at the end. The numbers are great-circle distances on the sphere, measured on longitude and latitude, not on flat map units.\n\nChange **Stopover speed threshold** and **Minimum stopover** below to see how the definition decides where the discs appear.',
       options: {colorBy: 'speed', showStops: true},
       highlight: {readout: 'stops'},
       controls: ['colorBy', 'showStops', 'stopSpeed', 'stopHours'],
@@ -566,7 +617,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Original and simplified tracks are compared with kept dots.',
       optionsMode: 'fresh',
       title: 'A lighter copy of every track',
-      body: 'Hourly fixes mean about 3,000 vertices per bird. **`GPULineSimplification`** keeps only the vertices that matter. Douglas-Peucker measures how far each vertex lies from the straight chord between its kept neighbours; a vertex is kept when that distance exceeds the **tolerance**. At 10 km the bold orange tracks keep only a few percent of the vertices and are hard to tell from the originals.\n\nThe expensive part, an importance for every vertex, is computed **once**; moving the **Tolerance** slider re-runs only a mask and a compaction on the GPU. Read **Vertices kept** to compare, and watch the readout **Importance rounds** to see whether the result is exact (converged) or an over-estimate (superset).',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nHourly fixes mean about 3,000 vertices per bird. **`GPULineSimplification`** keeps only the vertices that matter. Douglas-Peucker measures how far each vertex lies from the straight chord between its kept neighbours; a vertex is kept when that distance exceeds the **tolerance**. Compare the bold simplified tracks with the originals and use **Vertices kept** to read the retained share at the current tolerance.\n\nThe expensive part, an importance for every vertex, is computed **once**; moving the **Tolerance** slider re-runs only a mask and a compaction on the GPU. Read **Vertices kept** to compare, and watch the readout **Importance rounds** to see whether the result is exact (converged) or an over-estimate (superset).',
       options: {showSimplified: true, simplifyMetric: 'segment', toleranceLog: 1, colorBy: 'plain'},
       highlight: {readout: 'simplified'},
       controls: ['showSimplified', 'toleranceLog'],
@@ -578,7 +629,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Time-aware simplification keeps vertices around a stopover.',
       optionsMode: 'fresh',
       title: 'Simplify with time in mind',
-      body: 'Douglas-Peucker looks only at shape: a bird that sat for a week at one spot adds nothing. **TD-TR** (time-ratio, Meratnia and de By 2004) asks instead **how far the bird is from where a bird flying the chord at constant speed would be at that moment**. A stopover then costs importance, so the simplified track keeps the vertices around it.\n\nSwitch **Distance measure** to *TD-TR*: more vertices survive at the same tolerance, clustered where the bird sped up, slowed or stopped. Turn on **Show stopovers** and see them line up with the kept vertices.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nDouglas-Peucker looks only at shape: a bird that sat for a week at one spot adds nothing. **TD-TR** (time-ratio, Meratnia and de By 2004) asks instead **how far the bird is from where a bird flying the chord at constant speed would be at that moment**. A stopover then costs importance, so the simplified track keeps the vertices around it.\n\nSwitch **Distance measure** to *TD-TR* and compare the retained vertices at the same tolerance, especially where the bird sped up, slowed or stopped. Turn on **Show stopovers** and see them line up with the kept vertices.',
       options: {
         showSimplified: true,
         simplifyMetric: 'time-ratio',
@@ -595,7 +646,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'A route-distance matrix groups gull migrations into families.',
       optionsMode: 'fresh',
       title: 'Do they all take the same route?',
-      body: 'To compare routes, **`GPUTrajectoryResample`** rebuilds each track as 96 points, and **`GPUTrackSimilarity`** scores all 465 pairs in one pass with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. It follows Shapely `frechet_distance` without densification. The routes are resampled along great circles and compared with great-circle distances, and the simplification tolerance is in great-circle meters too, so no projection enters.\n\nThe 31 x 31 distance matrix is small, so the CPU clusters it into **three route families** (average linkage), drawn in three colors, from the most northerly last fix to the most southerly. Move **Number of route families**, switch **Route distance** to *Hausdorff*, or set **Color tracks by** to *Route distance to the selected bird* and click any track to ask who flies like it.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nTo compare routes, **`GPUTrajectoryResample`** rebuilds each track as 96 points, and **`GPUTrackSimilarity`** scores all 465 pairs in one pass with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. It follows Shapely `frechet_distance` without densification. The routes are resampled along great circles and compared with great-circle distances, and the simplification tolerance is in great-circle meters too, so no projection enters.\n\nThe distance matrix is small, so the CPU clusters it into the chosen number of **route families** (average linkage), drawn in separate colors, from the most northerly last fix to the most southerly. Move **Number of route families**, switch **Route distance** to *Hausdorff*, or set **Color tracks by** to *Route distance to the selected bird* and click any track to ask who flies like it.',
       options: {
         colorBy: 'family',
         familyCount: 3,
@@ -613,7 +664,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'Weekly positions sweep south along a latitude chart.',
       optionsMode: 'fresh',
       title: 'Where is everyone in the second week of September?',
-      body: "**`GPUTemporalReduction`** reduces 98,000 hourly fixes to one row per bird and time bucket: first, last, minimum and maximum value and a count. Here the values are longitude, latitude and ground speed, and the bucket is 7 days. Each dot is a bird's last fix of a week; lines join the weeks.\n\nThe ringed dots are the **Snapshot day**, and the readouts summarize the bucket: how many birds are reporting, the median latitude, how many are already south of 40 N, and the fastest hourly step. Press **Play** (or drag **Snapshot day**) from July to November and watch the median bird move south: the ringed dots sweep down the map while the rule on the chart moves along the curve of median latitude. The curve is flat through the breeding season, then drops in steps as the birds leave, and the band widens when families split between Iberia and Africa. The bucket width is a parameter write, so **Bucket width** changes the reduction without a recompile.",
+      body: "Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUTemporalReduction`** reduces 98,000 hourly fixes to one row per bird and time bucket: first, last, minimum and maximum value and a count. Here the values are longitude, latitude and ground speed, and the bucket is 7 days. Each dot is a bird's last fix of a week; lines join the weeks.\n\nThe ringed dots are the **Snapshot day**, and the readouts summarize the bucket: how many birds are reporting, the median latitude, how many are already south of 40 N, and the fastest hourly step. Press **Play** (or drag **Snapshot day**) from July to November and watch the median bird move south: the ringed dots sweep down the map while the rule on the chart moves along the curve of median latitude. The curve is flat through the breeding season, then drops in steps as the birds leave, and the band widens when families split between Iberia and Africa. The bucket width is a parameter write, so **Bucket width** changes the reduction without a recompile.",
       options: {
         showWeekly: true,
         colorBy: 'plain',
@@ -632,7 +683,7 @@ bucketParameters.write(getGPUTemporalReductionParameterValues(0, ${state.bucketD
       textAlternative: 'The gull sample and its tagged-track limits are summarized on the map.',
       optionsMode: 'fresh',
       title: 'Limits, and what to try',
-      body: 'Hourly GPS means short flights and brief stops hide between fixes, and a tag that failed or a bird that died looks like an early arrival. These 31 adults all come from a few colonies, so the families describe this sample, not the species. The clustering is a quick average-linkage on a small matrix, and Frechet on 96 resampled points describes the shape of a route, not every detour. Simplification does not preserve topology, so tracks may touch or cross after simplification. All birds are adults: there are no juveniles in this study.\n\n**Try it:** move **Stopover speed threshold** up to 3 m/s and watch colonies fill with discs; raise **Tolerance** to 100 km and flip **Distance measure** to compare Douglas-Peucker with TD-TR; set **Bucket width** to 3 days and **Snapshot day** to 27 Oct (day 104).',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nHourly GPS means short flights and brief stops hide between fixes, and a tag that failed or a bird that died looks like an early arrival. These 31 adults all come from a few colonies, so the families describe this sample, not the species. The clustering is a quick average-linkage on a small matrix, and Frechet on 96 resampled points describes the shape of a route, not every detour. Simplification does not preserve topology, so tracks may touch or cross after simplification. All birds are adults: there are no juveniles in this study.\n\n**Try it:** move **Stopover speed threshold** up to 3 m/s and watch colonies fill with discs; raise **Tolerance** to 100 km and flip **Distance measure** to compare Douglas-Peucker with TD-TR; set **Bucket width** to 3 days and **Snapshot day** to 27 Oct (day 104).',
       options: {colorBy: 'date', showStops: true, showSimplified: true, showWeekly: true},
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
       controls: ['stopSpeed', 'toleranceLog', 'simplifyMetric', 'bucketDays', 'snapshotDay']

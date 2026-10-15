@@ -132,11 +132,12 @@ export default defineScene<TransitFrequencyOptions>({
       kind: 'chart',
       help: 'Lines with most scheduled trips per hour in the window. Trips are grouped by (mode, line name), so a number shared by several cities counts together.'
     },
+    {id: 'comparisonStatus', label: 'Resolution comparison'},
     {
       id: 'cellComparison',
       label: 'Busiest value by cell size',
       kind: 'chart',
-      help: 'The same scheduled segments summarised at 200, 400 and 800 metres with fixed service classes.'
+      help: 'The selected mode’s segments clipped to 200, 400 and 800 metre grids with the same GPU estimator as the map; maxima are length divided by cell width and the two-hour window.'
     },
     {
       id: 'vehicleKilometers',
@@ -317,7 +318,7 @@ graph2.add(new GPUGroupStatistics({
       optionsMode: 'fresh',
       options: {cellMeters: 400, serviceStyle: 'classes', representation: 'both'},
       controls: ['cellMeters', 'representation'],
-      readouts: ['busiest', 'cellComparison', 'cellValue']
+      readouts: ['busiest', 'comparisonStatus', 'cellComparison', 'cellValue']
     },
     {
       id: 'modes',

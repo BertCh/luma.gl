@@ -1195,10 +1195,18 @@ export async function createGlobalAutocorrelation(
       ],
       y2Domain: finiteZ.length ? [Math.min(0, ...finiteZ), Math.max(...finiteZ) * 1.05] : [0, 1],
       y2Label: 'z-score',
-      markers: peak.band >= 0 ? [{x: kilometers[peak.band], label: 'z peak'}] : [],
+      markers:
+        peak.band >= 0
+          ? [
+              {
+                x: kilometers[peak.band],
+                label: peak.isFirstPeak ? 'First z peak' : 'Strongest tested band'
+              }
+            ]
+          : [],
       formatX: value => (value < 10 ? value.toFixed(1) : value.toFixed(0)),
       description:
-        "Line chart of global Moran's I for neighbours within each distance, falling as the distance grows, with the z-score on a second axis and a marker where it peaks.",
+        "Line chart of global Moran's I for neighbours within each distance, falling as the distance grows, with the z-score on a second axis and a marker at the first local z peak, or the strongest tested band if no local peak is detected.",
       table: false
     });
   };
@@ -1401,7 +1409,7 @@ export async function createGlobalAutocorrelation(
     ctx.setReadout(
       'peak',
       peak.band >= 0
-        ? formatDistance(((peak.band + 1) * maximumDistance) / o.bandCount)
+        ? `${peak.isFirstPeak ? 'first local z peak' : 'strongest tested band (no local peak)'} at ${formatDistance(((peak.band + 1) * maximumDistance) / o.bandCount)}`
         : 'no defined band'
     );
     ctx.setReadout('maxDistance', formatDistance(maximumDistance));

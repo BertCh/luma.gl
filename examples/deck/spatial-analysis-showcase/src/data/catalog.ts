@@ -274,6 +274,16 @@ export class LoadedDataset {
    */
   getProjection(origin?: readonly [number, number]): LocalMetricProjection {
     this.warnOnLargeExtent();
+    return this.getDisplayProjection(origin);
+  }
+
+  /**
+   * Mercator-local coordinates for deck.gl `METER_OFFSETS` drawing and picking only.
+   * No extent warning: display scale is intentionally Mercator. Never feed these coordinates
+   * to regional distance/area analyses; declare an analysis frame or a geodesic context instead.
+   * Calling this does not disable the warning from a later {@link getProjection} call.
+   */
+  getDisplayProjection(origin?: readonly [number, number]): LocalMetricProjection {
     const resolved = origin ?? getBboxCenter(this.manifest.bbox ?? this.info.bbox);
     const key = `${resolved[0]},${resolved[1]}`;
     let projection = this.projections.get(key);

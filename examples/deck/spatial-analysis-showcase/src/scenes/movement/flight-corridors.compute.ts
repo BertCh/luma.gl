@@ -768,6 +768,12 @@ export async function createFlightCorridors(
       westDistance += west[index];
       weightedBalance += balance[index] * total;
     }
+    ctx.setReadout(
+      'directionStatus',
+      words[0] || words[2]
+        ? 'Incomplete: directional line-density capacity exceeded.'
+        : 'Ready: direction summary received.'
+    );
     const totalDistance = eastDistance + westDistance;
     const share = totalDistance > 0 ? (100 * eastDistance) / totalDistance : 0;
     ctx.setReadout(
@@ -923,21 +929,35 @@ export async function createFlightCorridors(
 
   /** Compiles the density variants for the chosen cell and direction, then swaps them in. */
   function requestDensityVariants(): void {
+    ctx.setReadout(
+      'directionStatus',
+      'Preparing the selected grid; direction results are pending.'
+    );
+    for (const id of ['directionCells', 'directionBalance', 'directionPieces'])
+      ctx.setReadout(id, 'Computing…');
     const cell = Number(ctx.options.cellDegrees);
     const direction = DIRECTION_CODES[ctx.options.direction];
-    void graphSwap.request({
-      build: async () => {
-        await getVariant(cell, direction);
-        await getDirectionBalance(cell);
-        return {cell, direction};
-      },
-      commit: next => {
-        currentCell = next.cell;
-        currentDirection = next.direction;
-        densityDirty = true;
-        ctx.requestLayers();
-      }
-    });
+    void graphSwap
+      .request({
+        build: async () => {
+          await getVariant(cell, direction);
+          await getDirectionBalance(cell);
+          return {cell, direction};
+        },
+        commit: next => {
+          currentCell = next.cell;
+          currentDirection = next.direction;
+          densityDirty = true;
+          ctx.requestLayers();
+        }
+      })
+      .catch(error => {
+        if (destroyed) return;
+        ctx.setReadout(
+          'directionStatus',
+          `Analysis unavailable: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
   }
 
   // ---- Status readback --------------------------------------------------------------------------
@@ -1000,6 +1020,9 @@ export async function createFlightCorridors(
           requestDensityVariants();
           break;
         case 'densityView':
+          if (ctx.options.densityView === 'direction-balance') {
+            ctx.setReadout('directionStatus', 'Computing direction balance; results are pending.');
+          }
           densityDirty = true;
           ctx.requestLayers();
           break;

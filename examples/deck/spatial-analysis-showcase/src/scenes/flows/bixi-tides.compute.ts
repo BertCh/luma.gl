@@ -630,14 +630,22 @@ export async function createBixiTides(
         ? `${shortStationName(flows.names[fillStation], 30)}: ${formatSigned(fill, 1)} ${word}`
         : null
     );
-    if (stats.flowRows > 0) {
-      const weight = stats.topWeight[0] / (ctx.options.units === 'total' ? 1 : days);
+    // Residual endpoints aggregate suppressed pairs and are not station destinations.
+    const busiestPair = stats.topOrigin.findIndex(
+      (origin, index) =>
+        index < stats.flowRows &&
+        stats.topWeight[index] > 0 &&
+        origin < stationCount &&
+        stats.topDestination[index] < stationCount
+    );
+    if (busiestPair >= 0) {
+      const weight = stats.topWeight[busiestPair] / (ctx.options.units === 'total' ? 1 : days);
       ctx.setReadout(
         'busiestFlow',
-        `${shortStationName(zoneName(stats.topOrigin[0]), 22)} to ${shortStationName(zoneName(stats.topDestination[0]), 22)}: ${formatCount(weight)} ${word}`
+        `${shortStationName(zoneName(stats.topOrigin[busiestPair]), 22)} to ${shortStationName(zoneName(stats.topDestination[busiestPair]), 22)}: ${formatCount(weight)} ${word}`
       );
     } else {
-      ctx.setReadout('busiestFlow', null);
+      ctx.setReadout('busiestFlow', 'no station-to-station pair in the ranked sample');
     }
     ctx.setReadout('rows', rows);
     ctx.setReadout('pairs', stats.pairCount);

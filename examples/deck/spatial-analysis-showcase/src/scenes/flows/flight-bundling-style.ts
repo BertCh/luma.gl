@@ -153,7 +153,6 @@ export function getDelayTable(floor: number, underFloorCount?: number): ClassTab
     breaks: DELAY_BREAKS,
     colors: getDelayColors(),
     unit: 'min',
-    extent: [0, 60],
     method: 'Mean departure delay per pair, flights-weighted (a mean, not a median)',
     noData: {
       label: `Under ${floor} flights`,

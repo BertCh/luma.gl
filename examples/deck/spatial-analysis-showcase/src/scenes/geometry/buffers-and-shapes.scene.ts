@@ -461,9 +461,9 @@ The readout compares the mean hop between consecutive stops along the curve with
       headline: 'Clipping creates vertices at boundaries',
       textAlternative:
         'Chicago street lines are clipped to a movable axis-aligned rectangle and coloured by source road class, with surviving vertices and pieces reported; clipping is planar and output beyond the fixed capacity is truncated and flagged.',
-      body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here 100 000 street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourceLineIndices\` output, so it can be coloured by road class.
+      body: `\`GPURectangleClip\` clips line and polygon layers to an axis-aligned rectangle on the GPU. Here the loaded street vertices are cut to a box you can **drag** (or click to move); **Rectangle half-width** below resizes it. Streets that leave and re-enter the box become several pieces; each piece keeps its source street through the \`sourceLineIndices\` output, so it can be coloured by road class.
 
-The readouts show the vertices that survive, the number of pieces and whether the output overflowed. The rectangle is a per-frame parameter, so dragging costs only a parameter write and one encode.`,
+The current vertex result is **{{clipVertices}}**; the other readouts show the number of pieces and whether the output overflowed. The rectangle is a per-frame parameter, so dragging costs only a parameter write and one encode.`,
       camera: {longitude: -87.64, latitude: 41.88, zoom: 11.3, transitionMs: 1500},
       options: {view: 'clip', clipGeometry: 'roads', clipSize: 4},
       controls: ['clipSize', 'clipGeometry'],

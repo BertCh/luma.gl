@@ -174,7 +174,7 @@ export default defineScene<HarborPlaybackOptions>({
       default: 0,
       unit: 'min',
       format: value => (value === 0 ? 'off' : `${value} min`),
-      help: 'When the two fixes either side of the playhead are further apart than this, the vessel is flagged as in a gap and hidden instead of drawn at a guessed position. 0 turns the test off. Moored vessels were thinned to one fix every few minutes by our preprocessing, so a limit under that hides them for a reason that is ours, not AIS silence.'
+      help: 'When the two fixes either side of the playhead are further apart than this, the vessel is flagged as in a gap and hidden instead of drawn at a guessed position. 0 turns the test off. Moored vessels were thinned to one fix every few minutes by our preprocessing, so a limit under that hides them for a reason that is ours, not AIS silence. Zero disables the gap test.'
     },
     {
       kind: 'select',
@@ -649,9 +649,9 @@ new VesselMarkerLayer({
       headline: 'Most vessels here are tied up, not underway',
       textAlternative:
         'The Upper Bay with vessels as coloured arrows and squares; most marks are small squares at the piers, with a few arrows crossing the water.',
-      body: 'Set **Colour arrows by** to *Speed*: value says how fast, in the speed classes of the histogram. *Group* gives hue instead: what a vessel is. Shape adds a third variable: squares are slower than the stop speed, arrows are underway. **{{stoppedNow}}** of {{active}} vessels here are squares, {{stoppedShare}}. Drag **Time of day (UTC)** to see it change. *Hue for kinds, value for amounts, shape for state.*',
+      body: 'Set **Colour arrows by** to *Speed*: value says how fast, using the map’s speed classes. *Group* gives hue instead: what a vessel is. Shape adds a third variable: squares are slower than the stop speed, arrows are underway. **{{stoppedNow}}** of {{active}} vessels here are squares, {{stoppedShare}}. Drag **Time of day (UTC)** to see it change. *Hue for kinds, value for amounts, shape for state.*',
       evidence:
-        '**{{stoppedNow}}** of **{{active}}** active vessels are below the current stop-speed threshold; the histogram gives the distribution behind the classes.',
+        '**{{stoppedNow}}** of **{{active}}** active vessels are below the current stop-speed threshold; the histogram separately shows full-day mean speeds for all tracks, not the instantaneous speeds of these active vessels.',
       caveat:
         '“Stopped” is a thresholded state, so the same **{{active}}** vessels can divide differently when the stop-speed rule changes.',
       optionsMode: 'fresh',
@@ -691,7 +691,7 @@ new VesselMarkerLayer({
       headline: 'The arrow is a guess between two fixes',
       textAlternative:
         'A Staten Island ferry mid-crossing: hollow rings for its AIS fixes, two filled rings either side of the arrow, and a straight chord between them.',
-      body: 'Rings are real AIS fixes; the filled pair brackets the playhead. The GPU finds it by binary search and puts the arrow **{{fraction}}** of the way along the chord. Drag **Time of day (UTC)** and watch it run. Moored vessels were thinned to one fix per {{mooredCadence}} by our preprocessing: raise **Maximum fix gap** and they vanish for a reason that is ours, not AIS silence.',
+      body: 'Rings are real AIS fixes; the filled pair brackets the playhead. The GPU finds it by binary search and puts the arrow **{{fraction}}** of the way along the chord. Drag **Time of day (UTC)** and watch it run. Moored vessels were thinned to one fix per {{mooredCadence}} by our preprocessing: lower a positive **Maximum fix gap** below that cadence and they vanish for a reason that is ours, not AIS silence. Zero disables the gap test.',
       evidence:
         'For the highlighted ferry, the live playhead lies **{{fraction}}** of the way between the two filled fixes; **{{inGap}}** tracks are currently rejected as gaps.',
       caveat:

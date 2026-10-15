@@ -93,7 +93,7 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       default: 0,
       unit: 'days',
       format: value => (value === 0 ? 'off' : `${value} days`),
-      help: 'GPUTrajectoryPlayhead hides a drifter whose neighbouring fixes are further apart than this instead of drawing it at a guessed position. 0 turns the test off. The record is 6-hourly, so only real data gaps exceed a day or two.'
+      help: 'GPUTrajectoryPlayhead hides a drifter whose neighbouring fixes are further apart than this instead of drawing it at a guessed position. 0 turns the test off. The retained fixes are roughly 12-hourly, so gaps exceeding a day or two indicate missing positions.'
     },
     {
       kind: 'select',
@@ -102,10 +102,10 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       group: 'Color',
       apply: 'param',
       default: 'sst',
-      help: 'Sea-surface temperature measured by the drifter, days since its release, or the date.',
+      help: 'Sea-surface temperature measured by the drifter, days since its first retained fix, or the date.',
       options: [
         {value: 'sst', label: 'Sea-surface temperature'},
-        {value: 'age', label: 'Days since release'},
+        {value: 'age', label: 'Days since the first retained fix'},
         {value: 'date', label: 'Date'}
       ]
     },
@@ -257,13 +257,13 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       id: 'releaseChart',
       label: 'First records by week',
       kind: 'chart',
-      help: 'First retained daily position for each drifter, grouped by week of 2017. This is release and record effort, not an ocean-current measurement.'
+      help: 'First retained fix for each drifter, grouped by week of 2017. This is record availability, not an ocean-current measurement.'
     },
     {
       id: 'activeChart',
       label: 'Drifters reporting through the year',
       kind: 'chart',
-      help: 'Number of drifter records with a position on each day. The vertical rule is the playhead. Records already at sea on 1 January all start on day 0 and are cut after 60 days, which makes the early peak; new deployments follow through the year.'
+      help: 'Number of drifter records with a position on each day. The vertical rule is the playhead. Records already at sea on 1 January all start on day 0 and are cut after 60 days, which makes the early peak; other records begin through the year.'
     },
     {
       id: 'sstChart',
@@ -334,7 +334,7 @@ export default defineScene<OceanDriftersPlaybackOptions>({
       } else if (state.colorBy === 'age') {
         legends.push({
           kind: 'ramp',
-          title: 'Days since release',
+          title: 'Days since the first retained fix',
           ramp: state.ramp,
           extent: [0, 60],
           unit: 'days',
@@ -444,9 +444,10 @@ play.encode(commandEncoder, {parameters: undefined});`,
       id: 'a-year-of-drifters',
       title: "Where did the world's drifters go in 2017?",
       headline: 'The sample starts where instruments enter',
-      textAlternative: 'A dark global ocean map with sparse release rings and faint drifter paths.',
+      textAlternative:
+        'A dark global ocean map with sparse first-fix rings and faint drifter paths.',
       optionsMode: 'fresh',
-      body: 'A **drifter** is a buoy with a drogue that helps it follow currents rather than surface wind. It reports position and sea-surface temperature by satellite.\n\nThis sample follows each loaded drifter from its release window. Press **Play**, or drag **Date**: dots are current positions, trails show recent movement, and the live release chart shows when observations enter the display.',
+      body: 'A **drifter** is a buoy with a drogue that helps it follow currents rather than surface wind. It reports position and sea-surface temperature by satellite.\n\nThis sample follows each loaded drifter for 60 days from its first retained 2017 fix, which need not be its deployment date. Press **Play**, or drag **Date**: dots are current positions, trails show recent movement, and the first-record chart shows when observations enter the display.',
       camera: {...GLOBAL_VIEW, transitionMs: 1200},
       options: {play: true, time: 0, trailDays: 14},
       controls: ['play', 'time', 'speed'],
@@ -458,7 +459,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
       headline: 'Colour reads water temperature',
       textAlternative: 'Warm and cool drifter trails cross a dark world ocean.',
       optionsMode: 'fresh',
-      body: 'Every fix carries the **sea-surface temperature** the buoy measured. The trails are colored by it: the warm tropics glow, the Southern Ocean and the Arctic go dark. A drifter that crosses a color boundary has crossed a front. Narrow **Temperature range of the ramp** to bring out gradients inside one ocean, or switch **Color tracks by** to *Days since release* to see which tracks are fresh.\n\nThe dots take their color from the temperature **at the playhead**: `GPUTrajectoryPlayhead` reports the bracketing fix and the fraction between the two, and a small kernel interpolates between their temperatures.',
+      body: 'Every fix carries the **sea-surface temperature** the buoy measured. The trails are colored by it: the warm tropics glow, the Southern Ocean and the Arctic go dark. A drifter that crosses a color boundary has crossed a front. Narrow **Temperature range of the ramp** to bring out gradients inside one ocean, or switch **Color tracks by** to *Days since the first retained fix* to see which tracks are fresh.\n\nThe dots take their color from the temperature **at the playhead**: `GPUTrajectoryPlayhead` reports the bracketing fix and the fraction between the two, and a small kernel interpolates between their temperatures.',
       camera: {longitude: -40, latitude: 25, zoom: 2.6, transitionMs: 1400},
       options: {play: false, time: 100, trailDays: 30, showBackdrop: true},
       controls: ['colorBy', 'sstRange', 'ramp'],
@@ -526,7 +527,7 @@ play.encode(commandEncoder, {parameters: undefined});`,
       headline: 'Empty ocean does not mean still ocean',
       textAlternative: 'Faint global drifter tracks make the uneven 2017 sample visible.',
       optionsMode: 'fresh',
-      body: 'Each drifter is shown only through this story’s release-window sample, not as a full observing-program record. Deployments are not spatially uniform; a lost drogue can change how a buoy follows wind and current, and this archive does not identify every case. Temperatures come from the buoy sensor and dates are UTC.\n\n**Try it:** color tracks by *Date*; extend the trail and accelerate playback; then fly to the *Southern Ocean* and inspect the circumpolar routes.',
+      body: 'Each drifter is shown only through this story’s window after the first retained fix, not as a full observing-program record. Deployments are not spatially uniform; a lost drogue can change how a buoy follows wind and current, and this archive does not identify every case. Temperatures come from the buoy sensor and dates are UTC.\n\n**Try it:** color tracks by *Date*; extend the trail and accelerate playback; then fly to the *Southern Ocean* and inspect the circumpolar routes.',
       camera: {longitude: 60, latitude: -56, zoom: 2.4, transitionMs: 1500},
       options: {
         play: true,

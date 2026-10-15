@@ -22,7 +22,7 @@ Each route segment takes the colour of the direction it points, clockwise from n
 
 ## Match the ramp to the ground {#fare-colour}
 
-Fare classes, each holding an equal share of the trips. Left of the divider the ramp runs against the dark ground and the dearest trips sink into it; right, brightest means dearest. Drag the divider, or turn off **Compare ramps** and flip **Ramp** by hand.
+Fare classes, each holding approximately a fifth of the trips (tied or discretized fares prevent exact equal counts). Left of the divider the ramp runs against the dark ground and the dearest trips sink into it; right, brightest means dearest. Drag the divider, or turn off **Compare ramps** and flip **Ramp** by hand.
 
 *A sequential ramp must run toward contrast with its ground.*
 

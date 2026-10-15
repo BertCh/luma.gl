@@ -433,7 +433,7 @@ graph.add(new GPUTrackSimilarity({
       textAlternative: 'A density grid changes resolution over a narrow passage.',
       optionsMode: 'fresh',
       title: 'Where does the flyway pinch?',
-      body: 'Choose the **Autumn** passage for all species and drag **Probe latitude** below. The chart shows, for every latitude row, the longitude range that holds the central 80% of the track length. At **50 N** the harriers leave from a belt only about 2 degrees wide (Belgium and the Netherlands); at **37 N** the band is still only a few degrees wide, the funnel of southern Iberia and the Strait of Gibraltar, and farther south it fans out over the Sahara and the Sahel.\n\nA narrow band is a bottleneck: whatever happens in that strip (a wind farm, a drained wetland, a hunting season) happens to most of the population. The readout gives the width in kilometers.',
+      body: 'Choose the **Autumn** passage for all species and drag **Probe latitude** below. The chart shows, for every latitude row, the longitude range that holds the central 80% of the track length. At **50 N** the harriers leave from a belt only about 2 degrees wide (Belgium and the Netherlands); at **37 N** the band is still only a few degrees wide, the funnel of southern Iberia and the Strait of Gibraltar, and farther south it fans out over the Sahara and the Sahel.\n\nA narrow band is a bottleneck: the strip contains most of the sampled track length at that latitude. This does not measure the fraction of the population, or even the fraction of distinct birds, exposed to a wind farm, drained wetland or hunting season there. The readout gives the width in kilometers.',
       options: {species: 'all', season: 'autumn', probeLatitude: 37, showTracks: false},
       camera: {longitude: -4, latitude: 36, zoom: 4.3, transitionMs: 1400},
       highlight: {readout: 'probe'},
@@ -455,7 +455,7 @@ graph.add(new GPUTrackSimilarity({
     {
       id: 'fidelity',
       headline: 'A long track is not many birds',
-      textAlternative: 'One selected route is compared with the population density.',
+      textAlternative: 'One selected route is compared with the sampled track density.',
       optionsMode: 'fresh',
       title: 'Does a bird repeat its own route?',
       body: '**`GPUTrajectoryResample`** rebuilds every track as 96 points and **`GPUTrackSimilarity`** scores all 5,050 pairs with the discrete **Frechet distance**: the shortest leash that lets two walkers follow their routes in order. The routes are resampled along great circles and compared with great-circle distances. The chart compares pairs that are the same bird in two different years against pairs of different birds, for tracks with enough days of data.\n\nSet **Color tracks by** to *Route distance to the selected track* and click a track: its other tagged years (yellow) should be the coldest lines if birds are faithful to a route. Use **Minimum days of data** to include or drop short tags, and **Route distance** to switch to Hausdorff.\n\nThe honest limits: tags are on 42 birds, only a few of which have two or more complete years; the years are folded onto one calendar; and Frechet on 96 points describes the shape of a route, not every detour. **Try:** set the minimum to 300 days and see how the same-bird curve changes.',

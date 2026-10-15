@@ -455,7 +455,8 @@ export default defineScene<SunOptions>({
   ],
 
   readouts: [
-    {id: 'zermattSunHours', label: 'Zermatt direct sun', emphasis: 'tile'},
+    {id: 'zermattSunHours', label: 'Zermatt direct sun (CPU timeline)', emphasis: 'tile'},
+    {id: 'zermattMapSunHours', label: 'Zermatt direct sun (GPU map)', emphasis: 'tile'},
     {id: 'firstSun', label: 'First direct sun', emphasis: 'tile'},
     {
       id: 'pixelTimeline',
@@ -631,7 +632,7 @@ export default defineScene<SunOptions>({
       headline: 'Sun hours: the map the village wants',
       textAlternative:
         'A classed cold-to-warm map of hours of direct sun across the Zermatt valley, with pale relief beneath. A histogram has the same class boundaries and a Zermatt marker.',
-      body: '`GPUSolarIrradiance` sums a day of visible sun for every slope. Zermatt receives **{{zermattSunHours}}**; the window average is **{{tileMean}}**. Keep **Day-product scale** common when dates must compare, or fit it to inspect one day. Choose Sun hours or Insolation with **Map product**.\n\nClear sky only: clouds, trees and buildings are absent; diffuse sky is the weakest term and snow albedo is not modelled.\n\n*Class a continuous field at the decision threshold.*',
+      body: '`GPUSolarIrradiance` sums a day of visible sun for every slope. The GPU map gives Zermatt **{{zermattMapSunHours}}** of direct sun; the window average for the selected product is **{{tileMean}}**. The separate CPU timeline gives **{{zermattSunHours}}**. The map samples a grid cell with a discretized horizon and daily integration, while the CPU timeline uses a point skyline and its own time samples; their discretization can produce different sun-hour totals. Keep **Day-product scale** common when dates must compare, or fit it to inspect one day. Choose Sun hours or Insolation with **Map product**.\n\nClear sky only: clouds, trees and buildings are absent; diffuse sky is the weakest term and snow albedo is not modelled.\n\n*Class a continuous field at the decision threshold.*',
       optionsMode: 'fresh',
       options: {
         product: 'sun-hours',
@@ -641,7 +642,7 @@ export default defineScene<SunOptions>({
         animate: false
       },
       controls: ['product', 'scale', 'display'],
-      readouts: ['zermattSunHours', 'tileMean', 'sunHistogram'],
+      readouts: ['zermattMapSunHours', 'zermattSunHours', 'tileMean', 'sunHistogram'],
       camera: {...TERRAIN_FRAMES.valley, transitionMs: 1200},
       furniture: furnitureFor('Hours of direct sun · common day scale'),
       annotations: getStepPlaces(STEP_PLACES.hours),

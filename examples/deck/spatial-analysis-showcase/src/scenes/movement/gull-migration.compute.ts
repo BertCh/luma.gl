@@ -141,6 +141,27 @@ export async function createGullMigration(
 ): Promise<SceneInstance<GullMigrationOptions>> {
   const gulls = loadGullTracks(ctx.datasets.get('gull-migration'));
   const {device} = ctx;
+  const pendingResults = new Set([
+    'metrics',
+    'segment simplification',
+    'time-ratio simplification',
+    'route comparison',
+    'temporal summary'
+  ]);
+  function markResultPending(result: string): void {
+    pendingResults.add(result);
+    ctx.setReadout('analysisStatus', `Results pending: ${[...pendingResults].join(', ')}.`);
+  }
+  function markResultReady(result: string): void {
+    pendingResults.delete(result);
+    ctx.setReadout(
+      'analysisStatus',
+      pendingResults.size
+        ? `Results pending: ${[...pendingResults].join(', ')}.`
+        : 'Ready: all analysis summaries received.'
+    );
+  }
+
   const {trackCount, vertexCount, segmentCount} = gulls;
   const resources = new SpatialAnalysisResources(device, 'gulls');
   const drawProps = {coordinateSystem: COORDINATE_SYSTEM.LNGLAT} as const;
@@ -461,6 +482,7 @@ export async function createGullMigration(
             rounds: words[4]
           };
           describeSimplification();
+          markResultReady(`${metric} simplification`);
         }
       )
     };
@@ -809,6 +831,8 @@ export async function createGullMigration(
     Math.min(BUCKET_COUNT - 1, Math.floor(day / ctx.options.bucketDays));
 
   function writeStopParameters(): void {
+    markResultPending('metrics');
+    ctx.setChart('stopChart', null);
     stopParameters.write(
       getGPUTrajectoryMetricsParameterValues({
         stopSpeedThreshold: ctx.options.stopSpeed,
@@ -820,6 +844,8 @@ export async function createGullMigration(
   }
 
   function writeBucketParameters(): void {
+    markResultPending('temporal summary');
+    ctx.setChart('latitudeChart', null);
     bucketParameters.write(
       getGPUTemporalReductionParameterValues(0, ctx.options.bucketDays * SECONDS_PER_DAY)
     );
@@ -1168,6 +1194,7 @@ export async function createGullMigration(
         stopTotal: words[tail + 2]
       };
       summarizeMetrics();
+      markResultReady('metrics');
     }
   );
 
@@ -1188,6 +1215,7 @@ export async function createGullMigration(
       };
       buildMatrix();
       ctx.setReadout('routes', `${trackCount} routes, ${formatCount(pairCount)} pairs scored`);
+      markResultReady('route comparison');
     }
   );
 
@@ -1213,6 +1241,7 @@ export async function createGullMigration(
         speedMax: floats.slice(slotCount * 4, slotCount * 5)
       };
       summarizeTemporal();
+      markResultReady('temporal summary');
     }
   );
 
@@ -1257,6 +1286,8 @@ export async function createGullMigration(
           writeStopParameters();
           break;
         case 'toleranceLog':
+          markResultPending('segment simplification');
+          markResultPending('time-ratio simplification');
           tolerancesDirty = true;
           markChanged();
           describeSimplification();
@@ -1266,6 +1297,8 @@ export async function createGullMigration(
           ctx.requestLayers();
           break;
         case 'routeSpacing':
+          markResultPending('route comparison');
+          ctx.setChart('familyChart', null);
           currentSpacing = state.routeSpacing;
           similarityDirty = true;
           markChanged();

@@ -367,11 +367,11 @@ export default defineScene<LeastCostOptions>({
       title: 'How long is the walk to Phantom Ranch?',
       headline: 'Terrain cost redirects travel through canyon breaks',
       textAlternative:
-        'Travel-time bands spread from the South Rim and a red least-cost route descends to Phantom Ranch through passable terrain.',
-      body: 'Grand Canyon Village is on the South Rim at 2,100 m; Phantom Ranch sits beside Bright Angel Creek at 830 m, 8 km away as the crow flies. A hiker cannot cross the Redwall and Supai cliffs, so the real walk follows the breaks in them. **Which way is cheapest, and how long does it take?**\n\nThe colored bands are **travel time from the start** (white dot): each band is an hour of walking, yellow nearest. The red line is the cheapest route to the red dot. Both are computed on the GPU on a 31 m grid from the 15 m DEM. Change **Map shows** or the walking pace below to see what else the model can draw.',
+        'Travel-time bands spread from the South Rim; a red least-cost route appears only when the selected destination is reachable.',
+      body: 'Grand Canyon Village is on the South Rim at 2,100 m; Phantom Ranch sits beside Bright Angel Creek at 830 m, 8 km away as the crow flies. A hiker cannot cross the Redwall and Supai cliffs, so the real walk follows the breaks in them. **Which way is cheapest, and how long does it take?**\n\nThe colored bands are **travel time from the start** (white dot): each band is an hour of walking, yellow nearest. A red line appears only if the destination (red dot) is reached. If the readout says **destination unreached**, move the red dot into the reached bands, increase **Time budget**, or raise **Cliff limit** to relax barriers. Both are computed on the GPU on a 31 m grid from the 15 m DEM. Change **Map shows** or the walking pace below to see what else the model can draw.',
       camera: {...CANYON_VIEW, transitionMs: 1400},
       options: {display: 'bands', placement: 'destination'},
-      controls: ['display', 'speed'],
+      controls: ['display', 'speed', 'costLimit', 'maxSlope'],
       readouts: ['canyonTime', 'canyonPath'],
       highlight: {readout: 'canyonTime'},
       callout: {coordinate: [-112.0953, 36.107], text: 'Phantom Ranch'}
@@ -405,11 +405,11 @@ export default defineScene<LeastCostOptions>({
       title: 'Drag the destination: GPUCostDistancePath',
       headline: 'Back-links recover the current least-cost route',
       textAlternative:
-        'A red route follows GPU back-links between draggable endpoints, with travel time, length and detour reported for the selected destination.',
-      body: '`GPUCostDistance` also writes **back-links**: for each cell, the direction of the next step on the cheapest way home. `GPUCostDistancePath` follows them from the destination to the start in one GPU thread and returns the cell list, which a small kernel turns into line segments drawn straight from the buffer.\n\n**Drag the red dot** and the route re-snaps in the same frame: no relaxation is repeated, only the path graph runs. The readouts give the time, length, climb and descent along the route, and the **detour**: travel time compared to walking the straight line (switched on with **Show straight line**) over flat ground. Real trails use these breaks: Bright Angel and the Kaibabs ride fault lines.',
+        'For a reachable destination, a red route follows GPU back-links between draggable endpoints; otherwise the readouts report no route.',
+      body: '`GPUCostDistance` also writes **back-links**: for each cell, the direction of the next step on the cheapest way home. `GPUCostDistancePath` follows them from the destination to the start in one GPU thread and returns the cell list, which a small kernel turns into line segments drawn straight from the buffer.\n\n**Drag the red dot** and the route re-snaps in the same frame: no relaxation is repeated, only the path graph runs. For a reached destination, the readouts give the time, length, climb and descent along the route. If it is unreached, move the red dot into the reached bands or adjust **Time budget** and **Cliff limit**. For a valid route, **detour** is travel time compared to walking the straight line (switched on with **Show straight line**) over flat ground. Real trails use these breaks: Bright Angel and the Kaibabs ride fault lines.',
       options: {display: 'cost', showStraightLine: true},
       camera: {longitude: -112.1, latitude: 36.085, zoom: 11.9, transitionMs: 1400},
-      controls: ['showStraightLine', 'display'],
+      controls: ['showStraightLine', 'display', 'costLimit', 'maxSlope'],
       readouts: ['canyonTime', 'canyonPath', 'canyonDetour'],
       highlight: {readout: 'canyonDetour'}
     },
@@ -432,7 +432,7 @@ export default defineScene<LeastCostOptions>({
       headline: 'Land cover changes the Dixie-area route',
       textAlternative:
         'Near Greenville, categorical land cover modifies slope friction; the least-cost route avoids slower forest and impassable water where alternatives exist.',
-      body: 'North-east of here the same graphs run on 20 m cells around **Greenville, California**, burned by the 2021 Dixie Fire. Slope is only half the story there: 91 % of the window is conifer forest, which slows a crew; towns are faster; **Lake Almanor** (west edge) is a barrier. The friction kernel multiplies the Tobler slope cost by a **per-class factor** from ESA WorldCover, a table of eleven floats in a parameter buffer.\n\nThe map shows the land cover. The route from Greenville to the Almanor east shore threads valleys and meadows rather than ridges. Try **Tree cover pace factor** at 3 below and watch the route and the bands bend toward open ground.',
+      body: 'North-west of here the same graphs run on 20 m cells around **Greenville, California**, burned by the 2021 Dixie Fire. Slope is only half the story there: 91 % of the window is conifer forest, which slows a crew; towns are faster; **Lake Almanor** (west edge) is a barrier. The friction kernel multiplies the Tobler slope cost by a **per-class factor** from ESA WorldCover, a table of eleven floats in a parameter buffer.\n\nThe map shows the land cover. The route from Greenville to the Almanor east shore threads valleys and meadows rather than ridges. Try **Tree cover pace factor** at 3 below and watch the route and the bands bend toward open ground.',
       options: {display: 'landcover'},
       camera: {...DIXIE_VIEW, transitionMs: 3000},
       controls: ['display', 'forest', 'builtUp', 'waterBarrier'],

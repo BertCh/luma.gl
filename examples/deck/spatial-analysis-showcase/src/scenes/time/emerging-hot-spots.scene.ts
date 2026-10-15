@@ -191,9 +191,9 @@ export default defineScene<EmergingHotSpotsOptions>({
       apply: 'param',
       default: '0.95',
       options: [
-        {value: '0.9', label: '90% (z 1.64)'},
-        {value: '0.95', label: '95% (z 1.96)'},
-        {value: '0.99', label: '99% (z 2.58)'}
+        {value: '0.9', label: '90% (p ≤ 0.10)'},
+        {value: '0.95', label: '95% (p ≤ 0.05)'},
+        {value: '0.99', label: '99% (p ≤ 0.01)'}
       ],
       help: 'A bin is hot when its two-sided Gi* p-value, adjusted by the correction below, is at most one minus this level and z is positive; cold when z is negative.'
     },
@@ -208,7 +208,7 @@ export default defineScene<EmergingHotSpotsOptions>({
         {
           value: 'benjamini-hochberg',
           label: 'Benjamini-Hochberg (false discovery rate)',
-          help: 'Adjusts the p-values of all valid bins together, so the share of false hot and cold bins among the flagged ones is controlled.'
+          help: 'Adjusts the p-values of all valid bins together, controlling the expected false-discovery share under independence or suitable positive dependence. Overlapping windows need not meet those assumptions.'
         },
         {
           value: 'benjamini-yekutieli',
@@ -555,7 +555,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`,
       headline: 'North lakefront cells retain high Gi* scores',
       textAlternative:
         'A diverging cell map shows significant positive Gi-star scores along the north lakefront and negative scores elsewhere.',
-      body: 'For every bin, Gi* sums the counts of its **space-time neighborhood** (cells within the radius, in the current and the previous two weeks, set by **Temporal window**) and compares the sum with what random arrangement of all bins would give. The result is a z-score: `z = sum(x_j - mean) / (S * sqrt((n k - k^2) / (n - 1)))` where `k` is the number of bins in the neighborhood.\n\nRed is significantly high, blue significantly low, white unremarkable. A bin is a *hot spot* when z reaches the critical value of the **Hot spot confidence** (1.96 at 95%). Move **Slice shown** to see the pattern change week to week. The persistent dark red is the north lakefront: Lincoln Park, Montrose Point and Uptown, where neighborhood after neighborhood stays far above the citywide mean.',
+      body: 'For every bin, Gi* sums the counts of its **space-time neighborhood** (cells within the radius, in the current and the previous two weeks, set by **Temporal window**) and compares the sum with what random arrangement of all bins would give. The result is a z-score: `z = sum(x_j - mean) / (S * sqrt((n k - k^2) / (n - 1)))` where `k` is the number of bins in the neighborhood.\n\nRed is significantly high, blue significantly low, white unremarkable. A bin is a *hot spot* when z is positive and its two-sided p-value, adjusted by the selected **Multiple-testing correction**, is at most one minus **Hot spot confidence** (adjusted p ≤ 0.05 at 95%). Only with correction set to *None* does 95% correspond to the fixed positive z cutoff of about 1.96. Move **Slice shown** to see the pattern change week to week. The persistent dark red is the north lakefront: Lincoln Park, Montrose Point and Uptown, where neighborhood after neighborhood stays far above the citywide mean.',
       evidence:
         'The playhead locates **{{sliceLabel}}** in the full record curve; the mapped z-scores test that slice in its spatial and temporal neighbourhood. The current family contains **{{tests}}**.',
       caveat:

@@ -1006,12 +1006,24 @@ const CLIP: f32 = ${RELATIVE_CLIP.toFixed(1)};`,
     let localDissimilaritySum = 0;
     let localTheilSum = 0;
     for (let unit = 0; unit < n; unit++) {
-      localTheilSum += latest.theil[scale * n + unit];
-      localDissimilaritySum += latest.dissimilarity[(scale * n + unit) * GROUP_COUNT + focal];
+      // GPUSegregation gives empty environments NaN local terms and excludes them globally.
+      const localTheil = latest.theil[scale * n + unit];
+      const localDissimilarity = latest.dissimilarity[(scale * n + unit) * GROUP_COUNT + focal];
+      if (Number.isFinite(localTheil)) localTheilSum += localTheil;
+      if (Number.isFinite(localDissimilarity)) localDissimilaritySum += localDissimilarity;
     }
+    const globalTheil = column(latest.indices, scale, layoutIndices.entropy);
+    const globalDissimilarity = column(latest.indices, scale, layoutIndices.dissimilarity + focal);
+    const sumsAgree =
+      Number.isFinite(globalTheil) &&
+      Number.isFinite(globalDissimilarity) &&
+      Math.abs(localTheilSum - globalTheil) < 0.0005 &&
+      Math.abs(localDissimilaritySum - globalDissimilarity) < 0.0005;
     ctx.setReadout(
       'localSum',
-      `local H sums to ${localTheilSum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.entropy), 3)}); local D of ${getFocalLabel()} sums to ${localDissimilaritySum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.dissimilarity + focal), 3)})`
+      !Number.isFinite(globalTheil) || !Number.isFinite(globalDissimilarity)
+        ? 'Local-sum check unavailable: the global index is undefined.'
+        : `${sumsAgree ? 'Verified' : 'Mismatch'}: local H sums to ${localTheilSum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.entropy), 3)}); local D of ${getFocalLabel()} sums to ${localDissimilaritySum.toFixed(3)} (global ${formatIndex(column(latest.indices, scale, layoutIndices.dissimilarity + focal), 3)})`
     );
   };
 

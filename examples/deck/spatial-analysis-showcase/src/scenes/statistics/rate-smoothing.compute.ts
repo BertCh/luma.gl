@@ -223,9 +223,10 @@ export async function createRateSmoothing(
       feature => feature.properties?.name === name && feature.properties?.state === state
     );
 
-  // Geometry: planar-metre mesh for the fill, outline segments for hairlines and rings.
+  // Display geometry only. Rates are births per woman-year, and spatial pooling uses exact
+  // shared-edge contiguity on the source rings; neither measures distance nor polygon area.
   const origin = counties.defaultOrigin;
-  const projection = counties.getProjection(origin);
+  const projection = counties.getDisplayProjection(origin);
   const mesh = buildPolygonMesh(geojson, (lng, lat) => projection.project(lng, lat));
   const polygons = createPolygonMeshBuffers(resources, mesh, 'counties');
   const layerOrigin: [number, number, number] = [origin[0], origin[1], 0];

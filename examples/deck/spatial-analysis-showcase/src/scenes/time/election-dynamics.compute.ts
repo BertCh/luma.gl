@@ -209,7 +209,9 @@ export async function createElectionDynamics(
   const elections = ctx.datasets.get('us-elections');
   const statesDataset = ctx.datasets.get('us-states');
   const origin = counties.defaultOrigin;
-  const projection = counties.getProjection(origin);
+  // Raster cells and outlines are display-only. Markov/LISA use vote shares and queen
+  // contiguity on source rings, with no distance or area weighting.
+  const projection = counties.getDisplayProjection(origin);
   const source = getPolygonSource(counties);
   const rows = source.featureCount;
   const raster: B13PolygonRaster = rasterizePolygons(

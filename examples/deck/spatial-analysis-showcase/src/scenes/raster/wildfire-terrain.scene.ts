@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import wildfireDataset from '../../data/datasets/poopdeck-wildfires.dataset';
+import elevationDataset from '../../data/datasets/wildfire-california-dem.dataset';
 import {ground} from '../../cartography/grounds';
 import {defineScene} from '../scene';
 import {storyFromMarkdown} from '../story-markdown';
@@ -33,7 +35,7 @@ export default defineScene<WildfireTerrainOptions>({
       subtitle: 'Perimeter interiors versus nearby rings'
     },
     scaleBar: {units: 'metric'},
-    credit: 'CAL FIRE; USGS elevation',
+    credit: `${wildfireDataset.attribution}; ${elevationDataset.attribution}`,
     caveat: 'Terrain associations do not control for weather, fuels, suppression or ignition.'
   },
 

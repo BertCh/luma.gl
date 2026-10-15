@@ -331,6 +331,7 @@ export default defineScene<HorizonOptions>({
   ],
 
   readouts: [
+    {id: 'viewSummary', label: 'Terrain and summit catalogue'},
     {
       id: 'peaksInRange',
       format: 'integer',
@@ -480,7 +481,7 @@ export default defineScene<HorizonOptions>({
       headline: 'Peaks ring the terrace in every direction',
       textAlternative:
         'Relief map of the Gornergrat cirque centred on a gold eye, with the Matterhorn, Dufourspitze, Weisshorn, Dom and other named summits marked by ink triangles and a dashed frame where the data ends.',
-      body: 'From the terrace at Gornergrat the horizon is a ring of summits. **{{peaksInRange}}** named peaks above **{{peakFloor}}** lie in range, the highest **{{highestPeak}}**. Which can you actually see, and which hide behind a nearer ridge? The gold eye is you; drag it. The relief is the whole cirque, cut off where the data ends.\n\n*Ask the question before running the method.*',
+      body: 'From the terrace at Gornergrat the horizon is a ring of summits. **{{viewSummary}}** The relief and catalogue cards populate when loading finishes. Which can you actually see, and which hide behind a nearer ridge? The gold eye is you; drag it. The relief is the whole cirque, cut off where the data ends.\n\n*Ask the question before running the method.*',
       optionsMode: 'fresh',
       options: {view: 'plain'},
       controls: [],
@@ -582,7 +583,21 @@ export default defineScene<HorizonOptions>({
       'The ring is the skyline seen from above: each segment sits where its ray first meets the highest ground, coloured by the elevation angle. The panorama is the same curve unrolled by bearing. Peaks are filled blue circles when visible, orange rings when marginal and hollow grey rings when hidden; an ink ring marks the peaks on the skyline. The terrain is bare earth from a digital elevation model of swissALTI3D and Copernicus data: trees, buildings, glaciers as surfaces and clouds are not occluders. Named summits are OpenStreetMap peaks above a height floor, one per massif, snapped to the highest DEM cell within 160 m. Drag the gold eye, or click a peak or the panorama to cast a ray.\n\nCatalogue heights use a national datum, while the Terrarium DEM has an unspecified geoid, so their comparison carries uncertainty of ±tens of metres.'
   },
 
-  create: async ctx => (await import('./horizon.compute')).createHorizon(ctx),
+  create: async ctx => {
+    ctx.setReadout('viewSummary', 'Loading terrain and the summit catalogue…');
+    ctx.setReadout('peaksInRange', 'Loading summit catalogue…');
+    ctx.setReadout('highestPeak', 'Loading summit catalogue…');
+    try {
+      return await (await import('./horizon.compute')).createHorizon(ctx);
+    } catch (error) {
+      if (!ctx.signal.aborted) {
+        ctx.setReadout('viewSummary', 'Terrain and summit catalogue could not be loaded.');
+        ctx.setReadout('peaksInRange', 'Unavailable');
+        ctx.setReadout('highestPeak', 'Unavailable');
+      }
+      throw error;
+    }
+  },
 
   snippet: state => `import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {

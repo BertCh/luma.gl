@@ -428,7 +428,7 @@ compiled.encode(commandEncoder, {parameters: undefined});`;
       controls: ['predicate', 'pattern'],
       readouts: ['contiguity', 'parity'],
       title: 'Rook contiguity from a DE-9IM pattern',
-      body: 'Rook contiguity requires a shared **edge**, not just a corner: boundaries must meet in a line. No named predicate says that, but a DE-9IM pattern does: **`F***1****`** means the boundaries intersect in a one-dimensional set. Choose the *relate (DE-9IM pattern)* **Predicate** and the rook preset of **DE-9IM pattern**.\n\nThe pattern lives in a uint32 parameter buffer, so cycling through the presets (rook, queen, corner only) rewrites eight words and never rebuilds the graph. Expect about 4.7 neighbours per tract, one fewer neighbour than queen on average, with the same island.',
+      body: 'Rook contiguity requires a shared **edge**, not just a corner: boundaries must meet in a line. No named predicate says that, but a DE-9IM pattern does: **`F***1****`** means the boundaries intersect in a one-dimensional set. Choose the *relate (DE-9IM pattern)* **Predicate** and the rook preset of **DE-9IM pattern**.\n\nThe pattern lives in a uint32 parameter buffer, so cycling through the presets (rook, queen, corner only) rewrites eight words and never rebuilds the graph. The current result is **{{contiguity}}**. On this tract dataset, the reference rook mean is approximately two neighbours lower than the queen mean; the **Reference (libpysal)** card reports both baselines.',
       options: {predicate: 'relate', pattern: 'rook', show: 'count'}
     },
     {

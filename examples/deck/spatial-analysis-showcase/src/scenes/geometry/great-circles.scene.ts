@@ -193,7 +193,7 @@ export default defineScene<GreatCirclesOptions>({
       headline: 'Projected curves require sufficient vertices',
       textAlternative:
         'Great-circle routes are coloured by haul class and tessellated with at least four segments, with total arc vertices reported; too few segments render projected routes as straight chords, while shorter maximum segment lengths increase output size.',
-      body: `A great circle is only a straight line in 3D. Projected to longitude and latitude it bends, and the bend needs vertices. **Minimum segments per arc** sets how many each arc gets; with 1 every arc is a straight chord on this map, which is plainly wrong for flights from Chicago to Asia over the pole.
+      body: `A great circle is the intersection of a sphere with a plane through its centre. Its shorter arc is a shortest path on the sphere; the straight chord through the sphere is a different object. Its projected curve needs enough vertices. **Minimum segments per arc** sets how many each arc gets; an arc with only one segment appears as a straight chord on this map, which misrepresents long curved routes. The maximum-length setting can require additional segments even when the minimum is 1.
 
 Set it to 1, then 6, then 24 and watch the arcs curve. **Maximum segment length** adds more segments to long arcs only, so short routes stay cheap. Both are parameter writes: the vertex count in the readout changes without a recompile.`,
       options: {showArcs: true, arcMinimumSegments: 4, showRhumbComparison: false},

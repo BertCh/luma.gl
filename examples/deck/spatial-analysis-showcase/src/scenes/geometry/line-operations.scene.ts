@@ -432,8 +432,8 @@ The number of pieces depends on the data, so the contributor reports it through 
       title: 'Run a train along each line',
       headline: 'Measure and offset locate an event',
       textAlternative:
-        'Markers are positioned one kilometre apart along each Chicago L route, with white ticks showing route tangents; distance or fractional measures and lateral offsets are selectable, while events beyond a route end are clamped.',
-      body: `\`GPULineLocate\` turns "N km along route R" into a map position and a direction. Here 320 markers (40 per route) sit a kilometre apart and **run along the lines**: only the \`measureOffset\` parameter changes each frame, a single buffer write.
+        'Markers are requested one kilometre apart along each loaded Chicago L path segment, with white ticks showing route tangents; distance or fractional measures and lateral offsets are selectable, while events beyond a route end are clamped.',
+      body: `\`GPULineLocate\` turns "N km along route R" into a map position and a direction. Here 40 markers per loaded path segment are requested a kilometre apart and **run along the lines** ({{reshapePieces}}): only the \`measureOffset\` parameter changes each frame, a single buffer write.
 
 Each marker also reports a tangent (the white tick) so it can point along the track, and a status that says when it was clamped at the route end. Raise **Spacing scale** above 1 and markers pile up at the end of the shorter routes (see the clamped count). Add a **Lateral offset** to put alternate markers on either side. Set **Measure is a** to *Fraction* to place markers by fraction of route length instead of distance.`,
       options: {lineTool: 'locate', locateMode: 'distance'},
@@ -464,12 +464,12 @@ Lines join each place to its inferred foot point. Side is relative to the street
         'Orange simplified New York Harbor AIS tracks overlay faint originals, with the kept-fix ratio determined by a metre, pixel or time-ratio tolerance; unconverged importance rounds and removed observations limit fidelity.',
       body: `897 AIS tracks of vessels in New York Harbor hold 124,780 position fixes. \`GPULineSimplification\` computes a Douglas-Peucker **importance** for every fix once (64 gated rounds on the GPU), then the **tolerance** you set, in metres or in pixels at the current zoom, only re-selects the vertices to keep.
 
-Orange is the simplified track over the faint original. Slide **Tolerance** below: at 30 m the kept fraction drops to a few percent while the shape stays right. The readouts show whether the rounds converged (then the result equals the classic recursive algorithm) and how many rounds ran. Switch **Distance measure** to *Time-ratio* (or tick **Tolerance follows the zoom**) to keep the fixes that matter for speed, not just shape (TD-TR).`,
+Orange is the simplified track over the faint original. Slide **Tolerance** below: at **{{tracksTolerance}}**, the result is **{{tracksRatio}}**. Larger tolerances discard more spatial detail. The readouts show whether the rounds converged (then the result equals the classic recursive algorithm) and how many rounds ran. Switch **Distance measure** to *Time-ratio* (or tick **Tolerance follows the zoom**) to keep the fixes that matter for speed, not just shape (TD-TR).`,
       camera: {longitude: -74.03, latitude: 40.66, zoom: 10.3, transitionMs: 1600},
       options: {view: 'tracks', trackTool: 'simplify', simplifyTolerance: 1.5},
       highlight: {readout: 'tracksRatio'},
       controls: ['simplifyTolerance', 'simplifyAuto', 'simplifyMetric'],
-      readouts: ['tracksRatio', 'tracksConverged', 'tracksRounds']
+      readouts: ['tracksTolerance', 'tracksRatio', 'tracksConverged', 'tracksRounds']
     },
     {
       id: 'compare-methods',

@@ -445,31 +445,31 @@ export async function createHurricaneSeason(
       })),
       xLabel: 'month (May–Dec)',
       yLabel:
-        ctx.options.denominator === 'share' ? 'share of selected seasons active' : 'storms active',
+        ctx.options.denominator === 'share' ? 'mean active storms per season' : 'storms active',
       formatX: value => formatDayOfYear(value),
-      formatY: value =>
-        ctx.options.denominator === 'share' ? `${(value * 100).toFixed(0)}%` : value.toFixed(0),
+      formatY: value => (ctx.options.denominator === 'share' ? value.toFixed(2) : value.toFixed(0)),
       markers: [
         {x: day, label: 'playhead'},
         {x: 252, label: 'NHC climatological reference: 10 Sep'}
       ],
       height: 150,
-      description: `Five-day-smoothed stacked active storm bands from 1 May to 31 December, shown as ${ctx.options.denominator === 'share' ? 'share of selected seasons active' : 'storms active'}. The 10 September rule is an external NHC climatological reference, not a result calculated from this subset.`
+      description: `Five-day-smoothed stacked active storm bands from 1 May to 31 December, shown as ${ctx.options.denominator === 'share' ? 'mean active storms per season' : 'storms active'}. The 10 September rule is an external NHC climatological reference, not a result calculated from this subset.`
     });
-    const totals = activeByDay.map(band => band.reduce((sum, value) => sum + value, 0));
-    const peak = Math.max(
-      ...Array.from({length: DAYS_IN_YEAR}, (_, index) =>
-        activeByDay.reduce((sum, band) => sum + band[index], 0)
-      )
+    const dailyTotals = Array.from({length: DAYS_IN_YEAR}, (_, index) =>
+      activeByDay.reduce((sum, band) => sum + band[index], 0)
     );
+    const peak = Math.max(...dailyTotals);
+    // Use the first peak day when several days tie, keeping every band on the same day.
+    const peakDay = dailyTotals.indexOf(peak);
+    const totals = activeByDay.map(band => band[peakDay]);
     ctx.setReadout('peakActive', `${peak.toFixed(0)} storms active (unsmoothed selected total)`);
     ctx.setReadout(
       'peakShare',
-      `${((peak / selectedSeasonCount) * 100).toFixed(1)}% of selected seasons active`
+      `${(peak / selectedSeasonCount).toFixed(2)} active storms per season`
     );
     ctx.setReadout(
       'categoryComposition',
-      labels.map((label, index) => `${label} ${totals[index].toFixed(0)}`).join(' · ')
+      `${formatDayOfYear(peakDay)}: ${labels.map((label, index) => `${label} ${totals[index].toFixed(0)}`).join(' · ')}`
     );
   }
 

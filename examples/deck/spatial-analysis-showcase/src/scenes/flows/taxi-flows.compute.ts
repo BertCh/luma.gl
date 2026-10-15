@@ -307,8 +307,9 @@ export async function createTaxiFlows(
     );
   }
 
-  function getWeightKey(): string {
-    return ctx.options.source === 'taxi' ? ctx.options.taxiWeight : ctx.options.commuteWeight;
+  function getWeightKey(source: FlowSource): string {
+    // The active graph keeps its source while a requested source compiles asynchronously.
+    return source.id === 'taxi' ? ctx.options.taxiWeight : ctx.options.commuteWeight;
   }
 
   function markChanged(): void {
@@ -318,7 +319,7 @@ export async function createTaxiFlows(
 
   function writeWeights(): void {
     const prepared = graph?.prepared ?? prepare(ctx.options.source);
-    prepared.weights.write(prepared.source.weights[getWeightKey()]);
+    prepared.weights.write(prepared.source.weights[getWeightKey(prepared.source)]);
     refreshFlowScale();
     refreshZoneTable();
     markChanged();
@@ -341,10 +342,11 @@ export async function createTaxiFlows(
   /** The one width scale of the dataset, computed from every row (see `getFlowScale`). */
   function refreshFlowScale(): void {
     const prepared = graph?.prepared ?? prepare(ctx.options.source);
-    const key = `${prepared.source.id}:${getWeightKey()}`;
+    const weightKey = getWeightKey(prepared.source);
+    const key = `${prepared.source.id}:${weightKey}`;
     if (key === flowScaleKey) return;
     flowScaleKey = key;
-    flowScale = getFlowScale(prepared.source, getWeightKey(), prepared.centerBounds);
+    flowScale = getFlowScale(prepared.source, weightKey, prepared.centerBounds);
     ctx.setLegendData('flowScale', flowScale);
     ctx.setReadout('scaleMax', formatWeight(flowScale.maxFlow));
   }
@@ -355,7 +357,7 @@ export async function createTaxiFlows(
     const {source} = prepared;
     const ground = ctx.ground();
     const totals = ctx.options.totals;
-    const weightKey = getWeightKey();
+    const weightKey = getWeightKey(source);
     const key = `${source.id}:${weightKey}:${source.id === 'commute' ? 'arrivals' : totals}`;
     let entry = breaksByKey.get(key);
     if (!entry) {
@@ -406,9 +408,10 @@ export async function createTaxiFlows(
       }
       return;
     }
-    const key = `${source.id}:${getWeightKey()}`;
+    const weightKey = getWeightKey(source);
+    const key = `${source.id}:${weightKey}`;
     if (!hourly || hourly.key !== key) {
-      const weights = source.weights[getWeightKey()];
+      const weights = source.weights[weightKey];
       const weekday = new Float64Array(24);
       const weekend = new Float64Array(24);
       for (let row = 0; row < source.rowCount; row++) {
@@ -697,7 +700,7 @@ export async function createTaxiFlows(
     selectedPair = null;
     ctx.setHighlight(null);
     // The new graph reads this source's current weights, mask and lattice parameters.
-    prepared.weights.write(prepared.source.weights[getWeightKey()]);
+    prepared.weights.write(prepared.source.weights[getWeightKey(prepared.source)]);
     writeMask();
     writeLattice();
     refreshFlowScale();
@@ -805,9 +808,8 @@ export async function createTaxiFlows(
   }
 
   function formatWeight(value: number): string {
-    const units = (graph?.prepared ?? prepare(ctx.options.source)).source.weightUnits[
-      getWeightKey()
-    ];
+    const {source} = graph?.prepared ?? prepare(ctx.options.source);
+    const units = source.weightUnits[getWeightKey(source)];
     return `${units.prefix}${formatCount(value)} ${units.unit}`;
   }
 
@@ -1198,7 +1200,7 @@ export async function createTaxiFlows(
     const total = arrivals ? current.incoming[zone] : current.out[zone];
     const divisor = getRateDivisor(source.id, current.dayType, current.windowHours);
     const density = total > 0 ? total / Math.max(getZoneArea(current, zone), 1e-6) / divisor : 0;
-    const units = source.weightUnits[getWeightKey()];
+    const units = source.weightUnits[getWeightKey(source)];
     const swatch =
       zoneTable && density > 0 ? zoneTable.colors[getClassIndexOf(zoneTable, density)] : undefined;
     const noun = source.id === 'commute' ? 'Jobs arriving' : arrivals ? 'Arrivals' : 'Departures';

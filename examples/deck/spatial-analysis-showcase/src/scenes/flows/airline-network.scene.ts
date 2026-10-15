@@ -1029,7 +1029,7 @@ new GPUGraphForceLayout({
       headline: 'Without geography, the communities pull apart',
       textAlternative:
         'Airports and routes on a flat dark ground animate between their map positions and a force layout, where airports of one community clump together.',
-      body: 'The force layout ignores longitude and latitude: airports repel, routes pull. Press **Animate morph** or drag **Morph** and watch whether the communities separate. Route length on the map and in the layout correlate at **{{layoutCorrelation}}**; zero would be unrelated, one identical. The ground is flat because no geography is left to show. In All controls, change the disc size or the view.',
+      body: 'The force layout ignores longitude and latitude: airports repel, routes pull. Press **Animate morph** or drag **Morph** and watch whether the communities separate. Route length on the map and in the layout correlate at **{{layoutCorrelation}}**; zero means no linear association; one means perfect positive linear association, even when lengths differ by a positive scale factor or a constant offset. The ground is flat because no geography is left to show. In All controls, change the disc size or the view.',
       optionsMode: 'fresh',
       options: {
         view: 'morph',

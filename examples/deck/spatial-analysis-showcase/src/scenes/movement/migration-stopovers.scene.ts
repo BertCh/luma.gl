@@ -218,6 +218,7 @@ export default defineScene<MigrationStopoversOptions>({
   ],
 
   readouts: [
+    {id: 'analysisStatus', label: 'Analysis status', layout: 'block'},
     {
       id: 'stayChart',
       label: 'How long do dwells last?',
@@ -346,8 +347,38 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       'Each dot is one dwell, colored by how long the bird stayed. The large discs are the ranked sites (the top three have a halo): a disc is the centroid of a cluster of dwells. Tracks run under the dots. All durations are in days of the folded year; the same bird in different years counts as one bird, and its stays add up as dwell.'
   },
 
-  create: async ctx =>
-    (await import('./migration-stopovers.compute')).createMigrationStopovers(ctx),
+  create: async ctx => {
+    ctx.setReadout('analysisStatus', 'Loading analysis; results are not ready.');
+    for (const id of ['tracks', 'stops', 'sites', 'siteList', 'selectedSite', 'tracksWithStops'])
+      ctx.setReadout(id, 'Loading analysis…');
+    try {
+      const instance = await (
+        await import('./migration-stopovers.compute')
+      ).createMigrationStopovers(ctx);
+      ctx.setReadout(
+        'analysisStatus',
+        'Waiting for GPU results; no result has been confirmed yet.'
+      );
+      return instance;
+    } catch (error) {
+      if (!ctx.signal.aborted) {
+        ctx.setReadout(
+          'analysisStatus',
+          `Analysis unavailable: ${error instanceof Error ? error.message : String(error)}`
+        );
+        for (const id of [
+          'tracks',
+          'stops',
+          'sites',
+          'siteList',
+          'selectedSite',
+          'tracksWithStops'
+        ])
+          ctx.setReadout(id, 'Analysis unavailable');
+      }
+      throw error;
+    }
+  },
 
   story: [
     {
@@ -356,10 +387,10 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'A paper atlas map draws migration routes and proportional stop discs.',
       optionsMode: 'fresh',
       title: 'Where do the birds stop on the way?',
-      body: "Marsh harriers and Montagu's harriers fly from the Low Countries to the Sahel and back; spoonbills move to the Atlantic coast of France and Iberia. A GPS fix every two hours says where each bird was, so a bird that stays within a few kilometers for days shows up as a run of fixes that barely move: a **dwell**.\n\nEvery dot is a dwell, colored by the length of the stay. Where do they cluster, and are the places the birds stop the same places they live?",
+      body: "Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nMarsh harriers and Montagu's harriers fly from the Low Countries to the Sahel and back; spoonbills move to the Atlantic coast of France and Iberia. A GPS fix every two hours says where each bird was, so a bird that stays within a few kilometers for days shows up as a run of fixes that barely move: a **dwell**.\n\nEvery dot is a dwell, colored by the length of the stay. Where do they cluster, and are the places the birds stop the same places they live?",
       camera: {...EUROPE_AFRICA_VIEW, transitionMs: 1200},
       controls: [],
-      readouts: ['tracks', 'stops']
+      readouts: ['analysisStatus', 'tracks', 'stops']
     },
     {
       id: 'dwells',
@@ -367,11 +398,11 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'Slow and fast segments reveal a dwell rule on one route.',
       optionsMode: 'fresh',
       title: 'Finding the dwells',
-      body: '**`GPUTrajectoryMetrics`** marks each two-hour step as slow when the bird covers less than the **Slow-step speed** times the step, then reports every run of slow steps that lasts at least the **Minimum dwell**: its first and last fix, the mean position and the duration. It runs once for all 101 tracks and re-runs on every slider move, because both values are parameters.\n\nTry **Slow-step speed** at 0.5 m/s and the dwells thin out, then at 4 m/s and short flights get glued into one long stay. The readout counts the dwells; the histogram shows how long they last.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUTrajectoryMetrics`** marks each two-hour step as slow when the bird covers less than the **Slow-step speed** times the step, then reports every run of slow steps that lasts at least the **Minimum dwell**: its first and last fix, the mean position and the duration. It runs once for all 101 tracks and re-runs on every slider move, because both values are parameters.\n\nTry **Slow-step speed** at 0.5 m/s and the dwells thin out, then at 4 m/s and short flights get glued into one long stay. The readout counts the dwells; the histogram shows how long they last.',
       options: {showSites: false, showTracks: true, trackOpacity: 0.2},
       highlight: {readout: 'stops'},
       controls: ['stopSpeed', 'minStayHours'],
-      readouts: ['stops', 'stayChart']
+      readouts: ['analysisStatus', 'stops', 'stayChart']
     },
     {
       id: 'stopover-or-home',
@@ -379,11 +410,11 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'Short stays and long home ranges are separated by hollow rings.',
       optionsMode: 'fresh',
       title: 'A stopover is not a home range',
-      body: "The histogram has two populations. Most dwells last a few days: **stopovers**. A thin tail runs to months: a breeding territory in Flanders, a wintering range in the Sahel. Drag **Longest stopover** below and the long dots disappear from the map: only dwells shorter than the limit go on to the next stage.\n\nPick one species in **Species** to see how it moves: the spoonbills' stops sit on the Atlantic seaboard of France and Iberia, the harriers' in Flanders and the Sahel. **Stopovers that begin between** limits the map to a season.",
+      body: "Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nUse the duration histogram to distinguish short stays from longer residence. A short dwell may be a **stopover**; a long dwell may be a breeding territory or wintering range. Duration alone does not establish either behavior. Drag **Longest stopover** below and the long dots disappear from the map: only dwells shorter than the limit go on to the next stage.\n\nPick one species in **Species** to see how it moves: the spoonbills' stops sit on the Atlantic seaboard of France and Iberia, the harriers' in Flanders and the Sahel. **Stopovers that begin between** limits the map to a season.",
       options: {showSites: false, maxStayDays: 14, colorStops: 'stay'},
       highlight: {readout: 'stops'},
       controls: ['maxStayDays', 'species', 'dayRange'],
-      readouts: ['stops', 'stayChart']
+      readouts: ['analysisStatus', 'stops', 'stayChart']
     },
     {
       id: 'clustering',
@@ -391,11 +422,11 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'A metric radius ring groups individual stop points into a site.',
       optionsMode: 'fresh',
       title: 'From stops to sites',
-      body: '**`GPUSpatialClustering`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU on longitude and latitude with a great-circle radius, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. A radius of 80 km gives about two dozen sites; 300 km merges most of them into a handful, and 10 km shatters them.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\n**`GPUSpatialClustering`** runs DBSCAN on the stopover centers: two stopovers are neighbors when they lie within the **Site radius**, and a stop is a core point when **Minimum stops per site** of them are near. Clusters become **sites**; stops that never reach the minimum are noise (grey). The clustering runs on the GPU on longitude and latitude with a great-circle radius, and moving either slider just rewrites a parameter buffer.\n\nColor the stops by **Site** to see the clusters. Compare the live **Sites** count at 10, 80 and 300 km. A larger radius can join neighboring stops; a smaller radius can split sites or leave more stops as noise.',
       options: {showSites: true, colorStops: 'cluster', maxStayDays: 14},
       highlight: {readout: 'sites'},
       controls: ['colorStops', 'epsilonKm', 'minimumStops'],
-      readouts: ['sites']
+      readouts: ['analysisStatus', 'sites']
     },
     {
       id: 'ranking',
@@ -403,11 +434,11 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'Proportional discs resize as the site statistic changes.',
       optionsMode: 'fresh',
       title: 'Which sites matter most?',
-      body: 'The sites are ranked by **total dwell**, the bird-days spent there, and the list says how many birds, how many stops and when the stays usually begin. Click a disc on the map to read it. By dwell, the top of the list is dominated by the two ends of the journey: the **Flanders** breeding area, where the stays begin in early August after breeding, then the **Sahel of Mali and Mauritania** where harriers settle in early October, then the **Vendee coast** of France for the spoonbills.\n\nSwitch **Rank sites by** to *Distinct birds* and an en-route site climbs the list: the Atlantic plains of Morocco, used by about half a dozen birds. A real stopover is brief, so it does not win on bird-days.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nThe sites are ranked by **total dwell**, the bird-days spent there, and the list says how many birds, how many stops and when the stays usually begin. Click a disc on the map to read it. Read **Ranked sites** for the current order and each site’s bird count, dwell and dates. The ranking depends on the active species, season and dwell rules.\n\nSwitch **Rank sites by** to *Distinct birds* and compare the order. A brief stop used by many birds can rank differently by bird count than by total dwell.',
       options: {showSites: true, colorStops: 'stay', rankBy: 'dwell', maxStayDays: 14},
       highlight: {readout: 'siteList'},
       controls: ['rankBy', 'showSites'],
-      readouts: ['siteList', 'siteChart', 'selectedSite']
+      readouts: ['analysisStatus', 'siteList', 'siteChart', 'selectedSite']
     },
     {
       id: 'spring',
@@ -415,7 +446,7 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       textAlternative: 'A spring stopover atlas ranks sites using the chosen rule.',
       optionsMode: 'fresh',
       title: 'When do they stop, and what does the sample hide?',
-      body: 'Set **Stopovers that begin between** to spring, 1 March to 15 June: the northbound stops are fewer than the autumn ones, and the Atlantic plains of **Morocco** appear: about half a dozen birds stopping there between late March and mid-April. The chart shows the weeks in which stopovers begin: the autumn hump (late summer to early autumn) is larger and broader than the spring one, and the spike in the first week of January is an artifact of the fold, where stays are cut at New Year.\n\nThe honest limits: tags are on 42 birds, and some individuals appear in several years, which makes a site look busier than the population is; the archive folds years onto one calendar, so "April" blends every year; a two-hour fix cannot see a rest of a few hours; and whether a stay is a stopover or a home range is a threshold (**Longest stopover**), not a fact. **Try:** set **Minimum stops per site** to 1 and see how many single-bird sites appear.',
+      body: 'Results are pending until the analysis status says Ready. **{{analysisStatus}}**.\n\nSet **Stopovers that begin between** to spring, 1 March to 15 June, and compare the live ranking with autumn. The chart shows the weeks in which retained stopovers begin. Stays are cut at New Year when tracks are folded onto one calendar, so early-January starts can be boundary artifacts.\n\nThe honest limits: tags are on 42 birds, and some individuals appear in several years, which makes a site look busier than the population is; the archive folds years onto one calendar, so "April" blends every year; a two-hour fix cannot see a rest of a few hours; and whether a stay is a stopover or a home range is a threshold (**Longest stopover**), not a fact. **Try:** set **Minimum stops per site** to 1 and see how many single-bird sites appear.',
       options: {
         showSites: true,
         rankBy: 'birds',
@@ -426,7 +457,7 @@ clusterParameters.write(getGPUSpatialClusteringParameterValues({
       camera: {longitude: -2, latitude: 36, zoom: 3.8, transitionMs: 1400},
       highlight: {readout: 'siteList'},
       controls: ['dayRange', 'rankBy', 'minimumStops'],
-      readouts: ['seasonChart', 'siteList']
+      readouts: ['analysisStatus', 'seasonChart', 'siteList']
     }
   ]
 });

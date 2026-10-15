@@ -415,7 +415,8 @@ addKernelPass(coastGraph, {
   declarations: 'const NONE: u32 = ' + GPU_DISTANCE_FIELD_NONE + 'u;\\n' +
     'const EARTH_RADIUS_METERS: f32 = ' + GPU_EARTH_MEAN_RADIUS_METERS.toFixed(1) + ';',
   body: \`
-    kilometers[kilometersOffset + index] = bitcast<f32>(0x7f800000u); // +Infinity: transparent / beyond limit
+    var infinityBits = 0x7f800000u; // Runtime bits: WGSL forbids non-finite constants.
+    kilometers[kilometersOffset + index] = bitcast<f32>(infinityBits); // +Infinity: transparent / beyond limit
     let nearestCell = nearestCells[nearestCellsOffset + index];
     if (nearestCell == NONE) { return; }
     let centerOffset = cellCentersOffset + index * 2u;

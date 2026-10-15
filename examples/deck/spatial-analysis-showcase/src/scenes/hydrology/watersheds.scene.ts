@@ -160,7 +160,7 @@ export default defineScene<WatershedsOptions>({
       apply: 'param',
       default: 'pour-points',
       disabledWhen: state => state.product !== 'watersheds',
-      help: 'With pour points every cell is labelled by the nearest downstream pour point (nested watersheds). With outlets, each grid-edge or pit outlet gets its own basin.',
+      help: 'With pour points every cell is labelled by the nearest downstream pour point (mutually exclusive catchments). With outlets, each grid-edge or pit outlet gets its own basin.',
       options: [
         {value: 'pour-points', label: 'Pour points (click the map)'},
         {value: 'outlets', label: 'Every outlet (automatic basins)'}
@@ -327,7 +327,7 @@ export default defineScene<WatershedsOptions>({
       headline: 'Pour points delineate distinct upstream catchments',
       textAlternative:
         'Three colored catchment polygons extend upstream from selected pour points, with mapped area totals reported for each watershed.',
-      body: '`GPUTerrainWatersheds` labels every cell with the **nearest downstream pour point**. Three are placed for you: Phantom Ranch on Bright Angel Creek (1, red), Indian Garden on Garden Creek (2, orange) and the Colorado at the creek’s mouth (3, yellow). Because labelling follows the flow downhill, watershed 1 is *nested inside* watershed 3, and the areas appear in the readout.\n\n**Click the map** to add a pour point: it snaps to the highest-accumulation cell within five cells so a click near a creek lands on the creek. Switch **Basins from** below to *every outlet* to see the automatic basins the contributor builds without pour points.',
+      body: '`GPUTerrainWatersheds` labels every cell with the **nearest downstream pour point**. Three are placed for you: Phantom Ranch on Bright Angel Creek (1, red), Indian Garden on Garden Creek (2, orange) and the Colorado at the creek’s mouth (3, yellow). The labels and reported areas are **incremental, mutually exclusive catchments**: cells stop at the first downstream pour point. Label 3 therefore excludes cells assigned to upstream pour points, including label 1; its reported area is not the full cumulative upstream watershed.\n\n**Click the map** to add a pour point: it snaps to the highest-accumulation cell within five cells so a click near a creek lands on the creek. Switch **Basins from** below to *every outlet* to see the automatic basins the contributor builds without pour points.',
       camera: {longitude: -112.09, latitude: 36.095, zoom: 11.7, transitionMs: 1600},
       options: {product: 'watersheds', showStreams: true},
       controls: ['basinMode', 'resetPourPoints', 'clearPourPoints'],
@@ -523,8 +523,8 @@ export default defineScene<WatershedsOptions>({
     {id: 'pourPoints', label: 'Pour points', format: 'integer'},
     {
       id: 'watershedAreas',
-      label: 'Watershed areas',
-      help: 'Area draining to each pour point (nested watersheds include their upstream pour points).'
+      label: 'Incremental catchment areas',
+      help: 'Incremental area draining first to each pour point. Mutually exclusive: excludes catchments assigned to upstream pour points.'
     },
     {
       id: 'floodArea',

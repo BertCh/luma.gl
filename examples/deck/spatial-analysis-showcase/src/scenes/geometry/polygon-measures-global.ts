@@ -275,7 +275,9 @@ fn displayPosition(vertex: u32) -> vec2<f32> {
     clamp(positions[positionsOffset + vertex * 2u + 1u], -85.0511, 85.0511));
 }`,
       body: /* wgsl */ `
-  var first = vec2<f32>(bitcast<f32>(0x7fc00000u));
+  // WGSL forbids NaN constants, so bitcast a runtime bit pattern.
+  var nanBits = 0x7fc00000u;
+  var first = vec2<f32>(bitcast<f32>(nanBits));
   var start = first;
   var end = first;
   var feature = 0u;

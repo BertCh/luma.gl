@@ -909,6 +909,7 @@ export async function createHealthRegression(
     );
   };
   const writeSignificance = () => {
+    ctx.setReadout('localInference', `α = ${ctx.options.significance}`);
     // Every variant's recipe fills the same `moranParameters`, so the active one repacks for all.
     variants.get(activeModel)?.setSettings({significanceLevel: ctx.options.significance});
   };

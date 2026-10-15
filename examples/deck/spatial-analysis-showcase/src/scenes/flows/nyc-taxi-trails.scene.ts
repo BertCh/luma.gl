@@ -72,7 +72,7 @@ function getLegends(
       getClassTableLegend(getFareTable({breaks: fare.breaks, extent: fare.extent, match}), {
         title: 'Fare of the trip',
         id: 'fare-classes',
-        basis: 'five classes, a fifth of the trips each',
+        basis: 'five classes, approximately a fifth of the trips each',
         counts: fare.counts,
         layout: 'list',
         note: state.compareRamps

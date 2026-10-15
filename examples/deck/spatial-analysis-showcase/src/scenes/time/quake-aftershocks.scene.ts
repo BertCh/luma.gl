@@ -59,10 +59,10 @@ export default defineScene<QuakeAftershocksOptions>({
           {value: '0.25', label: '6 hours per second'},
           {value: '1', label: '1 day per second'},
           {value: '7', label: '1 week per second'},
-          {value: '30', label: '1 month per second'},
-          {value: '91', label: '3 months per second'}
+          {value: '30', label: '30 days per second'},
+          {value: '91', label: '91 days per second'}
         ],
-        help: 'How much catalog time passes per real second. A month per second plays the five years in about a minute; six hours per second lets you watch a sequence unfold.'
+        help: 'How much catalog time passes per real second. Thirty days per second plays the five years in about a minute; six hours per second lets you watch a sequence unfold.'
       },
       loop: true
     }),
@@ -202,7 +202,7 @@ export default defineScene<QuakeAftershocksOptions>({
         {
           value: 'month-count',
           label: 'Events in the playhead month',
-          help: 'Count per cell of the 30-day bucket holding the playhead.'
+          help: 'Count per cell of the 30.4375-day bucket holding the playhead.'
         },
         {
           value: 'month-max',
@@ -342,7 +342,7 @@ export default defineScene<QuakeAftershocksOptions>({
       headline: 'Monthly concentration identifies burst-dominated cells',
       textAlternative:
         'A raster over Japan highlights cells where one month contains a large share of five years of earthquakes.',
-      body: '`GPUTemporalReduction` cuts the window into a grid and the five years into 60 thirty-day months, then reduces every event into its (cell, month) slot: count, smallest, largest, first and last magnitude. The map now shows **burstiness**: the busiest month of a cell divided by its average month. A cell with a steady trickle scores near 1; a cell whose five years of events fell in a single month scores up to 60.\n\nBright cells are sequences, not background. Hover a cell for its busiest month, and switch **Cell grid shows** to the largest magnitude per month to see the same table as a map of the playhead month. The chart below the map is the same reduction summed over cells.',
+      body: '`GPUTemporalReduction` cuts the window into a grid and the five years into 60 fixed 30.4375-day buckets, then reduces every event into its (cell, month) slot: count, smallest, largest, first and last magnitude. The map now shows **burstiness**: the busiest month of a cell divided by its average month. A cell with a steady trickle scores near 1; a cell whose five years of events fell in a single month scores up to 60.\n\nBright cells are sequences, not background. Hover a cell for its busiest month, and switch **Cell grid shows** to the largest magnitude per month to see the same table as a map of the playhead month. The chart below the map is the same reduction summed over cells.',
       camera: {...QUAKE_REGIONS.japan.view, transitionMs: 1600},
       options: {
         region: 'japan',
@@ -383,7 +383,7 @@ export default defineScene<QuakeAftershocksOptions>({
   ],
 
   about: {
-    what: 'Three contributors on one catalog. `GPUNeighborSearch` lists the pairs of events within a radius; `GPUKnoxTest` counts how many are also close in time and compares with a Monte Carlo permutation of the times (Baker 1996); `GPUTemporalReduction` reduces events into (grid cell, 30-day month) slots. A bespoke layer draws the catalog directly from the buffers.',
+    what: 'Three contributors on one catalog. `GPUNeighborSearch` lists the pairs of events within a radius; `GPUKnoxTest` counts how many are also close in time and compares with a Monte Carlo permutation of the times (Baker 1996); `GPUTemporalReduction` reduces events into (grid cell, 30.4375-day bucket) slots. A bespoke layer draws the catalog directly from the buffers.',
     why: 'Earthquakes are the textbook space-time interaction: aftershocks and doublets make events near in space also near in time. A test of that interaction tells an analyst whether a catalog needs declustering before its background rate is used for hazard, and the month by cell table shows where the bursts are.',
     howToRead:
       "Radius is magnitude, color is depth (or age). In the Knox histogram the bars are the counts under random time assignments and the vertical line is the observed count: the further right of the bars, the stronger the interaction. A ratio near 1 means no clustering beyond chance. On the burstiness map bright means a few months hold most of a cell's events."
@@ -527,7 +527,7 @@ export default defineScene<QuakeAftershocksOptions>({
     {
       id: 'busiestMonth',
       label: 'Busiest month',
-      help: 'The 30-day bucket with the most events in the window, from the (cell, month) reduction.'
+      help: 'The 30.4375-day bucket with the most events in the window, from the (cell, month) reduction.'
     },
     {
       id: 'monthly',

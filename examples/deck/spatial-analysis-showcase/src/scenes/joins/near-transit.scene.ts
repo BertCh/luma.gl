@@ -298,13 +298,13 @@ compiled.encode(commandEncoder, {parameters: undefined});
   story: [
     {
       id: 'the-question',
-      headline: 'Many observations fall within 800 metres of stations',
+      headline: 'Station proximity depends on the chosen distance',
       textAlternative:
-        'Selected Chicago nature observations are highlighted within an 800-metre radius of L stations.',
+        'Selected Chicago nature observations are highlighted within the active buffer distance of L stations.',
       controls: ['points', 'features', 'distance'],
       readouts: ['selected', 'composition'],
       title: 'How much wildlife is logged within a short walk of an L station?',
-      body: 'The CTA runs 135 L stations inside Chicago. **`GPUBufferSelection`** selects the 43,557 nature observations of 2023 whose distance to the nearest station is at most the **Buffer distance**: here 400 m, about a five-minute walk. Selected observations are coloured by their distance; the rest stay gray.\n\nThe selected points are drawn through an **indirect draw**: the GPU writes the selected count into the draw record and the layer draws the compact ids, so nothing is read back to decide how many points to draw. Read **Selected** and **Compared with the whole city** for the share and what is over-represented.',
+      body: 'The CTA runs 135 L stations inside Chicago. **`GPUBufferSelection`** selects the 43,557 nature observations of 2023 whose distance to the nearest station is at most the **Buffer distance**. The distance currently applied is **{{distanceUsed}}**, measured directly rather than along a walking route. Selected observations are coloured by their distance; the rest stay gray.\n\nThe selected points are drawn through an **indirect draw**: the GPU writes the selected count into the draw record and the layer draws the compact ids, so nothing is read back to decide how many points to draw. Read **Selected** and **Compared with the whole city** for the share and what is over-represented.',
       camera: {longitude: -87.66, latitude: 41.87, zoom: 10.2},
       options: {points: 'observations', features: 'stations', distance: 400, colorBy: 'distance'},
       highlight: {readout: 'selected'}

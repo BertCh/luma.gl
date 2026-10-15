@@ -591,8 +591,16 @@ export default defineScene<NatureClusterOptions>({
     if (state.view === 'hotspots' && state.showMeans) {
       markers.push({color: ink, label: 'Mean centre of a hot spot', shape: 'ring'});
     }
-    if (state.view === 'hotspots' && state.showMedoids) {
-      markers.push({color: ink, label: 'Medoid: the most central record', shape: 'dot'});
+    if (
+      state.view === 'hotspots' &&
+      state.showMedoids &&
+      !(state.method === 'dbscan' && state.pipeline === 'recipe')
+    ) {
+      markers.push({
+        color: ink,
+        label: 'Medoid: most central record (clusters ≤1,024)',
+        shape: 'dot'
+      });
     }
     if (state.view === 'hotspots' && state.showWeighted && state.weight !== 'none') {
       markers.push({color: getSignal(groundName), label: 'Weighted centre', shape: 'dot'});
@@ -772,8 +780,8 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
       title: 'Describe the winner',
       headline: 'The biggest hot spot: size, area, water',
       textAlternative:
-        'Close map of the biggest hot spot: a filled convex hull around dense blue dots, with a ring at the mean centre, a dot at the medoid and a diamond for the weighted centre.',
-      body: '**{{winnerSize}}** records fill a hull of **{{hullArea}}**, **{{density}}**, and **{{hullWaterShare}}** of that hull lies outside the city limit, where no record can fall. Ring: mean centre; dot: medoid. Turn on **Medoids (dots)** and **Cluster ellipses**; **Weight observations by** research grade pulls the diamond toward confirmed identifications.\n\n*A hull outlines a cluster; it does not measure it.*',
+        'Close map of the biggest hot spot: a filled convex hull around dense blue dots, with a ring at the mean centre, a medoid dot only for clusters with at most 1,024 members, and a diamond for the weighted centre.',
+      body: '**{{winnerSize}}** records fill a hull of **{{hullArea}}**, **{{density}}**, and **{{hullWaterShare}}** of that hull lies outside the city limit, where no record can fall. Ring: mean centre. The winner’s medoid is **{{medoid}}**: medoid dots are computed only for clusters with at most 1,024 members. Turn on **Medoids (dots)** to see eligible clusters and **Cluster ellipses**; **Weight observations by** research grade pulls the diamond toward confirmed identifications.\n\n*A hull outlines a cluster; it does not measure it.*',
       optionsMode: 'fresh',
       options: {
         showMeans: true,
@@ -785,7 +793,7 @@ const sizeClass = size => breaks.filter(boundary => size >= boundary).length;`;
         labelHotSpots: true
       },
       controls: ['weight', 'showMedoids', 'showClusterEllipses'],
-      readouts: ['winnerSize', 'hullArea', 'hullWaterShare', 'density'],
+      readouts: ['winnerSize', 'hullArea', 'hullWaterShare', 'medoid'],
       stage: 'shapes',
       camera: {
         longitude: MONTROSE_POINT[0],

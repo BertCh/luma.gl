@@ -795,7 +795,7 @@ export async function createWorldView(env: WorldEnvironment): Promise<GeometryVi
             distances: imp('distances', airportDistances, 'float32', airportCount),
             initialBearings: imp('bearings', airportBearings, 'float32', airportCount),
             ...(model === 'wgs84'
-              ? {converged: imp('converged', airportConverged, 'uint32', airportCount)}
+              ? {status: {converged: imp('converged', airportConverged, 'uint32', airportCount)}}
               : {})
           }
         })
