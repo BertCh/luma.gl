@@ -13,11 +13,11 @@ import type {SceneContext, SceneInstance} from '../scene';
 import {
   FRONTIER_RESIDUAL_PARAMETER_LENGTH,
   FrontierResidualDiffusion,
-  getFrontierResidualDiffusionCoefficients,
   getFrontierResidualDiffusionParameterValues
 } from './frontier-neural';
+import {prepareCloudRepairStyle, type CloudRepairStyle} from './cloud-repair-style';
 
-export type CloudRepairPlace = 'oahu' | 'venice';
+export type CloudRepairPlace = 'pilbara' | 'plateau';
 export type CloudRepairDisplay = 'cloudy' | 'diffusion' | 'naive' | 'prior';
 
 /** Live controls of the temporal cloud-repair field. */
@@ -49,9 +49,15 @@ type PreparedPlace = PlaceRasters & {
   naiveDisplay: Uint32Array;
   priorDisplay: Uint32Array;
   maskedPixels: number;
+  cloudPixels: number;
+  shadowPixels: number;
+  guardedPixels: number;
+  style: CloudRepairStyle;
 };
 
-const STEPS_PER_FRAME = 4;
+const STEPS_PER_FRAME = 16;
+/** Mask class written by the dataset build for cloud; 2 is cloud shadow, 0 clear. */
+const CLOUD_CLASS = 1;
 
 function packRgba(red: number, green: number, blue: number): number {
   return (
@@ -93,28 +99,21 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
   const after = target.values as Uint8Array;
   const before = prior.values as Uint8Array;
   const cloudMask = mask.values as Uint8Array;
-  const state = new Float32Array(cellCount * 4);
-  const priorValues = new Float32Array(cellCount * 3);
+  const {state, priorValues, repairMask, style} = prepareCloudRepairStyle(
+    after,
+    before,
+    cloudMask,
+    target.width,
+    target.height
+  );
   const cloudyDisplay = new Uint32Array(cellCount);
   const diffusionDisplay = new Uint32Array(cellCount);
   const naiveDisplay = new Uint32Array(cellCount);
   const priorDisplay = new Uint32Array(cellCount);
-  const meanResidual = [0, 0, 0];
-  let knownPixels = 0;
   let maskedPixels = 0;
-
-  for (let cell = 0; cell < cellCount; cell++) {
-    const pixelBase = cell * 4;
-    if (cloudMask[cell]) {
-      maskedPixels++;
-      continue;
-    }
-    for (let channel = 0; channel < 3; channel++) {
-      meanResidual[channel] += (after[pixelBase + channel] - before[pixelBase + channel]) / 255;
-    }
-    knownPixels++;
-  }
-  for (let channel = 0; channel < 3; channel++) meanResidual[channel] /= Math.max(knownPixels, 1);
+  let cloudPixels = 0;
+  let shadowPixels = 0;
+  let guardedPixels = 0;
 
   for (let cell = 0; cell < cellCount; cell++) {
     const pixelBase = cell * 4;
@@ -126,22 +125,19 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
     const afterRed = after[pixelBase] / 255;
     const afterGreen = after[pixelBase + 1] / 255;
     const afterBlue = after[pixelBase + 2] / 255;
-    const masked = cloudMask[cell] !== 0;
-    priorValues[priorBase] = beforeRed;
-    priorValues[priorBase + 1] = beforeGreen;
-    priorValues[priorBase + 2] = beforeBlue;
-    state[stateBase] = masked ? meanResidual[0] : afterRed - beforeRed;
-    state[stateBase + 1] = masked ? meanResidual[1] : afterGreen - beforeGreen;
-    state[stateBase + 2] = masked ? meanResidual[2] : afterBlue - beforeBlue;
-    state[stateBase + 3] = masked ? 0 : 1;
+    const masked = repairMask[cell] !== 0;
+    if (masked) maskedPixels++;
+    if (cloudMask[cell] === CLOUD_CLASS) cloudPixels++;
+    else if (cloudMask[cell]) shadowPixels++;
+    else if (masked) guardedPixels++;
     cloudyDisplay[cell] = packRgba(afterRed, afterGreen, afterBlue);
     priorDisplay[cell] = packRgba(beforeRed, beforeGreen, beforeBlue);
     naiveDisplay[cell] = masked ? priorDisplay[cell] : cloudyDisplay[cell];
     diffusionDisplay[cell] = masked
       ? packRgba(
-          beforeRed + meanResidual[0],
-          beforeGreen + meanResidual[1],
-          beforeBlue + meanResidual[2]
+          priorValues[priorBase] + state[stateBase],
+          priorValues[priorBase + 1] + state[stateBase + 1],
+          priorValues[priorBase + 2] + state[stateBase + 2]
         )
       : cloudyDisplay[cell];
   }
@@ -162,7 +158,11 @@ function preparePlace(dataset: LoadedDataset, place: PlaceRasters): PreparedPlac
     diffusionDisplay,
     naiveDisplay,
     priorDisplay,
-    maskedPixels
+    maskedPixels,
+    cloudPixels,
+    shadowPixels,
+    guardedPixels,
+    style
   };
 }
 
@@ -171,35 +171,41 @@ export async function createResidualRepair(
   ctx: SceneContext<ResidualRepairOptions>
 ): Promise<SceneInstance<ResidualRepairOptions>> {
   const dataset = ctx.datasets.get('sentinel-cloud-repair');
-  const oahuTarget = dataset.raster;
-  if (!oahuTarget) throw new Error('sentinel-cloud-repair has no primary Oahu target');
-  const [oahuPrior, oahuMask, veniceTarget, venicePrior, veniceMask] = await Promise.all([
-    dataset.loadRaster('oahuPrior', ctx.signal),
-    dataset.loadRaster('oahuMask', ctx.signal),
-    dataset.loadRaster('veniceTarget', ctx.signal),
-    dataset.loadRaster('venicePrior', ctx.signal),
-    dataset.loadRaster('veniceMask', ctx.signal)
+  const pilbaraTarget = dataset.raster;
+  if (!pilbaraTarget) throw new Error('sentinel-cloud-repair has no primary Pilbara target');
+  const [pilbaraPrior, pilbaraMask, plateauTarget, plateauPrior, plateauMask] = await Promise.all([
+    dataset.loadRaster('pilbaraPrior', ctx.signal),
+    dataset.loadRaster('pilbaraMask', ctx.signal),
+    dataset.loadRaster('plateauTarget', ctx.signal),
+    dataset.loadRaster('plateauPrior', ctx.signal),
+    dataset.loadRaster('plateauMask', ctx.signal)
   ]);
   ctx.signal.throwIfAborted();
   const places: Record<CloudRepairPlace, PreparedPlace> = {
-    oahu: preparePlace(dataset, {
-      title: 'Waimānalo, Oʻahu',
-      targetDate: '29 Sep 2026',
-      priorDate: '3 Feb 2026',
-      target: oahuTarget,
-      prior: oahuPrior,
-      mask: oahuMask
+    pilbara: preparePlace(dataset, {
+      title: 'Hamersley Range, Pilbara',
+      targetDate: '4 Feb 2026',
+      priorDate: '30 Jan 2026',
+      target: pilbaraTarget,
+      prior: pilbaraPrior,
+      mask: pilbaraMask
     }),
-    venice: preparePlace(dataset, {
-      title: 'Venice Lagoon',
-      targetDate: '25 Aug 2026',
-      priorDate: '24 Aug 2026',
-      target: veniceTarget,
-      prior: venicePrior,
-      mask: veniceMask
+    plateau: preparePlace(dataset, {
+      title: 'Colorado Plateau, Utah',
+      targetDate: '29 Jul 2026',
+      priorDate: '27 Jul 2026',
+      target: plateauTarget,
+      prior: plateauPrior,
+      mask: plateauMask
     })
   };
-  const {width, height} = oahuTarget;
+  if (
+    plateauTarget.width !== pilbaraTarget.width ||
+    plateauTarget.height !== pilbaraTarget.height
+  ) {
+    throw new Error('sentinel-cloud-repair places must share one grid size');
+  }
+  const {width, height} = pilbaraTarget;
   const cellCount = width * height;
   const {device} = ctx;
   const resources = new SpatialAnalysisResources(device, 'neural-growth');
@@ -211,8 +217,6 @@ export async function createResidualRepair(
   let active = places[ctx.options.place];
   const stateA = upload('state-a', active.state);
   const stateB = upload('state-b', active.state);
-  const coefficients = upload('coefficients', getFrontierResidualDiffusionCoefficients());
-  const habitat = upload('habitat', new Float32Array(cellCount).fill(1));
   const prior = upload('prior', active.priorValues);
   const cloudyDisplay = upload('cloudy-display', active.cloudyDisplay);
   const naiveDisplay = upload('naive-display', active.naiveDisplay);
@@ -231,9 +235,7 @@ export async function createResidualRepair(
         width,
         height,
         state: importGraphBuffer(graph, `${id}-state`, input, 'float32', cellCount * 4),
-        coefficients: importGraphBuffer(graph, `${id}-coefficients`, coefficients, 'float32', 212),
         parameters: parameters.importToGraph(graph),
-        habitat: importGraphBuffer(graph, `${id}-habitat`, habitat, 'float32', cellCount),
         prior: importGraphBuffer(graph, `${id}-prior`, prior, 'float32', cellCount * 3),
         nextState: importGraphBuffer(graph, `${id}-next`, output, 'float32', cellCount * 4),
         display: importGraphBuffer(graph, `${id}-display`, display, 'uint32', cellCount),
@@ -250,7 +252,15 @@ export async function createResidualRepair(
 
   const updateReadouts = () => {
     ctx.setReadout('iterations', generation);
-    ctx.setReadout('cloud', `${((active.maskedPixels / cellCount) * 100).toFixed(1)}%`);
+    const percent = (pixels: number) => `${((pixels / cellCount) * 100).toFixed(1)}%`;
+    ctx.setReadout(
+      'cloud',
+      `${percent(active.maskedPixels)} (${percent(active.cloudPixels)} cloud · ${percent(active.shadowPixels)} shadow · ${percent(active.guardedPixels)} guard)`
+    );
+    ctx.setReadout(
+      'style',
+      `${active.style.sampleCount.toLocaleString()} clear pairs · RGB gains ${active.style.gain.map(value => value.toFixed(2)).join(' / ')}`
+    );
     ctx.setReadout('image', `${active.title} · ${active.targetDate} / ${active.priorDate}`);
   };
   const reset = () => {
@@ -267,18 +277,14 @@ export async function createResidualRepair(
     naiveDisplay.write(active.naiveDisplay);
     referenceDisplay.write(active.priorDisplay);
     reset();
-    if (moveCamera) ctx.fitBounds(active.target.bounds, {transitionMs: 700, maxZoom: 13.6});
+    if (moveCamera) ctx.fitBounds(active.target.bounds, {transitionMs: 700, maxZoom: 12});
     ctx.requestLayers();
   };
 
-  ctx.setReadout(
-    'coefficients',
-    `${getFrontierResidualDiffusionCoefficients().byteLength} bytes · fixed`
-  );
   ctx.setReadout('cells', cellCount);
   updateReadouts();
   ctx.setStatus(
-    'Cloud mask and dated observations are resident; residual diffusion is deterministic.'
+    'Current-day colour fit and guarded mask are ready; GPU diffusion refines local seams.'
   );
 
   return {
@@ -287,10 +293,7 @@ export async function createResidualRepair(
       if (!ctx.options.play || ctx.options.display !== 'diffusion') return;
       parameters.write(
         getFrontierResidualDiffusionParameterValues({
-          stepScale: ctx.options.stepScale,
-          mutation: 0,
-          damping: 0,
-          generation
+          stepScale: ctx.options.stepScale
         })
       );
       for (let step = 0; step < STEPS_PER_FRAME; step++) {

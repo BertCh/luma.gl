@@ -13,15 +13,15 @@ export default defineScene<ResidualRepairOptions>({
   chapter: 'raster',
   order: 20,
   summary:
-    'Repair Sentinel-2 cloud masks over Oʻahu or Venice with deterministic GPU diffusion. Clear target pixels pin the observed target-minus-prior residual; a fixed four-neighbor Laplacian propagates that residual into masked pixels. No parameters are learned.',
+    'Repair cloud and cloud-shadow masks in Sentinel-2 scenes of the Pilbara or the Colorado Plateau with deterministic GPU diffusion. A robust colour-and-contrast fit matches the older image to clear current-day pixels. A guarded mask excludes cloud fringes; coarse local colour estimates initialize the holes before a fixed GPU Laplacian refines their seams.',
   contributors: ['FrontierResidualDiffusion'],
   datasets: [
     {
       id: 'sentinel-cloud-repair',
-      role: 'two natural-colour cloudy/clear Sentinel-2 pairs with official scene-classification masks'
+      role: 'two natural-colour cloudy/clear Sentinel-2 pairs with cloud-probability and projected-shadow masks'
     }
   ],
-  initialView: {longitude: -157.71496, latitude: 21.33493, zoom: 12.55},
+  initialView: {longitude: 118.355, latitude: -22.066, zoom: 10.3},
   basemap: ground('paperCity'),
   furniture: {
     title: {
@@ -39,17 +39,17 @@ export default defineScene<ResidualRepairOptions>({
       label: 'Place',
       group: 'Observation pair',
       apply: 'param',
-      default: 'oahu',
+      default: 'pilbara',
       options: [
         {
-          value: 'oahu',
-          label: 'Waimānalo, Oʻahu',
-          help: 'Eight-month prior; vegetation and illumination changed.'
+          value: 'pilbara',
+          label: 'Hamersley Range, Pilbara',
+          help: 'Wet-season cumulus over red earth; clear prior five days earlier.'
         },
         {
-          value: 'venice',
-          label: 'Venice Lagoon',
-          help: 'One-day prior; less temporal separation than the Oʻahu pair.'
+          value: 'plateau',
+          label: 'Colorado Plateau, Utah',
+          help: 'Monsoon cumulus over canyon country; clear prior two days earlier.'
         }
       ],
       help: 'Switches all resident image, prior and mask buffers, then moves the camera.'
@@ -76,7 +76,7 @@ export default defineScene<ResidualRepairOptions>({
       group: 'Residual diffusion',
       apply: 'param',
       default: true,
-      help: 'Runs four deterministic four-neighbor diffusion updates per frame while the residual repair is visible.'
+      help: 'Runs 16 deterministic four-neighbor diffusion updates per frame while the residual repair is visible.'
     },
     {
       kind: 'slider',
@@ -88,14 +88,14 @@ export default defineScene<ResidualRepairOptions>({
       max: 1,
       step: 0.05,
       default: 0.8,
-      help: 'How quickly the target-minus-prior colour residual propagates across masked pixels.'
+      help: 'How quickly local colour differences refine the already style-matched fill.'
     },
     {
       kind: 'button',
       id: 'restart',
       label: 'Restart diffusion',
       group: 'Residual diffusion',
-      help: 'Restores the mean-residual initialization so the diffusion and naive results can be compared again.'
+      help: 'Restores the current-day colour fit and coarse local residual initialization so the diffusion and naive results can be compared again.'
     },
     {
       kind: 'slider',
@@ -113,10 +113,10 @@ export default defineScene<ResidualRepairOptions>({
     {
       id: 'clouds',
       title: 'Two real cloudy observations',
-      headline: 'Clouds hide Oʻahu ridges and Venice docks',
+      headline: 'Cumulus and their shadows hide red earth and canyons',
       textAlternative:
-        'A natural-colour Sentinel-2 target crop shows cloud-obscured terrain at 10 metres per pixel.',
-      body: 'Choose **Waimānalo, Oʻahu** or **Venice Lagoon**. Each view is a natural-colour, 512 × 512 Sentinel‑2 Level‑2A crop covering **5.12 km** at **10 metres per pixel**. These are observed clouds—not a painted circular hole. The target Scene Classification Layer marks cloud, cirrus, shadow, uncertainty and defective pixels, then a one-cell halo catches mixed cloud edges.',
+        'A natural-colour Sentinel-2 crop shows scattered white cumulus and black cloud shadows over red desert terrain.',
+      body: 'Choose **Hamersley Range, Pilbara** (25.6 km across) or **Colorado Plateau, Utah** (20.5 km). Each is a natural-colour 1536 × 1536 Sentinel‑2 Level‑2A crop of observed fair-weather cumulus, not a painted hole. The mask follows the standard s2cloudless-style recipe: Sen2Cor **cloud probability ≥ 50 %**, plus **cloud shadow** where NIR is dark inside the cloud footprint projected away from the sun. Because a clear prior exists a few days earlier, two multitemporal checks refine it: thin fringes count as cloud where blue brightened since the prior, and shadow requires NIR to drop below 70 % of the prior. The dataset includes a 100 m buffer. At runtime, large colour mismatches within 48 pixels of that mask are also excluded, followed by a six-pixel guard around the repair boundary. This heuristic can also mask genuine date-to-date changes near clouds.',
       options: {display: 'cloudy'},
       controls: ['place', 'display'],
       readouts: ['image', 'cloud']
@@ -127,21 +127,21 @@ export default defineScene<ResidualRepairOptions>({
       headline: 'The baseline copies prior pixels inside the mask',
       textAlternative:
         'Masked target pixels show the older clear observation; unmasked pixels retain target-date colour.',
-      body: '**Naive older-image paste** copies the prior observation where the SCL mask is invalid and leaves every clear target pixel unchanged. Venice uses the previous day. Oʻahu uses an observation acquired eight months earlier, increasing exposure to changes in water colour, vegetation and illumination.',
+      body: '**Naive older-image paste** copies the prior observation inside the cloud and shadow mask and leaves every clear target pixel unchanged. The Pilbara prior is five days older and the Colorado Plateau prior two days older; wet-season greening, rain-darkened soil and a different sun angle can still leave visible seams.',
       options: {display: 'naive'},
       controls: ['display', 'place'],
       readouts: ['cloud']
     },
     {
       id: 'diffusion',
-      title: 'Diffuse observed residuals into the mask',
-      headline: 'A fixed Laplacian propagates date-to-date colour residuals',
+      title: 'Match current-day style, then refine the seams',
+      headline: 'Clear current-day pixels set the colour and contrast',
       textAlternative:
         'Masked pixels show the prior image plus an iteratively diffused RGB residual; observed target pixels remain fixed.',
-      body: 'Switch to **Residual diffusion repair**. Each clear target pixel stores its observed target-minus-prior RGB residual and confidence 1; these values remain fixed. Masked pixels start at the scene-wide mean residual and confidence 0. Each GPU update adds 0.24 times the four-neighbor Laplacian, scaled by **Repair rate**, to all four channels. This is a deterministic finite-difference rule with fixed coefficients, not a trained model. The display adds the resulting RGB residual to the older clear image.',
+      body: 'Switch to **Residual diffusion repair**. A robust paired RGB fit estimates current-day colour gain and offset from clear pixels away from clouds, rejecting saturated pixels and outliers. The older image keeps its detail but takes on that colour and contrast. Reliable local residuals are averaged on a coarse grid and interpolated into holes, so large cloud interiors start with a local style estimate. A direct four-neighbor GPU Laplacian then refines the RGB residual at full resolution, scaled by **Repair rate**. The observation flag stays fixed: repaired pixels never become colour references. This is deterministic colour matching and diffusion, not a trained neural model.',
       options: {display: 'diffusion'},
       controls: ['display', 'play', 'stepScale', 'restart'],
-      readouts: ['iterations', 'coefficients']
+      readouts: ['iterations', 'style']
     },
     {
       id: 'compare',
@@ -149,30 +149,30 @@ export default defineScene<ResidualRepairOptions>({
       headline: 'Boundary continuity does not validate hidden content',
       textAlternative:
         'Residual diffusion and direct prior substitution reuse the same older detail; no target-date reference is available under cloud.',
-      body: 'Toggle between **Residual diffusion repair** and **Naive older-image paste** after the iteration count rises. Diffusion transfers the observed surrounding residual into the mask; the naive result uses the unadjusted historical measurement. No target-date reference exists under the cloud, so this comparison cannot measure reconstruction accuracy or recover changes that occurred while hidden. Use **Older clear reference** to inspect the detail both methods reuse.',
+      body: 'Toggle between **Residual diffusion repair** and **Naive older-image paste** after the iteration count rises. The repair starts with current-day colour and contrast throughout each hole, then diffusion refines local continuity at its edges. Both methods use the same expanded repair mask; the naive result uses the unadjusted historical measurement. No target-date reference exists under the cloud, so this comparison cannot measure reconstruction accuracy or recover changes that occurred while hidden. Use **Older clear reference** to inspect the detail both methods reuse.',
       controls: ['display', 'place'],
       readouts: ['iterations', 'image']
     }
   ],
   legends: () => [],
   readouts: [
-    {id: 'coefficients', label: 'Fixed coefficient matrix', format: 'text'},
+    {id: 'style', label: 'Current-day colour fit', format: 'text'},
     {id: 'iterations', label: 'Diffusion iterations', format: 'integer'},
     {id: 'cloud', label: 'Masked pixels', format: 'text'},
     {id: 'cells', label: 'Pixels per pass', format: 'integer'},
     {id: 'image', label: 'Observation pair', format: 'text'}
   ],
   snippet:
-    state => `// Fixed coefficients implement 0.24 × the four-neighbor Laplacian; no training occurs.
+    state => `// Robust current-day colour fit + coarse residual initialization precede GPU refinement.
 const diffusion = new FrontierResidualDiffusion({
-  width, height, state, nextState, coefficients, parameters, habitat, prior, display
+  width, height, state, nextState, parameters, prior, display
 });
 parameters.write(getFrontierResidualDiffusionParameterValues({
-  stepScale: ${state.stepScale}, mutation: 0, damping: 0
+  stepScale: ${state.stepScale}
 }));`,
   about: {
-    what: 'A deterministic cellular residual-diffusion rule repairs pixels flagged by Sentinel‑2 scene classification using a registered older clear observation.',
-    why: 'The paired observations expose the contribution of residual diffusion relative to direct prior-image substitution. The operation is reproducible and contains no learned parameters.',
+    what: 'A deterministic cellular residual-diffusion rule repairs pixels flagged as cloud or cloud shadow using a registered older clear observation.',
+    why: 'The paired observations expose the contribution of residual diffusion relative to direct prior-image substitution. The colour fit is estimated from clear paired pixels; the diffusion rule is fixed and reproducible.',
     howToRead:
       'The cloudy image and dated prior are observed. Cloud-masked target pixels do not contribute colour. The repaired output is older detail plus a spatially diffused residual; target-date content hidden by cloud is not observed or validated.'
   },
