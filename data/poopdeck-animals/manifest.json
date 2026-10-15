@@ -1,0 +1,168 @@
+{
+ "id": "poopdeck-animals",
+ "version": 1,
+ "kind": "trajectories",
+ "count": 101,
+ "bbox": [
+  -17.293375853395617,
+  6.759220265900112,
+  15.781169601149855,
+  58.28295095220986
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 102
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 226492
+  },
+  "timestamp": {
+   "file": "timestamp.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 226492,
+   "unit": "seconds since 2024-01-01T00:00:00Z (multi-year tracks folded onto calendar 2024)"
+  },
+  "species": {
+   "file": "species.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 101,
+   "categories": [
+    "Circus aeruginosus",
+    "Circus pygargus",
+    "Platalea leucorodia"
+   ]
+  },
+  "individual": {
+   "file": "individual.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 101,
+   "categories": [
+    "5325667",
+    "5327085",
+    "5336455",
+    "5446465",
+    "H171693",
+    "H173481",
+    "H183710",
+    "H185298",
+    "H197169",
+    "H200726",
+    "H209700",
+    "L143451",
+    "L143457",
+    "L143467",
+    "L143472",
+    "L143473",
+    "L174747",
+    "L177801",
+    "L177802",
+    "L177819",
+    "L177820",
+    "L177824",
+    "L177825",
+    "Arnhem 3806.696",
+    "E186488",
+    "E404978",
+    "E448932",
+    "E456565",
+    "E459160",
+    "E464110",
+    "E491304",
+    "E491305",
+    "B6918",
+    "B6926",
+    "B6927",
+    "B8453",
+    "B8454",
+    "B8457",
+    "B8462",
+    "B8470",
+    "Y0089",
+    "Y0095"
+   ]
+  },
+  "year": {
+   "file": "year.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 101,
+   "unit": "segment: 1 = first tagged year of the animal"
+  },
+  "source": {
+   "file": "source.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 101,
+   "categories": [
+    "MH_WATERLAND",
+    "H_GRONINGEN",
+    "MH_ANTWERPEN",
+    "BOP_RODENT",
+    "SPOONBILL_VLAANDEREN"
+   ]
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1704067200000,
+  "fixes": 226492,
+  "rawFixes": 486298,
+  "minGapSeconds": 6600,
+  "note": "One track per animal-year (organism + segment). Years are folded onto calendar 2024 by the archive, so a track is one animal in one tagged year; all years of an animal overlap in time.",
+  "datasets": [
+   {
+    "short": "MH_WATERLAND",
+    "gbifKey": "66e0553e-75f6-49de-b614-22efd9fbf6e9",
+    "doi": "10.5281/zenodo.10053583",
+    "species": "Circus aeruginosus",
+    "license": "CC0-1.0",
+    "publisher": "Research Institute for Nature and Forest (INBO)"
+   },
+   {
+    "short": "H_GRONINGEN",
+    "gbifKey": "5124534e-2d9c-46b7-a857-e0012821526b",
+    "doi": "10.5281/zenodo.10053658",
+    "species": "Circus aeruginosus",
+    "license": "CC0-1.0",
+    "publisher": "Research Institute for Nature and Forest (INBO)"
+   },
+   {
+    "short": "MH_ANTWERPEN",
+    "gbifKey": "e347ea47-db3f-4c47-8771-ea562330382c",
+    "doi": "10.5281/zenodo.10054153",
+    "species": "Circus aeruginosus",
+    "license": "CC0-1.0",
+    "publisher": "Research Institute for Nature and Forest (INBO)"
+   },
+   {
+    "short": "BOP_RODENT",
+    "gbifKey": "e2fb42ca-e408-4aa2-a7bd-a9bb4ddcc83a",
+    "doi": "10.5281/zenodo.17310324",
+    "species": "Circus pygargus",
+    "license": "CC0-1.0",
+    "publisher": "Research Institute for Nature and Forest (INBO)"
+   },
+   {
+    "short": "SPOONBILL_VLAANDEREN",
+    "gbifKey": "6850e626-46fd-4843-a391-2c06b069a940",
+    "doi": "10.5281/zenodo.23103735",
+    "species": "Platalea leucorodia",
+    "license": "CC0-1.0",
+    "publisher": "Research Institute for Nature and Forest (INBO)"
+   }
+  ],
+  "source": {
+   "archive": "https://tiles.poopdeck.gl/data/animals/manifest.json",
+   "gbif": "https://api.gbif.org/v1/dataset/<key>"
+  }
+ }
+}

@@ -1,0 +1,1 @@
+import{n as e}from"./gpu-vector-format-zKtof1xn.js";function t(t,n,r,i,a){let o=e(i).byteLength,s=t.importBuffer({id:n,byteLength:r.byteLength,usage:r.usage},r);return t.createDataView(s,{format:i,length:a??Math.floor(r.byteLength/o)})}function n(e,t){let n=e.createCommandEncoder({id:`${t.id}-encoder`});t.encode(n,{parameters:void 0}),e.submit(n.finish())}export{n,t};

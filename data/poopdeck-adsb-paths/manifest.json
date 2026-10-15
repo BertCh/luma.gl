@@ -1,0 +1,61 @@
+{
+  "id": "poopdeck-adsb-paths",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 38135,
+  "bbox": [
+    -124.9999173553719,
+    25.000945921667267,
+    -65.00110492274523,
+    49.99998922026592
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "length": 38136
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 454800
+    },
+    "timestamp": {
+      "file": "time.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2020-01-06T00:00:00.000Z",
+      "length": 454800
+    },
+    "altitude": {
+      "file": "altitude.bin",
+      "dtype": "uint16",
+      "unit": "metres above mean sea level (barometric, from feet)",
+      "length": 454800
+    },
+    "groundSpeed": {
+      "file": "groundSpeed.bin",
+      "dtype": "uint8",
+      "unit": "units of 3 knots (value x 3 = knots), ground speed as reported by the aircraft (ADS-B velocity message)",
+      "length": 454800
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1578268800000,
+    "timeRangeMs": [
+      1578268800000,
+      1578355190000
+    ],
+    "vertexCount": 454800,
+    "day": "2020-01-06 (Monday)",
+    "toleranceMeters": 10000,
+    "maxStepSeconds": 600,
+    "pingsBeforeSimplification": 3488095,
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/flights/manifest.json",
+      "name": "flights-new",
+      "note": "state vectors grouped by icao24; ground pings dropped; flights split at ping gaps > splitGap seconds"
+    }
+  }
+}

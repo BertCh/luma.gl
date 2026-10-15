@@ -1,0 +1,425 @@
+{
+ "id": "dixie-fire",
+ "version": 1,
+ "kind": "raster",
+ "count": 562500,
+ "bbox": [
+  -121.08993894007818,
+  40.103921542233465,
+  -120.90991598607712,
+  40.235939588107
+ ],
+ "crs": "EPSG:32610",
+ "raster": {
+  "width": 750,
+  "height": 750,
+  "bounds": [
+   -121.08993894007818,
+   40.103921542233465,
+   -120.90991598607712,
+   40.235939588107
+  ],
+  "boundsProjected": [
+   662800.0,
+   4441040.0,
+   677800.0,
+   4456040.0
+  ],
+  "projection": "EPSG:32610",
+  "cellSizeM": 20.0,
+  "file": "dem.png",
+  "encoding": "terrarium",
+  "noData": null,
+  "unit": "m",
+  "verticalQuantisationM": 0.5
+ },
+ "rasters": {
+  "dem": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "dem.png",
+   "encoding": "terrarium",
+   "unit": "m",
+   "description": "AWS Terrarium (3DEP ~10 m) bilinearly resampled to the 20 m grid"
+  },
+  "red_before": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B04_before.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B04",
+   "date": "2021-07-13",
+   "scene": "S2B_10TFK_20210713_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "nir_before": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B08_before.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B08",
+   "date": "2021-07-13",
+   "scene": "S2B_10TFK_20210713_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "swir22_before": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B12_before.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B12",
+   "date": "2021-07-13",
+   "scene": "S2B_10TFK_20210713_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "red_after": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B04_after.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B04",
+   "date": "2021-09-21",
+   "scene": "S2B_10TFK_20210921_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "nir_after": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B08_after.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B08",
+   "date": "2021-09-21",
+   "scene": "S2B_10TFK_20210921_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "swir22_after": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "B12_after.bin",
+   "encoding": "uint16-bin",
+   "dtype": "uint16",
+   "scale": 0.0001,
+   "offset": 0,
+   "noData": 0,
+   "band": "B12",
+   "date": "2021-09-21",
+   "scene": "S2B_10TFK_20210921_0_L2A",
+   "description": "surface reflectance x 10000 (L2A, baseline 03.01, no BOA offset)"
+  },
+  "scl_before": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "scl_before.png",
+   "encoding": "uint8-classes",
+   "date": "2021-07-13",
+   "classes": {
+    "0": "no data",
+    "1": "saturated",
+    "2": "dark area",
+    "3": "cloud shadow",
+    "4": "vegetation",
+    "5": "not vegetated",
+    "6": "water",
+    "7": "unclassified",
+    "8": "cloud medium",
+    "9": "cloud high",
+    "10": "thin cirrus",
+    "11": "snow"
+   },
+   "cloudMaskClasses": [
+    3,
+    8,
+    9,
+    10
+   ]
+  },
+  "scl_after": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "scl_after.png",
+   "encoding": "uint8-classes",
+   "date": "2021-09-21",
+   "classes": {
+    "0": "no data",
+    "1": "saturated",
+    "2": "dark area",
+    "3": "cloud shadow",
+    "4": "vegetation",
+    "5": "not vegetated",
+    "6": "water",
+    "7": "unclassified",
+    "8": "cloud medium",
+    "9": "cloud high",
+    "10": "thin cirrus",
+    "11": "snow"
+   },
+   "cloudMaskClasses": [
+    3,
+    8,
+    9,
+    10
+   ]
+  },
+  "worldcover": {
+   "width": 750,
+   "height": 750,
+   "bounds": [
+    -121.08993894007818,
+    40.103921542233465,
+    -120.90991598607712,
+    40.235939588107
+   ],
+   "boundsProjected": [
+    662800.0,
+    4441040.0,
+    677800.0,
+    4456040.0
+   ],
+   "projection": "EPSG:32610",
+   "cellSizeM": 20.0,
+   "file": "worldcover.png",
+   "encoding": "uint8-classes",
+   "classes": {
+    "10": "Tree cover",
+    "20": "Shrubland",
+    "30": "Grassland",
+    "40": "Cropland",
+    "50": "Built-up",
+    "60": "Bare / sparse vegetation",
+    "70": "Snow and ice",
+    "80": "Permanent water bodies",
+    "90": "Herbaceous wetland",
+    "95": "Mangroves",
+    "100": "Moss and lichen"
+   },
+   "description": "ESA WorldCover 2021 v200, mode-resampled from 10 m"
+  }
+ },
+ "properties": {
+  "attribution": "Contains modified Copernicus Sentinel data 2021 (ESA); ESA WorldCover 2021 (c) ESA, CC BY 4.0; terrain: AWS Terrain Tiles / USGS 3DEP",
+  "origin": "upper-left; rows run north to south; grid is EPSG:32610 (UTM 10N), 20 m, so analyses can use uniform cell size 20 m",
+  "greenvilleGridRowCol": [
+   538,
+   587
+  ],
+  "validation": {
+   "meanDNBR": 0.4887588890673772,
+   "maxDNBR": 1.5759117896522477,
+   "fractionAbove": {
+    "dNBR>0.1 (low+)": 0.7706635912878504,
+    "dNBR>0.27 (moderate-low+)": 0.6343395944344186,
+    "dNBR>0.66 (high)": 0.38791240865519805
+   },
+   "meanDNDVI": 0.29645433905458707,
+   "note": "dNBR = NBR_before - NBR_after, NBR = (B08-B12)/(B08+B12), reflectance = DN/10000; GPU results should match within float32 rounding.",
+   "burnedFractionByWorldCover(dNBR>0.27)": {
+    "Tree cover": 0.6642040942466954,
+    "Grassland": 0.307799067041906,
+    "Cropland": 0.2737752161383285,
+    "Built-up": 0.2302839116719243,
+    "Bare / sparse vegetation": 0.03841387856257745,
+    "Permanent water bodies": 0.38538877143528305
+   }
+  },
+  "sceneStats": {
+   "before": {
+    "scene": "S2B_10TFK_20210713_0_L2A",
+    "date": "2021-07-13",
+    "cloudOrShadowFraction": 3.3777777777777776e-05,
+    "validFraction": 0.9995093333333334,
+    "meanNDVI": 0.6318475366994238,
+    "meanNBR": 0.36764674485226356,
+    "sclHistogram": {
+     "0": 2,
+     "2": 326,
+     "4": 493700,
+     "5": 48225,
+     "6": 19351,
+     "7": 877,
+     "8": 7,
+     "9": 12
+    }
+   },
+   "after": {
+    "scene": "S2B_10TFK_20210921_0_L2A",
+    "date": "2021-09-21",
+    "cloudOrShadowFraction": 6.577777777777777e-05,
+    "validFraction": 0.9993742222222223,
+    "meanNDVI": 0.3355919947620252,
+    "meanNBR": -0.1208946305460456,
+    "sclHistogram": {
+     "2": 93714,
+     "3": 36,
+     "4": 104006,
+     "5": 324782,
+     "6": 19377,
+     "7": 20584,
+     "8": 1
+    }
+   }
+  },
+  "worldCoverShare": {
+   "Tree cover": 0.908896,
+   "Grassland": 0.046113777777777774,
+   "Cropland": 0.0012337777777777779,
+   "Built-up": 0.0033813333333333334,
+   "Bare / sparse vegetation": 0.0014346666666666668,
+   "Permanent water bodies": 0.03893866666666667,
+   "Herbaceous wetland": 1.7777777777777777e-06
+  },
+  "storyNotes": [
+   "Window 15 km x 15 km at 20 m centred near Greenville CA; before = 2021-07-13 (S2B), after = 2021-09-21 (S2B), both under 0.01% cloud in the window.",
+   "The Dixie Fire ignited 2021-07-13 near Cresta Dam, destroyed Greenville on 2021-08-04 and burned ~963,000 acres (second largest California fire on record); the pre date is the day it started.",
+   "63% of valid window pixels exceed dNBR 0.27 (moderate-low severity or worse); mean dNBR 0.49.",
+   "Mean NDVI falls from 0.63 to 0.34; Greenville (grid row/col 538,587) lies inside the burn.",
+   "WorldCover shows conifer tree cover dominating with grass/shrub in Indian Valley: zonal dNBR per class and slope-dependent debris-flow suitability are natural follow-ups.",
+   "Same grid for every layer: no reprojection needed to combine DEM, WorldCover and bands."
+  ]
+ }
+}

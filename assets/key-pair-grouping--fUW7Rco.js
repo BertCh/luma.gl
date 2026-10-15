@@ -1,0 +1,14 @@
+import{w as e}from"./resources-CwvhEOBe.js";import{t}from"./gpu-scan-BuGhTLDQ.js";import{t as n}from"./gpu-sort-Bl3Dztdb.js";import{s as r}from"./wgsl-kernel-nodes-Bm5c4bxp.js";var i=4294967295;function a(e){return 3*e+1}function o(t,i,a,o,s,c,l){let u=e(t,`${i}-item-ids`,`uint32`,o),d=e(t,`${i}-sorted-low`,`uint32`,o),f=e(t,`${i}-low-order`,`uint32`,o),p=e(t,`${i}-gathered-high`,`uint32`,o),m=e(t,`${i}-sorted-high`,`uint32`,o),h=e(t,`${i}-sorted-items`,`uint32`,o);return{nodes:[r(t,{id:`${i}-iota`,operation:a,variant:`iota`,bindings:[{name:`itemIds`,view:u,type:`u32`,access:`read_write`}],invocationCount:o,body:`itemIds[itemIdsOffset + index] = index;`}),...new n({id:`${i}-sort-low`,keys:c,values:u,outputKeys:d,outputValues:f,keyBits:l?.low}).getCommandNodes(t),r(t,{id:`${i}-gather-high`,operation:a,variant:`gather-high`,bindings:[{name:`keyHigh`,view:s,type:`u32`,access:`read`},{name:`lowOrder`,view:f,type:`u32`,access:`read`},{name:`gatheredHigh`,view:p,type:`u32`,access:`read_write`}],invocationCount:o,body:`gatheredHigh[gatheredHighOffset + index] = keyHigh[keyHighOffset + lowOrder[lowOrderOffset + index]];`}),...new n({id:`${i}-sort-high`,keys:p,values:f,outputKeys:m,outputValues:h,keyBits:l?.high}).getCommandNodes(t)],sortedItems:h}}function s(n,a,o,s,c,l,u){let d=e(n,`${a}-run-flags`,`uint32`,s),f=e(n,`${a}-group-index`,`uint32`,s),p=e(n,`${a}-group-starts`,`uint32`,s+1);return{nodes:[r(n,{id:`${a}-run-flags`,operation:o,variant:`run-flags`,bindings:[{name:`sortedItems`,view:u,type:`u32`,access:`read`},{name:`keyHigh`,view:c,type:`u32`,access:`read`},{name:`keyLow`,view:l,type:`u32`,access:`read`},{name:`flags`,view:d,type:`u32`,access:`read_write`}],invocationCount:s,body:`let item = sortedItems[sortedItemsOffset + index];
+  let high = keyHigh[keyHighOffset + item];
+  let low = keyLow[keyLowOffset + item];
+  var start = index == 0u || (high == ${i}u && low == ${i}u);
+  if (!start) {
+    let previous = sortedItems[sortedItemsOffset + index - 1u];
+    start = high != keyHigh[keyHighOffset + previous] || low != keyLow[keyLowOffset + previous];
+  }
+  flags[flagsOffset + index] = select(0u, 1u, start);`}),...new t({id:`${a}-group-scan`,input:d,output:f,mode:`inclusive`}).getCommandNodes(n),r(n,{id:`${a}-group-starts`,operation:o,variant:`group-starts`,bindings:[{name:`flags`,view:d,type:`u32`,access:`read`},{name:`groupIndex`,view:f,type:`u32`,access:`read`},{name:`groupStarts`,view:p,type:`u32`,access:`read_write`}],invocationCount:s,body:`if (flags[flagsOffset + index] != 0u) {
+    groupStarts[groupStartsOffset + groupIndex[groupIndexOffset + index] - 1u] = index;
+  }
+  if (index + 1u == INVOCATION_COUNT) {
+    groupStarts[groupStartsOffset + groupIndex[groupIndexOffset + index]] = INVOCATION_COUNT;
+  }`})],groupIndex:f,groupStarts:p}}export{o as i,s as n,a as r,i as t};

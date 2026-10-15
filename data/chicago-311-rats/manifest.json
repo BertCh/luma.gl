@@ -1,0 +1,45 @@
+{
+ "id": "chicago-311-rats",
+ "version": 1,
+ "kind": "points",
+ "count": 48636,
+ "bbox": [
+  -87.84616,
+  41.64801,
+  -87.52553,
+  42.02293
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 48636
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 48636,
+   "unit": "seconds since 2023-01-01T00:00:00 (local clock time, stored as if UTC)"
+  },
+  "tract": {
+   "file": "tract.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 48636,
+   "note": "index into chicago-tracts features; 65535 = none"
+  }
+ },
+ "properties": {
+  "description": "Chicago 311 service requests of type \"Rodent Baiting/Rat Complaint\" created in 2023 (server-side filtered), a second point process for bivariate / Knox stories.",
+  "source": "https://data.cityofchicago.org/Service-Requests/311-Service-Requests/v6vf-nfxy",
+  "storyNotes": [
+   "48,636 rodent complaints in 2023.",
+   "Peak month 8 (6,071); quietest 2 (2,408).",
+   "Busiest tract (index 198) logged 455 complaints; complaint counts reflect reporting propensity as well as rats.",
+   "Complaints are residential-address based and are good for testing co-location with other point processes such as wildlife sightings (cross-K, bivariate Moran) at tract level."
+  ]
+ }
+}

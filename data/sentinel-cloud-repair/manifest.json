@@ -1,0 +1,174 @@
+{
+  "id": "sentinel-cloud-repair",
+  "version": 2,
+  "kind": "raster",
+  "count": 2359296,
+  "bbox": [
+    -110.48678363159458,
+    -22.18301573358643,
+    118.48015030713725,
+    36.653154275573904
+  ],
+  "crs": "mixed UTM",
+  "raster": {
+    "width": 1536,
+    "height": 1536,
+    "bounds": [
+      118.2298877951496,
+      -22.18301573358643,
+      118.48015030713725,
+      -21.94974366601438
+    ],
+    "projection": "EPSG:32750",
+    "cellSizeGroundM": 16.666666666666668,
+    "file": "pilbara-cloudy.png",
+    "encoding": "rgba8",
+    "unit": "sRGB",
+    "date": "2026-02-04",
+    "description": "Cloudy Sentinel-2 L2A true-colour observation, Hamersley Range, Pilbara"
+  },
+  "rasters": {
+    "pilbaraPrior": {
+      "width": 1536,
+      "height": 1536,
+      "bounds": [
+        118.2298877951496,
+        -22.18301573358643,
+        118.48015030713725,
+        -21.94974366601438
+      ],
+      "projection": "EPSG:32750",
+      "cellSizeGroundM": 16.666666666666668,
+      "file": "pilbara-prior.png",
+      "encoding": "rgba8",
+      "unit": "sRGB",
+      "date": "2026-01-30",
+      "description": "Earlier clear observation used as the temporal prior"
+    },
+    "pilbaraMask": {
+      "width": 1536,
+      "height": 1536,
+      "bounds": [
+        118.2298877951496,
+        -22.18301573358643,
+        118.48015030713725,
+        -21.94974366601438
+      ],
+      "projection": "EPSG:32750",
+      "cellSizeGroundM": 16.666666666666668,
+      "file": "pilbara-mask.png",
+      "encoding": "uint8-classes",
+      "unit": "cloud mask",
+      "description": "0 clear, 1 cloud, 2 cloud shadow (CLD_20m >= 50 plus projected dark-NIR shadow, buffered)"
+    },
+    "plateauTarget": {
+      "width": 1536,
+      "height": 1536,
+      "bounds": [
+        -110.48678363159458,
+        36.46733068200139,
+        -110.2564390448126,
+        36.653154275573904
+      ],
+      "projection": "EPSG:32612",
+      "cellSizeGroundM": 13.333333333333334,
+      "file": "plateau-cloudy.png",
+      "encoding": "rgba8",
+      "unit": "sRGB",
+      "date": "2026-07-29",
+      "description": "Cloudy Sentinel-2 L2A true-colour observation, Colorado Plateau, Utah"
+    },
+    "plateauPrior": {
+      "width": 1536,
+      "height": 1536,
+      "bounds": [
+        -110.48678363159458,
+        36.46733068200139,
+        -110.2564390448126,
+        36.653154275573904
+      ],
+      "projection": "EPSG:32612",
+      "cellSizeGroundM": 13.333333333333334,
+      "file": "plateau-prior.png",
+      "encoding": "rgba8",
+      "unit": "sRGB",
+      "date": "2026-07-27",
+      "description": "Earlier clear observation used as the temporal prior"
+    },
+    "plateauMask": {
+      "width": 1536,
+      "height": 1536,
+      "bounds": [
+        -110.48678363159458,
+        36.46733068200139,
+        -110.2564390448126,
+        36.653154275573904
+      ],
+      "projection": "EPSG:32612",
+      "cellSizeGroundM": 13.333333333333334,
+      "file": "plateau-mask.png",
+      "encoding": "uint8-classes",
+      "unit": "cloud mask",
+      "description": "0 clear, 1 cloud, 2 cloud shadow (CLD_20m >= 50 plus projected dark-NIR shadow, buffered)"
+    }
+  },
+  "properties": {
+    "source": "Copernicus Sentinel-2 Level-2A Collection 1 via Element 84 Earth Search",
+    "attribution": "Contains modified Copernicus Sentinel data (2026)",
+    "grid": "1536 x 1536",
+    "mask": {
+      "cloudProbabilityThreshold": 50,
+      "darkNirReflectance": 0.15,
+      "darkNirReflectanceWithPrior": 0.2,
+      "shadowNirRatioToPrior": 0.7,
+      "blueBrighteningVsPrior": 0.06,
+      "fringeM": 600,
+      "maxCloudHeightM": 8000,
+      "erodeM": 40,
+      "dilateM": 100,
+      "classes": {
+        "0": "clear",
+        "1": "cloud",
+        "2": "cloud shadow"
+      }
+    },
+    "places": [
+      {
+        "id": "pilbara",
+        "title": "Hamersley Range, Pilbara",
+        "target": "S2B_T50KPA_20260204T021823_L2A",
+        "prior": "S2C_T50KPA_20260130T022322_L2A",
+        "targetDate": "2026-02-04",
+        "priorDate": "2026-01-30",
+        "bounds": [
+          118.2298877951496,
+          -22.18301573358643,
+          118.48015030713725,
+          -21.94974366601438
+        ],
+        "cellSizeGroundM": 16.666666666666668,
+        "cloudPercent": 21.88,
+        "shadowPercent": 16.26,
+        "priorMaskedPercent": 0.028
+      },
+      {
+        "id": "plateau",
+        "title": "Colorado Plateau, Utah",
+        "target": "S2A_T12SWF_20260729T180917_L2A",
+        "prior": "S2C_T12SWF_20260727T180433_L2A",
+        "targetDate": "2026-07-29",
+        "priorDate": "2026-07-27",
+        "bounds": [
+          -110.48678363159458,
+          36.46733068200139,
+          -110.2564390448126,
+          36.653154275573904
+        ],
+        "cellSizeGroundM": 13.333333333333334,
+        "cloudPercent": 28.32,
+        "shadowPercent": 12.93,
+        "priorMaskedPercent": 0.0
+      }
+    ]
+  }
+}

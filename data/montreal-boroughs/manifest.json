@@ -1,0 +1,89 @@
+{
+ "id": "montreal-boroughs",
+ "version": 1,
+ "kind": "polygons",
+ "count": 34,
+ "bbox": [
+  -73.9966,
+  45.3854,
+  -73.47387,
+  45.70758
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 2620
+  },
+  "ringOffsets": {
+   "file": "ringOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 38
+  },
+  "polygonRingOffsets": {
+   "file": "polygonRingOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 37
+  },
+  "partFeature": {
+   "file": "partFeature.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 36
+  }
+ },
+ "geometry": {
+  "type": "polygons",
+  "file": "boroughs.geojson"
+ },
+ "names": [
+  "Ahuntsic-Cartierville",
+  "Anjou",
+  "Baie-D'Urfé",
+  "Beaconsfield",
+  "Côte-Saint-Luc",
+  "Côte-des-Neiges-Notre-Dame-de-Grâce",
+  "Dollard-des-Ormeaux",
+  "Dorval",
+  "Hampstead",
+  "Kirkland",
+  "L'Île-Bizard-Sainte-Geneviève",
+  "L'Île-Dorval",
+  "LaSalle",
+  "Lachine",
+  "Le Plateau-Mont-Royal",
+  "Le Sud-Ouest",
+  "Mercier-Hochelaga-Maisonneuve",
+  "Mont-Royal",
+  "Montréal-Est",
+  "Montréal-Nord",
+  "Montréal-Ouest",
+  "Outremont",
+  "Pierrefonds-Roxboro",
+  "Pointe-Claire",
+  "Rivière-des-Prairies-Pointe-aux-Trembles",
+  "Rosemont-La Petite-Patrie",
+  "Saint-Laurent",
+  "Saint-Léonard",
+  "Sainte-Anne-de-Bellevue",
+  "Senneville",
+  "Verdun",
+  "Ville-Marie",
+  "Villeray-Saint-Michel-Parc-Extension",
+  "Westmount"
+ ],
+ "properties": {
+  "description": "Boroughs (arrondissements) and linked cities of the Montreal agglomeration, simplified to about 25 m. Feature properties: name (exactly as written in the source, NOM), kind, stationBoroughName (the borough string used by the bixi-flows dataset; equal to name where no BIXI station has that borough), areaKm2. Polygon part p owns rings polygonRingOffsets[p]..[p+1]; partFeature maps part to feature.",
+  "source": "Ville de Montreal, Limites administratives de l'agglomeration de Montreal (arrondissements et villes liees), WGS 84 GeoJSON, dataset modified 2023-11-29 (DATEMODIF), downloaded 2026-10-07",
+  "license": "Creative Commons Attribution 4.0 International",
+  "attribution": "Ville de Montréal, données ouvertes (CC BY 4.0)",
+  "simplifyMeters": 25.0,
+  "notes": [
+   "Stations in Laval, Longueuil, Boucherville, Sainte-Julie and Terrebonne lie outside the agglomeration: they have no polygon here."
+  ]
+ }
+}

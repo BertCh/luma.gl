@@ -1,0 +1,134 @@
+{
+  "id": "poopdeck-ecco-currents",
+  "version": 1,
+  "kind": "trajectories",
+  "count": 30000,
+  "bbox": [
+    -179.97470092773438,
+    -79.00834655761719,
+    179.99432373046875,
+    81.2803955078125
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "pathOffsets": {
+      "file": "pathOffsets.bin",
+      "dtype": "uint32",
+      "length": 30001
+    },
+    "vertices": {
+      "file": "vertices.bin",
+      "dtype": "float32",
+      "components": 2,
+      "length": 69921
+    },
+    "startTime": {
+      "file": "startTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2016-12-16T12:00:00.000Z",
+      "length": 30000
+    },
+    "endTime": {
+      "file": "endTime.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2016-12-16T12:00:00.000Z",
+      "length": 30000
+    },
+    "timestamp": {
+      "file": "time.bin",
+      "dtype": "uint32",
+      "unit": "seconds since 2016-12-16T12:00:00.000Z",
+      "length": 69921
+    },
+    "vertexValue": {
+      "file": "vertexValue.bin",
+      "dtype": "float32",
+      "note": "per-vertex scalar, NaN = none",
+      "length": 69921
+    },
+    "speed": {
+      "file": "speed.bin",
+      "dtype": "float32",
+      "length": 30000
+    },
+    "basin": {
+      "file": "basin.bin",
+      "dtype": "uint8",
+      "categories": [
+        "Southern",
+        "Indian",
+        "Pacific",
+        "Atlantic",
+        "Arctic"
+      ],
+      "length": 30000
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1481889600000,
+    "timeRangeMs": [
+      1481889600000,
+      1512993598560
+    ],
+    "vertexCount": 69921,
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/ecco-currents/manifest.json",
+      "name": "ecco-currents",
+      "description": "",
+      "attribution": "",
+      "layer": "default",
+      "exportedFrom": "stt-export.mjs",
+      "zoom": 0,
+      "window": {
+        "bbox": [
+          -180,
+          -90,
+          180,
+          90
+        ],
+        "time": [
+          1481760000000,
+          1512993600000
+        ]
+      },
+      "featuresInWindow": 1443603,
+      "sampled": true
+    },
+    "droppedAttributes": [],
+    "field": {
+      "cellDegrees": 0.5,
+      "kernelSigmaDegrees": 0.5,
+      "minimumWeight": 2.5,
+      "segmentsBinned": 1924764,
+      "segmentsRejected": 0,
+      "validCells": 167548,
+      "cells": 230400,
+      "peakSpeedMetersPerSecond": 0.5993323760139178,
+      "peakAt": [
+        -123.75,
+        1.25
+      ],
+      "planes": [
+        "u (deg lon/day)",
+        "v (deg lat/day)",
+        "weight"
+      ]
+    }
+  },
+  "raster": {
+    "file": "currents.bin",
+    "encoding": "float32-bin",
+    "width": 720,
+    "height": 320,
+    "depth": 3,
+    "bounds": [
+      -180,
+      -80,
+      180,
+      80
+    ],
+    "noData": null,
+    "unit": "degrees per day (u: longitude, v: latitude), plane 2 = kernel weight",
+    "rowOrigin": "north"
+  }
+}

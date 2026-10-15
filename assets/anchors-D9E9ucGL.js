@@ -1,0 +1,1 @@
+import{n as e}from"./earth-xB16XgAa.js";import{n as t}from"./polygon-mesh-48KB9j_1.js";var n=e;Math.PI/180*n;function r(e,t){let r=Math.PI/180,i=(t[1]-e[1])*r,a=(t[0]-e[0])*r,o=Math.sin(i/2)**2+Math.cos(e[1]*r)*Math.cos(t[1]*r)*Math.sin(a/2)**2;return 2*n*Math.asin(Math.min(1,Math.sqrt(o)))}function i(e){return t({type:`Polygon`,coordinates:e})}export{r as n,i as t};

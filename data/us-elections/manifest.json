@@ -1,0 +1,355 @@
+{
+ "id": "us-elections",
+ "version": 1,
+ "kind": "table",
+ "count": 3109,
+ "crs": "EPSG:4326",
+ "bbox": [
+  -124.7258,
+  24.4981,
+  -66.9499,
+  49.3844
+ ],
+ "columns": {
+  "demShare2000": {
+   "file": "demShare2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2000",
+   "unit": "fraction"
+  },
+  "repShare2000": {
+   "file": "repShare2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2000",
+   "unit": "fraction"
+  },
+  "demTwoParty2000": {
+   "file": "demTwoParty2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2000",
+   "unit": "fraction"
+  },
+  "totalVotes2000": {
+   "file": "totalVotes2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2000",
+   "unit": "votes"
+  },
+  "turnoutProxy2000": {
+   "file": "turnoutProxy2000.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2004": {
+   "file": "demShare2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2004",
+   "unit": "fraction"
+  },
+  "repShare2004": {
+   "file": "repShare2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2004",
+   "unit": "fraction"
+  },
+  "demTwoParty2004": {
+   "file": "demTwoParty2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2004",
+   "unit": "fraction"
+  },
+  "totalVotes2004": {
+   "file": "totalVotes2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2004",
+   "unit": "votes"
+  },
+  "turnoutProxy2004": {
+   "file": "turnoutProxy2004.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2008": {
+   "file": "demShare2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2008",
+   "unit": "fraction"
+  },
+  "repShare2008": {
+   "file": "repShare2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2008",
+   "unit": "fraction"
+  },
+  "demTwoParty2008": {
+   "file": "demTwoParty2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2008",
+   "unit": "fraction"
+  },
+  "totalVotes2008": {
+   "file": "totalVotes2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2008",
+   "unit": "votes"
+  },
+  "turnoutProxy2008": {
+   "file": "turnoutProxy2008.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2012": {
+   "file": "demShare2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2012",
+   "unit": "fraction"
+  },
+  "repShare2012": {
+   "file": "repShare2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2012",
+   "unit": "fraction"
+  },
+  "demTwoParty2012": {
+   "file": "demTwoParty2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2012",
+   "unit": "fraction"
+  },
+  "totalVotes2012": {
+   "file": "totalVotes2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2012",
+   "unit": "votes"
+  },
+  "turnoutProxy2012": {
+   "file": "turnoutProxy2012.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2016": {
+   "file": "demShare2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2016",
+   "unit": "fraction"
+  },
+  "repShare2016": {
+   "file": "repShare2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2016",
+   "unit": "fraction"
+  },
+  "demTwoParty2016": {
+   "file": "demTwoParty2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2016",
+   "unit": "fraction"
+  },
+  "totalVotes2016": {
+   "file": "totalVotes2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2016",
+   "unit": "votes"
+  },
+  "turnoutProxy2016": {
+   "file": "turnoutProxy2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2020": {
+   "file": "demShare2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2020",
+   "unit": "fraction"
+  },
+  "repShare2020": {
+   "file": "repShare2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2020",
+   "unit": "fraction"
+  },
+  "demTwoParty2020": {
+   "file": "demTwoParty2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2020",
+   "unit": "fraction"
+  },
+  "totalVotes2020": {
+   "file": "totalVotes2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2020",
+   "unit": "votes"
+  },
+  "turnoutProxy2020": {
+   "file": "turnoutProxy2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "demShare2024": {
+   "file": "demShare2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic share of all votes cast for president, 2024",
+   "unit": "fraction"
+  },
+  "repShare2024": {
+   "file": "repShare2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Republican share of all votes cast for president, 2024",
+   "unit": "fraction"
+  },
+  "demTwoParty2024": {
+   "file": "demTwoParty2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Democratic / (Democratic + Republican) votes, 2024",
+   "unit": "fraction"
+  },
+  "totalVotes2024": {
+   "file": "totalVotes2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Total presidential votes cast in the county, 2024",
+   "unit": "votes"
+  },
+  "turnoutProxy2024": {
+   "file": "turnoutProxy2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Votes cast / 2020 Census resident population (not voting-age population; only comparable across counties within a year, population growth inflates later years)",
+   "unit": "ratio"
+  },
+  "repSwing2012_2016": {
+   "file": "repSwing2012_2016.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Change in Republican two-party share 2012->2016, percentage points (positive = shift to Republican)",
+   "unit": "percentage points"
+  },
+  "repSwing2016_2020": {
+   "file": "repSwing2016_2020.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Change in Republican two-party share 2016->2020, percentage points (positive = shift to Republican)",
+   "unit": "percentage points"
+  },
+  "repSwing2020_2024": {
+   "file": "repSwing2020_2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Change in Republican two-party share 2020->2024, percentage points (positive = shift to Republican)",
+   "unit": "percentage points"
+  },
+  "repSwing2000_2024": {
+   "file": "repSwing2000_2024.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 3109,
+   "description": "Change in Republican two-party share 2000->2024, percentage points (positive = shift to Republican)",
+   "unit": "percentage points"
+  }
+ },
+ "properties": {
+  "alignedTo": "us-counties (same row order, sorted by FIPS)",
+  "years": [
+   2000,
+   2004,
+   2008,
+   2012,
+   2016,
+   2020,
+   2024
+  ],
+  "columnPattern": "demShare<Y>, repShare<Y>, demTwoParty<Y>, totalVotes<Y>, turnoutProxy<Y> for each year, plus repSwing<A>_<B>",
+  "sources": "2000-2020: MIT Election Data and Science Lab, County Presidential Election Returns 2000-2020, Harvard Dataverse, doi:10.7910/DVN/VOQCHQ (CC0 1.0). 2024: MIT Election Data and Science Lab precinct-level returns 2024 (github.com/MEDSL/2024-elections-official; CC0), aggregated to county by scripts/data/us-elections.",
+  "caveats": [
+   "2024 is rebuilt from precinct data and is not the official MEDSL county file; states failing reconciliation against MEDSL state totals are NaN.",
+   "Bedford city VA is folded into Bedford County (2000-2012); Shannon SD is mapped to Oglala Lakota. Alaska and Hawaii are not in us-counties.",
+   "Jackson County MO (29095) is NaN for 2024 (Kansas City reported separately in the source).",
+   "Missing values are NaN."
+  ],
+  "storyNotes": [
+   "2859 of 3109 counties carry 2024 returns (states rejected because MEDSL precinct files are incomplete: AK, IN, LA, NJ, NY); earlier years cover ~3,100.",
+   "County winner changes: 2012->2016 239, 2016->2020 78, 2020->2024 74 of ~2859 comparable counties.",
+   "2020->2024 largest pro-Republican swings among counties with >=50k votes: Webb, TX +12.8 pp; Imperial, CA +12.8 pp; El Paso, TX +10.2 pp; Hidalgo, TX +10.1 pp.",
+   "2020->2024 largest pro-Democratic swings among counties with >=50k votes: Henry, GA -4.6 pp; Douglas, GA -3.1 pp; Kaufman, TX -3.1 pp; Paulding, GA -2.6 pp.",
+   "Median Republican two-party swing 2020->2024 = +1.5 pp; 2016->2020 = -0.6 pp.",
+   "Connecticut is NaN (election returns use 8 legacy counties; us-counties carries 9 planning regions); Broomfield CO is NaN for 2000 (county created 2001)."
+  ]
+ }
+}

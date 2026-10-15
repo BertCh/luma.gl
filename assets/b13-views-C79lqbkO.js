@@ -1,0 +1,1 @@
+import{t as e}from"./graph-buffers-B4_80RlX.js";function t(t,n){let r=new Map;return(i,a,o,s)=>{let c=r.get(i);return c||(c=e(t,`${n}-${i}`,a,o,s),r.set(i,c)),c}}export{t};

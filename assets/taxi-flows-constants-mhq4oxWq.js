@@ -1,0 +1,1 @@
+function e(e){let t=((Math.round(e)+4)%24+24)%24;return`${String(t).padStart(2,`0`)}:00`}export{e as t};

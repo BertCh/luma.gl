@@ -1,0 +1,97 @@
+{
+ "id": "chicago-lodes-od",
+ "version": 1,
+ "kind": "flows",
+ "count": 40000,
+ "bbox": [
+  -87.94025,
+  41.64429,
+  -87.52416,
+  42.02313
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "locations": {
+   "file": "locations.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 791,
+   "note": "tract representative points, order = chicago-tracts features"
+  },
+  "origin": {
+   "file": "origin.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "HOME tract index into locations"
+  },
+  "destination": {
+   "file": "destination.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "WORK tract index into locations"
+  },
+  "count": {
+   "file": "count.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "all jobs (S000)"
+  },
+  "earningsLow": {
+   "file": "earningsLow.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "SE01: <= $1,250/month"
+  },
+  "earningsMid": {
+   "file": "earningsMid.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "SE02: $1,251-$3,333/month"
+  },
+  "earningsHigh": {
+   "file": "earningsHigh.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 40000,
+   "note": "SE03: > $3,333/month"
+  },
+  "wacJobs": {
+   "file": "wacJobs.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 791,
+   "note": "jobs by workplace tract (LODES WAC C000, per tract, length = tracts)"
+  },
+  "residentWorkers": {
+   "file": "residentWorkers.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 791,
+   "note": "workers living in tract (OD main, any IL workplace)"
+  },
+  "sameTractJobs": {
+   "file": "sameTractJobs.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 791,
+   "note": "home=work within tract (excluded from flows)"
+  }
+ },
+ "properties": {
+  "description": "LEHD LODES8 Illinois main OD (JT00, all jobs, 2021) aggregated from blocks to 2020 tract-to-tract flows between the Chicago tracts; the top 40,000 non-self flows by jobs. Origin = home, destination = work. Totals for all tracts are in the per-tract columns.",
+  "licence": "US Census Bureau LEHD LODES, public domain (attribute: U.S. Census Bureau, LEHD Origin-Destination Employment Statistics)",
+  "storyNotes": [
+   "139,015 tract pairs have commuters inside Chicago; the top 40,000 flows keep 80% of inter-tract Chicago-internal jobs.",
+   "Busiest workplace tract: 17031839100 with 314,988 jobs (the Loop / downtown core); 1,322,328 jobs across city tracts.",
+   "Largest single flow: 2,033 workers from tract 17031081800 to 17031839100.",
+   "In kept flows 66% of jobs are high-earning (>$3,333/mo) and 11% low-earning; the earnings split is in the three earnings columns.",
+   "17,255 workers live and work in the same tract (excluded from flows).",
+   "LODES blocks are noise-infused for privacy, so small flows are fuzzed; aggregate to tracts (as here) for stable estimates."
+  ]
+ }
+}

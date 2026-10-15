@@ -1,0 +1,1 @@
+import{t as e}from"./geodesic-wgsl-DS0CJZ42.js";var t=1.2566,n=e;export{n,t};

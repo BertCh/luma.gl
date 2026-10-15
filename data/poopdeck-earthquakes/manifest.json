@@ -1,0 +1,97 @@
+{
+ "id": "poopdeck-earthquakes",
+ "version": 1,
+ "kind": "points",
+ "count": 77231,
+ "bbox": [
+  -179.99969482421875,
+  -82.88369750976562,
+  179.99940490722656,
+  87.38600158691406
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 77231
+  },
+  "timestamp": {
+   "file": "time.bin",
+   "dtype": "uint32",
+   "unit": "seconds since 2020-01-01T00:28:20.000Z",
+   "length": 77231
+  },
+  "depth": {
+   "file": "depth.bin",
+   "dtype": "float32",
+   "length": 77231
+  },
+  "magnitude": {
+   "file": "magnitude.bin",
+   "dtype": "float32",
+   "length": 77231
+  },
+  "mag_band": {
+   "file": "mag_band.bin",
+   "dtype": "uint8",
+   "categories": [
+    "2-M5-6",
+    "1-M4.5-5",
+    "3-M6-7",
+    "4-M7-8",
+    "5-M8+"
+   ],
+   "length": 77231
+  },
+  "type": {
+   "file": "type.bin",
+   "dtype": "uint8",
+   "categories": [
+    "earthquake",
+    "mine collapse",
+    "mining explosion",
+    "volcanic eruption",
+    "landslide"
+   ],
+   "length": 77231
+  }
+ },
+ "properties": {
+  "timeOriginMs": 1577838500000,
+  "timeRangeMs": [
+   1577838500000,
+   1735602989978
+  ],
+  "vertexCount": 77231,
+  "source": {
+   "manifestUrl": "https://tiles.poopdeck.gl/data/earthquakes-v2/manifest.json",
+   "name": "Global earthquakes M4.0+, 2020-2024",
+   "description": "Every magnitude-4.0+ earthquake in the USGS ComCat catalog between 2020-01-01 and 2024-12-30 — 522,982 events, sized by magnitude and banded by magnitude class.",
+   "attribution": "USGS Earthquake Catalog (ComCat) — public domain (US Gov)",
+   "layer": "default",
+   "exportedFrom": "stt-export.mjs",
+   "zoom": 0,
+   "window": {
+    "bbox": [
+     -180,
+     -90,
+     180,
+     90
+    ],
+    "time": [
+     1577836800000,
+     1735689600000
+    ]
+   },
+   "featuresInWindow": 77231,
+   "sampled": false
+  },
+  "droppedAttributes": [
+   "place (44320 distinct strings)",
+   "title (54129 distinct strings)"
+  ],
+  "note": "USGS ComCat events of magnitude 4 and above, 2020-01-01 to 2024-12-30, sorted by time. type is the USGS event type (earthquake, mining explosion, ...). Depths are in km below the datum, some are negative or fixed at 10 km by the contributing network."
+ }
+}

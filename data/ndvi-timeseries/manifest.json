@@ -1,0 +1,179 @@
+{
+ "id": "ndvi-timeseries",
+ "version": 1,
+ "kind": "raster",
+ "count": 1048576,
+ "bbox": [
+  -121.1533904044892,
+  40.05684352180999,
+  -120.84615235333791,
+  40.28215387609911
+ ],
+ "crs": "EPSG:32610",
+ "raster": {
+  "file": "ndvi.bin",
+  "encoding": "uint8-bin",
+  "dtype": "uint8",
+  "width": 256,
+  "height": 256,
+  "depth": 16,
+  "layout": "time-major [t][row][col], row 0 = north",
+  "bounds": [
+   -121.1533904044892,
+   40.05684352180999,
+   -120.84615235333791,
+   40.28215387609911
+  ],
+  "boundsProjected": [
+   657500.0,
+   4435700.0,
+   683100.0,
+   4461300.0
+  ],
+  "projection": "EPSG:32610",
+  "cellSizeM": 100.0,
+  "noData": 0,
+  "unit": "NDVI",
+  "decode": "ndvi = v / 127.5 - 1 for v > 0; v == 0 is cloud/shadow/no data"
+ },
+ "columns": {
+  "days": {
+   "file": "days.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 16,
+   "unit": "days since 2017-01-01"
+  }
+ },
+ "properties": {
+  "dates": [
+   "2017-09-02",
+   "2018-07-29",
+   "2018-08-08",
+   "2019-08-23",
+   "2020-06-03",
+   "2020-08-02",
+   "2021-06-03",
+   "2021-07-13",
+   "2021-09-11",
+   "2021-09-21",
+   "2022-06-23",
+   "2022-08-07",
+   "2023-07-13",
+   "2023-08-02",
+   "2024-06-22",
+   "2024-08-01"
+  ],
+  "scenes": [
+   {
+    "date": "2017-09-02",
+    "scene": "S2B_10TFK_20170902_0_L2A",
+    "validFraction": 0.9826812744140625,
+    "meanNDVI": 0.568501350262104
+   },
+   {
+    "date": "2018-07-29",
+    "scene": "S2B_10TFK_20180729_0_L2A",
+    "validFraction": 1.0,
+    "meanNDVI": 0.4576023810813138
+   },
+   {
+    "date": "2018-08-08",
+    "scene": "S2B_10TFK_20180808_0_L2A",
+    "validFraction": 0.9979705810546875,
+    "meanNDVI": 0.559612266941035
+   },
+   {
+    "date": "2019-08-23",
+    "scene": "S2B_10TFK_20190823_0_L2A",
+    "validFraction": 0.93841552734375,
+    "meanNDVI": 0.6200315750304275
+   },
+   {
+    "date": "2020-06-03",
+    "scene": "S2A_10TFK_20200603_0_L2A",
+    "validFraction": 0.9334564208984375,
+    "meanNDVI": 0.6169147743530483
+   },
+   {
+    "date": "2020-08-02",
+    "scene": "S2A_10TFK_20200802_0_L2A",
+    "validFraction": 0.9438018798828125,
+    "meanNDVI": 0.6198299809317693
+   },
+   {
+    "date": "2021-06-03",
+    "scene": "S2B_10TFK_20210603_0_L2A",
+    "validFraction": 0.9326171875,
+    "meanNDVI": 0.6085013885536916
+   },
+   {
+    "date": "2021-07-13",
+    "scene": "S2B_10TFK_20210713_0_L2A",
+    "validFraction": 0.947509765625,
+    "meanNDVI": 0.5986973908350531
+   },
+   {
+    "date": "2021-09-11",
+    "scene": "S2B_10TFK_20210911_0_L2A",
+    "validFraction": 0.9315185546875,
+    "meanNDVI": 0.3760621818946186
+   },
+   {
+    "date": "2021-09-21",
+    "scene": "S2B_10TFK_20210921_0_L2A",
+    "validFraction": 0.931549072265625,
+    "meanNDVI": 0.387432881361453
+   },
+   {
+    "date": "2022-06-23",
+    "scene": "S2A_10TFK_20220623_0_L2A",
+    "validFraction": 0.959228515625,
+    "meanNDVI": 0.3469132373583441
+   },
+   {
+    "date": "2022-08-07",
+    "scene": "S2B_10TFK_20220807_0_L2A",
+    "validFraction": 0.951171875,
+    "meanNDVI": 0.3621339822924928
+   },
+   {
+    "date": "2023-07-13",
+    "scene": "S2B_10TFK_20230713_0_L2A",
+    "validFraction": 0.94622802734375,
+    "meanNDVI": 0.4373555410074287
+   },
+   {
+    "date": "2023-08-02",
+    "scene": "S2B_10TFK_20230802_0_L2A",
+    "validFraction": 0.9577178955078125,
+    "meanNDVI": 0.40630180977123065
+   },
+   {
+    "date": "2024-06-22",
+    "scene": "S2A_10TFK_20240622_0_L2A",
+    "validFraction": 0.942352294921875,
+    "meanNDVI": 0.46862285138909715
+   },
+   {
+    "date": "2024-08-01",
+    "scene": "S2A_10TFK_20240801_0_L2A",
+    "validFraction": 0.9974365234375,
+    "meanNDVI": 0.3870970195383298
+   }
+  ],
+  "dixieFire": {
+   "ignition": "2021-07-13",
+   "greenvilleDestroyed": "2021-08-04",
+   "contained": "2021-10-25"
+  },
+  "attribution": "Contains modified Copernicus Sentinel data 2017-2024 (ESA)",
+  "storyNotes": [
+   "16 cloud-screened summer dates 2017-2024 over a 25.6 km window at 100 m; every pixel carries a 16-step time series (v == 0 gaps are masked cloud).",
+   "Mann-Kendall / Sen slope over all dates mostly captures the Dixie Fire step: NDVI collapses in the 2021-09-21 snapshot and recovers only partially through 2024 (window mean NDVI ~0.60 in 2021-07-13, ~0.39 on 2021-09-21, ~0.35 in 2022, ~0.47 by 2024-06).",
+   "Pixels outside the burn scar (Lake Almanor shoreline, irrigated Indian Valley meadows) give flat or weakly positive trends: a clean contrast for significance maps.",
+   "For a pure recovery-trend test, use only dates after 2021-09-21 (indices in properties.dates).",
+   "Dates are not evenly spaced (two per summer): treat time as ordinal for Mann-Kendall or use days.bin for Sen slope per year."
+  ]
+ }
+}

@@ -1,0 +1,1 @@
+var e=2166136261,t=16777619;function n(n){let r=e;for(let e=0;e<n.length;e++)r^=n.charCodeAt(e),r=Math.imul(r,t);return(r>>>0).toString(16).padStart(8,`0`)}export{n as t};

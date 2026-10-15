@@ -1,0 +1,99 @@
+{
+ "id": "us-airline-flows",
+ "version": 1,
+ "kind": "flows",
+ "count": 5792,
+ "bbox": [
+  -176.64599609375,
+  -14.331000328063965,
+  145.72900390625,
+  71.285400390625
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "locations": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 335
+  },
+  "origin": {
+   "file": "origin.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 5792,
+   "description": "directed flow: index into locations"
+  },
+  "destination": {
+   "file": "destination.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 5792
+  },
+  "count": {
+   "file": "count.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 5792,
+   "unit": "scheduled flights in July 2023 (weight)"
+  },
+  "cancelled": {
+   "file": "cancelled.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 5792,
+   "unit": "cancelled flights (included in count)"
+  },
+  "lateDepartures": {
+   "file": "lateDepartures.bin",
+   "dtype": "uint16",
+   "components": 1,
+   "length": 5792,
+   "unit": "flights departing >= 15 min late"
+  },
+  "meanDepDelay": {
+   "file": "meanDepDelay.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 5792,
+   "unit": "minutes"
+  },
+  "distanceKm": {
+   "file": "distanceKm.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 5792
+  },
+  "airportFlights": {
+   "file": "airportFlights.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 335,
+   "description": "in + out flights per airport"
+  }
+ },
+ "table": {
+  "file": "airports.csv",
+  "columns": [
+   "index",
+   "iata",
+   "name",
+   "city",
+   "country"
+  ],
+  "note": "row i describes locations[i]"
+ },
+ "properties": {
+  "month": "2023-07",
+  "weightMeaning": "flights (not passengers): BTS T-100 passenger tables need an interactive download, so this uses the On-Time Reporting Carrier file for the largest US carriers",
+  "coverage": "601,582 of 601,866 flight records matched to airport coordinates (OpenFlights)",
+  "attribution": "U.S. Bureau of Transportation Statistics, On-Time Reporting Carrier On-Time Performance (public domain); airport coordinates and names from OpenFlights (ODbL 1.0)",
+  "storyNotes": [
+   "5,792 directed airport pairs, 335 airports, 601,582 flights in July 2023.",
+   "Busiest pairs: HNL->OGG (1104), OGG->HNL (1103), SFO->LAX (959), LAX->SFO (940), LAX->LAS (868).",
+   "Busiest airports (in+out flights): ATL (59,834), DFW (52,019), DEN (51,185), ORD (45,584), LAX (35,041), CLT (33,957).",
+   "Mean departure delay is 21.3 min and 2.4% of flights were cancelled; worst mean delay among pairs with >=100 flights: LAS->BOS (98 min).",
+   "Weights are skewed: the top 10% of pairs carry 37% of flights, a classic case for flow aggregation and edge bundling."
+  ]
+ }
+}

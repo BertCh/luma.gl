@@ -1,0 +1,1 @@
+function e(e,t){for(let[n,r]of Object.entries(t))if(r&&(r.format!==`uint32`||r.length<1))throw Error(`${e} ${n} must contain one uint32 row`)}export{e as t};

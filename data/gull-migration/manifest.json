@@ -1,0 +1,101 @@
+{
+ "id": "gull-migration",
+ "version": 1,
+ "kind": "trajectories",
+ "count": 31,
+ "bbox": [
+  -17.159780502319336,
+  14.022418975830078,
+  5.900843620300293,
+  54.153038024902344
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 32
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 98538
+  },
+  "timestamp": {
+   "file": "timestamp.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 98538,
+   "unit": "seconds since 2015-07-15T00:00:00Z"
+  },
+  "speed": {
+   "file": "speed.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 98538,
+   "unit": "m/s (GPS ground speed, 0 where missing)"
+  },
+  "sex": {
+   "file": "sex.bin",
+   "dtype": "uint8",
+   "components": 1,
+   "length": 31,
+   "categories": [
+    "f",
+    "m",
+    "u"
+   ]
+  }
+ },
+ "properties": {
+  "birdIds": [
+   "5508290",
+   "EA672503",
+   "L901190",
+   "L901531",
+   "L902130",
+   "L904806",
+   "L904816",
+   "L906110",
+   "L907004",
+   "L907132",
+   "L907322",
+   "L907424",
+   "L909206",
+   "L909346",
+   "L909648",
+   "L909695",
+   "L909877",
+   "L909887",
+   "L909937",
+   "L910935",
+   "L911715",
+   "L911863",
+   "L912603",
+   "L912685",
+   "L914750",
+   "L916122",
+   "L916302",
+   "L916304",
+   "L916309",
+   "L916310",
+   "L916710"
+  ],
+  "birdIdNote": "bird id i = properties.birdIds[i], Movebank individual-local-identifier",
+  "window": "2015-07-15 to 2015-11-30 (autumn migration)",
+  "sampling": "first GPS fix of each UTC hour; marked outliers removed",
+  "lifeStage": "all tracked birds are adults",
+  "study": "LBBG_ZEEBRUGGE (UvA-BiTS GPS tags), Belgium/Netherlands breeding colonies",
+  "doi": "https://doi.org/10.5281/zenodo.5068540",
+  "attribution": "Stienen E, Desmet P, Aelterman B, et al. LifeWatch GPS tracking of Lesser Black-backed gulls (LBBG_ZEEBRUGGE), INBO / Research Institute for Nature and Forest and Flanders Marine Institute, Zenodo, CC0 1.0",
+  "storyNotes": [
+   "31 adult gulls from the Zeebrugge/Belgian-Dutch North Sea coast colonies, hourly fixes, 15 Jul - 30 Nov 2015.",
+   "18 birds reach south of 38 N (Iberia/Morocco) and 4 cross south of 30 N into the Sahara/West Africa; furthest south L909887 at 14.0 N, L910935 at 20.7 N, L909648 at 23.6 N.",
+   "Southbound departures (first fix south of 45 N) spread from 05 Aug to 27 Nov, median 19 Oct.",
+   "On 30 Nov, 23 of 31 birds are south of 41 N; 5 sit in the Gulf of Cadiz / Guadalquivir area of SW Spain and 6 are still in the Channel / North Sea (resident or late migrants).",
+   "All birds are adults (no juveniles) tagged at known colonies, so start points are shared and routes can be compared by similarity clustering."
+  ]
+ }
+}

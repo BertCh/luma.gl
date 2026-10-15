@@ -1,0 +1,1 @@
+import{u as e}from"./raster-grid-D2bmCwkc.js";function t(t,r,i){i[2]=t.zFactor??1,e(i,r,n)}var n={cellSizeIndex:0,northEdgeIndex:3};export{t as n,n as t};

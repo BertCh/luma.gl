@@ -1,0 +1,80 @@
+{
+ "id": "alps-dem",
+ "version": 1,
+ "kind": "raster",
+ "count": 4194304,
+ "bbox": [
+  7.654123306274404,
+  45.92387121632808,
+  7.829904556274401,
+  46.04601228826735
+ ],
+ "crs": "EPSG:4326",
+ "raster": {
+  "file": "dem.png",
+  "encoding": "terrarium",
+  "width": 2048,
+  "height": 2048,
+  "bounds": [
+   7.654123306274404,
+   45.92387121632808,
+   7.829904556274401,
+   46.04601228826735
+  ],
+  "boundsMercator": [
+   852053.1089233942,
+   5768157.91085572,
+   871620.9881643988,
+   5787725.790096724
+  ],
+  "projection": "EPSG:3857",
+  "cellSizeMercatorM": 9.554628535647032,
+  "cellSizeGroundM": 6.639008800512035,
+  "noData": null,
+  "unit": "m",
+  "verticalQuantisationM": 0.25,
+  "webMercatorTile": {
+   "zoom": 13,
+   "tileSize": 512,
+   "originPixel": [
+    2186329,
+    1491401
+   ]
+  }
+ },
+ "properties": {
+  "source": "Mapterhorn terrain tiles (swissALTI3D, (c) swisstopo OGD; Copernicus GLO-30 outside Switzerland)",
+  "observers": {
+   "Matterhorn": {
+    "lon": 7.6586,
+    "lat": 45.9766,
+    "elevationM": 4456.0
+   },
+   "Gornergrat": {
+    "lon": 7.7843,
+    "lat": 45.9832,
+    "elevationM": 3124.25
+   },
+   "Zermatt": {
+    "lon": 7.7491,
+    "lat": 46.0207,
+    "elevationM": 1602.75
+   }
+  },
+  "minElevationM": 1503.0,
+  "maxElevationM": 4476.0,
+  "highestPoint": {
+   "lon": 7.658629417419425,
+   "lat": 45.976416552057366,
+   "elevationM": 4476.0
+  },
+  "storyNotes": [
+   "Window ~13.6 km square at 6.6 m ground resolution (Web Mercator 9.6 m/px); relief 1503 to 4476 m.",
+   "Matterhorn (4478 m) rises ~2800 m above Zermatt (1600 m): the steepest, most iconic horn in the Alps, ideal for slope, curvature and summit detection.",
+   "Gornergrat (3089 m) is the viewshed observer: it looks straight across the Gorner Glacier to Monte Rosa and Matterhorn.",
+   "Gorner and Findel glaciers give flat, wide ice tongues between sharp arete ridges: geomorphons separate ridge, shoulder, hollow and valley cleanly.",
+   "Mattertal valley floor at Zermatt is a narrow glacial U-valley; lateral moraines and cirques show up as TPI hollows.",
+   "Data is Terrarium-quantised to 0.25 m; Web Mercator pixels, so use cellSizeMode web-mercator with northEdge/southEdge from boundsMercator."
+  ]
+ }
+}

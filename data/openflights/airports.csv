@@ -1,0 +1,3258 @@
+index,iata,name,city,country
+0,AAE,Rabah Bitat Airport,Annaba,Algeria
+1,AAL,Aalborg Airport,Aalborg,Denmark
+2,AAN,Al Ain International Airport,Al Ain,United Arab Emirates
+3,AAQ,Anapa Vityazevo Airport,Anapa,Russia
+4,AAR,Aarhus Airport,Aarhus,Denmark
+5,AAT,Altay Air Base,Altay,China
+6,AAX,Romeu Zema Airport,Araxa,Brazil
+7,AAY,Al Ghaidah International Airport,Al Ghaidah Intl,Yemen
+8,ABA,Abakan Airport,Abakan,Russia
+9,ABB,Asaba International Airport,Asaba,Nigeria
+10,ABD,Abadan Airport,Abadan,Iran
+11,ABE,Lehigh Valley International Airport,Allentown,United States
+12,ABI,Abilene Regional Airport,Abilene,United States
+13,ABJ,Port Bouet Airport,Abidjan,Cote d'Ivoire
+14,ABL,Ambler Airport,Ambler,United States
+15,ABM,Northern Peninsula Airport,Amberley,Australia
+16,ABQ,Albuquerque International Sunport,Albuquerque,United States
+17,ABR,Aberdeen Regional Airport,Aberdeen,United States
+18,ABS,Abu Simbel Airport,Abu Simbel,Egypt
+19,ABT,Al Baha Airport,El-baha,Saudi Arabia
+20,ABV,Nnamdi Azikiwe International Airport,Abuja,Nigeria
+21,ABX,Albury Airport,Albury,Australia
+22,ABY,Southwest Georgia Regional Airport,Albany,United States
+23,ABZ,Aberdeen Dyce Airport,Aberdeen,United Kingdom
+24,ACA,General Juan N Alvarez International Airport,Acapulco,Mexico
+25,ACC,Kotoka International Airport,Accra,Ghana
+26,ACE,Lanzarote Airport,Arrecife,Spain
+27,ACH,St Gallen Altenrhein Airport,Altenrhein,Switzerland
+28,ACI,Alderney Airport,Alderney,Guernsey
+29,ACK,Nantucket Memorial Airport,Nantucket,United States
+30,ACR,Araracuara Airport,Araracuara,Colombia
+31,ACT,Waco Regional Airport,Waco,United States
+32,ACV,California Redwood Coast-Humboldt County Airport,Arcata CA,United States
+33,ACX,Xingyi Airport,Xingyi,China
+34,ACY,Atlantic City International Airport,Atlantic City,United States
+35,ACZ,Zabol Airport,Zabol,Iran
+36,ADA,Adana Airport,Adana,Turkey
+37,ADB,Adnan Menderes International Airport,Izmir,Turkey
+38,ADD,Addis Ababa Bole International Airport,Addis Ababa,Ethiopia
+39,ADE,Aden International Airport,Aden,Yemen
+40,ADF,Adıyaman Airport,Adiyaman,Turkey
+41,ADK,Adak Airport,Adak Island,United States
+42,ADL,Adelaide International Airport,Adelaide,Australia
+43,ADQ,Kodiak Airport,Kodiak,United States
+44,ADU,Ardabil Airport,Ardabil,Iran
+45,ADZ,Gustavo Rojas Pinilla International Airport,San Andres Island,Colombia
+46,AEB,Baise Youjiang Airport,Baise,China
+47,AEP,Jorge Newbery Airpark,Buenos Aires,Argentina
+48,AER,Sochi International Airport,Sochi,Russia
+49,AES,Ålesund Airport,Alesund,Norway
+50,AET,Allakaket Airport,Allakaket,United States
+51,AEX,Alexandria International Airport,Alexandria,United States
+52,AEY,Akureyri Airport,Akureyri,Iceland
+53,AFA,Suboficial Ay Santiago Germano Airport,San Rafael,Argentina
+54,AFL,Piloto Osvaldo Marques Dias Airport,Alta Floresta,Brazil
+55,AFZ,Sabzevar National Airport,Sabzevar,Iran
+56,AGA,Al Massira Airport,Agadir,Morocco
+57,AGB,Augsburg Airport,Augsburg,Germany
+58,AGF,Agen-La Garenne Airport,Agen,France
+59,AGH,Ängelholm-Helsingborg Airport,Ängelholm,Sweden
+60,AGN,Angoon Seaplane Base,Angoon,United States
+61,AGP,Málaga Airport,Malaga,Spain
+62,AGR,Agra Airport,Agra,India
+63,AGS,Augusta Regional At Bush Field,Bush Field,United States
+64,AGT,Guarani International Airport,Ciudad del Este,Paraguay
+65,AGU,Jesús Terán Paredo International Airport,Aguascalientes,Mexico
+66,AGX,Agatti Airport,Agatti Island,India
+67,AHB,Abha Regional Airport,Abha,Saudi Arabia
+68,AHE,Ahe Airport,Ahe,French Polynesia
+69,AHN,Athens Ben Epps Airport,Athens,United States
+70,AHO,Alghero-Fertilia Airport,Alghero,Italy
+71,AHU,Cherif Al Idrissi Airport,Al Hociema,Morocco
+72,AIA,Alliance Municipal Airport,Alliance,United States
+73,AIN,Wainwright Airport,Wainwright,United States
+74,AIT,Aitutaki Airport,Aitutaki,Cook Islands
+75,AIU,Enua Airport,Atiu Island,Cook Islands
+76,AJA,Ajaccio-Napoléon Bonaparte Airport,Ajaccio,France
+77,AJF,Al-Jawf Domestic Airport,Al-Jawf,Saudi Arabia
+78,AJI,Ağrı Airport,Agri,Turkey
+79,AJL,Lengpui Airport,Aizwal,India
+80,AJR,Arvidsjaur Airport,Arvidsjaur,Sweden
+81,AJU,Santa Maria Airport,Aracaju,Brazil
+82,AKB,Atka Airport,Atka,United States
+83,AKF,Kufra Airport,Kufra,Libya
+84,AKJ,Asahikawa Airport,Asahikawa,Japan
+85,AKK,Akhiok Airport,Akhiok,United States
+86,AKL,Auckland International Airport,Auckland,New Zealand
+87,AKN,King Salmon Airport,King Salmon,United States
+88,AKP,Anaktuvuk Pass Airport,Anaktuvuk Pass,United States
+89,AKU,Aksu Airport,Aksu,China
+90,AKV,Akulivik Airport,Akulivik,Canada
+91,AKX,Aktobe Airport,Aktyubinsk,Kazakhstan
+92,AKY,Sittwe Airport,Sittwe,Burma
+93,ALA,Almaty Airport,Alma-ata,Kazakhstan
+94,ALB,Albany International Airport,Albany,United States
+95,ALC,Alicante International Airport,Alicante,Spain
+96,ALF,Alta Airport,Alta,Norway
+97,ALG,Houari Boumediene Airport,Algier,Algeria
+98,ALH,Albany Airport,Albany,Australia
+99,ALO,Waterloo Regional Airport,Waterloo,United States
+100,ALS,San Luis Valley Regional Bergman Field,Alamosa,United States
+101,ALW,Walla Walla Regional Airport,Walla Walla,United States
+102,AMA,Rick Husband Amarillo International Airport,Amarillo,United States
+103,AMD,Sardar Vallabhbhai Patel International Airport,Ahmedabad,India
+104,AMH,Arba Minch Airport,Arba Minch,Ethiopia
+105,AMM,Queen Alia International Airport,Amman,Jordan
+106,AMQ,"Pattimura Airport, Ambon",Ambon,Indonesia
+107,AMS,Amsterdam Airport Schiphol,Amsterdam,Netherlands
+108,ANC,Ted Stevens Anchorage International Airport,Anchorage,United States
+109,ANF,Andrés Sabella Gálvez International Airport,Antofagasta,Chile
+110,ANG,Angoulême-Brie-Champniers Airport,Angouleme,France
+111,ANI,Aniak Airport,Aniak,United States
+112,ANM,Antsirabato Airport,Antalaha,Madagascar
+113,ANR,Antwerp International Airport (Deurne),Antwerp,Belgium
+114,ANS,Andahuaylas Airport,Andahuaylas,Peru
+115,ANU,V.C. Bird International Airport,Antigua,Antigua and Barbuda
+116,ANV,Anvik Airport,Anvik,United States
+117,ANX,Andøya Airport,Andoya,Norway
+118,AOE,Anadolu Airport,Eskissehir,Turkey
+119,AOG,Anshan Air Base,Anshan,China
+120,AOI,Ancona Falconara Airport,Ancona,Italy
+121,AOJ,Aomori Airport,Aomori,Japan
+122,AOK,Karpathos Airport,Karpathos,Greece
+123,AOO,Altoona Blair County Airport,Altoona,United States
+124,AOR,Sultan Abdul Halim Airport,Alor Setar,Malaysia
+125,APF,Naples Municipal Airport,Naples,United States
+126,APL,Nampula Airport,Nampula,Mozambique
+127,APN,Alpena County Regional Airport,Alpena,United States
+128,APO,Antonio Roldan Betancourt Airport,Carepa,Colombia
+129,APW,Faleolo International Airport,Faleolo,Samoa
+130,AQA,Araraquara Airport,Araracuara,Brazil
+131,AQG,Anqing Tianzhushan Airport,Anqing,China
+132,AQI,Al Qaisumah/Hafr Al Batin Airport,Hafr Al-batin,Saudi Arabia
+133,AQJ,Aqaba King Hussein International Airport,Aqaba,Jordan
+134,AQP,Rodríguez Ballón International Airport,Arequipa,Peru
+135,ARC,Arctic Village Airport,Arctic Village,United States
+136,ARH,Talagi Airport,Arkhangelsk,Russia
+137,ARI,Chacalluta Airport,Arica,Chile
+138,ARK,Arusha Airport,Arusha,Tanzania
+139,ARM,Armidale Airport,Armidale,Australia
+140,ARN,Stockholm-Arlanda Airport,Stockholm,Sweden
+141,ART,Watertown International Airport,Watertown,United States
+142,ARU,Araçatuba Airport,Aracatuba,Brazil
+143,ARW,Arad International Airport,Arad,Romania
+144,ASB,Ashgabat International Airport,Ashkhabad,Turkmenistan
+145,ASE,Aspen-Pitkin Co/Sardy Field,Aspen,United States
+146,ASF,Astrakhan Airport,Astrakhan,Russia
+147,ASJ,Amami Airport,Amami,Japan
+148,ASM,Asmara International Airport,Asmara,Eritrea
+149,ASO,Asosa Airport,Asosa,Ethiopia
+150,ASP,Alice Springs Airport,Alice Springs,Australia
+151,ASR,Kayseri Erkilet Airport,Kayseri,Turkey
+152,ASU,Silvio Pettirossi International Airport,Asuncion,Paraguay
+153,ASV,Amboseli Airport,Amboseli National Park,Kenya
+154,ASW,Aswan International Airport,Aswan,Egypt
+155,ATA,Comandante FAP German Arias Graziani Airport,Anta,Peru
+156,ATC,Arthur's Town Airport,Arthur's Town,Bahamas
+157,ATD,Uru Harbour Airport,Atoifi,Solomon Islands
+158,ATH,Eleftherios Venizelos International Airport,Athens,Greece
+159,ATK,Atqasuk Edward Burnell Sr Memorial Airport,Atqasuk,United States
+160,ATL,Hartsfield Jackson Atlanta International Airport,Atlanta,United States
+161,ATM,Altamira Airport,Altamira,Brazil
+162,ATQ,Sri Guru Ram Dass Jee International Airport,Amritsar,India
+163,ATW,Appleton International Airport,Appleton,United States
+164,ATY,Watertown Regional Airport,Watertown,United States
+165,ATZ,Assiut International Airport,Asyut,Egypt
+166,AUA,Queen Beatrix International Airport,Oranjestad,Aruba
+167,AUC,Santiago Perez Airport,Arauca,Colombia
+168,AUG,Augusta State Airport,Augusta,United States
+169,AUH,Abu Dhabi International Airport,Abu Dhabi,United Arab Emirates
+170,AUK,Alakanuk Airport,Alakanuk,United States
+171,AUQ,Hiva Oa-Atuona Airport,Hiva-oa,French Polynesia
+172,AUR,Aurillac Airport,Aurillac,France
+173,AUS,Austin Bergstrom International Airport,Austin,United States
+174,AUU,Aurukun Airport,Aurukun,Australia
+175,AUX,Araguaína Airport,Araguaina,Brazil
+176,AUY,Aneityum Airport,Anelghowhat,Vanuatu
+177,AVA,Anshun Huangguoshu Airport,Anshun,China
+178,AVL,Asheville Regional Airport,Asheville,United States
+179,AVN,Avignon-Caumont Airport,Avignon,France
+180,AVP,Wilkes Barre Scranton International Airport,Scranton,United States
+181,AVV,Avalon Airport,Avalon,Australia
+182,AWD,Aniwa Airport,Aniwa,Vanuatu
+183,AWZ,Ahwaz Airport,Ahwaz,Iran
+184,AXA,Clayton J Lloyd International Airport,The Valley,Anguilla
+185,AXD,Dimokritos Airport,Alexandroupolis,Greece
+186,AXK,Ataq Airport,Ataq,Yemen
+187,AXM,El Eden Airport,Armenia,Colombia
+188,AXP,Spring Point Airport,Spring Point,Bahamas
+189,AXR,Arutua Airport,Arutua,French Polynesia
+190,AXT,Akita Airport,Akita,Japan
+191,AXU,Axum Airport,Axum,Ethiopia
+192,AYP,Coronel FAP Alfredo Mendivil Duarte Airport,Ayacucho,Peru
+193,AYQ,Ayers Rock Connellan Airport,Uluru,Australia
+194,AYT,Antalya International Airport,Antalya,Turkey
+195,AZA,Phoenix-Mesa-Gateway Airport,Mesa,United States
+196,AZD,Shahid Sadooghi Airport,Yazd,Iran
+197,AZI,Bateen Airport,Abu Dhabi,United Arab Emirates
+198,AZN,Andizhan Airport,Andizhan,Uzbekistan
+199,AZO,Kalamazoo Battle Creek International Airport,Kalamazoo,United States
+200,AZR,Touat Cheikh Sidi Mohamed Belkebir Airport,Adrar,Algeria
+201,AZS,Samaná El Catey International Airport,Samana,Dominican Republic
+202,BAH,Bahrain International Airport,Bahrain,Bahrain
+203,BAL,Batman Airport,Batman,Turkey
+204,BAQ,Ernesto Cortissoz International Airport,Barranquilla,Colombia
+205,BAV,Baotou Airport,Baotou,China
+206,BAX,Barnaul Airport,Barnaul,Russia
+207,BAY,Tautii Magheraus Airport,Baia Mare,Romania
+208,BAZ,Barcelos Airport,Barcelos,Brazil
+209,BBA,Balmaceda Airport,Balmaceda,Chile
+210,BBI,Biju Patnaik Airport,Bhubaneswar,India
+211,BBK,Kasane Airport,Kasane,Botswana
+212,BBN,Bario Airport,Bario,Malaysia
+213,BBO,Berbera Airport,Berbera,Somalia
+214,BCD,Bacolod-Silay Airport,Bacolod,Philippines
+215,BCI,Barcaldine Airport,Barcaldine,Australia
+216,BCN,Barcelona International Airport,Barcelona,Spain
+217,BDA,L.F. Wade International International Airport,Bermuda,Bermuda
+218,BDB,Bundaberg Airport,Bundaberg,Australia
+219,BDH,Bandar Lengeh Airport,Bandar Lengeh,Iran
+220,BDJ,Syamsudin Noor Airport,Banjarmasin,Indonesia
+221,BDL,Bradley International Airport,Windsor Locks,United States
+222,BDO,Husein Sastranegara International Airport,Bandung,Indonesia
+223,BDP,Bhadrapur Airport,Chandragarhi,Nepal
+224,BDQ,Vadodara Airport,Baroda,India
+225,BDS,Brindisi – Salento Airport,Brindisi,Italy
+226,BDU,Bardufoss Airport,Bardufoss,Norway
+227,BEB,Benbecula Airport,Benbecula,United Kingdom
+228,BEG,Belgrade Nikola Tesla Airport,Belgrade,Serbia
+229,BEJ,Kalimarau Airport,Tanjung Redep-Borneo Island,Indonesia
+230,BEL,Val de Cans/Júlio Cezar Ribeiro International Airport,Belem,Brazil
+231,BEN,Benina International Airport,Benghazi,Libya
+232,BES,Brest Bretagne Airport,Brest,France
+233,BET,Bethel Airport,Bethel,United States
+234,BEU,Bedourie Airport,Bedourie,Australia
+235,BEW,Beira Airport,Beira,Mozambique
+236,BEY,Beirut Rafic Hariri International Airport,Beirut,Lebanon
+237,BFD,Bradford Regional Airport,Bradford,United States
+238,BFF,Western Neb. Rgnl/William B. Heilig Airport,Scottsbluff,United States
+239,BFI,Boeing Field King County International Airport,Seattle,United States
+240,BFJ,Bijie Feixiong Airport,Bijie,China
+241,BFL,Meadows Field,Bakersfield,United States
+242,BFN,Bram Fischer International Airport,Bloemfontein,South Africa
+243,BFS,Belfast International Airport,Belfast,United Kingdom
+244,BFV,Buri Ram Airport,Buri Ram,Thailand
+245,BGA,Palonegro Airport,Bucaramanga,Colombia
+246,BGF,Bangui M'Poko International Airport,Bangui,Central African Republic
+247,BGG,Bingöl Çeltiksuyu Airport,Bingol,Turkey
+248,BGI,Sir Grantley Adams International Airport,Bridgetown,Barbados
+249,BGM,Greater Binghamton/Edwin A Link field,Binghamton,United States
+250,BGO,Bergen Airport Flesland,Bergen,Norway
+251,BGR,Bangor International Airport,Bangor,United States
+252,BGW,Baghdad International Airport,Baghdad,Iraq
+253,BGY,Il Caravaggio International Airport,Bergamo,Italy
+254,BHB,Hancock County-Bar Harbor Airport,Bar Harbor,United States
+255,BHD,George Best Belfast City Airport,Belfast,United Kingdom
+256,BHE,Woodbourne Airport,Woodbourne,New Zealand
+257,BHH,Bisha Airport,Bisha,Saudi Arabia
+258,BHI,Comandante Espora Airport,Bahia Blanca,Argentina
+259,BHJ,Bhuj Airport,Bhuj,India
+260,BHK,Bukhara Airport,Bukhara,Uzbekistan
+261,BHM,Birmingham-Shuttlesworth International Airport,Birmingham,United States
+262,BHO,Raja Bhoj International Airport,Bhopal,India
+263,BHQ,Broken Hill Airport,Broken Hill,Australia
+264,BHR,Bharatpur Airport,Bharatpur,Nepal
+265,BHS,Bathurst Airport,Bathurst,Australia
+266,BHU,Bhavnagar Airport,Bhaunagar,India
+267,BHV,Bahawalpur Airport,Bahawalpur,Pakistan
+268,BHX,Birmingham International Airport,Birmingham,United Kingdom
+269,BHY,Beihai Airport,Beihai,China
+270,BIA,Bastia-Poretta Airport,Bastia,France
+271,BIK,Frans Kaisiepo Airport,Biak,Indonesia
+272,BIL,Billings Logan International Airport,Billings,United States
+273,BIM,South Bimini Airport,Alice Town,Bahamas
+274,BIO,Bilbao Airport,Bilbao,Spain
+275,BIQ,Biarritz-Anglet-Bayonne Airport,Biarritz-bayonne,France
+276,BIR,Biratnagar Airport,Biratnagar,Nepal
+277,BIS,Bismarck Municipal Airport,Bismarck,United States
+278,BJA,Soummam Airport,Bejaja,Algeria
+279,BJB,Bojnord Airport,Bojnourd,Iran
+280,BJF,Båtsfjord Airport,Batsfjord,Norway
+281,BJI,Bemidji Regional Airport,Bemidji,United States
+282,BJL,Banjul International Airport,Banjul,Gambia
+283,BJM,Bujumbura International Airport,Bujumbura,Burundi
+284,BJR,Bahir Dar Airport,Bahar Dar,Ethiopia
+285,BJV,Milas Bodrum International Airport,Bodrum,Turkey
+286,BJX,Del Bajío International Airport,Del Bajio,Mexico
+287,BJZ,Badajoz Airport,Badajoz,Spain
+288,BKC,Buckland Airport,Buckland,United States
+289,BKG,Branson Airport,Branson,United States
+290,BKI,Kota Kinabalu International Airport,Kota Kinabalu,Malaysia
+291,BKK,Suvarnabhumi Airport,Bangkok,Thailand
+292,BKM,Bakalalan Airport,Bakalalan,Malaysia
+293,BKO,Modibo Keita International Airport,Bamako,Mali
+294,BKQ,Blackall Airport,Blackall,Australia
+295,BKS,Fatmawati Soekarno Airport,Bengkulu,Indonesia
+296,BKW,Raleigh County Memorial Airport,Beckley,United States
+297,BKY,Bukavu Kavumu Airport,Bukavu/kavumu,Congo (Kinshasa)
+298,BKZ,Bukoba Airport,Bukoba,Tanzania
+299,BLA,General José Antonio Anzoategui International Airport,Barcelona,Venezuela
+300,BLE,Borlange Airport,Borlange,Sweden
+301,BLI,Bellingham International Airport,Bellingham,United States
+302,BLJ,Batna Airport,Batna,Algeria
+303,BLK,Blackpool International Airport,Blackpool,United Kingdom
+304,BLL,Billund Airport,Billund,Denmark
+305,BLQ,Bologna Guglielmo Marconi Airport,Bologna,Italy
+306,BLR,Kempegowda International Airport,Bangalore,India
+307,BLV,Scott AFB/Midamerica Airport,Belleville,United States
+308,BLZ,Chileka International Airport,Blantyre,Malawi
+309,BMA,Stockholm-Bromma Airport,Stockholm,Sweden
+310,BME,Broome International Airport,Broome,Australia
+311,BMI,Central Illinois Regional Airport at Bloomington-Normal,Bloomington,United States
+312,BMU,Muhammad Salahuddin Airport,Bima,Indonesia
+313,BMV,Buon Ma Thuot Airport,Buonmethuot,Vietnam
+314,BMW,Bordj Badji Mokhtar Airport,Bordj Badji Mokhtar,Algeria
+315,BMY,Île Art - Waala Airport,Waala,New Caledonia
+316,BNA,Nashville International Airport,Nashville,United States
+317,BNB,Boende Airport,Boende,Congo (Kinshasa)
+318,BNC,Beni Airport,Beni,Congo (Kinshasa)
+319,BND,Bandar Abbas International Airport,Bandar Abbas,Iran
+320,BNE,Brisbane International Airport,Brisbane,Australia
+321,BNI,Benin Airport,Benin,Nigeria
+322,BNK,Ballina Byron Gateway Airport,Ballina Byron Bay,Australia
+323,BNN,Brønnøysund Airport,Bronnoysund,Norway
+324,BNS,Barinas Airport,Barinas,Venezuela
+325,BNX,Banja Luka International Airport,Banja Luka,Bosnia and Herzegovina
+326,BOB,Bora Bora Airport,Bora Bora,French Polynesia
+327,BOC,Bocas Del Toro International Airport,Bocas Del Toro,Panama
+328,BOD,Bordeaux-Mérignac Airport,Bordeaux,France
+329,BOG,El Dorado International Airport,Bogota,Colombia
+330,BOH,Bournemouth Airport,Bournemouth,United Kingdom
+331,BOI,Boise Air Terminal/Gowen Field,Boise,United States
+332,BOJ,Burgas Airport,Bourgas,Bulgaria
+333,BOM,Chhatrapati Shivaji International Airport,Mumbai,India
+334,BON,Flamingo International Airport,Kralendijk,Netherlands Antilles
+335,BOO,Bodø Airport,Bodo,Norway
+336,BOS,General Edward Lawrence Logan International Airport,Boston,United States
+337,BOY,Bobo Dioulasso Airport,Bobo-dioulasso,Burkina Faso
+338,BPL,Alashankou Bole (Bortala) airport,Bole,China
+339,BPN,Sultan Aji Muhamad Sulaiman Airport,Balikpapan,Indonesia
+340,BPS,Porto Seguro Airport,Porto Seguro,Brazil
+341,BPT,Southeast Texas Regional Airport,Beaumont,United States
+342,BPX,Qamdo Bangda Airport,Bangda,China
+343,BQB,Busselton Regional Airport,Brusselton,Australia
+344,BQK,Brunswick Golden Isles Airport,Brunswick,United States
+345,BQL,Boulia Airport,Boulia,Australia
+346,BQN,Rafael Hernandez Airport,Aguadilla,Puerto Rico
+347,BQS,Ignatyevo Airport,Blagoveschensk,Russia
+348,BRA,Barreiras Airport,Barreiras,Brazil
+349,BRC,San Carlos De Bariloche Airport,San Carlos De Bariloche,Argentina
+350,BRD,Brainerd Lakes Regional Airport,Brainerd,United States
+351,BRE,Bremen Airport,Bremen,Germany
+352,BRI,Bari Karol Wojtyła Airport,Bari,Italy
+353,BRL,Southeast Iowa Regional Airport,Burlington,United States
+354,BRM,Barquisimeto International Airport,Barquisimeto,Venezuela
+355,BRN,Bern Belp Airport,Bern,Switzerland
+356,BRO,Brownsville South Padre Island International Airport,Brownsville,United States
+357,BRQ,Brno-Tuřany Airport,Brno,Czech Republic
+358,BRR,Barra Airport,Barra,United Kingdom
+359,BRS,Bristol Airport,Bristol,United Kingdom
+360,BRU,Brussels Airport,Brussels,Belgium
+361,BRW,Wiley Post Will Rogers Memorial Airport,Barrow,United States
+362,BSA,Bosaso Airport,Bosaso,Somalia
+363,BSB,Presidente Juscelino Kubistschek International Airport,Brasilia,Brazil
+364,BSC,José Celestino Mutis Airport,Bahia Solano,Colombia
+365,BSD,Baoshan Yunduan Airport,Baoshan,China
+366,BSG,Bata Airport,Bata,Equatorial Guinea
+367,BSK,Biskra Airport,Biskra,Algeria
+368,BSL,EuroAirport Basel-Mulhouse-Freiburg Airport,Mulhouse,France
+369,BSO,Basco Airport,Basco,Philippines
+370,BSR,Basrah International Airport,Basrah,Iraq
+371,BTC,Batticaloa Airport,Batticaloa,Sri Lanka
+372,BTH,Hang Nadim International Airport,Batam,Indonesia
+373,BTI,Barter Island LRRS Airport,Barter Island,United States
+374,BTJ,Sultan Iskandar Muda International Airport,Banda Aceh,Indonesia
+375,BTK,Bratsk Airport,Bratsk,Russia
+376,BTM,Bert Mooney Airport,Butte,United States
+377,BTR,Baton Rouge Metropolitan Airport,Baton Rouge,United States
+378,BTS,M. R. Štefánik Airport,Bratislava,Slovakia
+379,BTT,Bettles Airport,Bettles,United States
+380,BTU,Bintulu Airport,Bintulu,Malaysia
+381,BTV,Burlington International Airport,Burlington,United States
+382,BUA,Buka Airport,Buka Island,Papua New Guinea
+383,BUC,Burketown Airport,Burketown,Australia
+384,BUD,Budapest Liszt Ferenc International Airport,Budapest,Hungary
+385,BUF,Buffalo Niagara International Airport,Buffalo,United States
+386,BUL,Bulolo Airport,Bulolo,Papua New Guinea
+387,BUN,Gerardo Tobar López Airport,Buenaventura,Colombia
+388,BUQ,Joshua Mqabuko Nkomo International Airport,Bulawayo,Zimbabwe
+389,BUR,Bob Hope Airport,Burbank,United States
+390,BUS,Batumi International Airport,Batumi,Georgia
+391,BUW,Betoambari Airport,Bau-Bau,Indonesia
+392,BUX,Bunia Airport,Bunia,Congo (Kinshasa)
+393,BUZ,Bushehr Airport,Bushehr,Iran
+394,BVA,Paris Beauvais Tillé Airport,Beauvais,France
+395,BVB,Atlas Brasil Cantanhede Airport,Boa Vista,Brazil
+396,BVC,Rabil Airport,Boa Vista,Cape Verde
+397,BVE,Brive Souillac Airport,Brive,France
+398,BVG,Berlevåg Airport,Berlevag,Norway
+399,BVH,Brigadeiro Camarão Airport,Vilhena,Brazil
+400,BVI,Birdsville Airport,Birdsville,Australia
+401,BVS,Breves Airport,Breves,Brazil
+402,BWA,Gautam Buddha Airport,Bhairawa,Nepal
+403,BWI,Baltimore/Washington International Thurgood Marshall Airport,Baltimore,United States
+404,BWK,Bol Airport,Brac,Croatia
+405,BWN,Brunei International Airport,Bandar Seri Begawan,Brunei
+406,BWT,Wynyard Airport,Burnie,Australia
+407,BXB,Babo Airport,Babo,Indonesia
+408,BXR,Bam Airport,Bam,Iran
+409,BXU,Bancasi Airport,Butuan,Philippines
+410,BYC,Yacuiba Airport,Yacuiba,Bolivia
+411,BYN,Bayankhongor Airport,Bayankhongor,Mongolia
+412,BYO,Bonito Airport,Bointo,Brazil
+413,BZE,Philip S. W. Goldson International Airport,Belize City,Belize
+414,BZG,Bydgoszcz Ignacy Jan Paderewski Airport,Bydgoszcz,Poland
+415,BZL,Barisal Airport,Barisal,Bangladesh
+416,BZN,Gallatin Field,Bozeman,United States
+417,BZO,Bolzano Airport,Bolzano,Italy
+418,BZR,Béziers-Vias Airport,Beziers,France
+419,BZV,Maya-Maya Airport,Brazzaville,Congo (Brazzaville)
+420,CAB,Cabinda Airport,Cabinda,Angola
+421,CAC,Cascavel Airport,Cascavel,Brazil
+422,CAE,Columbia Metropolitan Airport,Columbia,United States
+423,CAG,Cagliari Elmas Airport,Cagliari,Italy
+424,CAH,Cà Mau Airport,Ca Mau,Vietnam
+425,CAI,Cairo International Airport,Cairo,Egypt
+426,CAJ,Canaima Airport,Canaima,Venezuela
+427,CAK,Akron Canton Regional Airport,Akron,United States
+428,CAL,Campbeltown Airport,Campbeltown,United Kingdom
+429,CAN,Guangzhou Baiyun International Airport,Guangzhou,China
+430,CAP,Cap Haitien International Airport,Cap Haitien,Haiti
+431,CAW,Bartolomeu Lisandro Airport,Campos,Brazil
+432,CAY,Cayenne-Rochambeau Airport,Cayenne,French Guiana
+433,CBB,Jorge Wilsterman International Airport,Cochabamba,Bolivia
+434,CBH,Béchar Boudghene Ben Ali Lotfi Airport,Béchar,Algeria
+435,CBO,Awang Airport,Cotabato,Philippines
+436,CBQ,Margaret Ekpo International Airport,Calabar,Nigeria
+437,CBR,Canberra International Airport,Canberra,Australia
+438,CBT,Catumbela Airport,Catumbela,Angola
+439,CCC,Jardines Del Rey Airport,Cunagua,Cuba
+440,CCF,Carcassonne Airport,Carcassonne,France
+441,CCJ,Calicut International Airport,Calicut,India
+442,CCK,Cocos (Keeling) Islands Airport,Cocos Keeling Island,Cocos (Keeling) Islands
+443,CCM,Diomício Freitas Airport,Criciuma,Brazil
+444,CCP,Carriel Sur Airport,Concepcion,Chile
+445,CCS,Simón Bolívar International Airport,Caracas,Venezuela
+446,CCU,Netaji Subhash Chandra Bose International Airport,Kolkata,India
+447,CCV,Craig Cove Airport,Craig Cove,Vanuatu
+448,CDB,Cold Bay Airport,Cold Bay,United States
+449,CDC,Cedar City Regional Airport,Cedar City,United States
+450,CDG,Charles de Gaulle International Airport,Paris,France
+451,CDJ,Conceição do Araguaia Airport,Conceicao Do Araguaia,Brazil
+452,CDR,Chadron Municipal Airport,Chadron,United States
+453,CDV,Merle K (Mudhole) Smith Airport,Cordova,United States
+454,CEB,Mactan Cebu International Airport,Cebu,Philippines
+455,CEC,Jack Mc Namara Field Airport,Crescent City,United States
+456,CED,Ceduna Airport,Ceduna,Australia
+457,CEE,Cherepovets Airport,Cherepovets,Russia
+458,CEG,Hawarden Airport,Hawarden,United Kingdom
+459,CEI,Chiang Rai International Airport,Chiang Rai,Thailand
+460,CEK,Chelyabinsk Balandino Airport,Chelyabinsk,Russia
+461,CEM,Central Airport,Central,United States
+462,CEN,Ciudad Obregón International Airport,Ciudad Obregon,Mexico
+463,CEZ,Cortez Municipal Airport,Cortez,United States
+464,CFB,Cabo Frio Airport,Cabo Frio,Brazil
+465,CFC,Caçador Airport,Cacador,Brazil
+466,CFE,Clermont-Ferrand Auvergne Airport,Clermont-Ferrand,France
+467,CFK,Ech Cheliff Airport,Ech-cheliff,Algeria
+468,CFN,Donegal Airport,Dongloe,Ireland
+469,CFR,Caen-Carpiquet Airport,Caen,France
+470,CFS,Coffs Harbour Airport,Coff's Harbour,Australia
+471,CFU,Ioannis Kapodistrias International Airport,Kerkyra/corfu,Greece
+472,CGB,Marechal Rondon Airport,Cuiaba,Brazil
+473,CGD,Changde Airport,Changde,China
+474,CGH,Congonhas Airport,Sao Paulo,Brazil
+475,CGI,Cape Girardeau Regional Airport,Cape Girardeau,United States
+476,CGK,Soekarno-Hatta International Airport,Jakarta,Indonesia
+477,CGM,Camiguin Airport,Camiguin,Philippines
+478,CGN,Cologne Bonn Airport,Cologne,Germany
+479,CGO,Zhengzhou Xinzheng International Airport,Zhengzhou,China
+480,CGP,Shah Amanat International Airport,Chittagong,Bangladesh
+481,CGQ,Longjia Airport,Changchun,China
+482,CGR,Campo Grande Airport,Campo Grande,Brazil
+483,CGY,Laguindingan Airport,Cagayan de Oro City,Philippines
+484,CHA,Lovell Field,Chattanooga,United States
+485,CHC,Christchurch International Airport,Christchurch,New Zealand
+486,CHG,Chaoyang Airport,Chaoyang,China
+487,CHO,Charlottesville Albemarle Airport,Charlottesville VA,United States
+488,CHQ,Chania International Airport,Chania,Greece
+489,CHS,Charleston Air Force Base-International Airport,Charleston,United States
+490,CHU,Chuathbaluk Airport,Chuathbaluk,United States
+491,CHX,Cap Manuel Niño International Airport,Changuinola,Panama
+492,CHY,Choiseul Bay Airport,Choiseul Bay,Solomon Islands
+493,CIA,Ciampino–G. B. Pastine International Airport,Rome,Italy
+494,CIC,Chico Municipal Airport,Chico,United States
+495,CID,The Eastern Iowa Airport,Cedar Rapids,United States
+496,CIF,Chifeng Airport,Chifeng,China
+497,CIH,Changzhi Airport,Changzhi,China
+498,CIJ,Capitán Aníbal Arab Airport,Cobija,Bolivia
+499,CIK,Chalkyitsik Airport,Chalkyitsik,United States
+500,CIP,Chipata Airport,Chipata,Zambia
+501,CIT,Shymkent Airport,Chimkent,Kazakhstan
+502,CIU,Chippewa County International Airport,Sault Ste Marie,United States
+503,CIX,Capitan FAP Jose A Quinones Gonzales International Airport,Chiclayo,Peru
+504,CIY,Comiso Airport,Comiso,Italy
+505,CIZ,Coari Airport,Coari,Brazil
+506,CJA,Mayor General FAP Armando Revoredo Iglesias Airport,Cajamarca,Peru
+507,CJB,Coimbatore International Airport,Coimbatore,India
+508,CJC,El Loa Airport,Calama,Chile
+509,CJJ,Cheongju International Airport/Cheongju Air Base (K-59/G-513),Chongju,South Korea
+510,CJL,Chitral Airport,Chitral,Pakistan
+511,CJM,Chumphon Airport,Chumphon,Thailand
+512,CJS,Abraham González International Airport,Ciudad Juarez,Mexico
+513,CJU,Jeju International Airport,Cheju,South Korea
+514,CKB,North Central West Virginia Airport,Clarksburg,United States
+515,CKG,Chongqing Jiangbei International Airport,Chongqing,China
+516,CKH,Chokurdakh Airport,Chokurdah,Russia
+517,CKS,Carajás Airport,Parauapebas,Brazil
+518,CKY,Conakry International Airport,Conakry,Guinea
+519,CKZ,Çanakkale Airport,Canakkale,Turkey
+520,CLD,Mc Clellan-Palomar Airport,Carlsbad,United States
+521,CLE,Cleveland Hopkins International Airport,Cleveland,United States
+522,CLJ,Cluj-Napoca International Airport,Cluj-napoca,Romania
+523,CLL,Easterwood Field,College Station,United States
+524,CLM,William R Fairchild International Airport,Port Angeles,United States
+525,CLO,Alfonso Bonilla Aragon International Airport,Cali,Colombia
+526,CLQ,Licenciado Miguel de la Madrid Airport,Colima,Mexico
+527,CLT,Charlotte Douglas International Airport,Charlotte,United States
+528,CLV,Nelson Ribeiro Guimarães Airport,Caldas Novas,Brazil
+529,CLY,Calvi-Sainte-Catherine Airport,Calvi,France
+530,CMA,Cunnamulla Airport,Cunnamulla,Australia
+531,CMB,Bandaranaike International Colombo Airport,Colombo,Sri Lanka
+532,CME,Ciudad del Carmen International Airport,Ciudad Del Carmen,Mexico
+533,CMG,Corumbá International Airport,Corumba,Brazil
+534,CMH,John Glenn Columbus International Airport,Columbus,United States
+535,CMI,University of Illinois Willard Airport,Champaign,United States
+536,CMN,Mohammed V International Airport,Casablanca,Morocco
+537,CMP,Santana do Araguaia Airport,Santana do Araguaia,Brazil
+538,CMU,Chimbu Airport,Kundiawa,Papua New Guinea
+539,CMW,Ignacio Agramonte International Airport,Camaguey,Cuba
+540,CMX,Houghton County Memorial Airport,Hancock,United States
+541,CND,Mihail Kogălniceanu International Airport,Constanta,Romania
+542,CNF,Tancredo Neves International Airport,Belo Horizonte,Brazil
+543,CNJ,Cloncurry Airport,Cloncurry,Australia
+544,CNM,Cavern City Air Terminal,Carlsbad,United States
+545,CNP,Neerlerit Inaat Airport,Neerlerit Inaat,Greenland
+546,CNS,Cairns International Airport,Cairns,Australia
+547,CNX,Chiang Mai International Airport,Chiang Mai,Thailand
+548,CNY,Canyonlands Field,Moab,United States
+549,COD,Yellowstone Regional Airport,Cody,United States
+550,COK,Cochin International Airport,Kochi,India
+551,COO,Cadjehoun Airport,Cotonou,Benin
+552,COQ,Choibalsan Airport,Choibalsan,Mongolia
+553,COR,Ingeniero Ambrosio Taravella Airport,Cordoba,Argentina
+554,COS,City of Colorado Springs Municipal Airport,Colorado Springs,United States
+555,COU,Columbia Regional Airport,Columbia,United States
+556,CPC,Aviador C. Campos Airport,San Martin Des Andes,Argentina
+557,CPD,Coober Pedy Airport,Coober Pedy,Australia
+558,CPE,Ingeniero Alberto Acuña Ongay International Airport,Campeche,Mexico
+559,CPH,Copenhagen Kastrup Airport,Copenhagen,Denmark
+560,CPO,Desierto de Atacama Airport,Copiapo,Chile
+561,CPR,Casper-Natrona County International Airport,Casper,United States
+562,CPT,Cape Town International Airport,Cape Town,South Africa
+563,CPV,Presidente João Suassuna Airport,Campina Grande,Brazil
+564,CPX,Benjamin Rivera Noriega Airport,Culebra Island,Puerto Rico
+565,CRA,Craiova Airport,Craiova,Romania
+566,CRD,General E. Mosconi Airport,Comodoro Rivadavia,Argentina
+567,CRI,Colonel Hill Airport,Colonel Hill,Bahamas
+568,CRK,Diosdado Macapagal International Airport,Angeles City,Philippines
+569,CRL,Brussels South Charleroi Airport,Charleroi,Belgium
+570,CRM,Catarman National Airport,Catarman,Philippines
+571,CRP,Corpus Christi International Airport,Corpus Christi,United States
+572,CRW,Yeager Airport,Charleston,United States
+573,CSG,Columbus Metropolitan Airport,Columbus,United States
+574,CSH,Solovki Airport,Solovetsky Islands,Russia
+575,CSK,Cap Skirring Airport,Cap Skiring,Senegal
+576,CSX,Changsha Huanghua International Airport,Changcha,China
+577,CSY,Cheboksary Airport,Cheboksary,Russia
+578,CTA,Catania-Fontanarossa Airport,Catania,Italy
+579,CTC,Catamarca Airport,Catamarca,Argentina
+580,CTG,Rafael Nuñez International Airport,Cartagena,Colombia
+581,CTL,Charleville Airport,Charlieville,Australia
+582,CTM,Chetumal International Airport,Chetumal,Mexico
+583,CTS,New Chitose Airport,Sapporo,Japan
+584,CTU,Chengdu Shuangliu International Airport,Chengdu,China
+585,CUC,Camilo Daza International Airport,Cucuta,Colombia
+586,CUE,Mariscal Lamar Airport,Cuenca,Ecuador
+587,CUF,Cuneo International Airport,Cuneo,Italy
+588,CUL,Bachigualato Federal International Airport,Culiacan,Mexico
+589,CUM,Cumaná (Antonio José de Sucre) Airport,Cumana,Venezuela
+590,CUN,Cancún International Airport,Cancun,Mexico
+591,CUQ,Coen Airport,Coen,Australia
+592,CUR,Hato International Airport,Willemstad,Netherlands Antilles
+593,CUU,General Roberto Fierro Villalobos International Airport,Chihuahua,Mexico
+594,CUZ,Alejandro Velasco Astete International Airport,Cuzco,Peru
+595,CVG,Cincinnati Northern Kentucky International Airport,Cincinnati,United States
+596,CVM,General Pedro Jose Mendez International Airport,Ciudad Victoria,Mexico
+597,CVU,Corvo Airport,Corvo,Portugal
+598,CWA,Central Wisconsin Airport,Wassau,United States
+599,CWB,Afonso Pena Airport,Curitiba,Brazil
+600,CWL,Cardiff International Airport,Cardiff,United Kingdom
+601,CXB,Cox's Bazar Airport,Cox's Bazar,Bangladesh
+602,CXH,Vancouver Harbour Water Aerodrome,Vancouver,Canada
+603,CXI,Cassidy International Airport,Kiritimati,Kiribati
+604,CXJ,Hugo Cantergiani Regional Airport,Caxias Do Sul,Brazil
+605,CXR,Cam Ranh Airport,Nha Trang,Vietnam
+606,CYB,Gerrard Smith International Airport,Cayman Brac,Cayman Islands
+607,CYF,Chefornak Airport,Chefornak,United States
+608,CYO,Vilo Acuña International Airport,Cayo Largo del Sur,Cuba
+609,CYP,Calbayog Airport,Calbayog City,Philippines
+610,CYS,Cheyenne Regional Jerry Olson Field,Cheyenne,United States
+611,CYX,Cherskiy Airport,Cherskiy,Russia
+612,CYZ,Cauayan Airport,Cauayan,Philippines
+613,CZE,José Leonardo Chirinos Airport,Coro,Venezuela
+614,CZL,Mohamed Boudiaf International Airport,Constantine,Algeria
+615,CZM,Cozumel International Airport,Cozumel,Mexico
+616,CZS,Cruzeiro do Sul Airport,Cruzeiro do Sul,Brazil
+617,CZU,Las Brujas Airport,Corozal,Colombia
+618,CZX,Changzhou Benniu Airport,Changzhou,China
+619,DAB,Daytona Beach International Airport,Daytona Beach,United States
+620,DAC,Hazrat Shahjalal International Airport,Dhaka,Bangladesh
+621,DAD,Da Nang International Airport,Danang,Vietnam
+622,DAL,Dallas Love Field,Dallas,United States
+623,DAR,Julius Nyerere International Airport,Dar Es Salaam,Tanzania
+624,DAT,Datong Airport,Datong,China
+625,DAU,Daru Airport,Daru,Papua New Guinea
+626,DAV,Enrique Malek International Airport,David,Panama
+627,DAX,Dachuan Airport,Dazhou,China
+628,DAY,James M Cox Dayton International Airport,Dayton,United States
+629,DBA,Dalbandin Airport,Dalbandin,Pakistan
+630,DBO,Dubbo City Regional Airport,Dubbo,Australia
+631,DBQ,Dubuque Regional Airport,Dubuque IA,United States
+632,DBV,Dubrovnik Airport,Dubrovnik,Croatia
+633,DCA,Ronald Reagan Washington National Airport,Washington,United States
+634,DCM,Castres-Mazamet Airport,Castres,France
+635,DCN,RAAF Base Curtin,Derby,Australia
+636,DCY,Daocheng Yading Airport,Daocheng,China
+637,DDC,Dodge City Regional Airport,Dodge City,United States
+638,DDG,Dandong Airport,Dandong,China
+639,DEA,Dera Ghazi Khan Airport,Dera Ghazi Khan,Pakistan
+640,DEB,Debrecen International Airport,Debrecen,Hungary
+641,DEC,Decatur Airport,Decatur,United States
+642,DED,Dehradun Airport,Dehra Dun,India
+643,DEE,Mendeleyevo Airport,Yuzhno-Kurilsk,Russia
+644,DEF,Dezful Airport,Dezful,Iran
+645,DEL,Indira Gandhi International Airport,Delhi,India
+646,DEN,Denver International Airport,Denver,United States
+647,DFW,Dallas Fort Worth International Airport,Dallas-Fort Worth,United States
+648,DGO,General Guadalupe Victoria International Airport,Durango,Mexico
+649,DGT,Sibulan Airport,Dumaguete,Philippines
+650,DHI,Dhangarhi Airport,Dhangarhi,Nepal
+651,DHM,Kangra Airport,Kangra,India
+652,DHN,Dothan Regional Airport,Dothan,United States
+653,DIB,Dibrugarh Airport,Mohanbari,India
+654,DIE,Arrachart Airport,Antsiranana,Madagascar
+655,DIG,Diqing Airport,Shangri-La,China
+656,DIJ,Dijon-Bourgogne Airport,Dijon,France
+657,DIK,Dickinson Theodore Roosevelt Regional Airport,Dickinson,United States
+658,DIL,Presidente Nicolau Lobato International Airport,Dili,East Timor
+659,DIN,Dien Bien Phu Airport,Dienbienphu,Vietnam
+660,DIR,Aba Tenna Dejazmach Yilma International Airport,Dire Dawa,Ethiopia
+661,DIU,Diu Airport,Diu,India
+662,DIY,Diyarbakir Airport,Diyabakir,Turkey
+663,DJB,Sultan Thaha Airport,Jambi,Indonesia
+664,DJE,Djerba Zarzis International Airport,Djerba,Tunisia
+665,DJG,Djanet Inedbirene Airport,Djanet,Algeria
+666,DJJ,Sentani International Airport,Jayapura,Indonesia
+667,DKR,Léopold Sédar Senghor International Airport,Dakar,Senegal
+668,DLA,Douala International Airport,Douala,Cameroon
+669,DLC,Zhoushuizi Airport,Dalian,China
+670,DLE,Dole-Tavaux Airport,Dole,France
+671,DLG,Dillingham Airport,Dillingham,United States
+672,DLH,Duluth International Airport,Duluth,United States
+673,DLI,Lien Khuong Airport,Dalat,Vietnam
+674,DLM,Dalaman International Airport,Dalaman,Turkey
+675,DLU,Dali Airport,Dali,China
+676,DLY,Dillon's Bay Airport,Dillon's Bay,Vanuatu
+677,DLZ,Dalanzadgad Airport,Dalanzadgad,Mongolia
+678,DMB,Taraz Airport,Dzhambul,Kazakhstan
+679,DMD,Doomadgee Airport,Doomadgee,Australia
+680,DME,Domodedovo International Airport,Moscow,Russia
+681,DMK,Don Mueang International Airport,Bangkok,Thailand
+682,DMM,King Fahd International Airport,Dammam,Saudi Arabia
+683,DMU,Dimapur Airport,Dimapur,India
+684,DND,Dundee Airport,Dundee,United Kingdom
+685,DNH,Dunhuang Airport,Dunhuang,China
+686,DNK,Dnipropetrovsk International Airport,Dnepropetrovsk,Ukraine
+687,DNR,Dinard-Pleurtuit-Saint-Malo Airport,Dinard,France
+688,DNZ,Çardak Airport,Denizli,Turkey
+689,DOB,Rar Gwamar Airport,Dobo,Indonesia
+690,DOH,Hamad International Airport,Doha,Qatar
+691,DOK,Donetsk International Airport,Donetsk,Ukraine
+692,DOL,Deauville-Saint-Gatien Airport,Deauville,France
+693,DOM,Douglas-Charles Airport,Dominica,Dominica
+694,DOU,Dourados Airport,Dourados,Brazil
+695,DOY,Dongying Shengli Airport,Dongying,China
+696,DPL,Dipolog Airport,Dipolog,Philippines
+697,DPO,Devonport Airport,Devonport,Australia
+698,DPS,Ngurah Rai (Bali) International Airport,Denpasar,Indonesia
+699,DQA,Saertu Airport,Daqing,China
+700,DRG,Deering Airport,Deering,United States
+701,DRK,Drake Bay Airport,Puntarenas,Costa Rica
+702,DRO,Durango La Plata County Airport,Durango,United States
+703,DRS,Dresden Airport,Dresden,Germany
+704,DRV,Dharavandhoo Airport,DHARAVANDHOO,Maldives
+705,DRW,Darwin International Airport,Darwin,Australia
+706,DSA,Robin Hood Doncaster Sheffield Airport,"Doncaster, Sheffield",United Kingdom
+707,DSK,Dera Ismael Khan Airport,Dera Ismael Khan,Pakistan
+708,DSM,Des Moines International Airport,Des Moines,United States
+709,DSN,Ordos Ejin Horo Airport,Dongsheng,China
+710,DTM,Dortmund Airport,Dortmund,Germany
+711,DTW,Detroit Metropolitan Wayne County Airport,Detroit,United States
+712,DUB,Dublin Airport,Dublin,Ireland
+713,DUD,Dunedin Airport,Dunedin,New Zealand
+714,DUJ,DuBois Regional Airport,Du Bois,United States
+715,DUR,King Shaka International Airport,Durban,South Africa
+716,DUS,Düsseldorf Airport,Duesseldorf,Germany
+717,DUT,Unalaska Airport,Unalaska,United States
+718,DVO,Francisco Bangoy International Airport,Davao,Philippines
+719,DWC,Al Maktoum International Airport,Dubai,United Arab Emirates
+720,DWD,King Salman Abdulaziz Airport,,Saudi Arabia
+721,DXB,Dubai International Airport,Dubai,United Arab Emirates
+722,DYG,Dayong Airport,Dayong,China
+723,DYR,Ugolny Airport,Anadyr,Russia
+724,DYU,Dushanbe Airport,Dushanbe,Tajikistan
+725,DZA,Dzaoudzi Pamandzi International Airport,Dzaoudzi,Mayotte
+726,DZN,Zhezkazgan Airport,Zhezkazgan,Kazakhstan
+727,EAE,Siwo Airport,Sangafa,Vanuatu
+728,EAM,Nejran Airport,Nejran,Saudi Arabia
+729,EAS,San Sebastian Airport,San Sebastian,Spain
+730,EAT,Pangborn Memorial Airport,Wenatchee,United States
+731,EAU,Chippewa Valley Regional Airport,Eau Claire,United States
+732,EBA,Marina Di Campo Airport,Marina Di Campo,Italy
+733,EBB,Entebbe International Airport,Entebbe,Uganda
+734,EBH,El Bayadh Airport,El Bayadh,Algeria
+735,EBJ,Esbjerg Airport,Esbjerg,Denmark
+736,EBL,Erbil International Airport,Erbil,Iraq
+737,EBU,Saint-Étienne-Bouthéon Airport,St-Etienne,France
+738,ECN,Ercan International Airport,Nicosia,Cyprus
+739,ECP,Northwest Florida Beaches International Airport,Panama City,United States
+740,EDI,Edinburgh Airport,Edinburgh,United Kingdom
+741,EDL,Eldoret International Airport,Eldoret,Kenya
+742,EDO,Balıkesir Körfez Airport,Balikesir Korfez,Turkey
+743,EDR,Pormpuraaw Airport,Pormpuraaw,Australia
+744,EEK,Eek Airport,Eek,United States
+745,EFL,Kefallinia Airport,Keffallinia,Greece
+746,EGC,Bergerac-Roumanière Airport,Bergerac,France
+747,EGE,Eagle County Regional Airport,Vail,United States
+748,EGM,Sege Airport,Sege,Solomon Islands
+749,EGN,Geneina Airport,Geneina,Sudan
+750,EGO,Belgorod International Airport,Belgorod,Russia
+751,EGS,Egilsstaðir Airport,Egilsstadir,Iceland
+752,EGX,Egegik Airport,Egegik,United States
+753,EIN,Eindhoven Airport,Eindhoven,Netherlands
+754,EIS,Terrance B. Lettsome International Airport,Tortola,British Virgin Islands
+755,EJA,Yariguíes Airport,Barrancabermeja,Colombia
+756,EJH,Al Wajh Domestic Airport,Wejh,Saudi Arabia
+757,EKO,Elko Regional Airport,Elko,United States
+758,EKS,Shakhtyorsk Airport,Shakhtyorsk,Russia
+759,ELC,Elcho Island Airport,Elcho Island,Australia
+760,ELD,South Arkansas Regional At Goodwin Field,El Dorado,United States
+761,ELF,El Fasher Airport,El Fasher,Sudan
+762,ELG,El Golea Airport,El Golea,Algeria
+763,ELH,North Eleuthera Airport,North Eleuthera,Bahamas
+764,ELI,Elim Airport,Elim,United States
+765,ELM,Elmira Corning Regional Airport,Elmira,United States
+766,ELP,El Paso International Airport,El Paso,United States
+767,ELQ,Gassim Airport,Gassim,Saudi Arabia
+768,ELS,Ben Schoeman Airport,East London,South Africa
+769,ELU,Guemar Airport,Guemar,Algeria
+770,ELV,Elfin Cove Seaplane Base,Elfin Cove,United States
+771,EMA,East Midlands Airport,East Midlands,United Kingdom
+772,EMD,Emerald Airport,Emerald,Australia
+773,EMK,Emmonak Airport,Emmonak,United States
+774,ENA,Kenai Municipal Airport,Kenai,United States
+775,ENE,Ende (H Hasan Aroeboesman) Airport,Ende,Indonesia
+776,ENH,Enshi Airport,Enshi,China
+777,ENU,Akanu Ibiam International Airport,Enugu,Nigeria
+778,ENY,Yan'an Ershilipu Airport,Yan'an,China
+779,EOH,Enrique Olaya Herrera Airport,Medellin,Colombia
+780,EOI,Eday Airport,Eday,United Kingdom
+781,EPR,Esperance Airport,Esperance,Australia
+782,EQS,Brigadier Antonio Parodi Airport,Esquel,Argentina
+783,ERC,Erzincan Airport,Erzincan,Turkey
+784,ERF,Erfurt Airport,Erfurt,Germany
+785,ERI,Erie International Tom Ridge Field,Erie,United States
+786,ERL,Erenhot Saiwusu International Airport,Erenhot,China
+787,ERM,Erechim Airport,Erechim,Brazil
+788,ERN,Eirunepé Airport,Eirunepe,Brazil
+789,ERS,Eros Airport,Windhoek,Namibia
+790,ERZ,Erzurum International Airport,Erzurum,Turkey
+791,ESB,Esenboğa International Airport,Ankara,Turkey
+792,ESC,Delta County Airport,Escanaba,United States
+793,ESD,Orcas Island Airport,Eastsound,United States
+794,ESL,Elista Airport,Elista,Russia
+795,ESM,General Rivadeneira Airport,Esmeraldas,Ecuador
+796,ESU,Mogador Airport,Essadouira,Morocco
+797,ETH,Eilat Airport,Elat,Israel
+798,ETR,Santa Rosa International Airport,Santa Rosa,Ecuador
+799,ETZ,Metz-Nancy-Lorraine Airport,Metz,France
+800,EUG,Mahlon Sweet Field,Eugene,United States
+801,EUN,Hassan I Airport,El Aaiún,Western Sahara
+802,EUX,F. D. Roosevelt Airport,Oranjestad,Netherlands Antilles
+803,EVE,"Harstad/Narvik Airport, Evenes",Harstad/Narvik,Norway
+804,EVG,Sveg Airport,Sveg,Sweden
+805,EVN,Zvartnots International Airport,Yerevan,Armenia
+806,EVV,Evansville Regional Airport,Evansville,United States
+807,EWB,New Bedford Regional Airport,New Bedford,United States
+808,EWN,Coastal Carolina Regional Airport,New Bern,United States
+809,EWR,Newark Liberty International Airport,Newark,United States
+810,EXT,Exeter International Airport,Exeter,United Kingdom
+811,EYK,Beloyarskiy Airport,Beloyarsky,Russia
+812,EYP,El Yopal Airport,Yopal,Colombia
+813,EYW,Key West International Airport,Key West,United States
+814,EZE,Ministro Pistarini International Airport,Buenos Aires,Argentina
+815,EZS,Elazığ Airport,Elazig,Turkey
+816,FAE,Vagar Airport,Vagar,Faroe Islands
+817,FAI,Fairbanks International Airport,Fairbanks,United States
+818,FAO,Faro Airport,Faro,Portugal
+819,FAR,Hector International Airport,Fargo,United States
+820,FAT,Fresno Yosemite International Airport,Fresno,United States
+821,FAV,Fakarava Airport,Fakarava,French Polynesia
+822,FAY,Fayetteville Regional Grannis Field,Fayetteville,United States
+823,FBM,Lubumbashi International Airport,Lubumashi,Congo (Kinshasa)
+824,FCA,Glacier Park International Airport,Kalispell,United States
+825,FCO,Leonardo da Vinci–Fiumicino Airport,Rome,Italy
+826,FDF,Martinique Aimé Césaire International Airport,Fort-de-france,Martinique
+827,FDH,Friedrichshafen Airport,Friedrichshafen,Germany
+828,FEG,Fergana International Airport,Fergana,Uzbekistan
+829,FEN,Fernando de Noronha Airport,Fernando Do Noronha,Brazil
+830,FEZ,Saïss Airport,Fes,Morocco
+831,FIH,Ndjili International Airport,Kinshasa,Congo (Kinshasa)
+832,FJR,Fujairah International Airport,Fujeirah,United Arab Emirates
+833,FKB,Karlsruhe Baden-Baden Airport,Karlsruhe/Baden-Baden,Germany
+834,FKI,Bangoka International Airport,Kisangani,Congo (Kinshasa)
+835,FKL,Venango Regional Airport,Franklin,United States
+836,FKQ,Fakfak Airport,Fak Fak,Indonesia
+837,FKS,Fukushima Airport,Fukushima,Japan
+838,FLA,Gustavo Artunduaga Paredes Airport,Florencia,Colombia
+839,FLG,Flagstaff Pulliam Airport,Flagstaff,United States
+840,FLL,Fort Lauderdale Hollywood International Airport,Fort Lauderdale,United States
+841,FLN,Hercílio Luz International Airport,Florianopolis,Brazil
+842,FLO,Florence Regional Airport,Florence,United States
+843,FLR,Peretola Airport,Florence,Italy
+844,FLS,Flinders Island Airport,Flinders Island,Australia
+845,FLW,Flores Airport,Flores,Portugal
+846,FMA,Formosa Airport,Formosa,Argentina
+847,FMI,Kalemie Airport,Kalemie,Congo (Kinshasa)
+848,FMM,Memmingen Allgau Airport,Memmingen,Germany
+849,FMN,Four Corners Regional Airport,Farmington,United States
+850,FMO,Münster Osnabrück Airport,Munster,Germany
+851,FNA,Lungi International Airport,Freetown,Sierra Leone
+852,FNC,Madeira Airport,Funchal,Portugal
+853,FNI,Nîmes-Arles-Camargue Airport,Nimes,France
+854,FNJ,Pyongyang Sunan International Airport,Pyongyang,North Korea
+855,FNT,Bishop International Airport,Flint,United States
+856,FOC,Fuzhou Changle International Airport,Fuzhou,China
+857,FOE,Topeka Regional Airport - Forbes Field,Topeka,United States
+858,FON,Arenal Airport,La Fortuna/San Carlos,Costa Rica
+859,FOR,Pinto Martins International Airport,Fortaleza,Brazil
+860,FPO,Grand Bahama International Airport,Freeport,Bahamas
+861,FRA,Frankfurt am Main Airport,Frankfurt,Germany
+862,FRD,Friday Harbor Airport,Friday Harbor,United States
+863,FRE,Fera/Maringe Airport,Fera Island,Solomon Islands
+864,FRO,Florø Airport,Floro,Norway
+865,FRS,Mundo Maya International Airport,Flores,Guatemala
+866,FRU,Manas International Airport,Bishkek,Kyrgyzstan
+867,FRW,Francistown Airport,Francistown,Botswana
+868,FSC,Figari Sud-Corse Airport,Figari,France
+869,FSD,Joe Foss Field Airport,Sioux Falls,United States
+870,FSM,Fort Smith Regional Airport,Fort Smith,United States
+871,FSP,St Pierre Airport,St.-pierre,Saint Pierre and Miquelon
+872,FTA,Futuna Airport,Futuna Island,Vanuatu
+873,FTE,El Calafate Airport,El Calafate,Argentina
+874,FTU,Tôlanaro Airport,Tolagnaro,Madagascar
+875,FUE,Fuerteventura Airport,Fuerteventura,Spain
+876,FUG,Fuyang Xiguan Airport,Fuyang,China
+877,FUJ,Fukue Airport,Fukue,Japan
+878,FUK,Fukuoka Airport,Fukuoka,Japan
+879,FUN,Funafuti International Airport,Funafuti,Tuvalu
+880,FUO,Foshan Shadi Airport,Foshan,China
+881,FUT,Pointe Vele Airport,Futuna Island,Wallis and Futuna
+882,FWA,Fort Wayne International Airport,Fort Wayne,United States
+883,FYU,Fort Yukon Airport,Fort Yukon,United States
+884,GAE,Gabès Matmata International Airport,Gabes,Tunisia
+885,GAF,Gafsa Ksar International Airport,Gafsa,Tunisia
+886,GAJ,Yamagata Airport,Yamagata,Japan
+887,GAL,Edward G. Pitka Sr Airport,Galena,United States
+888,GAM,Gambell Airport,Gambell,United States
+889,GAN,Gan International Airport,Gan Island,Maldives
+890,GAO,Mariana Grajales Airport,Guantanamo,Cuba
+891,GAU,Lokpriya Gopinath Bordoloi International Airport,Guwahati,India
+892,GBB,Gabala International Airport,Qabala,Azerbaijan
+893,GBE,Sir Seretse Khama International Airport,Gaberone,Botswana
+894,GBT,Gorgan Airport,Gorgan,Iran
+895,GCC,Gillette Campbell County Airport,Gillette,United States
+896,GCH,Gachsaran Airport,Gachsaran,Iran
+897,GCI,Guernsey Airport,Guernsey,Guernsey
+898,GCK,Garden City Regional Airport,Garden City,United States
+899,GCM,Owen Roberts International Airport,Georgetown,Cayman Islands
+900,GCN,Grand Canyon National Park Airport,Grand Canyon,United States
+901,GDE,Gode Airport,Gode,Ethiopia
+902,GDL,Don Miguel Hidalgo Y Costilla International Airport,Guadalajara,Mexico
+903,GDN,Gdańsk Lech Wałęsa Airport,Gdansk,Poland
+904,GDQ,Gonder Airport,Gondar,Ethiopia
+905,GDT,JAGS McCartney International Airport,Cockburn Town,Turks and Caicos Islands
+906,GDV,Dawson Community Airport,Glendive,United States
+907,GDX,Sokol Airport,Magadan,Russia
+908,GDZ,Gelendzhik Airport,Gelendzhik,Russia
+909,GEA,Nouméa Magenta Airport,Noumea,New Caledonia
+910,GEG,Spokane International Airport,Spokane,United States
+911,GEL,Santo Ângelo Airport,Santo Angelo,Brazil
+912,GEO,Cheddi Jagan International Airport,Georgetown,Guyana
+913,GES,General Santos International Airport,Romblon,Philippines
+914,GET,Geraldton Airport,Geraldton,Australia
+915,GEV,Gällivare Airport,Gallivare,Sweden
+916,GFF,Griffith Airport,Griffith,Australia
+917,GFK,Grand Forks International Airport,Grand Forks,United States
+918,GFN,Grafton Airport,Grafton,Australia
+919,GGG,East Texas Regional Airport,Longview,United States
+920,GGT,Exuma International Airport,Great Exuma,Bahamas
+921,GGW,Wokal Field Glasgow International Airport,Glasgow,United States
+922,GHA,Noumérat - Moufdi Zakaria Airport,Ghardaia,Algeria
+923,GHB,Governor's Harbour Airport,Governor's Harbor,Bahamas
+924,GHT,Ghat Airport,Ghat,Libya
+925,GIB,Gibraltar Airport,Gibraltar,Gibraltar
+926,GIG,Rio Galeão – Tom Jobim International Airport,Rio De Janeiro,Brazil
+927,GIL,Gilgit Airport,Gilgit,Pakistan
+928,GIS,Gisborne Airport,Gisborne,New Zealand
+929,GIU,Sigiriya Air Force Base,Sigiriya,Sri Lanka
+930,GIZ,Jizan Regional Airport,Gizan,Saudi Arabia
+931,GJA,La Laguna Airport,Guanaja,Honduras
+932,GJT,Grand Junction Regional Airport,Grand Junction,United States
+933,GKA,Goroka Airport,Goroka,Papua New Guinea
+934,GKK,Kooddoo Airport,Kooddoo,Maldives
+935,GLA,Glasgow International Airport,Glasgow,United Kingdom
+936,GLF,Golfito Airport,Golfito,Costa Rica
+937,GLH,Mid Delta Regional Airport,Greenville,United States
+938,GLK,Galcaio Airport,Galcaio,Somalia
+939,GLO,Gloucestershire Airport,Golouchestershire,United Kingdom
+940,GLT,Gladstone Airport,Gladstone,Australia
+941,GLV,Golovin Airport,Golovin,United States
+942,GMA,Gemena Airport,Gemena,Congo (Kinshasa)
+943,GMB,Gambella Airport,Gambella,Ethiopia
+944,GMO,Gombe Lawanti International Airport,Gombe,Nigeria
+945,GMP,Gimpo International Airport,Seoul,South Korea
+946,GMR,Totegegie Airport,Totegegie,French Polynesia
+947,GMZ,La Gomera Airport,La Gomera,Spain
+948,GND,Point Salines International Airport,Point Salines,Grenada
+949,GNM,Guanambi Airport,Guanambi,Brazil
+950,GNV,Gainesville Regional Airport,Gainesville,United States
+951,GNY,Şanlıurfa GAP Airport,Sanliurfa,Turkey
+952,GOA,Genoa Cristoforo Colombo Airport,Genoa,Italy
+953,GOH,Godthaab / Nuuk Airport,Godthaab,Greenland
+954,GOI,Dabolim Airport,Goa,India
+955,GOJ,Nizhny Novgorod Strigino International Airport,Nizhniy Novgorod,Russia
+956,GOM,Goma International Airport,Goma,Congo (Kinshasa)
+957,GOP,Gorakhpur Airport,Gorakhpur,India
+958,GOQ,Golmud Airport,Golmud,China
+959,GOT,Gothenburg-Landvetter Airport,Gothenborg,Sweden
+960,GOU,Garoua International Airport,Garoua,Cameroon
+961,GOV,Gove Airport,Gove,Australia
+962,GPA,Araxos Airport,Patras,Greece
+963,GPB,Tancredo Thomas de Faria Airport,Guarapuava,Brazil
+964,GPI,Juan Casiano Airport,Guapi,Colombia
+965,GPS,Seymour Airport,Galapagos,Ecuador
+966,GPT,Gulfport Biloxi International Airport,Gulfport,United States
+967,GRB,Austin Straubel International Airport,Green Bay,United States
+968,GRI,Central Nebraska Regional Airport,Grand Island,United States
+969,GRJ,George Airport,George,South Africa
+970,GRK,Robert Gray  Army Air Field Airport,Killeen,United States
+971,GRO,Girona Airport,Gerona,Spain
+972,GRP,Gurupi Airport,Gurupi,Brazil
+973,GRQ,Eelde Airport,Groningen,Netherlands
+974,GRR,Gerald R. Ford International Airport,Grand Rapids,United States
+975,GRU,Guarulhos - Governador André Franco Montoro International Airport,Sao Paulo,Brazil
+976,GRW,Graciosa Airport,Graciosa Island,Portugal
+977,GRX,Federico Garcia Lorca Airport,Granada,Spain
+978,GRZ,Graz Airport,Graz,Austria
+979,GSE,Gothenburg City Airport,Gothenborg,Sweden
+980,GSO,Piedmont Triad International Airport,Greensboro,United States
+981,GSP,Greenville Spartanburg International Airport,Greenville,United States
+982,GST,Gustavus Airport,Gustavus,United States
+983,GTE,Groote Eylandt Airport,Groote Eylandt,Australia
+984,GTF,Great Falls International Airport,Great Falls,United States
+985,GTO,Jalaluddin Airport,Gorontalo,Indonesia
+986,GTR,Golden Triangle Regional Airport,Columbus Mississippi,United States
+987,GUA,La Aurora Airport,Guatemala City,Guatemala
+988,GUC,Gunnison Crested Butte Regional Airport,Gunnison,United States
+989,GUM,Antonio B. Won Pat International Airport,Agana,Guam
+990,GUR,Gurney Airport,Gurney,Papua New Guinea
+991,GUW,Atyrau Airport,Atyrau,Kazakhstan
+992,GVA,Geneva Cointrin International Airport,Geneva,Switzerland
+993,GVR,Coronel Altino Machado de Oliveira Airport,Governador Valadares,Brazil
+994,GWD,Gwadar International Airport,Gwadar,Pakistan
+995,GWL,Gwalior Airport,Gwalior,India
+996,GWT,Westerland Sylt Airport,Westerland,Germany
+997,GXF,Sayun International Airport,Sayun Intl,Yemen
+998,GXH,Gannan Xiahe Airport,Xiahe city,China
+999,GYA,Capitán de Av. Emilio Beltrán Airport,Guayaramerín,Bolivia
+1000,GYD,Heydar Aliyev International Airport,Baku,Azerbaijan
+1001,GYE,José Joaquín de Olmedo International Airport,Guayaquil,Ecuador
+1002,GYN,Santa Genoveva Airport,Goiania,Brazil
+1003,GYS,Guangyuan Airport,Guangyuan,China
+1004,GZO,Nusatupe Airport,Gizo,Solomon Islands
+1005,GZP,Gazipaşa Airport,Alanya,Turkey
+1006,GZT,Gaziantep International Airport,Gaziantep,Turkey
+1007,HAA,Hasvik Airport,Hasvik,Norway
+1008,HAC,Hachijojima Airport,Hachijojima,Japan
+1009,HAD,Halmstad Airport,Halmstad,Sweden
+1010,HAH,Prince Said Ibrahim International Airport,Moroni,Comoros
+1011,HAJ,Hannover Airport,Hannover,Germany
+1012,HAK,Haikou Meilan International Airport,Haikou,China
+1013,HAM,Hamburg Airport,Hamburg,Germany
+1014,HAN,Noi Bai International Airport,Hanoi,Vietnam
+1015,HAQ,Hanimaadhoo Airport,Haa Dhaalu Atoll,Maldives
+1016,HAS,Ha'il Airport,Hail,Saudi Arabia
+1017,HAU,Haugesund Airport,Haugesund,Norway
+1018,HAV,José Martí International Airport,Havana,Cuba
+1019,HBA,Hobart International Airport,Hobart,Australia
+1020,HBE,Borg El Arab International Airport,Alexandria,Egypt
+1021,HBX,Hubli Airport,Hubli,India
+1022,HCR,Holy Cross Airport,Holy Cross,United States
+1023,HDF,Heringsdorf Airport,Heringsdorf,Germany
+1024,HDG,Handan Airport,Handan,China
+1025,HDM,Hamadan Airport,Hamadan,Iran
+1026,HDN,Yampa Valley Airport,Hayden,United States
+1027,HDS,Hoedspruit Air Force Base Airport,Hoedspruit,South Africa
+1028,HDY,Hat Yai International Airport,Hat Yai,Thailand
+1029,HEA,Herat Airport,Herat,Afghanistan
+1030,HEH,Heho Airport,Heho,Burma
+1031,HEK,Heihe Airport,Heihe,China
+1032,HEL,Helsinki Vantaa Airport,Helsinki,Finland
+1033,HER,Heraklion International Nikos Kazantzakis Airport,Heraklion,Greece
+1034,HET,Baita International Airport,Hohhot,China
+1035,HFA,Haifa International Airport,Haifa,Israel
+1036,HFE,Hefei Luogang International Airport,Hefei,China
+1037,HFS,Hagfors Airport,Hagfors,Sweden
+1038,HFT,Hammerfest Airport,Hammerfest,Norway
+1039,HGA,Egal International Airport,Hargeisa,Somalia
+1040,HGH,Hangzhou Xiaoshan International Airport,Hangzhou,China
+1041,HGN,Mae Hong Son Airport,Mae Hong Son,Thailand
+1042,HGR,Hagerstown Regional Richard A Henson Field,Hagerstown,United States
+1043,HGU,Mount Hagen Kagamuga Airport,Mount Hagen,Papua New Guinea
+1044,HHH,Hilton Head Airport,Hilton Head Island,United States
+1045,HHN,Frankfurt-Hahn Airport,Hahn,Germany
+1046,HIA,Lianshui Airport,Huai An,China
+1047,HIB,Range Regional Airport,Hibbing,United States
+1048,HID,Horn Island Airport,Horn Island,Australia
+1049,HIJ,Hiroshima Airport,Hiroshima,Japan
+1050,HIN,Sacheon Air Base/Airport,Sacheon,South Korea
+1051,HIR,Honiara International Airport,Honiara,Solomon Islands
+1052,HJJ,Zhijiang Airport,Zhijiang,China
+1053,HJR,Khajuraho Airport,Khajuraho,India
+1054,HKD,Hakodate Airport,Hakodate,Japan
+1055,HKG,Hong Kong International Airport,Hong Kong,Hong Kong
+1056,HKK,Hokitika Airfield,Hokitika,New Zealand
+1057,HKN,Kimbe Airport,Hoskins,Papua New Guinea
+1058,HKT,Phuket International Airport,Phuket,Thailand
+1059,HLA,Lanseria Airport,Johannesburg,South Africa
+1060,HLD,Dongshan Airport,Hailar,China
+1061,HLH,Ulanhot Airport,Ulanhot,China
+1062,HLN,Helena Regional Airport,Helena,United States
+1063,HLZ,Hamilton International Airport,Hamilton,New Zealand
+1064,HMA,Khanty Mansiysk Airport,Khanty-Mansiysk,Russia
+1065,HMB,Sohag International Airport,Sohag,Egypt
+1066,HME,Oued Irara Airport,Hassi Messaoud,Algeria
+1067,HMI,Hami Airport,Hami,China
+1068,HMO,General Ignacio P. Garcia International Airport,Hermosillo,Mexico
+1069,HMV,Hemavan Airport,Hemavan,Sweden
+1070,HNA,Hanamaki Airport,Hanamaki,Japan
+1071,HND,Tokyo Haneda International Airport,Tokyo,Japan
+1072,HNH,Hoonah Airport,Hoonah,United States
+1073,HNL,Daniel K Inouye International Airport,Honolulu,United States
+1074,HNM,Hana Airport,Hana,United States
+1075,HNS,Haines Airport,Haines,United States
+1076,HOB,Lea County Regional Airport,Hobbs,United States
+1077,HOD,Hodeidah International Airport,Hodeidah,Yemen
+1078,HOE,Ban Huoeisay Airport,Huay Xai,Laos
+1079,HOF,Al Ahsa Airport,Al-ahsa,Saudi Arabia
+1080,HOG,Frank Pais International Airport,Holguin,Cuba
+1081,HOI,Hao Airport,Hao Island,French Polynesia
+1082,HOM,Homer Airport,Homer,United States
+1083,HON,Huron Regional Airport,Huron,United States
+1084,HOR,Horta Airport,Horta,Portugal
+1085,HOT,Memorial Field,Hot Springs,United States
+1086,HOU,William P Hobby Airport,Houston,United States
+1087,HOV,"Ørsta-Volda Airport, Hovden",Orsta-Volda,Norway
+1088,HPB,Hooper Bay Airport,Hooper Bay,United States
+1089,HPH,Cat Bi International Airport,Haiphong,Vietnam
+1090,HPN,Westchester County Airport,White Plains,United States
+1091,HRB,Taiping Airport,Harbin,China
+1092,HRE,Robert Gabriel Mugabe International Airport,Harare,Zimbabwe
+1093,HRG,Hurghada International Airport,Hurghada,Egypt
+1094,HRI,Mattala Rajapaksa International Airport,Mattala,Sri Lanka
+1095,HRK,Kharkiv International Airport,Kharkov,Ukraine
+1096,HRL,Valley International Airport,Harlingen,United States
+1097,HRM,Hassi R'Mel Airport,Tilrempt,Algeria
+1098,HRO,Boone County Airport,Harrison,United States
+1099,HSG,Saga Airport,Saga,Japan
+1100,HSL,Huslia Airport,Huslia,United States
+1101,HSN,Zhoushan Airport,Zhoushan,China
+1102,HSV,Huntsville International Carl T Jones Field,Huntsville,United States
+1103,HTA,Chita-Kadala Airport,Chita,Russia
+1104,HTI,Hamilton Island Airport,Hamilton Island,Australia
+1105,HTN,Hotan Airport,Hotan,China
+1106,HTS,Tri-State/Milton J. Ferguson Field,Huntington,United States
+1107,HTY,Hatay Airport,Hatay,Turkey
+1108,HUH,Huahine-Fare Airport,Huahine Island,French Polynesia
+1109,HUI,Phu Bai Airport,Hue,Vietnam
+1110,HUN,Hualien Airport,Hualien,Taiwan
+1111,HUS,Hughes Airport,Hughes,United States
+1112,HUU,Alferez Fap David Figueroa Fernandini Airport,Huánuco,Peru
+1113,HUX,Bahías de Huatulco International Airport,Huatulco,Mexico
+1114,HUY,Humberside Airport,Humberside,United Kingdom
+1115,HVB,Hervey Bay Airport,Hervey Bay,Australia
+1116,HVD,Khovd Airport,Khovd,Mongolia
+1117,HVG,Valan Airport,Honningsvag,Norway
+1118,HVN,Tweed New Haven Airport,New Haven,United States
+1119,HVR,Havre City County Airport,Havre,United States
+1120,HYA,Barnstable Municipal Boardman Polando Field,Barnstable,United States
+1121,HYD,Rajiv Gandhi International Airport,Hyderabad,India
+1122,HYG,Hydaburg Seaplane Base,Hydaburg,United States
+1123,HYN,Huangyan Luqiao Airport,Huangyan,China
+1124,HZH,Liping Airport,Liping,China
+1125,IAA,Igarka Airport,Igarka,Russia
+1126,IAD,Washington Dulles International Airport,Washington,United States
+1127,IAG,Niagara Falls International Airport,Niagara Falls,United States
+1128,IAH,George Bush Intercontinental Houston Airport,Houston,United States
+1129,IAM,In Aménas Airport,Zarzaitine,Algeria
+1130,IAN,Bob Baker Memorial Airport,Kiana,United States
+1131,IAO,Siargao Airport,Siargao,Philippines
+1132,IAR,Tunoshna Airport,Yaroslavl,Russia
+1133,IAS,Iaşi Airport,Iasi,Romania
+1134,IBA,Ibadan Airport,Ibadan,Nigeria
+1135,IBE,Perales Airport,Ibague,Colombia
+1136,IBR,Hyakuri Airport,Ibaraki,Japan
+1137,IBZ,Ibiza Airport,Ibiza,Spain
+1138,ICI,Cicia Airport,Cicia,Fiji
+1139,ICN,Incheon International Airport,Seoul,South Korea
+1140,ICT,Wichita Eisenhower National Airport,Wichita,United States
+1141,IDA,Idaho Falls Regional Airport,Idaho Falls,United States
+1142,IDR,Devi Ahilyabai Holkar Airport,Indore,India
+1143,IEV,Kiev Zhuliany International Airport,Kiev,Ukraine
+1144,IFJ,Ísafjörður Airport,Isafjordur,Iceland
+1145,IFN,Esfahan Shahid Beheshti International Airport,Esfahan,Iran
+1146,IFO,Ivano-Frankivsk International Airport,Ivano-Frankivsk,Ukraine
+1147,IGA,Inagua Airport,Matthew Town,Bahamas
+1148,IGD,Iğdır Airport,Igdir,Turkey
+1149,IGG,Igiugig Airport,Igiugig,United States
+1150,IGR,Cataratas Del Iguazú International Airport,Iguazu Falls,Argentina
+1151,IGU,Cataratas International Airport,Foz Do Iguacu,Brazil
+1152,IIL,Ilam Airport,Ilam,Iran
+1153,IJK,Izhevsk Airport,Izhevsk,Russia
+1154,IKA,Imam Khomeini International Airport,Tehran,Iran
+1155,IKI,Iki Airport,Iki,Japan
+1156,IKO,Nikolski Air Station,Nikolski,United States
+1157,IKS,Tiksi Airport,Tiksi,Russia
+1158,IKT,Irkutsk Airport,Irkutsk,Russia
+1159,ILD,Lleida-Alguaire Airport,Lleida,Spain
+1160,ILG,New Castle Airport,Wilmington,United States
+1161,ILI,Iliamna Airport,Iliamna,United States
+1162,ILM,Wilmington International Airport,Wilmington,United States
+1163,ILO,Iloilo International Airport,Iloilo,Philippines
+1164,ILP,Île des Pins Airport,Île des Pins,New Caledonia
+1165,ILR,Ilorin International Airport,Ilorin,Nigeria
+1166,ILY,Islay Airport,Islay,United Kingdom
+1167,IMF,Imphal Airport,Imphal,India
+1168,IMP,Prefeito Renato Moreira Airport,Imperatriz,Brazil
+1169,IMT,Ford Airport,Iron Mountain,United States
+1170,IND,Indianapolis International Airport,Indianapolis,United States
+1171,INH,Inhambane Airport,Inhambane,Mozambique
+1172,INL,Falls International Airport,International Falls,United States
+1173,INN,Innsbruck Airport,Innsbruck,Austria
+1174,INU,Nauru International Airport,Nauru,Nauru
+1175,INV,Inverness Airport,Inverness,United Kingdom
+1176,INZ,In Salah Airport,In Salah,Algeria
+1177,IOA,Ioannina Airport,Ioannina,Greece
+1178,IOM,Isle of Man Airport,Isle Of Man,Isle of Man
+1179,IOS,Bahia - Jorge Amado Airport,Ilheus,Brazil
+1180,IPA,Ipota Airport,Ipota,Vanuatu
+1181,IPC,Mataveri Airport,Easter Island,Chile
+1182,IPH,Sultan Azlan Shah Airport,Ipoh,Malaysia
+1183,IPI,San Luis Airport,Ipiales,Colombia
+1184,IPL,Imperial County Airport,Imperial,United States
+1185,IPN,Usiminas Airport,Ipatinga,Brazil
+1186,IPT,Williamsport Regional Airport,Williamsport,United States
+1187,IQN,Qingyang Airport,Qingyang,China
+1188,IQQ,Diego Aracena Airport,Iquique,Chile
+1189,IQT,Coronel FAP Francisco Secada Vignetta International Airport,Iquitos,Peru
+1190,IRA,Ngorangora Airport,Kirakira,Solomon Islands
+1191,IRC,Circle City /New/ Airport,Circle,United States
+1192,IRG,Lockhart River Airport,Lockhart River,Australia
+1193,IRJ,Capitan V A Almonacid Airport,La Rioja,Argentina
+1194,IRK,Kirksville Regional Airport,Kirksville,United States
+1195,IRP,Matari Airport,Isiro,Congo (Kinshasa)
+1196,IRZ,Tapuruquara Airport,Santa Isabel do Rio Negro,Brazil
+1197,ISA,Mount Isa Airport,Mount Isa,Australia
+1198,ISB,New Islamabad International Airport,Islamabad,Pakistan
+1199,ISC,St. Mary's Airport,ST MARY\'S,United Kingdom
+1200,ISE,Süleyman Demirel International Airport,Isparta,Turkey
+1201,ISG,New Ishigaki Airport,Ishigaki,Japan
+1202,ISN,Sloulin Field International Airport,Williston,United States
+1203,ISP,Long Island Mac Arthur Airport,Islip,United States
+1204,IST,Istanbul Airport,Istanbul,Turkey
+1205,ISU,Sulaymaniyah International Airport,Sulaymaniyah,Iraq
+1206,ITB,Itaituba Airport,Itaituba,Brazil
+1207,ITH,Ithaca Tompkins Regional Airport,Ithaca,United States
+1208,ITM,Osaka International Airport,Osaka,Japan
+1209,ITO,Hilo International Airport,Hilo,United States
+1210,IUE,Niue International Airport,Alofi,Niue
+1211,IVC,Invercargill Airport,Invercargill,New Zealand
+1212,IVL,Ivalo Airport,Ivalo,Finland
+1213,IWJ,Iwami Airport,Iwami,Japan
+1214,IWK,Iwakuni Marine Corps Air Station,Iwakuni,Japan
+1215,IXA,Agartala Airport,Agartala,India
+1216,IXB,Bagdogra Airport,Baghdogra,India
+1217,IXC,Chandigarh Airport,Chandigarh,India
+1218,IXD,Allahabad Airport,Allahabad,India
+1219,IXE,Mangalore International Airport,Mangalore,India
+1220,IXG,Belgaum Airport,Belgaum,India
+1221,IXJ,Jammu Airport,Jammu,India
+1222,IXL,Leh Kushok Bakula Rimpochee Airport,Leh,India
+1223,IXM,Madurai Airport,Madurai,India
+1224,IXR,Birsa Munda Airport,Ranchi,India
+1225,IXS,Silchar Airport,Silchar,India
+1226,IXU,Aurangabad Airport,Aurangabad,India
+1227,IXZ,Vir Savarkar International Airport,Port Blair,India
+1228,IZA,Zona da Mata Regional Airport,Juiz de Fora,Brazil
+1229,IZO,Izumo Airport,Izumo,Japan
+1230,JAC,Jackson Hole Airport,Jacksn Hole,United States
+1231,JAI,Jaipur International Airport,Jaipur,India
+1232,JAL,El Lencero Airport,Jalapa,Mexico
+1233,JAN,Jackson-Medgar Wiley Evers International Airport,Jackson,United States
+1234,JAU,Francisco Carle Airport,Jauja,Peru
+1235,JAV,Ilulissat Airport,Ilulissat,Greenland
+1236,JAX,Jacksonville International Airport,Jacksonville,United States
+1237,JBQ,La Isabela International Airport,La Isabela,Dominican Republic
+1238,JBR,Jonesboro Municipal Airport,Jonesboro,United States
+1239,JCB,Santa Terezinha Airport,Joacaba,Brazil
+1240,JCK,Julia Creek Airport,Julia Creek,Australia
+1241,JDH,Jodhpur Airport,Jodhpur,India
+1242,JDO,Orlando Bezerra de Menezes Airport,Juazeiro Do Norte,Brazil
+1243,JDZ,Jingdezhen Airport,Jingdezhen,China
+1244,JED,King Abdulaziz International Airport,Jeddah,Saudi Arabia
+1245,JEG,Aasiaat Airport,Aasiaat,Greenland
+1246,JER,Jersey Airport,Jersey,Jersey
+1247,JFK,John F Kennedy International Airport,New York,United States
+1248,JFR,Paamiut Heliport,Paamiut,Greenland
+1249,JGA,Jamnagar Airport,Jamnagar,India
+1250,JGD,Jiagedaqi Airport,Jiagedaqi District,China
+1251,JGN,Jiayuguan Airport,Jiayuguan,China
+1252,JGS,Jinggangshan Airport,Jian,China
+1253,JHB,Senai International Airport,Johor Bahru,Malaysia
+1254,JHG,Xishuangbanna Gasa Airport,Jinghonggasa,China
+1255,JHM,Kapalua Airport,Lahania-kapalua,United States
+1256,JHS,Sisimiut Airport,Sisimiut,Greenland
+1257,JHW,Chautauqua County-Jamestown Airport,Jamestown,United States
+1258,JIB,Djibouti-Ambouli Airport,Djibouti,Djibouti
+1259,JIC,Jinchuan Airport,Jinchuan,China
+1260,JIJ,Wilwal International Airport,Jijiga,Ethiopia
+1261,JIK,Ikaria Airport,Ikaria,Greece
+1262,JIM,Jimma Airport,Jimma,Ethiopia
+1263,JIQ,Qianjiang Wulingshan Airport,Qianjiang,China
+1264,JIU,Jiujiang Lushan Airport,Jiujiang,China
+1265,JJN,Quanzhou Jinjiang International Airport,Quanzhou,China
+1266,JJU,Qaqortoq Heliport,Qaqortoq,Greenland
+1267,JKG,Jönköping Airport,Joenkoeping,Sweden
+1268,JKH,Chios Island National Airport,Chios,Greece
+1269,JKL,Kalymnos Airport,Kalymnos,Greece
+1270,JKR,Janakpur Airport,Janakpur,Nepal
+1271,JLN,Joplin Regional Airport,Joplin,United States
+1272,JLR,Jabalpur Airport,Jabalpur,India
+1273,JMK,Mikonos Airport,Mykonos,Greece
+1274,JMU,Jiamusi Airport,Jiamusi,China
+1275,JNB,OR Tambo International Airport,Johannesburg,South Africa
+1276,JNG,Jining Qufu Airport,Jining,China
+1277,JNN,Nanortalik Heliport,Nanortalik,Greenland
+1278,JNS,Narsaq Heliport,Narsaq,Greenland
+1279,JNU,Juneau International Airport,Juneau,United States
+1280,JNX,Naxos Airport,Cyclades Islands,Greece
+1281,JNZ,Jinzhou Airport,Jinzhou,China
+1282,JOE,Joensuu Airport,Joensuu,Finland
+1283,JOG,Adi Sutjipto International Airport,Yogyakarta,Indonesia
+1284,JOI,Lauro Carneiro de Loyola Airport,Joinville,Brazil
+1285,JOL,Jolo Airport,Jolo,Philippines
+1286,JOS,Yakubu Gowon Airport,Jos,Nigeria
+1287,JPA,Presidente Castro Pinto International Airport,Joao Pessoa,Brazil
+1288,JPR,Ji-Paraná Airport,Ji-Paraná,Brazil
+1289,JQA,Qaarsut Airport,Uummannaq,Greenland
+1290,JQE,Jaqué Airport,Jaqué,Panama
+1291,JRO,Kilimanjaro International Airport,Kilimanjaro,Tanzania
+1292,JSH,Sitia Airport,Sitia,Greece
+1293,JSI,Skiathos Island National Airport,Skiathos,Greece
+1294,JSR,Jessore Airport,Jessore,Bangladesh
+1295,JST,John Murtha Johnstown Cambria County Airport,Johnstown,United States
+1296,JSU,Maniitsoq Airport,Maniitsoq,Greenland
+1297,JSY,Syros Airport,Syros Island,Greece
+1298,JTC,Bauru - Arealva Airport,Bauru,Brazil
+1299,JTR,Santorini Airport,Thira,Greece
+1300,JTY,Astypalaia Airport,Astypalaia,Greece
+1301,JUB,Juba International Airport,Juba,South Sudan
+1302,JUH,Jiuhuashan Airport,Chizhou,China
+1303,JUJ,Gobernador Horacio Guzman International Airport,Jujuy,Argentina
+1304,JUL,Inca Manco Capac International Airport,Juliaca,Peru
+1305,JUV,Upernavik Airport,Upernavik,Greenland
+1306,JUZ,Quzhou Airport,Quzhou,China
+1307,JXA,Jixi Xingkaihu Airport,Jixi,China
+1308,JYV,Jyvaskyla Airport,Jyvaskyla,Finland
+1309,JZH,Jiuzhai Huanglong Airport,Jiuzhaigou,China
+1310,KAA,Kasama Airport,Kasama,Zambia
+1311,KAD,Kaduna Airport,Kaduna,Nigeria
+1312,KAJ,Kajaani Airport,Kajaani,Finland
+1313,KAL,Kaltag Airport,Kaltag,United States
+1314,KAN,Mallam Aminu International Airport,Kano,Nigeria
+1315,KAO,Kuusamo Airport,Kuusamo,Finland
+1316,KAT,Kaitaia Airport,Kaitaia,New Zealand
+1317,KAW,Kawthoung Airport,Kawthoung,Burma
+1318,KAZ,Kao Airport,Kao,Indonesia
+1319,KBL,Hamid Karzai International Airport,Kabul,Afghanistan
+1320,KBP,Boryspil International Airport,Kiev,Ukraine
+1321,KBR,Sultan Ismail Petra Airport,Kota Bahru,Malaysia
+1322,KBV,Krabi Airport,Krabi,Thailand
+1323,KCA,Kuqa Airport,Kuqa,China
+1324,KCH,Kuching International Airport,Kuching,Malaysia
+1325,KCK,Kirensk Airport,Kirensk,Russia
+1326,KCM,Kahramanmaraş Airport,Kahramanmaras,Turkey
+1327,KCO,Cengiz Topel Airport,Topel,Turkey
+1328,KCT,Koggala Airport,Koggala,Sri Lanka
+1329,KCZ,Kōchi Ryōma Airport,Kochi,Japan
+1330,KDH,Kandahar Airport,Kandahar,Afghanistan
+1331,KDI,Wolter Monginsidi Airport,Kendari,Indonesia
+1332,KDM,Kaadedhdhoo Airport,Kaadedhdhoo,Maldives
+1333,KDO,Kadhdhoo Airport,Laamu Atoll,Maldives
+1334,KDU,Skardu Airport,Skardu,Pakistan
+1335,KDV,Vunisea Airport,Vunisea,Fiji
+1336,KEF,Keflavik International Airport,Keflavik,Iceland
+1337,KEJ,Kemerovo Airport,Kemorovo,Russia
+1338,KEM,Kemi-Tornio Airport,Kemi,Finland
+1339,KEP,Nepalgunj Airport,Nepalgunj,Nepal
+1340,KER,Kerman Airport,Kerman,Iran
+1341,KET,Kengtung Airport,Kengtung,Burma
+1342,KEW,Keewaywin Airport,Keewaywin,Canada
+1343,KFP,False Pass Airport,False Pass,United States
+1344,KFS,Kastamonu Airport,Kastamonu,Turkey
+1345,KGA,Kananga Airport,Kananga,Congo (Kinshasa)
+1346,KGC,Kingscote Airport,Kingscote,Australia
+1347,KGD,Khrabrovo Airport,Kaliningrad,Russia
+1348,KGE,Kaghau Airport,Kagau Island,Solomon Islands
+1349,KGF,Sary-Arka Airport,Karaganda,Kazakhstan
+1350,KGI,Kalgoorlie Boulder Airport,Kalgoorlie,Australia
+1351,KGL,Kigali International Airport,Kigali,Rwanda
+1352,KGP,Kogalym International Airport,Kogalym,Russia
+1353,KGS,Kos Airport,Kos,Greece
+1354,KGT,Kangding Airport,Kangding,China
+1355,KHD,Khoram Abad Airport,Khorram Abad,Iran
+1356,KHG,Kashgar Airport,Kashi,China
+1357,KHH,Kaohsiung International Airport,Kaohsiung,Taiwan
+1358,KHI,Jinnah International Airport,Karachi,Pakistan
+1359,KHN,Nanchang Changbei International Airport,Nanchang,China
+1360,KHS,Khasab Air Base,Khasab,Oman
+1361,KHV,Khabarovsk-Novy Airport,Khabarovsk,Russia
+1362,KHY,Khoy Airport,Khoy,Iran
+1363,KID,Kristianstad Airport,Kristianstad,Sweden
+1364,KIF,Kingfisher Lake Airport,Kingfisher Lake,Canada
+1365,KIH,Kish International Airport,Kish Island,Iran
+1366,KIJ,Niigata Airport,Niigata,Japan
+1367,KIM,Kimberley Airport,Kimberley,South Africa
+1368,KIN,Norman Manley International Airport,Kingston,Jamaica
+1369,KIR,Kerry Airport,Kerry,Ireland
+1370,KIS,Kisumu Airport,Kisumu,Kenya
+1371,KIT,Kithira Airport,Kithira,Greece
+1372,KIV,Chişinău International Airport,Chisinau,Moldova
+1373,KIX,Kansai International Airport,Osaka,Japan
+1374,KJA,Yemelyanovo Airport,Krasnoyarsk,Russia
+1375,KKA,Koyuk Alfred Adams Airport,Koyuk,United States
+1376,KKC,Khon Kaen Airport,Khon Kaen,Thailand
+1377,KKE,Kerikeri Airport,Kerikeri,New Zealand
+1378,KKH,Kongiganak Airport,Kongiganak,United States
+1379,KKJ,Kitakyūshū Airport,Kitakyushu,Japan
+1380,KKN,Kirkenes Airport (Høybuktmoen),Kirkenes,Norway
+1381,KKR,Kaukura Airport,Kaukura Atoll,French Polynesia
+1382,KLG,Kalskag Airport,Kalskag,United States
+1383,KLN,Larsen Bay Airport,Larsen Bay,United States
+1384,KLO,Kalibo International Airport,Kalibo,Philippines
+1385,KLR,Kalmar Airport,Kalkmar,Sweden
+1386,KLU,Klagenfurt Airport,Klagenfurt,Austria
+1387,KLV,Karlovy Vary International Airport,Karlovy Vary,Czech Republic
+1388,KLW,Klawock Airport,Klawock,United States
+1389,KLX,Kalamata Airport,Kalamata,Greece
+1390,KME,Kamembe Airport,Kamembe,Rwanda
+1391,KMG,Kunming Changshui International Airport,Kunming,China
+1392,KMI,Miyazaki Airport,Miyazaki,Japan
+1393,KMJ,Kumamoto Airport,Kumamoto,Japan
+1394,KMQ,Komatsu Airport,Kanazawa,Japan
+1395,KMS,Kumasi Airport,Kumasi,Ghana
+1396,KND,Kindu Airport,Kindu,Congo (Kinshasa)
+1397,KNG,Kaimana Airport,Kaimana,Indonesia
+1398,KNH,Kinmen Airport,Kinmen,Taiwan
+1399,KNQ,Koné Airport,Kone,New Caledonia
+1400,KNS,King Island Airport,King Island,Australia
+1401,KNU,Kanpur Airport,Kanpur,India
+1402,KNX,Kununurra Airport,Kununurra,Australia
+1403,KOA,Ellison Onizuka Kona International At Keahole Airport,Kona,United States
+1404,KOC,Koumac Airport,Koumac,New Caledonia
+1405,KOE,El Tari Airport,Kupang,Indonesia
+1406,KOI,Kirkwall Airport,Kirkwall,United Kingdom
+1407,KOJ,Kagoshima Airport,Kagoshima,Japan
+1408,KOK,Kokkola-Pietarsaari Airport,Kruunupyy,Finland
+1409,KOO,Kongolo Airport,Kongolo,Congo (Kinshasa)
+1410,KOP,Nakhon Phanom Airport,Nakhon Phanom,Thailand
+1411,KOS,Sihanoukville International Airport,Sihanoukville,Cambodia
+1412,KOT,Kotlik Airport,Kotlik,United States
+1413,KOV,Kokshetau Airport,Kokshetau,Kazakhstan
+1414,KOW,Ganzhou Airport,Ganzhou,China
+1415,KPN,Kipnuk Airport,Kipnuk,United States
+1416,KPO,Pohang Airport (G-815/K-3),Pohang,South Korea
+1417,KPV,Perryville Airport,Perryville,United States
+1418,KQA,Akutan Seaplane Base,Akutan,United States
+1419,KQT,Qurghonteppa International Airport,Kurgan Tyube,Tajikistan
+1420,KRF,Kramfors Sollefteå Airport,Kramfors,Sweden
+1421,KRK,Kraków John Paul II International Airport,Krakow,Poland
+1422,KRL,Korla Airport,Korla,China
+1423,KRN,Kiruna Airport,Kiruna,Sweden
+1424,KRO,Kurgan Airport,Kurgan,Russia
+1425,KRP,Karup Airport,Karup,Denmark
+1426,KRR,Krasnodar Pashkovsky International Airport,Krasnodar,Russia
+1427,KRS,Kristiansand Airport,Kristiansand,Norway
+1428,KRT,Khartoum International Airport,Khartoum,Sudan
+1429,KRY,Karamay Airport,Karamay,China
+1430,KSA,Kosrae International Airport,Kosrae,Micronesia
+1431,KSC,Košice Airport,Kosice,Slovakia
+1432,KSD,Karlstad Airport,Karlstad,Sweden
+1433,KSE,Kasese Airport,Kasese,Uganda
+1434,KSF,Kassel-Calden Airport,Kassel,Germany
+1435,KSH,Shahid Ashrafi Esfahani Airport,Bakhtaran,Iran
+1436,KSJ,Kasos Airport,Kasos,Greece
+1437,KSM,St Mary's Airport,St Mary's,United States
+1438,KSN,Kostanay West Airport,Kostanay,Kazakhstan
+1439,KSO,Kastoria National Airport,Kastoria,Greece
+1440,KSQ,Karshi Khanabad Airport,Khanabad,Uzbekistan
+1441,KSU,Kristiansund Airport (Kvernberget),Kristiansund,Norway
+1442,KSY,Kars Airport,Kars,Turkey
+1443,KTA,Karratha Airport,Karratha,Australia
+1444,KTE,Kerteh Airport,Kerteh,Malaysia
+1445,KTG,Ketapang(Rahadi Usman) Airport,Ketapang,Indonesia
+1446,KTL,Kitale Airport,Kitale,Kenya
+1447,KTM,Tribhuvan International Airport,Kathmandu,Nepal
+1448,KTN,Ketchikan International Airport,Ketchikan,United States
+1449,KTS,Brevig Mission Airport,Brevig Mission,United States
+1450,KTT,Kittilä Airport,Kittila,Finland
+1451,KTW,Katowice International Airport,Katowice,Poland
+1452,KUA,Kuantan Airport,Kuantan,Malaysia
+1453,KUD,Kudat Airport,Kudat,Malaysia
+1454,KUF,Kurumoch International Airport,Samara,Russia
+1455,KUH,Kushiro Airport,Kushiro,Japan
+1456,KUK,Kasigluk Airport,Kasigluk,United States
+1457,KUL,Kuala Lumpur International Airport,Kuala Lumpur,Malaysia
+1458,KUN,Kaunas International Airport,Kaunas,Lithuania
+1459,KUO,Kuopio Airport,Kuopio,Finland
+1460,KUT,Kopitnari Airport,Kutaisi,Georgia
+1461,KUU,Kullu Manali Airport,Kulu,India
+1462,KUV,Kunsan Air Base,Kunsan,South Korea
+1463,KVA,Alexander the Great International Airport,Kavala,Greece
+1464,KVC,King Cove Airport,King Cove,United States
+1465,KVD,Ganja Airport,Ganja,Azerbaijan
+1466,KVG,Kavieng Airport,Kavieng,Papua New Guinea
+1467,KVK,Kirovsk-Apatity Airport,Apatity,Russia
+1468,KVL,Kivalina Airport,Kivalina,United States
+1469,KVX,Pobedilovo Airport,Kirov,Russia
+1470,KWA,Bucholz Army Air Field,Kwajalein,Marshall Islands
+1471,KWE,Longdongbao Airport,Guiyang,China
+1472,KWI,Kuwait International Airport,Kuwait,Kuwait
+1473,KWJ,Gwangju Airport,Kwangju,South Korea
+1474,KWK,Kwigillingok Airport,Kwigillingok,United States
+1475,KWL,Guilin Liangjiang International Airport,Guilin,China
+1476,KWM,Kowanyama Airport,Kowanyama,Australia
+1477,KWN,Quinhagak Airport,Quinhagak,United States
+1478,KWT,Kwethluk Airport,Kwethluk,United States
+1479,KYA,Konya Airport,Konya,Turkey
+1480,KYK,Karluk Airport,Karluk,United States
+1481,KYP,Kyaukpyu Airport,Kyaukpyu,Burma
+1482,KYU,Koyukuk Airport,Koyukuk,United States
+1483,KYZ,Kyzyl Airport,Kyzyl,Russia
+1484,KZI,Filippos Airport,Kozani,Greece
+1485,KZN,Kazan International Airport,Kazan,Russia
+1486,KZO,Kzyl-Orda Southwest Airport,Kzyl-Orda,Kazakhstan
+1487,KZR,Zafer Airport,Kutahya,Turkey
+1488,KZS,Kastelorizo Airport,Kastelorizo,Greece
+1489,LAD,Quatro de Fevereiro Airport,Luanda,Angola
+1490,LAE,Nadzab Airport,Nadzab,Papua New Guinea
+1491,LAI,Lannion-Côte de Granit Airport,Lannion,France
+1492,LAM,Los Alamos Airport,Los Alamos,United States
+1493,LAN,Capital City Airport,Lansing,United States
+1494,LAO,Laoag International Airport,Laoag,Philippines
+1495,LAP,Manuel Márquez de León International Airport,La Paz,Mexico
+1496,LAQ,La Abraq Airport,Al Bayda',Libya
+1497,LAR,Laramie Regional Airport,Laramie,United States
+1498,LAS,McCarran International Airport,Las Vegas,United States
+1499,LAU,Manda Airstrip,Lamu,Kenya
+1500,LAW,Lawton Fort Sill Regional Airport,Lawton,United States
+1501,LAX,Los Angeles International Airport,Los Angeles,United States
+1502,LAZ,Bom Jesus da Lapa Airport,Bom Jesus Da Lapa,Brazil
+1503,LBA,Leeds Bradford Airport,Leeds,United Kingdom
+1504,LBB,Lubbock Preston Smith International Airport,Lubbock,United States
+1505,LBC,Lübeck Blankensee Airport,Luebeck,Germany
+1506,LBD,Khudzhand Airport,Khudzhand,Tajikistan
+1507,LBE,Arnold Palmer Regional Airport,Latrobe,United States
+1508,LBF,North Platte Regional Airport Lee Bird Field,North Platte,United States
+1509,LBJ,Komodo Airport,Labuhan Bajo,Indonesia
+1510,LBL,Liberal Mid-America Regional Airport,Liberal,United States
+1511,LBS,Labasa Airport,Lambasa,Fiji
+1512,LBU,Labuan Airport,Labuan,Malaysia
+1513,LBV,Libreville Leon M'ba International Airport,Libreville,Gabon
+1514,LCA,Larnaca International Airport,Larnaca,Cyprus
+1515,LCE,Goloson International Airport,La Ceiba,Honduras
+1516,LCG,A Coruña Airport,La Coruna,Spain
+1517,LCH,Lake Charles Regional Airport,Lake Charles,United States
+1518,LCK,Rickenbacker International Airport,Columbus,United States
+1519,LCX,Longyan Guanzhishan Airport,Longyan,China
+1520,LCY,London City Airport,London,United Kingdom
+1521,LDB,Governador José Richa Airport,Londrina,Brazil
+1522,LDE,Tarbes-Lourdes-Pyrénées Airport,Tarbes,France
+1523,LDH,Lord Howe Island Airport,Lord Howe Island,Australia
+1524,LDS,Lindu Airport,Yinchun,China
+1525,LDU,Lahad Datu Airport,Lahad Datu,Malaysia
+1526,LDY,City of Derry Airport,Londonderry,United Kingdom
+1527,LEA,Learmonth Airport,Learmonth,Australia
+1528,LEB,Lebanon Municipal Airport,Lebanon,United States
+1529,LEC,Coronel Horácio de Mattos Airport,Lençóis,Brazil
+1530,LED,Pulkovo Airport,St. Petersburg,Russia
+1531,LEH,Le Havre Octeville Airport,Le Havre,France
+1532,LEI,Almería International Airport,Almeria,Spain
+1533,LEJ,Leipzig/Halle Airport,Leipzig,Germany
+1534,LEN,Leon Airport,Leon,Spain
+1535,LEQ,Land's End Airport,Land's End,United Kingdom
+1536,LET,Alfredo Vásquez Cobo International Airport,Leticia,Colombia
+1537,LEX,Blue Grass Airport,Lexington KY,United States
+1538,LFM,Lamerd Airport,Lamerd,Iran
+1539,LFR,La Fria Airport,La Fria,Venezuela
+1540,LFT,Lafayette Regional Airport,Lafayette,United States
+1541,LFW,Lomé-Tokoin Airport,Lome,Togo
+1542,LGA,La Guardia Airport,New York,United States
+1543,LGB,Long Beach /Daugherty Field/ Airport,Long Beach,United States
+1544,LGG,Liège Airport,Liege,Belgium
+1545,LGI,Deadman's Cay Airport,Dead Man's Cay,Bahamas
+1546,LGK,Langkawi International Airport,Langkawi,Malaysia
+1547,LGL,Long Lellang Airport,Long Datih,Malaysia
+1548,LGP,Legazpi City International Airport,Legazpi,Philippines
+1549,LGW,London Gatwick Airport,London,United Kingdom
+1550,LHE,Alama Iqbal International Airport,Lahore,Pakistan
+1551,LHR,London Heathrow Airport,London,United Kingdom
+1552,LHW,Lanzhou Zhongchuan Airport,Lanzhou,China
+1553,LIF,Lifou Airport,Lifou,New Caledonia
+1554,LIG,Limoges Airport,Limoges,France
+1555,LIH,Lihue Airport,Lihue,United States
+1556,LIL,Lille-Lesquin Airport,Lille,France
+1557,LIM,Jorge Chávez International Airport,Lima,Peru
+1558,LIN,Milano Linate Airport,Milan,Italy
+1559,LIR,Daniel Oduber Quiros International Airport,Liberia,Costa Rica
+1560,LIS,Humberto Delgado Airport (Lisbon Portela Airport),Lisbon,Portugal
+1561,LIT,Bill & Hillary Clinton National Airport/Adams Field,Little Rock,United States
+1562,LJA,Lodja Airport,Lodja,Congo (Kinshasa)
+1563,LJG,Lijiang Airport,Lijiang,China
+1564,LJU,Ljubljana Jože Pučnik Airport,Ljubljana,Slovenia
+1565,LKB,Lakeba Island Airport,Lakeba Island,Fiji
+1566,LKG,Lokichoggio Airport,Lokichoggio,Kenya
+1567,LKH,Long Akah Airport,Long Akah,Malaysia
+1568,LKL,Banak Airport,Lakselv,Norway
+1569,LKN,Leknes Airport,Leknes,Norway
+1570,LKO,Chaudhary Charan Singh International Airport,Lucknow,India
+1571,LLA,Luleå Airport,Lulea,Sweden
+1572,LLB,Libo Airport,Libo,China
+1573,LLF,Lingling Airport,Yongzhou,China
+1574,LLI,Lalibella Airport,Lalibella,Ethiopia
+1575,LLK,Lankaran International Airport,Lankaran,Azerbaijan
+1576,LLU,Alluitsup Paa Heliport,Alluitsup Paa,Greenland
+1577,LLW,Lilongwe International Airport,Lilongwe,Malawi
+1578,LMA,Minchumina Airport,Lake Minchumina,United States
+1579,LMM,Valle del Fuerte International Airport,Los Mochis,Mexico
+1580,LMN,Limbang Airport,Limbang,Malaysia
+1581,LMP,Lampedusa Airport,Lampedusa,Italy
+1582,LMT,Crater Lake-Klamath Regional Airport,Klamath Falls,United States
+1583,LNB,Lamen Bay Airport,Lamen Bay,Vanuatu
+1584,LNE,Lonorore Airport,Lonorore,Vanuatu
+1585,LNJ,Lintsang Airfield,Lincang,China
+1586,LNK,Lincoln Airport,Lincoln,United States
+1587,LNS,Lancaster Airport,Lancaster,United States
+1588,LNY,Lanai Airport,Lanai,United States
+1589,LNZ,Linz Hörsching Airport,Linz,Austria
+1590,LOD,Longana Airport,Longana,Vanuatu
+1591,LOE,Loei Airport,Loei,Thailand
+1592,LOH,Camilo Ponce Enriquez Airport,La Toma (Catamayo),Ecuador
+1593,LOK,Lodwar Airport,Lodwar,Kenya
+1594,LOP,Lombok International Airport,Praya,Indonesia
+1595,LOS,Murtala Muhammed International Airport,Lagos,Nigeria
+1596,LPA,Gran Canaria Airport,Gran Canaria,Spain
+1597,LPB,El Alto International Airport,La Paz,Bolivia
+1598,LPD,La Pedrera Airport,La Pedrera,Colombia
+1599,LPI,Linköping City Airport,Linkoeping,Sweden
+1600,LPL,Liverpool John Lennon Airport,Liverpool,United Kingdom
+1601,LPM,Lamap Airport,Lamap,Vanuatu
+1602,LPP,Lappeenranta Airport,Lappeenranta,Finland
+1603,LPQ,Luang Phabang International Airport,Luang Prabang,Laos
+1604,LPT,Lampang Airport,Lampang,Thailand
+1605,LPY,Le Puy-Loudes Airport,Le Puy,France
+1606,LQM,Caucaya Airport,Puerto Leguízamo,Colombia
+1607,LRD,Laredo International Airport,Laredo,United States
+1608,LRE,Longreach Airport,Longreach,Australia
+1609,LRH,La Rochelle-Île de Ré Airport,La Rochelle,France
+1610,LRM,Casa De Campo International Airport,La Romana,Dominican Republic
+1611,LRR,Lar Airport,Lar,Iran
+1612,LRS,Leros Airport,Leros,Greece
+1613,LRT,Lorient South Brittany (Bretagne Sud) Airport,Lorient,France
+1614,LSC,La Florida Airport,La Serena,Chile
+1615,LSE,La Crosse Municipal Airport,La Crosse,United States
+1616,LSI,Sumburgh Airport,Sumburgh,United Kingdom
+1617,LSP,Josefa Camejo International Airport,Paraguana,Venezuela
+1618,LST,Launceston Airport,Launceston,Australia
+1619,LSY,Lismore Airport,Lismore,Australia
+1620,LTD,Ghadames East Airport,Ghadames,Libya
+1621,LTI,Altai Airport,Altai,Mongolia
+1622,LTN,London Luton Airport,London,United Kingdom
+1623,LTO,Loreto International Airport,Loreto,Mexico
+1624,LTX,Cotopaxi International Airport,Latacunga,Ecuador
+1625,LUD,Luderitz Airport,Luderitz,Namibia
+1626,LUG,Lugano Airport,Lugano,Switzerland
+1627,LUH,Ludhiana Airport,Ludhiaha,India
+1628,LUK,Cincinnati Municipal Airport Lunken Field,Cincinnati,United States
+1629,LUM,Mangshi Airport,Luxi,China
+1630,LUN,Kenneth Kaunda International Airport Lusaka,Lusaka,Zambia
+1631,LUO,Luena Airport,Luena,Angola
+1632,LUQ,Brigadier Mayor D Cesar Raul Ojeda Airport,San Luis,Argentina
+1633,LUR,Cape Lisburne LRRS Airport,Cape Lisburne,United States
+1634,LUV,Dumatumbun Airport,Langgur-Kei Islands,Indonesia
+1635,LUW,Syukuran Aminuddin Amir Airport,Luwuk,Indonesia
+1636,LUX,Luxembourg-Findel International Airport,Luxemburg,Luxembourg
+1637,LUZ,Lublin Airport,Lublin,Poland
+1638,LVI,Livingstone Airport,Livingstone,Zambia
+1639,LWB,Greenbrier Valley Airport,Lewisburg,United States
+1640,LWN,Gyumri Shirak Airport,Gyumri,Armenia
+1641,LWO,Lviv International Airport,Lvov,Ukraine
+1642,LWS,Lewiston Nez Perce County Airport,Lewiston,United States
+1643,LWY,Lawas Airport,Lawas,Malaysia
+1644,LXA,Lhasa Gonggar Airport,Lhasa,China
+1645,LXG,Luang Namtha Airport,Luang Namtha,Laos
+1646,LXR,Luxor International Airport,Luxor,Egypt
+1647,LXS,Limnos Airport,Limnos,Greece
+1648,LYA,Luoyang Airport,Luoyang,China
+1649,LYB,Edward Bodden Airfield,Little Cayman,Cayman Islands
+1650,LYC,Lycksele Airport,Lycksele,Sweden
+1651,LYG,Lianyungang Airport,Lianyungang,China
+1652,LYH,Lynchburg Regional Preston Glenn Field,Lynchburg,United States
+1653,LYI,Shubuling Airport,Linyi,China
+1654,LYP,Faisalabad International Airport,Faisalabad,Pakistan
+1655,LYR,"Svalbard Airport, Longyear",Svalbard,Norway
+1656,LYS,Lyon Saint-Exupéry Airport,Lyon,France
+1657,LZC,Lázaro Cárdenas Airport,Lazard Cardenas,Mexico
+1658,LZH,Liuzhou Bailian Airport,Liuzhou,China
+1659,LZO,Luzhou Airport,Luzhou,China
+1660,LZY,Nyingchi Airport,Nyingchi,China
+1661,MAA,Chennai International Airport,Madras,India
+1662,MAB,João Correa da Rocha Airport,Maraba,Brazil
+1663,MAD,Adolfo Suárez Madrid–Barajas Airport,Madrid,Spain
+1664,MAF,Midland International Airport,Midland,United States
+1665,MAG,Madang Airport,Madang,Papua New Guinea
+1666,MAH,Menorca Airport,Menorca,Spain
+1667,MAJ,Marshall Islands International Airport,Majuro,Marshall Islands
+1668,MAM,General Servando Canales International Airport,Matamoros,Mexico
+1669,MAN,Manchester Airport,Manchester,United Kingdom
+1670,MAO,Eduardo Gomes International Airport,Manaus,Brazil
+1671,MAQ,Mae Sot Airport,Tak,Thailand
+1672,MAR,La Chinita International Airport,Maracaibo,Venezuela
+1673,MAS,Momote Airport,Momote,Papua New Guinea
+1674,MAU,Maupiti Airport,Maupiti,French Polynesia
+1675,MAZ,Eugenio Maria De Hostos Airport,Mayaguez,Puerto Rico
+1676,MBA,Mombasa Moi International Airport,Mombasa,Kenya
+1677,MBE,Monbetsu Airport,Monbetsu,Japan
+1678,MBI,Songwe Airport,Mbeya,Tanzania
+1679,MBJ,Sangster International Airport,Montego Bay,Jamaica
+1680,MBL,Manistee Co Blacker Airport,Manistee,United States
+1681,MBS,MBS International Airport,Saginaw,United States
+1682,MBT,Moises R. Espinosa Airport,Masbate,Philippines
+1683,MCE,Merced Regional Macready Field,Merced,United States
+1684,MCG,McGrath Airport,Mcgrath,United States
+1685,MCI,Kansas City International Airport,Kansas City,United States
+1686,MCK,Mc Cook Ben Nelson Regional Airport,McCook,United States
+1687,MCN,Middle Georgia Regional Airport,Macon,United States
+1688,MCO,Orlando International Airport,Orlando,United States
+1689,MCP,Alberto Alcolumbre Airport,Macapa,Brazil
+1690,MCT,Muscat International Airport,Muscat,Oman
+1691,MCV,McArthur River Mine Airport,McArthur River Mine,Australia
+1692,MCX,Uytash Airport,Makhachkala,Russia
+1693,MCY,Sunshine Coast Airport,Maroochydore,Australia
+1694,MCZ,Zumbi dos Palmares Airport,Maceio,Brazil
+1695,MDC,Sam Ratulangi Airport,Manado,Indonesia
+1696,MDE,Jose Maria Córdova International Airport,Rio Negro,Colombia
+1697,MDG,Mudanjiang Hailang International Airport,Mudanjiang,China
+1698,MDK,Mbandaka Airport,Mbandaka,Congo (Kinshasa)
+1699,MDL,Mandalay International Airport,Mandalay,Burma
+1700,MDQ,Ástor Piazzola International Airport,Mar Del Plata,Argentina
+1701,MDT,Harrisburg International Airport,Harrisburg,United States
+1702,MDU,Mendi Airport,Mendi,Papua New Guinea
+1703,MDW,Chicago Midway International Airport,Chicago,United States
+1704,MDZ,El Plumerillo Airport,Mendoza,Argentina
+1705,MEA,Macaé Airport,Macaé,Brazil
+1706,MEB,Melbourne Essendon Airport,Melbourne,Australia
+1707,MEC,Eloy Alfaro International Airport,Manta,Ecuador
+1708,MED,Prince Mohammad Bin Abdulaziz Airport,Madinah,Saudi Arabia
+1709,MEE,Maré Airport,Mare,New Caledonia
+1710,MEG,Malanje Airport,Malanje,Angola
+1711,MEH,Mehamn Airport,Mehamn,Norway
+1712,MEI,Key Field,Meridian,United States
+1713,MEL,Melbourne International Airport,Melbourne,Australia
+1714,MEM,Memphis International Airport,Memphis,United States
+1715,MEU,Monte Dourado Airport,Almeirim,Brazil
+1716,MEX,Licenciado Benito Juarez International Airport,Mexico City,Mexico
+1717,MFE,Mc Allen Miller International Airport,Mcallen,United States
+1718,MFM,Macau International Airport,Macau,Macau
+1719,MFR,Rogue Valley International Medford Airport,Medford,United States
+1720,MFU,Mfuwe Airport,Mfuwe,Zambia
+1721,MGA,Augusto C. Sandino (Managua) International Airport,Managua,Nicaragua
+1722,MGB,Mount Gambier Airport,Mount Gambier,Australia
+1723,MGF,Regional de Maringá - Sílvio Nane Junior Airport,Maringa,Brazil
+1724,MGH,Margate Airport,Margate,South Africa
+1725,MGM,Montgomery Regional (Dannelly Field) Airport,MONTGOMERY,United States
+1726,MGQ,Aden Adde International Airport,Mogadishu,Somalia
+1727,MGS,Mangaia Island Airport,Mangaia Island,Cook Islands
+1728,MGT,Milingimbi Airport,Milingimbi,Australia
+1729,MGW,Morgantown Municipal Walter L. Bill Hart Field,Morgantown,United States
+1730,MGZ,Myeik Airport,Myeik,Burma
+1731,MHC,Mocopulli Airport,Castro,Chile
+1732,MHD,Mashhad International Airport,Mashhad,Iran
+1733,MHG,Mannheim-City Airport,Mannheim,Germany
+1734,MHH,Leonard M Thompson International Airport,Marsh Harbor,Bahamas
+1735,MHK,Manhattan Regional Airport,Manhattan,United States
+1736,MHQ,Mariehamn Airport,Mariehamn,Finland
+1737,MHT,Manchester-Boston Regional Airport,Manchester NH,United States
+1738,MIA,Miami International Airport,Miami,United States
+1739,MID,Licenciado Manuel Crescencio Rejon Int Airport,Merida,Mexico
+1740,MIG,Mianyang Airport,Mianyang,China
+1741,MII,Frank Miloye Milenkowichi–Marília State Airport,Marília,Brazil
+1742,MIM,Merimbula Airport,Merimbula,Australia
+1743,MIR,Monastir Habib Bourguiba International Airport,Monastir,Tunisia
+1744,MIS,Misima Island Airport,Misima Island,Papua New Guinea
+1745,MJD,Moenjodaro Airport,Moenjodaro,Pakistan
+1746,MJF,Mosjøen Airport (Kjærstad),Mosjoen,Norway
+1747,MJM,Mbuji Mayi Airport,Mbuji-mayi,Congo (Kinshasa)
+1748,MJN,Amborovy Airport,Mahajanga,Madagascar
+1749,MJT,Mytilene International Airport,Mytilini,Greece
+1750,MJV,San Javier Airport,Murcia,Spain
+1751,MJZ,Mirny Airport,Mirnyj,Russia
+1752,MKE,General Mitchell International Airport,Milwaukee,United States
+1753,MKG,Muskegon County Airport,Muskegon,United States
+1754,MKK,Molokai Airport,Molokai,United States
+1755,MKL,McKellar-Sipes Regional Airport,Jackson,United States
+1756,MKM,Mukah Airport,Mukah,Malaysia
+1757,MKP,Makemo Airport,Makemo,French Polynesia
+1758,MKQ,Mopah Airport,Merauke,Indonesia
+1759,MKW,Rendani Airport,Manokwari,Indonesia
+1760,MKY,Mackay Airport,Mackay,Australia
+1761,MLA,Malta International Airport,Malta,Malta
+1762,MLB,Melbourne International Airport,Melbourne,United States
+1763,MLE,Malé International Airport,Male,Maldives
+1764,MLG,Abdul Rachman Saleh Airport,Malang,Indonesia
+1765,MLI,Quad City International Airport,Moline,United States
+1766,MLL,Marshall Don Hunter Sr Airport,Marshall,United States
+1767,MLM,General Francisco J. Mujica International Airport,Morelia,Mexico
+1768,MLN,Melilla Airport,Melilla,Spain
+1769,MLO,Milos Airport,Milos,Greece
+1770,MLU,Monroe Regional Airport,Monroe,United States
+1771,MLW,Spriggs Payne Airport,Monrovia,Liberia
+1772,MLX,Malatya Erhaç Airport,Malatya,Turkey
+1773,MLY,Manley Hot Springs Airport,Manley Hot Springs,United States
+1774,MMB,Memanbetsu Airport,Memanbetsu,Japan
+1775,MME,Durham Tees Valley Airport,Teesside,United Kingdom
+1776,MMH,Mammoth Yosemite Airport,Mammoth Lakes,United States
+1777,MMJ,Matsumoto Airport,Matsumoto,Japan
+1778,MMK,Murmansk Airport,Murmansk,Russia
+1779,MMO,Maio Airport,Maio,Cape Verde
+1780,MMU,Morristown Municipal Airport,Morristown,United States
+1781,MMX,Malmö Sturup Airport,Malmoe,Sweden
+1782,MMY,Miyako Airport,Miyako,Japan
+1783,MNA,Melangguane Airport,Melonguane,Indonesia
+1784,MNG,Maningrida Airport,Maningrida,Australia
+1785,MNL,Ninoy Aquino International Airport,Manila,Philippines
+1786,MNS,Mansa Airport,Mansa,Zambia
+1787,MOB,Mobile Regional Airport,Mobile,United States
+1788,MOC,Mário Ribeiro Airport,Montes Claros,Brazil
+1789,MOD,Modesto City Co-Harry Sham Field,Modesto,United States
+1790,MOF,Maumere(Wai Oti) Airport,Maumere,Indonesia
+1791,MOI,Mitiaro Island Airport,Mitiaro Island,Cook Islands
+1792,MOL,Molde Airport,Molde,Norway
+1793,MOQ,Morondava Airport,Morondava,Madagascar
+1794,MOT,Minot International Airport,Minot,United States
+1795,MOU,Mountain Village Airport,Mountain Village,United States
+1796,MOV,Moranbah Airport,Moranbah,Australia
+1797,MOZ,Moorea Airport,Moorea,French Polynesia
+1798,MPA,Katima Mulilo Airport,Mpacha,Namibia
+1799,MPH,Godofredo P. Ramos Airport,Caticlan,Philippines
+1800,MPL,Montpellier-Méditerranée Airport,Montpellier,France
+1801,MPM,Maputo Airport,Maputo,Mozambique
+1802,MPN,Mount Pleasant Airport,Mount Pleasant,Falkland Islands
+1803,MQF,Magnitogorsk International Airport,Magnetiogorsk,Russia
+1804,MQH,Minaçu Airport,Minacu,Brazil
+1805,MQJ,Moma Airport,Honuu,Russia
+1806,MQL,Mildura Airport,Mildura,Australia
+1807,MQM,Mardin Airport,Mardin,Turkey
+1808,MQN,"Mo i Rana Airport, Røssvoll",Mo i Rana,Norway
+1809,MQP,Kruger Mpumalanga International Airport,Mpumalanga,South Africa
+1810,MQT,Sawyer International Airport,Gwinn,United States
+1811,MQX,Mekele Airport,Makale,Ethiopia
+1812,MRD,Alberto Carnevalli Airport,Merida,Venezuela
+1813,MRE,Mara Serena Lodge Airstrip,Masai Mara,Kenya
+1814,MRS,Marseille Provence Airport,Marseille,France
+1815,MRU,Sir Seewoosagur Ramgoolam International Airport,Plaisance,Mauritius
+1816,MRV,Mineralnyye Vody Airport,Mineralnye Vody,Russia
+1817,MRX,Mahshahr Airport,Bandar Mahshahr,Iran
+1818,MRY,Monterey Peninsula Airport,Monterey,United States
+1819,MRZ,Moree Airport,Moree,Australia
+1820,MSA,Muskrat Dam Airport,Muskrat Dam,Canada
+1821,MSJ,Misawa Air Base,Misawa,Japan
+1822,MSL,Northwest Alabama Regional Airport,Muscle Shoals,United States
+1823,MSN,Dane County Regional Truax Field,Madison,United States
+1824,MSO,Missoula International Airport,Missoula,United States
+1825,MSP,Minneapolis-St Paul International/Wold-Chamberlain Airport,Minneapolis,United States
+1826,MSQ,Minsk National Airport,Minsk 2,Belarus
+1827,MSR,Muş Airport,Mus,Turkey
+1828,MSS,Massena International Richards Field,Massena,United States
+1829,MST,Maastricht Aachen Airport,Maastricht,Netherlands
+1830,MSU,Moshoeshoe I International Airport,Maseru,Lesotho
+1831,MSW,Massawa International Airport,Massawa,Eritrea
+1832,MSY,Louis Armstrong New Orleans International Airport,New Orleans,United States
+1833,MSZ,Namibe Airport,Mocamedes,Angola
+1834,MTJ,Montrose Regional Airport,Montrose CO,United States
+1835,MTM,Metlakatla Seaplane Base,Metakatla,United States
+1836,MTR,Los Garzones Airport,Monteria,Colombia
+1837,MTS,Matsapha Airport,Manzini,Swaziland
+1838,MTT,Minatitlán/Coatzacoalcos National Airport,Minatitlan,Mexico
+1839,MTV,Mota Lava Airport,Ablow,Vanuatu
+1840,MTY,General Mariano Escobedo International Airport,Monterrey,Mexico
+1841,MUA,Munda Airport,Munda,Solomon Islands
+1842,MUB,Maun Airport,Maun,Botswana
+1843,MUC,Munich Airport,Munich,Germany
+1844,MUE,Waimea Kohala Airport,Kamuela,United States
+1845,MUK,Mauke Airport,Mauke Island,Cook Islands
+1846,MUN,Maturín Airport,Maturin,Venezuela
+1847,MUR,Marudi Airport,Marudi,Malaysia
+1848,MUW,Ghriss Airport,Ghriss,Algeria
+1849,MUX,Multan International Airport,Multan,Pakistan
+1850,MVD,Carrasco International /General C L Berisso Airport,Montevideo,Uruguay
+1851,MVP,Fabio Alberto Leon Bentley Airport,Mitu,Colombia
+1852,MVR,Salak Airport,Maroua,Cameroon
+1853,MVT,Mataiva Airport,Mataiva,French Polynesia
+1854,MVY,Martha's Vineyard Airport,Vineyard Haven MA,United States
+1855,MWA,Williamson County Regional Airport,Marion,United States
+1856,MWF,Maewo-Naone Airport,Maewo Island,Vanuatu
+1857,MWX,Muan International Airport,Muan,South Korea
+1858,MWZ,Mwanza Airport,Mwanza,Tanzania
+1859,MXH,Moro Airport,Moro,Papua New Guinea
+1860,MXL,General Rodolfo Sánchez Taboada International Airport,Mexicali,Mexico
+1861,MXP,Malpensa International Airport,Milano,Italy
+1862,MXV,Mörön Airport,Muren,Mongolia
+1863,MXX,Mora Airport,Mora,Sweden
+1864,MXZ,Meixian Airport,Meixian,China
+1865,MYA,Moruya Airport,Moruya,Australia
+1866,MYD,Malindi Airport,Malindi,Kenya
+1867,MYG,Mayaguana Airport,Mayaguana,Bahamas
+1868,MYJ,Matsuyama Airport,Matsuyama,Japan
+1869,MYQ,Mysore Airport,Mysore,India
+1870,MYR,Myrtle Beach International Airport,Myrtle Beach,United States
+1871,MYT,Myitkyina Airport,Myitkyina,Burma
+1872,MYU,Mekoryuk Airport,Mekoryuk,United States
+1873,MYW,Mtwara Airport,Mtwara,Tanzania
+1874,MYY,Miri Airport,Miri,Malaysia
+1875,MZG,Makung Airport,Makung,Taiwan
+1876,MZH,Amasya Merzifon Airport,Merzifon,Turkey
+1877,MZL,La Nubia Airport,Manizales,Colombia
+1878,MZR,Mazar I Sharif Airport,Mazar-i-sharif,Afghanistan
+1879,MZT,General Rafael Buelna International Airport,Mazatlan,Mexico
+1880,MZV,Mulu Airport,Mulu,Malaysia
+1881,MZW,Mecheria Airport,Mecheria,Algeria
+1882,NAG,Dr. Babasaheb Ambedkar International Airport,Nagpur,India
+1883,NAH,Naha Airport,Naha,Indonesia
+1884,NAJ,Nakhchivan Airport,Nakhchivan,Azerbaijan
+1885,NAN,Nadi International Airport,Nandi,Fiji
+1886,NAO,Nanchong Airport,Nanchong,China
+1887,NAP,Naples International Airport,Naples,Italy
+1888,NAQ,Qaanaaq Airport,Qaanaaq,Greenland
+1889,NAS,Lynden Pindling International Airport,Nassau,Bahamas
+1890,NAT,Governador Aluízio Alves International Airport,Natal,Brazil
+1891,NAV,Nevşehir Kapadokya Airport,Nevsehir,Turkey
+1892,NAW,Narathiwat Airport,Narathiwat,Thailand
+1893,NAY,Beijing Nanyuan Airport,Beijing,China
+1894,NBC,Begishevo Airport,Nizhnekamsk,Russia
+1895,NBE,Enfidha - Hammamet International Airport,Enfidha,Tunisia
+1896,NBO,Jomo Kenyatta International Airport,Nairobi,Kenya
+1897,NBS,Changbaishan Airport,Baishan,China
+1898,NBX,Nabire Airport,Nabire,Indonesia
+1899,NCE,Nice-Côte d'Azur Airport,Nice,France
+1900,NCL,Newcastle Airport,Newcastle,United Kingdom
+1901,NCU,Nukus Airport,Nukus,Uzbekistan
+1902,NDB,Nouadhibou International Airport,Nouadhibou,Mauritania
+1903,NDG,Qiqihar Sanjiazi Airport,Qiqihar,China
+1904,NDJ,N'Djamena International Airport,N'djamena,Chad
+1905,NDR,Nador International Airport,El Aroui,Morocco
+1906,NDU,Rundu Airport,Rundu,Namibia
+1907,NDY,Sanday Airport,Sanday,United Kingdom
+1908,NER,Chulman Airport,Neryungri,Russia
+1909,NEV,Vance W. Amory International Airport,Charlestown,Saint Kitts and Nevis
+1910,NGB,Ningbo Lishe International Airport,Ninbo,China
+1911,NGE,N'Gaoundéré Airport,N'gaoundere,Cameroon
+1912,NGK,Nogliki Airport,Nogliki,Russia
+1913,NGO,Chubu Centrair International Airport,Nagoya,Japan
+1914,NGQ,Ngari Gunsa Airport,Shiquanhe,China
+1915,NGS,Nagasaki Airport,Nagasaki,Japan
+1916,NHV,Nuku Hiva Airport,Nuku Hiva,French Polynesia
+1917,NIB,Nikolai Airport,Nikolai,United States
+1918,NIM,Diori Hamani International Airport,Niamey,Niger
+1919,NJC,Nizhnevartovsk Airport,Nizhnevartovsk,Russia
+1920,NJF,Al Najaf International Airport,Najaf,Iraq
+1921,NKC,Nouakchott–Oumtounsy International Airport,Nouakschott,Mauritania
+1922,NKG,Nanjing Lukou Airport,Nanjing,China
+1923,NKM,Nagoya Airport,Nagoya,Japan
+1924,NLA,Simon Mwansa Kapwepwe International Airport,Ndola,Zambia
+1925,NLD,Quetzalcóatl International Airport,Nuevo Laredo,Mexico
+1926,NLG,Nelson Lagoon Airport,Nelson Lagoon,United States
+1927,NLK,Norfolk Island International Airport,Norfolk Island,Norfolk Island
+1928,NLT,Xinyuan Nalati Airport,Xinyuan,China
+1929,NMA,Namangan Airport,Namangan,Uzbekistan
+1930,NME,Nightmute Airport,Nightmute,United States
+1931,NNB,Santa Ana Airport,Santa Ana,Solomon Islands
+1932,NNG,Nanning Wuxu Airport,Nanning,China
+1933,NNM,Naryan Mar Airport,Naryan-Mar,Russia
+1934,NNT,Nan Airport,Nan,Thailand
+1935,NNY,Nanyang Jiangying Airport,Nanyang,China
+1936,NOB,Nosara Airport,Nosara Beach,Costa Rica
+1937,NOC,Ireland West Knock Airport,Connaught,Ireland
+1938,NOJ,Noyabrsk Airport,Noyabrsk,Russia
+1939,NOP,Sinop Airport,Sinop,Turkey
+1940,NOS,Fascene Airport,Nosy-be,Madagascar
+1941,NOU,La Tontouta International Airport,Noumea,New Caledonia
+1942,NOV,Nova Lisboa Airport,Huambo,Angola
+1943,NOZ,Spichenkovo Airport,Novokuznetsk,Russia
+1944,NPE,Hawke's Bay Airport,NAPIER,New Zealand
+1945,NPL,New Plymouth Airport,New Plymouth,New Zealand
+1946,NQN,Presidente Peron Airport,Neuquen,Argentina
+1947,NQU,Reyes Murillo Airport,Nuquí,Colombia
+1948,NQY,Newquay Cornwall Airport,Newquai,United Kingdom
+1949,NRA,Narrandera Airport,Narrandera,Australia
+1950,NRK,Norrköping Airport,Norrkoeping,Sweden
+1951,NRL,North Ronaldsay Airport,North Ronaldsay,United Kingdom
+1952,NRN,Weeze Airport,Weeze,Germany
+1953,NRT,Narita International Airport,Tokyo,Japan
+1954,NSH,Noshahr Airport,Noshahr,Iran
+1955,NSI,Yaoundé Nsimalen International Airport,Yaounde,Cameroon
+1956,NSK,Norilsk-Alykel Airport,Norilsk,Russia
+1957,NSN,Nelson Airport,Nelson,New Zealand
+1958,NST,Nakhon Si Thammarat Airport,Nakhon Si Thammarat,Thailand
+1959,NTE,Nantes Atlantique Airport,Nantes,France
+1960,NTL,Newcastle Airport,Newcastle,Australia
+1961,NTN,Normanton Airport,Normanton,Australia
+1962,NTQ,Noto Airport,Wajima,Japan
+1963,NTX,Ranai Airport,Ranai-Natuna Besar Island,Indonesia
+1964,NUE,Nuremberg Airport,Nuernberg,Germany
+1965,NUI,Nuiqsut Airport,Nuiqsut,United States
+1966,NUL,Nulato Airport,Nulato,United States
+1967,NUS,Norsup Airport,Norsup,Vanuatu
+1968,NUX,Novy Urengoy Airport,Novy Urengoy,Russia
+1969,NVA,Benito Salas Airport,Neiva,Colombia
+1970,NVI,Navoi Airport,Navoi,Uzbekistan
+1971,NVK,Narvik Framnes Airport,Narvik,Norway
+1972,NVT,Ministro Victor Konder International Airport,Navegantes,Brazil
+1973,NWI,Norwich International Airport,Norwich,United Kingdom
+1974,NYA,Nyagan Airport,Nyagan,Russia
+1975,NYI,Sunyani Airport,Sunyani,Ghana
+1976,NYK,Nanyuki Airport,Nanyuki,Kenya
+1977,NYM,Nadym Airport,Nadym,Russia
+1978,NYO,Stockholm Skavsta Airport,Stockholm,Sweden
+1979,NYT,Naypyidaw Airport,Naypyidaw,Burma
+1980,NYU,Bagan Airport,Bagan,Burma
+1981,NZH,Manzhouli Xijiao Airport,Manzhouli,China
+1982,OAG,Orange Airport,Orange,Australia
+1983,OAJ,Albert J Ellis Airport,Jacksonville NC,United States
+1984,OAK,Metropolitan Oakland International Airport,Oakland,United States
+1985,OAL,Cacoal Airport,Cacoal,Brazil
+1986,OAX,Xoxocotlán International Airport,Oaxaca,Mexico
+1987,OBO,Tokachi-Obihiro Airport,Obihiro,Japan
+1988,OBU,Kobuk Airport,Kobuk,United States
+1989,OBY,Ittoqqortoormiit Heliport,Ittoqqortoormiit,Greenland
+1990,OCC,Francisco De Orellana Airport,Coca,Ecuador
+1991,ODN,Long Seridan Airport,Long Seridan,Malaysia
+1992,ODO,Bodaybo Airport,Bodaibo,Russia
+1993,ODS,Odessa International Airport,Odessa,Ukraine
+1994,ODY,Oudomsay Airport,Muang Xay,Laos
+1995,OER,Örnsköldsvik Airport,Ornskoldsvik,Sweden
+1996,OGD,Ogden Hinckley Airport,Ogden,United States
+1997,OGG,Kahului Airport,Kahului,United States
+1998,OGL,Eugene F. Correira International Airport,Georgetown,Guyana
+1999,OGS,Ogdensburg International Airport,Ogdensburg,United States
+2000,OGX,Ain el Beida Airport,Ouargla,Algeria
+2001,OGZ,Beslan Airport,Beslan,Russia
+2002,OHE,Gu-Lian Airport,Mohe County,China
+2003,OIA,Ourilândia do Norte Airport,Ourilandia do Norte,Brazil
+2004,OIM,Oshima Airport,Oshima,Japan
+2005,OIT,Oita Airport,Oita,Japan
+2006,OKA,Naha Airport,Okinawa,Japan
+2007,OKC,Will Rogers World Airport,Oklahoma City,United States
+2008,OKJ,Okayama Airport,Okayama,Japan
+2009,OKL,Oksibil Airport,Oksibil,Indonesia
+2010,OLA,Ørland Airport,Orland,Norway
+2011,OLB,Olbia Costa Smeralda Airport,Olbia,Italy
+2012,OLC,Senadora Eunice Micheles Airport,Sao Paulo de Olivenca,Brazil
+2013,OLF,L M Clayton Airport,Wolf Point,United States
+2014,OLL,Oyo Ollombo Airport,Oyo,Congo (Brazzaville)
+2015,OLP,Olympic Dam Airport,Olympic Dam,Australia
+2016,OMA,Eppley Airfield,Omaha,United States
+2017,OMD,Oranjemund Airport,Oranjemund,Namibia
+2018,OME,Nome Airport,Nome,United States
+2019,OMH,Urmia Airport,Uromiyeh,Iran
+2020,OMO,Mostar International Airport,Mostar,Bosnia and Herzegovina
+2021,OMR,Oradea International Airport,Oradea,Romania
+2022,OMS,Omsk Central Airport,Omsk,Russia
+2023,OND,Ondangwa Airport,Ondangwa,Namibia
+2024,ONG,Mornington Island Airport,Mornington Island,Australia
+2025,ONJ,Odate Noshiro Airport,Odate Noshiro,Japan
+2026,ONQ,Zonguldak Airport,Zonguldak,Turkey
+2027,ONT,Ontario International Airport,Ontario,United States
+2028,OOK,Toksook Bay Airport,Toksook Bay,United States
+2029,OOL,Gold Coast Airport,Coolangatta,Australia
+2030,OPO,Francisco de Sá Carneiro Airport,Porto,Portugal
+2031,OPS,Presidente João Batista Figueiredo Airport,Sinop,Brazil
+2032,ORB,Örebro Airport,Orebro,Sweden
+2033,ORD,Chicago O'Hare International Airport,Chicago,United States
+2034,ORF,Norfolk International Airport,Norfolk,United States
+2035,ORH,Worcester Regional Airport,Worcester,United States
+2036,ORK,Cork Airport,Cork,Ireland
+2037,ORN,Es Senia Airport,Oran,Algeria
+2038,ORU,Juan Mendoza Airport,Oruro,Bolivia
+2039,ORV,Robert (Bob) Curtis Memorial Airport,Noorvik,United States
+2040,ORX,Oriximiná Airport,Oriximina,Brazil
+2041,ORY,Paris-Orly Airport,Paris,France
+2042,OSD,Åre Östersund Airport,Östersund,Sweden
+2043,OSI,Osijek Airport,Osijek,Croatia
+2044,OSL,Oslo Lufthavn,Oslo,Norway
+2045,OSM,Mosul International Airport,Mosul,Iraq
+2046,OSR,Ostrava Leos Janáček Airport,Ostrava,Czech Republic
+2047,OSS,Osh Airport,Osh,Kyrgyzstan
+2048,OST,Ostend-Bruges International Airport,Ostend,Belgium
+2049,OSW,Orsk Airport,Orsk,Russia
+2050,OSY,Namsos Høknesøra Airport,Namsos,Norway
+2051,OTH,Southwest Oregon Regional Airport,North Bend,United States
+2052,OTP,Henri Coandă International Airport,Bucharest,Romania
+2053,OTZ,Ralph Wien Memorial Airport,Kotzebue,United States
+2054,OUA,Ouagadougou Airport,Ouagadougou,Burkina Faso
+2055,OUD,Angads Airport,Oujda,Morocco
+2056,OUL,Oulu Airport,Oulu,Finland
+2057,OUZ,Tazadit Airport,Zouerat,Mauritania
+2058,OVB,Tolmachevo Airport,Novosibirsk,Russia
+2059,OVD,Asturias Airport,Aviles,Spain
+2060,OVS,Sovetskiy Airport,Sovetskiy,Russia
+2061,OWB,Owensboro Daviess County Airport,Owensboro,United States
+2062,OXB,Osvaldo Vieira International Airport,Bissau,Guinea-Bissau
+2063,OZC,Labo Airport,Ozamis,Philippines
+2064,OZH,Zaporizhzhia International Airport,Zaporozhye,Ukraine
+2065,OZZ,Ouarzazate Airport,Ouarzazate,Morocco
+2066,PAC,Marcos A. Gelabert International Airport,Panama,Panama
+2067,PAD,Paderborn Lippstadt Airport,Paderborn,Germany
+2068,PAG,Pagadian Airport,Pagadian,Philippines
+2069,PAH,Barkley Regional Airport,PADUCAH,United States
+2070,PAP,Toussaint Louverture International Airport,Port-au-prince,Haiti
+2071,PAS,Paros National Airport,Paros,Greece
+2072,PAT,Lok Nayak Jayaprakash Airport,Patina,India
+2073,PAV,Paulo Afonso Airport,Paulo Alfonso,Brazil
+2074,PAZ,El Tajín National Airport,Poza Rico,Mexico
+2075,PBC,Hermanos Serdán International Airport,Puebla,Mexico
+2076,PBD,Porbandar Airport,Porbandar,India
+2077,PBG,Plattsburgh International Airport,Plattsburgh,United States
+2078,PBH,Paro Airport,Thimphu,Bhutan
+2079,PBI,Palm Beach International Airport,West Palm Beach,United States
+2080,PBJ,Tavie Airport,Paama Island,Vanuatu
+2081,PBL,General Bartolome Salom International Airport,Puerto Cabello,Venezuela
+2082,PBM,Johan Adolf Pengel International Airport,Zandery,Suriname
+2083,PBO,Paraburdoo Airport,Paraburdoo,Australia
+2084,PBU,Putao Airport,Putao,Burma
+2085,PBZ,Plettenberg Bay Airport,Plettenberg Bay,South Africa
+2086,PCL,Cap FAP David Abenzur Rengifo International Airport,Pucallpa,Peru
+2087,PCR,German Olano Airport,Puerto Carreno,Colombia
+2088,PDA,Obando Airport,Puerto Inírida,Colombia
+2089,PDG,Minangkabau International Airport,Padang,Indonesia
+2090,PDL,João Paulo II Airport,Ponta Delgada,Portugal
+2091,PDP,Capitan Corbeta CA Curbelo International Airport,Punta del Este,Uruguay
+2092,PDS,Piedras Negras International Airport,Piedras Negras,Mexico
+2093,PDT,Eastern Oregon Regional At Pendleton Airport,Pendleton,United States
+2094,PDV,Plovdiv International Airport,Plovdiv,Bulgaria
+2095,PDX,Portland International Airport,Portland,United States
+2096,PED,Pardubice Airport,Pardubice,Czech Republic
+2097,PEE,Bolshoye Savino Airport,Perm,Russia
+2098,PEG,Perugia San Francesco d'Assisi – Umbria International Airport,Perugia,Italy
+2099,PEI,Matecaña International Airport,Pereira,Colombia
+2100,PEK,Beijing Capital International Airport,Beijing,China
+2101,PEM,Padre Aldamiz International Airport,Puerto Maldonado,Peru
+2102,PEN,Penang International Airport,Penang,Malaysia
+2103,PER,Perth International Airport,Perth,Australia
+2104,PES,Petrozavodsk Airport,Petrozavodsk,Russia
+2105,PET,João Simões Lopes Neto International Airport,Pelotas,Brazil
+2106,PEU,Puerto Lempira Airport,Puerto Lempira,Honduras
+2107,PEW,Peshawar International Airport,Peshawar,Pakistan
+2108,PEZ,Penza Airport,Penza,Russia
+2109,PFB,Lauro Kurtz Airport,Passo Fundo,Brazil
+2110,PFO,Paphos International Airport,Paphos,Cyprus
+2111,PFQ,Parsabade Moghan Airport,Parsabad,Iran
+2112,PGA,Page Municipal Airport,Page,United States
+2113,PGD,Charlotte County Airport,Punta Gorda,United States
+2114,PGF,Perpignan-Rivesaltes (Llabanère) Airport,Perpignan,France
+2115,PGK,Pangkal Pinang (Depati Amir) Airport,Pangkal Pinang,Indonesia
+2116,PGU,Persian Gulf International Airport,Khalije Fars,Iran
+2117,PGV,Pitt Greenville Airport,Greenville,United States
+2118,PGX,Périgueux-Bassillac Airport,Perigueux,France
+2119,PHB,Prefeito Doutor João Silva Filho Airport,Parnaiba,Brazil
+2120,PHC,Port Harcourt International Airport,Port Hartcourt,Nigeria
+2121,PHE,Port Hedland International Airport,Port Hedland,Australia
+2122,PHF,Newport News Williamsburg International Airport,Newport News,United States
+2123,PHL,Philadelphia International Airport,Philadelphia,United States
+2124,PHS,Phitsanulok Airport,Phitsanulok,Thailand
+2125,PHW,Hendrik Van Eck Airport,Phalaborwa,South Africa
+2126,PHX,Phoenix Sky Harbor International Airport,Phoenix,United States
+2127,PIA,General Wayne A. Downing Peoria International Airport,Peoria,United States
+2128,PIB,Hattiesburg Laurel Regional Airport,Hattiesburg/Laurel,United States
+2129,PIE,St Petersburg Clearwater International Airport,St. Petersburg,United States
+2130,PIH,Pocatello Regional Airport,Pocatello,United States
+2131,PIK,Glasgow Prestwick Airport,Prestwick,United Kingdom
+2132,PIN,Parintins Airport,Parintins,Brazil
+2133,PIP,Pilot Point Airport,Pilot Point,United States
+2134,PIR,Pierre Regional Airport,Pierre,United States
+2135,PIS,Poitiers-Biard Airport,Poitiers,France
+2136,PIT,Pittsburgh International Airport,Pittsburgh,United States
+2137,PIU,Capitán FAP Guillermo Concha Iberico International Airport,Piura,Peru
+2138,PIX,Pico Airport,Pico,Portugal
+2139,PIZ,Point Lay LRRS Airport,Point Lay,United States
+2140,PJA,Pajala Airport,Pajala,Sweden
+2141,PJG,Panjgur Airport,Panjgur,Pakistan
+2142,PJM,Puerto Jimenez Airport,Puerto Jimenez,Costa Rica
+2143,PKA,Napaskiak Airport,Napaskiak,United States
+2144,PKB,Mid Ohio Valley Regional Airport,PARKERSBURG,United States
+2145,PKC,Yelizovo Airport,Petropavlovsk,Russia
+2146,PKE,Parkes Airport,Parkes,Australia
+2147,PKN,Iskandar Airport,Pangkalan Bun,Indonesia
+2148,PKR,Pokhara Airport,Pokhara,Nepal
+2149,PKU,Sultan Syarif Kasim Ii (Simpang Tiga) Airport,Pekanbaru,Indonesia
+2150,PKY,Tjilik Riwut Airport,Palangkaraya,Indonesia
+2151,PKZ,Pakse International Airport,Pakse,Laos
+2152,PLM,Sultan Mahmud Badaruddin II Airport,Palembang,Indonesia
+2153,PLN,Pellston Regional Airport of Emmet County Airport,Pellston,United States
+2154,PLO,Port Lincoln Airport,Port Lincoln,Australia
+2155,PLQ,Palanga International Airport,Palanga,Lithuania
+2156,PLS,Providenciales Airport,Providenciales,Turks and Caicos Islands
+2157,PLU,Pampulha - Carlos Drummond de Andrade Airport,Belo Horizonte,Brazil
+2158,PLW,Mutiara Airport,Palu,Indonesia
+2159,PLX,Semipalatinsk Airport,Semiplatinsk,Kazakhstan
+2160,PLZ,Port Elizabeth Airport,Port Elizabeth,South Africa
+2161,PMC,El Tepual Airport,Puerto Montt,Chile
+2162,PMF,Parma Airport,Parma,Italy
+2163,PMI,Palma De Mallorca Airport,Palma de Mallorca,Spain
+2164,PMO,Falcone–Borsellino Airport,Palermo,Italy
+2165,PMR,Palmerston North Airport,Palmerston North,New Zealand
+2166,PMV,Del Caribe Santiago Mariño International Airport,Porlamar,Venezuela
+2167,PMW,Brigadeiro Lysias Rodrigues Airport,Palmas,Brazil
+2168,PMY,El Tehuelche Airport,Puerto Madryn,Argentina
+2169,PMZ,Palmar Sur Airport,Palmar Sur,Costa Rica
+2170,PNA,Pamplona Airport,Pamplona,Spain
+2171,PNH,Phnom Penh International Airport,Phnom-penh,Cambodia
+2172,PNI,Pohnpei International Airport,Pohnpei,Micronesia
+2173,PNK,Supadio Airport,Pontianak,Indonesia
+2174,PNL,Pantelleria Airport,Pantelleria,Italy
+2175,PNP,Girua Airport,Girua,Papua New Guinea
+2176,PNQ,Pune Airport,Pune,India
+2177,PNR,Pointe Noire Airport,Pointe-noire,Congo (Brazzaville)
+2178,PNS,Pensacola Regional Airport,Pensacola,United States
+2179,PNZ,Senador Nilo Coelho Airport,Petrolina,Brazil
+2180,POA,Salgado Filho Airport,Porto Alegre,Brazil
+2181,POG,Port Gentil Airport,Port Gentil,Gabon
+2182,POI,Capitan Nicolas Rojas Airport,Potosi,Bolivia
+2183,POJ,Patos de Minas Airport,Patos de Minas,Brazil
+2184,POL,Pemba Airport,Pemba,Mozambique
+2185,POM,Port Moresby Jacksons International Airport,Port Moresby,Papua New Guinea
+2186,POP,Gregorio Luperon International Airport,Puerto Plata,Dominican Republic
+2187,POR,Pori Airport,Pori,Finland
+2188,POS,Piarco International Airport,Port-of-spain,Trinidad and Tobago
+2189,POZ,Poznań-Ławica Airport,Poznan,Poland
+2190,PPB,Presidente Prudente Airport,President Prudente,Brazil
+2191,PPG,Pago Pago International Airport,Pago Pago,American Samoa
+2192,PPK,Petropavlosk South Airport,Petropavlosk,Kazakhstan
+2193,PPN,Guillermo León Valencia Airport,Popayan,Colombia
+2194,PPP,Proserpine Whitsunday Coast Airport,Prosserpine,Australia
+2195,PPQ,Paraparaumu Airport,Paraparaumu,New Zealand
+2196,PPS,Puerto Princesa Airport,Puerto Princesa,Philippines
+2197,PPT,Faa'a International Airport,Papeete,French Polynesia
+2198,PPW,Papa Westray Airport,Papa Westray,United Kingdom
+2199,PQC,Phu Quoc International Airport,Phuquoc,Vietnam
+2200,PQI,Northern Maine Regional Airport at Presque Isle,Presque Isle,United States
+2201,PQM,Palenque International Airport,Palenque,Mexico
+2202,PQQ,Port Macquarie Airport,Port Macquarie,Australia
+2203,PRA,General Urquiza Airport,Parana,Argentina
+2204,PRC,Ernest A. Love Field,Prescott,United States
+2205,PRG,Václav Havel Airport Prague,Prague,Czech Republic
+2206,PRH,Phrae Airport,Phrae,Thailand
+2207,PRI,Praslin Airport,Praslin,Seychelles
+2208,PRN,Priština International Airport,Pristina,Serbia
+2209,PSA,Pisa International Airport,Pisa,Italy
+2210,PSC,Tri Cities Airport,Pasco,United States
+2211,PSE,Mercedita Airport,Ponce,Puerto Rico
+2212,PSG,Petersburg James A Johnson Airport,Petersburg,United States
+2213,PSJ,Kasiguncu Airport,Poso,Indonesia
+2214,PSM,Portsmouth International at Pease Airport,Portsmouth,United States
+2215,PSO,Antonio Narino Airport,Pasto,Colombia
+2216,PSP,Palm Springs International Airport,Palm Springs,United States
+2217,PSR,Pescara International Airport,Pescara,Italy
+2218,PSS,Libertador Gral D Jose De San Martin Airport,Posadas,Argentina
+2219,PTG,Polokwane International Airport,Potgietersrus,South Africa
+2220,PTH,Port Heiden Airport,Port Heiden,United States
+2221,PTJ,Portland Airport,Portland,Australia
+2222,PTP,Pointe-à-Pitre Le Raizet,Pointe-a-pitre,Guadeloupe
+2223,PTU,Platinum Airport,Port Moller,United States
+2224,PTY,Tocumen International Airport,Panama City,Panama
+2225,PUB,Pueblo Memorial Airport,Pueblo,United States
+2226,PUE,Puerto Obaldia Airport,Puerto Obaldia,Panama
+2227,PUF,Pau Pyrénées Airport,Pau,France
+2228,PUG,Port Augusta Airport,Argyle,Australia
+2229,PUJ,Punta Cana International Airport,Punta Cana,Dominican Republic
+2230,PUQ,Pdte. Carlos Ibañez del Campo Airport,Punta Arenas,Chile
+2231,PUS,Gimhae International Airport,Busan,South Korea
+2232,PUU,Tres De Mayo Airport,Puerto Asis,Colombia
+2233,PUW,Pullman Moscow Regional Airport,Pullman,United States
+2234,PUY,Pula Airport,Pula,Croatia
+2235,PVA,El Embrujo Airport,Providencia,Colombia
+2236,PVC,Provincetown Municipal Airport,Provincetown,United States
+2237,PVD,Theodore Francis Green State Airport,Providence,United States
+2238,PVG,Shanghai Pudong International Airport,Shanghai,China
+2239,PVH,Governador Jorge Teixeira de Oliveira Airport,Porto Velho,Brazil
+2240,PVK,Aktion National Airport,Preveza,Greece
+2241,PVR,Licenciado Gustavo Díaz Ordaz International Airport,Puerto Vallarta,Mexico
+2242,PVU,Provo Municipal Airport,Provo,United States
+2243,PWE,Pevek Airport,Pevek,Russia
+2244,PWM,Portland International Jetport Airport,Portland,United States
+2245,PWQ,Pavlodar Airport,Pavlodar,Kazakhstan
+2246,PXM,Puerto Escondido International Airport,Puerto Escondido,Mexico
+2247,PXO,Porto Santo Airport,Porto Santo,Portugal
+2248,PXU,Pleiku Airport,Pleiku,Vietnam
+2249,PYH,Cacique Aramare Airport,Puerto Ayacucho,Venezuela
+2250,PYJ,Polyarny Airport,Yakutia,Russia
+2251,PYY,Mae Hong Son Airport,Pai,Thailand
+2252,PZB,Pietermaritzburg Airport,Pietermaritzburg,South Africa
+2253,PZH,Zhob Airport,Zhob,Pakistan
+2254,PZI,Bao'anying Airport,Panzhihua,China
+2255,PZO,General Manuel Carlos Piar International Airport,Guayana,Venezuela
+2256,PZU,Port Sudan New International Airport,Port Sudan,Sudan
+2257,QBC,Bella Coola Airport,Bella Coola,Canada
+2258,QFG,Eqalugaarsuit Heliport,Eqalugaarsuit,Greenland
+2259,QOW,Sam Mbakwe International Airport,Imo,Nigeria
+2260,QRO,Querétaro Intercontinental Airport,Queretaro,Mexico
+2261,QRW,Warri Airport,Osubi,Nigeria
+2262,QSF,Ain Arnat Airport,Setif,Algeria
+2263,QUO,Akwa Ibom International Airport,Uyo,Nigeria
+2264,RAB,Tokua Airport,Tokua,Papua New Guinea
+2265,RAE,Arar Domestic Airport,Arar,Saudi Arabia
+2266,RAH,Rafha Domestic Airport,Rafha,Saudi Arabia
+2267,RAI,Praia International Airport,"Praia, Santiago Island",Cape Verde
+2268,RAJ,Rajkot Airport,Rajkot,India
+2269,RAK,Menara Airport,Marrakech,Morocco
+2270,RAO,Leite Lopes Airport,Ribeirao Preto,Brazil
+2271,RAP,Rapid City Regional Airport,Rapid City,United States
+2272,RAR,Rarotonga International Airport,Avarua,Cook Islands
+2273,RAS,Sardar-e-Jangal Airport,Rasht,Iran
+2274,RBA,Rabat-Salé Airport,Rabat,Morocco
+2275,RBQ,Rurenabaque Airport,Rerrenabaque,Bolivia
+2276,RBR,Plácido de Castro Airport,Rio Branco,Brazil
+2277,RBV,Ramata Airport,Ramata,Solomon Islands
+2278,RBY,Ruby Airport,Ruby,United States
+2279,RCB,Richards Bay Airport,Richard's Bay,South Africa
+2280,RCH,Almirante Padilla Airport,Rio Hacha,Colombia
+2281,RCM,Richmond Airport,Richmond,Australia
+2282,RCY,Rum Cay Airport,Port Nelson,Bahamas
+2283,RDC,Redenção Airport,Redencao,Brazil
+2284,RDD,Redding Municipal Airport,Redding,United States
+2285,RDM,Roberts Field,Redmond-Bend,United States
+2286,RDN,LTS Pulau Redang Airport,Redang,Malaysia
+2287,RDU,Raleigh Durham International Airport,Raleigh-durham,United States
+2288,RDZ,Rodez-Marcillac Airport,Rodez,France
+2289,REC,Guararapes - Gilberto Freyre International Airport,Recife,Brazil
+2290,REG,Reggio Calabria Airport,Reggio Calabria,Italy
+2291,REL,Almirante Marco Andres Zar Airport,Trelew,Argentina
+2292,REN,Orenburg Central Airport,Orenburg,Russia
+2293,REP,Siem Reap International Airport,Siem-reap,Cambodia
+2294,RES,Resistencia International Airport,Resistencia,Argentina
+2295,RET,Røst Airport,Røst,Norway
+2296,REU,Reus Air Base,Reus,Spain
+2297,REX,General Lucio Blanco International Airport,Reynosa,Mexico
+2298,RFD,Chicago Rockford International Airport,Rockford,United States
+2299,RFP,Raiatea Airport,Raiatea Island,French Polynesia
+2300,RGA,Hermes Quijada International Airport,Rio Grande,Argentina
+2301,RGI,Rangiroa Airport,Rangiroa,French Polynesia
+2302,RGK,Gorno-Altaysk Airport,Gorno-Altaysk,Russia
+2303,RGL,Piloto Civil N. Fernández Airport,Rio Gallegos,Argentina
+2304,RGN,Yangon International Airport,Yangon,Burma
+2305,RGS,Burgos Airport,Burgos,Spain
+2306,RHD,Termas de Río Hondo international Airport,Rio Hondo,Argentina
+2307,RHI,Rhinelander Oneida County Airport,Rhinelander,United States
+2308,RHO,Diagoras Airport,Rhodos,Greece
+2309,RIA,Santa Maria Airport,Santa Maria,Brazil
+2310,RIB,Capitán Av. Selin Zeitun Lopez Airport,Riberalta,Bolivia
+2311,RIC,Richmond International Airport,Richmond,United States
+2312,RIW,Riverton Regional Airport,Riverton WY,United States
+2313,RIX,Riga International Airport,Riga,Latvia
+2314,RIY,Mukalla International Airport,Mukalla,Yemen
+2315,RJA,Rajahmundry Airport,Rajahmundry,India
+2316,RJH,Shah Mokhdum Airport,Rajshahi,Bangladesh
+2317,RJK,Rijeka Airport,Rijeka,Croatia
+2318,RJL,Logroño-Agoncillo Airport,Logroño-Agoncillo,Spain
+2319,RKD,Knox County Regional Airport,Rockland,United States
+2320,RKS,Southwest Wyoming Regional Airport,Rock Springs,United States
+2321,RKV,Reykjavik Airport,Reykjavik,Iceland
+2322,RLG,Rostock-Laage Airport,Laage,Germany
+2323,RLK,Bayannur Tianjitai Airport,Bayannur,China
+2324,RMA,Roma Airport,Roma,Australia
+2325,RMF,Marsa Alam International Airport,Marsa Alam,Egypt
+2326,RMI,Federico Fellini International Airport,Rimini,Italy
+2327,RMQ,Taichung Ching Chuang Kang Airport,Taichung,Taiwan
+2328,RMT,Rimatara Airport,Rimatara,French Polynesia
+2329,RNA,Ulawa Airport,Ulawa,Solomon Islands
+2330,RNB,Ronneby Airport,Ronneby,Sweden
+2331,RNL,Rennell/Tingoa Airport,Rennell Island,Solomon Islands
+2332,RNN,Bornholm Airport,Ronne,Denmark
+2333,RNO,Reno Tahoe International Airport,Reno,United States
+2334,RNS,Rennes-Saint-Jacques Airport,Rennes,France
+2335,ROA,Roanoke–Blacksburg Regional Airport,Roanoke VA,United States
+2336,ROB,Roberts International Airport,Monrovia,Liberia
+2337,ROC,Greater Rochester International Airport,Rochester,United States
+2338,ROI,Roi Et Airport,Roi Et,Thailand
+2339,ROK,Rockhampton Airport,Rockhampton,Australia
+2340,ROO,Maestro Marinho Franco Airport,Rondonopolis,Brazil
+2341,ROP,Rota International Airport,Rota,Northern Mariana Islands
+2342,ROR,Babelthuap Airport,Babelthuap,Palau
+2343,ROS,Islas Malvinas Airport,Rosario,Argentina
+2344,ROT,Rotorua Regional Airport,Rotorua,New Zealand
+2345,ROV,Platov International Airport,Rostov,Russia
+2346,ROW,Roswell International Air Center Airport,Roswell,United States
+2347,RPR,Raipur Airport,Raipur,India
+2348,RRG,Sir Charles Gaetan Duval Airport,Rodriguez Island,Mauritius
+2349,RRS,Røros Airport,Roros,Norway
+2350,RSA,Santa Rosa Airport,Santa Rosa,Argentina
+2351,RSD,Rock Sound Airport,Rock Sound,Bahamas
+2352,RSH,Russian Mission Airport,Russian Mission,United States
+2353,RST,Rochester International Airport,Rochester,United States
+2354,RSU,Yeosu Airport,Yeosu,South Korea
+2355,RSW,Southwest Florida International Airport,Fort Myers,United States
+2356,RTA,Rotuma Airport,Rotuma,Fiji
+2357,RTB,Juan Manuel Galvez International Airport,Roatan,Honduras
+2358,RTM,Rotterdam The Hague Airport,Rotterdam,Netherlands
+2359,RTW,Saratov Central Airport,Saratov,Russia
+2360,RUA,Arua Airport,Arua,Uganda
+2361,RUH,King Khaled International Airport,Riyadh,Saudi Arabia
+2362,RUN,Roland Garros Airport,St.-denis,Reunion
+2363,RUR,Rurutu Airport,Rurutu,French Polynesia
+2364,RUS,Marau Airport,Marau,Solomon Islands
+2365,RUT,Rutland - Southern Vermont Regional Airport,Rutland,United States
+2366,RVD,General Leite de Castro Airport,Rio Verde,Brazil
+2367,RVE,Los Colonizadores Airport,Saravena,Colombia
+2368,RVK,"Rørvik Airport, Ryum",Rørvik,Norway
+2369,RVN,Rovaniemi Airport,Rovaniemi,Finland
+2370,RVT,Ravensthorpe Airport,Ravensthorpe,Australia
+2371,RVV,Raivavae Airport,Raivavae,French Polynesia
+2372,RXS,Roxas Airport,Roxas City,Philippines
+2373,RYG,"Moss Airport, Rygge",Rygge,Norway
+2374,RYK,Shaikh Zaid Airport,Rahim Yar Khan,Pakistan
+2375,RZE,Rzeszów-Jasionka Airport,Rzeszow,Poland
+2376,RZR,Ramsar Airport,Ramsar,Iran
+2377,SAB,Juancho E. Yrausquin Airport,Saba,Netherlands Antilles
+2378,SAF,Santa Fe Municipal Airport,Santa Fe,United States
+2379,SAH,Sana'a International Airport,Sanaa,Yemen
+2380,SAL,Monseñor Óscar Arnulfo Romero International Airport,San Salvador,El Salvador
+2381,SAN,San Diego International Airport,San Diego,United States
+2382,SAP,Ramón Villeda Morales International Airport,San Pedro Sula,Honduras
+2383,SAT,San Antonio International Airport,San Antonio,United States
+2384,SAV,Savannah Hilton Head International Airport,Savannah,United States
+2385,SAW,Sabiha Gökçen International Airport,Istanbul,Turkey
+2386,SBA,Santa Barbara Municipal Airport,Santa Barbara,United States
+2387,SBH,Gustaf III Airport,Gustavia,France
+2388,SBN,South Bend Regional Airport,South Bend,United States
+2389,SBP,San Luis County Regional Airport,San Luis Obispo,United States
+2390,SBW,Sibu Airport,Sibu,Malaysia
+2391,SBY,Salisbury Ocean City Wicomico Regional Airport,Salisbury,United States
+2392,SBZ,Sibiu International Airport,Sibiu,Romania
+2393,SCC,Deadhorse Airport,Deadhorse,United States
+2394,SCE,University Park Airport,State College Pennsylvania,United States
+2395,SCK,Stockton Metropolitan Airport,Stockton,United States
+2396,SCL,Comodoro Arturo Merino Benítez International Airport,Santiago,Chile
+2397,SCM,Scammon Bay Airport,Scammon Bay,United States
+2398,SCN,Saarbrücken Airport,Saarbruecken,Germany
+2399,SCO,Aktau Airport,Aktau,Kazakhstan
+2400,SCQ,Santiago de Compostela Airport,Santiago,Spain
+2401,SCT,Socotra International Airport,Socotra,Yemen
+2402,SCU,Antonio Maceo International Airport,Santiago De Cuba,Cuba
+2403,SCW,Syktyvkar Airport,Syktyvkar,Russia
+2404,SCY,San Cristóbal Airport,San Cristóbal,Ecuador
+2405,SCZ,Santa Cruz/Graciosa Bay/Luova Airport,Santa Cruz/Graciosa Bay/Luova,Solomon Islands
+2406,SDD,Lubango Airport,Lubango,Angola
+2407,SDE,Vicecomodoro Angel D. La Paz Aragonés Airport,Santiago Del Estero,Argentina
+2408,SDF,Louisville International Standiford Field,Louisville,United States
+2409,SDG,Sanandaj Airport,Sanandaj,Iran
+2410,SDJ,Sendai Airport,Sendai,Japan
+2411,SDK,Sandakan Airport,Sandakan,Malaysia
+2412,SDL,Sundsvall-Härnösand Airport,Sundsvall,Sweden
+2413,SDN,Sandane Airport (Anda),Sandane,Norway
+2414,SDP,Sand Point Airport,Sand Point,United States
+2415,SDQ,Las Américas International Airport,Santo Domingo,Dominican Republic
+2416,SDR,Santander Airport,Santander,Spain
+2417,SDU,Santos Dumont Airport,Rio De Janeiro,Brazil
+2418,SDV,Sde Dov Airport,Tel-aviv,Israel
+2419,SDY,Sidney - Richland Regional Airport,Sidney,United States
+2420,SEA,Seattle Tacoma International Airport,Seattle,United States
+2421,SEN,Southend Airport,Southend,United Kingdom
+2422,SEZ,Seychelles International Airport,Mahe,Seychelles
+2423,SFA,Sfax Thyna International Airport,Sfax,Tunisia
+2424,SFB,Orlando Sanford International Airport,Sanford,United States
+2425,SFG,L'Espérance Airport,St. Martin,Guadeloupe
+2426,SFJ,Kangerlussuaq Airport,Sondrestrom,Greenland
+2427,SFL,São Filipe Airport,"Sao Filipe, Fogo Island",Cape Verde
+2428,SFN,Sauce Viejo Airport,Santa Fe,Argentina
+2429,SFO,San Francisco International Airport,San Francisco,United States
+2430,SFT,Skellefteå Airport,Skelleftea,Sweden
+2431,SGC,Surgut Airport,Surgut,Russia
+2432,SGD,Sønderborg Airport,Soenderborg,Denmark
+2433,SGF,Springfield Branson National Airport,Springfield,United States
+2434,SGN,Tan Son Nhat International Airport,Ho Chi Minh City,Vietnam
+2435,SGO,St George Airport,St George,Australia
+2436,SGU,St George Municipal Airport,Saint George,United States
+2437,SGY,Skagway Airport,Skagway,United States
+2438,SHA,Shanghai Hongqiao International Airport,Shanghai,China
+2439,SHB,Nakashibetsu Airport,Nakashibetsu,Japan
+2440,SHD,Shenandoah Valley Regional Airport,Weyers Cave,United States
+2441,SHE,Taoxian Airport,Shenyang,China
+2442,SHG,Shungnak Airport,Shungnak,United States
+2443,SHH,Shishmaref Airport,Shishmaref,United States
+2444,SHJ,Sharjah International Airport,Sharjah,United Arab Emirates
+2445,SHL,Shillong Airport,Shillong,India
+2446,SHM,Nanki Shirahama Airport,Nanki-shirahama,Japan
+2447,SHP,Shanhaiguan Airport,Qinhuangdao,China
+2448,SHR,Sheridan County Airport,Sheridan,United States
+2449,SHV,Shreveport Regional Airport,Shreveport,United States
+2450,SHW,Sharurah Airport,Sharurah,Saudi Arabia
+2451,SHX,Shageluk Airport,Shageluk,United States
+2452,SID,Amílcar Cabral International Airport,Amilcar Cabral,Cape Verde
+2453,SIN,Singapore Changi Airport,Singapore,Singapore
+2454,SIP,Simferopol International Airport,Simferopol,Ukraine
+2455,SIT,Sitka Rocky Gutierrez Airport,Sitka,United States
+2456,SJC,Norman Y. Mineta San Jose International Airport,San Jose,United States
+2457,SJD,Los Cabos International Airport,San Jose Del Cabo,Mexico
+2458,SJE,Jorge E. Gonzalez Torres Airport,San Jose Del Guaviare,Colombia
+2459,SJI,San Jose Airport,San Jose,Philippines
+2460,SJJ,Sarajevo International Airport,Sarajevo,Bosnia and Herzegovina
+2461,SJK,Professor Urbano Ernesto Stumpf Airport,Sao Jose Dos Campos,Brazil
+2462,SJL,São Gabriel da Cachoeira Airport,Sao Gabriel,Brazil
+2463,SJO,Juan Santamaria International Airport,San Jose,Costa Rica
+2464,SJP,Prof. Eribelto Manoel Reino State Airport,Sao Jose Do Rio Preto,Brazil
+2465,SJT,San Angelo Regional Mathis Field,San Angelo,United States
+2466,SJU,Luis Munoz Marin International Airport,San Juan,Puerto Rico
+2467,SJW,Shijiazhuang Daguocun International Airport,Shijiazhuang,China
+2468,SJZ,São Jorge Airport,Sao Jorge Island,Portugal
+2469,SKB,Robert L. Bradshaw International Airport,Basse Terre,Saint Kitts and Nevis
+2470,SKD,Samarkand Airport,Samarkand,Uzbekistan
+2471,SKE,Skien Airport,Skien,Norway
+2472,SKG,Thessaloniki Macedonia International Airport,Thessaloniki,Greece
+2473,SKK,Shaktoolik Airport,Shaktoolik,United States
+2474,SKN,Stokmarknes Skagen Airport,Stokmarknes,Norway
+2475,SKO,Sadiq Abubakar III International Airport,Sokoto,Nigeria
+2476,SKP,Skopje Alexander the Great Airport,Skopje,Macedonia
+2477,SKT,Sialkot Airport,Sialkot,Pakistan
+2478,SKU,Skiros Airport,Skiros,Greece
+2479,SKX,Saransk Airport,Saransk,Russia
+2480,SKZ,Sukkur Airport,Sukkur,Pakistan
+2481,SLA,Martin Miguel De Guemes International Airport,Salta,Argentina
+2482,SLC,Salt Lake City International Airport,Salt Lake City,United States
+2483,SLH,Sola Airport,Sola,Vanuatu
+2484,SLK,Adirondack Regional Airport,Saranac Lake,United States
+2485,SLL,Salalah Airport,Salalah,Oman
+2486,SLM,Salamanca Airport,Salamanca,Spain
+2487,SLN,Salina Municipal Airport,Salina,United States
+2488,SLP,Ponciano Arriaga International Airport,San Luis Potosi,Mexico
+2489,SLQ,Sleetmute Airport,Sleetmute,United States
+2490,SLU,George F. L. Charles Airport,Castries,Saint Lucia
+2491,SLW,Plan De Guadalupe International Airport,Saltillo,Mexico
+2492,SLX,Salt Cay Airport,Salt Cay,Turks and Caicos Islands
+2493,SLY,Salekhard Airport,Salekhard,Russia
+2494,SLZ,Marechal Cunha Machado International Airport,Sao Luis,Brazil
+2495,SMA,Santa Maria Airport,Santa Maria (island),Portugal
+2496,SMF,Sacramento International Airport,Sacramento,United States
+2497,SMI,Samos Airport,Samos,Greece
+2498,SMK,St Michael Airport,St. Michael,United States
+2499,SML,Stella Maris Airport,Stella Maris,Bahamas
+2500,SMR,Simón Bolívar International Airport,Santa Marta,Colombia
+2501,SMS,Sainte Marie Airport,Sainte Marie,Madagascar
+2502,SMX,Santa Maria Pub/Capt G Allan Hancock Field,Santa Maria,United States
+2503,SNA,John Wayne Airport-Orange County Airport,Santa Ana,United States
+2504,SNE,Preguiça Airport,Sao Nocolau Island,Cape Verde
+2505,SNN,Shannon Airport,Shannon,Ireland
+2506,SNO,Sakon Nakhon Airport,Sakon Nakhon,Thailand
+2507,SNP,St Paul Island Airport,St. Paul Island,United States
+2508,SNU,Abel Santamaria Airport,Santa Clara,Cuba
+2509,SNV,Santa Elena de Uairen Airport,Santa Ana De Uairen,Venezuela
+2510,SNW,Thandwe Airport,Thandwe,Burma
+2511,SOC,Adi Sumarmo Wiryokusumo Airport,Solo City,Indonesia
+2512,SOF,Sofia Airport,Sofia,Bulgaria
+2513,SOG,Sogndal Airport,Sogndal,Norway
+2514,SOJ,Sørkjosen Airport,Sorkjosen,Norway
+2515,SOM,San Tomé Airport,San Tome,Venezuela
+2516,SON,Santo Pekoa International Airport,Santo,Vanuatu
+2517,SOQ,Dominique Edward Osok Airport,Sorong,Indonesia
+2518,SOU,Southampton Airport,Southampton,United Kingdom
+2519,SOW,Show Low Regional Airport,Show Low,United States
+2520,SOY,Stronsay Airport,Stronsay,United Kingdom
+2521,SPC,La Palma Airport,Santa Cruz De La Palma,Spain
+2522,SPD,Saidpur Airport,Saidpur,Bangladesh
+2523,SPI,Abraham Lincoln Capital Airport,Springfield,United States
+2524,SPN,Saipan International Airport,Saipan,Northern Mariana Islands
+2525,SPP,Menongue Airport,Menongue,Angola
+2526,SPR,San Pedro Airport,San Pedro,Belize
+2527,SPS,Sheppard Air Force Base-Wichita Falls Municipal Airport,Wichita Falls,United States
+2528,SPU,Split Airport,Split,Croatia
+2529,SRA,Santa Rosa Airport,Santa Rosa,Brazil
+2530,SRE,Juana Azurduy De Padilla Airport,Sucre,Bolivia
+2531,SRG,Achmad Yani Airport,Semarang,Indonesia
+2532,SRP,Stord Airport,Stord,Norway
+2533,SRQ,Sarasota Bradenton International Airport,Sarasota,United States
+2534,SRX,Gardabya Airport,Sirt,Libya
+2535,SRY,Dasht-e Naz Airport,Dasht-e-naz,Iran
+2536,SRZ,El Trompillo Airport,Santa Cruz,Bolivia
+2537,SSA,Deputado Luiz Eduardo Magalhães International Airport,Salvador,Brazil
+2538,SSG,Malabo Airport,Malabo,Equatorial Guinea
+2539,SSH,Sharm El Sheikh International Airport,Sharm El Sheikh,Egypt
+2540,SSJ,Sandnessjøen Airport (Stokka),Sandnessjoen,Norway
+2541,SSR,Sara Airport,Pentecost Island,Vanuatu
+2542,SSY,Mbanza Congo Airport,M'banza-congo,Angola
+2543,STC,St Cloud Regional Airport,Saint Cloud,United States
+2544,STD,Mayor Buenaventura Vivas International Airport,Santo Domingo,Venezuela
+2545,STG,St George Airport,Point Barrow,United States
+2546,STI,Cibao International Airport,Santiago,Dominican Republic
+2547,STL,St Louis Lambert International Airport,St. Louis,United States
+2548,STM,Maestro Wilson Fonseca Airport,Santarem,Brazil
+2549,STN,London Stansted Airport,London,United Kingdom
+2550,STR,Stuttgart Airport,Stuttgart,Germany
+2551,STS,Charles M. Schulz Sonoma County Airport,Santa Rosa,United States
+2552,STT,Cyril E. King Airport,St. Thomas,Virgin Islands
+2553,STV,Surat Airport,Surat,India
+2554,STW,Stavropol Shpakovskoye Airport,Stavropol,Russia
+2555,STX,Henry E Rohlsen Airport,St. Croix Island,Virgin Islands
+2556,STZ,Santa Terezinha Airport,Santa Terezinha,Brazil
+2557,SUB,Juanda International Airport,Surabaya,Indonesia
+2558,SUF,Lamezia Terme Airport,Lamezia,Italy
+2559,SUG,Surigao Airport,Sangley Point,Philippines
+2560,SUJ,Satu Mare Airport,Satu Mare,Romania
+2561,SUK,Sakkyryr Airport,Batagay-Alyta,Russia
+2562,SUR,Summer Beaver Airport,Summer Beaver,Canada
+2563,SUV,Nausori International Airport,Nausori,Fiji
+2564,SUX,Sioux Gateway Col. Bud Day Field,Sioux City,United States
+2565,SVA,Savoonga Airport,Savoonga,United States
+2566,SVB,Sambava Airport,Sambava,Madagascar
+2567,SVD,Argyle International Airport,Kingstown,Saint Vincent and the Grenadines
+2568,SVG,Stavanger Airport Sola,Stavanger,Norway
+2569,SVI,Eduardo Falla Solano Airport,San Vincente De Caguan,Colombia
+2570,SVJ,Svolvær Helle Airport,Svolvær,Norway
+2571,SVL,Savonlinna Airport,Savonlinna,Finland
+2572,SVO,Sheremetyevo International Airport,Moscow,Russia
+2573,SVP,Kuito Airport,Kuito,Angola
+2574,SVQ,Sevilla Airport,Sevilla,Spain
+2575,SVU,Savusavu Airport,Savusavu,Fiji
+2576,SVX,Koltsovo Airport,Yekaterinburg,Russia
+2577,SVZ,San Antonio Del Tachira Airport,San Antonio,Venezuela
+2578,SWA,Jieyang Chaoshan International Airport,Shantou,China
+2579,SWF,Stewart International Airport,Newburgh,United States
+2580,SWJ,Southwest Bay Airport,Malekula Island,Vanuatu
+2581,SXB,Strasbourg Airport,Strasbourg,France
+2582,SXF,Berlin-Schönefeld Airport,Berlin,Germany
+2583,SXI,Sirri Island Airport,Siri Island,Iran
+2584,SXK,Saumlaki/Olilit Airport,Saumlaki,Indonesia
+2585,SXM,Princess Juliana International Airport,Philipsburg,Netherlands Antilles
+2586,SXO,São Félix do Araguaia Airport,Sao Felix do Araguaia,Brazil
+2587,SXR,Sheikh ul Alam Airport,Srinagar,India
+2588,SXX,São Félix do Xingu Airport,Sao Felix do Xingu,Brazil
+2589,SYD,Sydney Kingsford Smith International Airport,Sydney,Australia
+2590,SYM,Pu'er Simao Airport,Simao,China
+2591,SYO,Shonai Airport,Shonai,Japan
+2592,SYQ,Tobias Bolanos International Airport,San Jose,Costa Rica
+2593,SYR,Syracuse Hancock International Airport,Syracuse,United States
+2594,SYX,Sanya Phoenix International Airport,Sanya,China
+2595,SYY,Stornoway Airport,Stornoway,United Kingdom
+2596,SYZ,Shiraz Shahid Dastghaib International Airport,Shiraz,Iran
+2597,SZA,Soyo Airport,Soyo,Angola
+2598,SZB,Sultan Abdul Aziz Shah International Airport,Kuala Lumpur,Malaysia
+2599,SZG,Salzburg Airport,Salzburg,Austria
+2600,SZX,Shenzhen Bao'an International Airport,Shenzhen,China
+2601,SZZ,"Szczecin-Goleniów ""Solidarność"" Airport",Szczecin,Poland
+2602,TAB,Tobago-Crown Point Airport,Scarborough,Trinidad and Tobago
+2603,TAC,Daniel Z. Romualdez Airport,Tacloban,Philippines
+2604,TAE,Daegu Airport,Taegu,South Korea
+2605,TAG,Tagbilaran Airport,Tagbilaran,Philippines
+2606,TAH,Tanna Airport,Tanna,Vanuatu
+2607,TAI,Ta'izz International Airport,Taiz,Yemen
+2608,TAK,Takamatsu Airport,Takamatsu,Japan
+2609,TAM,General Francisco Javier Mina International Airport,Tampico,Mexico
+2610,TAO,Liuting Airport,Qingdao,China
+2611,TAP,Tapachula International Airport,Tapachula,Mexico
+2612,TAS,Tashkent International Airport,Tashkent,Uzbekistan
+2613,TAY,Tartu Airport,Tartu,Estonia
+2614,TBB,Dong Tac Airport,Tuy Hoa,Vietnam
+2615,TBG,Tabubil Airport,Tabubil,Papua New Guinea
+2616,TBI,New Bight Airport,Cat Island,Bahamas
+2617,TBN,Waynesville-St. Robert Regional Forney field,Fort Leonardwood,United States
+2618,TBP,Capitan FAP Pedro Canga Rodriguez Airport,Tumbes,Peru
+2619,TBS,Tbilisi International Airport,Tbilisi,Georgia
+2620,TBT,Tabatinga Airport,Tabatinga,Brazil
+2621,TBU,Fua'amotu International Airport,Tongatapu,Tonga
+2622,TBW,Donskoye Airport,Tambow,Russia
+2623,TBZ,Tabriz International Airport,Tabriz,Iran
+2624,TCB,Treasure Cay Airport,Treasure Cay,Bahamas
+2625,TCG,Tacheng Airport,Tacheng,China
+2626,TCO,La Florida Airport,Tumaco,Colombia
+2627,TCQ,Coronel FAP Carlos Ciriani Santa Rosa International Airport,Tacna,Peru
+2628,TCZ,Tengchong Tuofeng Airport,Tengchong,China
+2629,TDD,Teniente Av. Jorge Henrich Arauz Airport,Trinidad,Bolivia
+2630,TDX,Trat Airport,Trat,Thailand
+2631,TEB,Teterboro Airport,Teterboro,United States
+2632,TEE,Cheikh Larbi Tébessi Airport,Tebessa,Algeria
+2633,TEN,Tongren Fenghuang Airport,Tongren,China
+2634,TEQ,Tekirdağ Çorlu Airport,Çorlu,Turkey
+2635,TER,Lajes Airport,Lajes (terceira Island),Portugal
+2636,TET,Chingozi Airport,Tete,Mozambique
+2637,TFF,Tefé Airport,Tefe,Brazil
+2638,TFN,Tenerife Norte Airport,Tenerife,Spain
+2639,TFS,Tenerife South Airport,Tenerife,Spain
+2640,TGD,Podgorica Airport,Podgorica,Montenegro
+2641,TGG,Sultan Mahmud Airport,Kuala Terengganu,Malaysia
+2642,TGH,Tongoa Airport,Tongoa Island,Vanuatu
+2643,TGI,Tingo Maria Airport,Tingo Maria,Peru
+2644,TGJ,Tiga Airport,Tiga,New Caledonia
+2645,TGK,Taganrog Yuzhny Airport,Taganrog,Russia
+2646,TGM,Transilvania Târgu Mureş International Airport,Tirgu Mures,Romania
+2647,TGO,Tongliao Airport,Tongliao,China
+2648,TGP,Podkamennaya Tunguska Airport,Bor,Russia
+2649,TGR,Touggourt Sidi Madhi Airport,Touggourt,Algeria
+2650,TGU,Toncontín International Airport,Tegucigalpa,Honduras
+2651,TGZ,Angel Albino Corzo International Airport,Tuxtla Gutierrez,Mexico
+2652,THE,Senador Petrônio Portela Airport,Teresina,Brazil
+2653,THL,Tachileik Airport,Tachilek,Burma
+2654,THN,Trollhättan-Vänersborg Airport,Trollhattan,Sweden
+2655,THR,Mehrabad International Airport,Teheran,Iran
+2656,THS,Sukhothai Airport,Sukhothai,Thailand
+2657,THU,Thule Air Base,Thule,Greenland
+2658,THX,Turukhansk Airport,Turukhansk,Russia
+2659,TIA,Tirana International Airport Mother Teresa,Tirana,Albania
+2660,TID,Bou Chekif Airport,Tiaret,Algeria
+2661,TIF,Ta’if Regional Airport,Taif,Saudi Arabia
+2662,TIH,Tikehau Airport,Tikehau,French Polynesia
+2663,TIJ,General Abelardo L. Rodríguez International Airport,Tijuana,Mexico
+2664,TIM,Moses Kilangin Airport,Timika,Indonesia
+2665,TIP,Tripoli International Airport,Tripoli,Libya
+2666,TIR,Tirupati Airport,Tirupeti,India
+2667,TIU,Timaru Airport,Timaru,New Zealand
+2668,TIV,Tivat Airport,Tivat,Montenegro
+2669,TIZ,Tari Airport,Tari,Papua New Guinea
+2670,TJA,Capitan Oriel Lea Plaza Airport,Tarija,Bolivia
+2671,TJM,Roshchino International Airport,Tyumen,Russia
+2672,TJQ,Buluh Tumbang (H A S Hanandjoeddin) Airport,Tanjung Pandan,Indonesia
+2673,TJU,Kulob Airport,Kulyab,Tajikistan
+2674,TKD,Takoradi Airport,Takoradi,Ghana
+2675,TKG,Radin Inten II (Branti) Airport,Bandar Lampung-Sumatra Island,Indonesia
+2676,TKK,Chuuk International Airport,Chuuk,Micronesia
+2677,TKP,Takapoto Airport,Takapoto,French Polynesia
+2678,TKS,Tokushima Airport/JMSDF Air Base,Tokushima,Japan
+2679,TKU,Turku Airport,Turku,Finland
+2680,TKX,Takaroa Airport,Takaroa,French Polynesia
+2681,TLA,Teller Airport,Teller,United States
+2682,TLC,Licenciado Adolfo Lopez Mateos International Airport,Toluca,Mexico
+2683,TLE,Toliara Airport,Toliara,Madagascar
+2684,TLH,Tallahassee Regional Airport,Tallahassee,United States
+2685,TLJ,Tatalina LRRS Airport,Tatalina,United States
+2686,TLL,Lennart Meri Tallinn Airport,Tallinn-ulemiste International,Estonia
+2687,TLM,Zenata – Messali El Hadj Airport,Tlemcen,Algeria
+2688,TLN,Toulon-Hyères Airport,Hyeres,France
+2689,TLS,Toulouse-Blagnac Airport,Toulouse,France
+2690,TLV,Ben Gurion International Airport,Tel-aviv,Israel
+2691,TMC,Tambolaka Airport,Waikabubak-Sumba Island,Indonesia
+2692,TME,Gustavo Vargas Airport,Tame,Colombia
+2693,TMI,Tumling Tar Airport,Tumling Tar,Nepal
+2694,TMJ,Termez Airport,Termez,Uzbekistan
+2695,TML,Tamale Airport,Tamale,Ghana
+2696,TMM,Toamasina Airport,Toamasina,Madagascar
+2697,TMP,Tampere-Pirkkala Airport,Tampere,Finland
+2698,TMR,Aguenar – Hadj Bey Akhamok Airport,Tamanrasset,Algeria
+2699,TMS,São Tomé International Airport,Sao Tome,Sao Tome and Principe
+2700,TMT,Trombetas Airport,Oriximina,Brazil
+2701,TMU,Tambor Airport,Nicoya,Costa Rica
+2702,TMW,Tamworth Airport,Tamworth,Australia
+2703,TNA,Yaoqiang Airport,Jinan,China
+2704,TNC,Tin City Long Range Radar Station Airport,Tin City,United States
+2705,TNG,Ibn Batouta Airport,Tanger,Morocco
+2706,TNJ,Raja Haji Fisabilillah International Airport,Tanjung Pinang,Indonesia
+2707,TNN,Tainan Airport,Tainan,Taiwan
+2708,TNR,Ivato Airport,Antananarivo,Madagascar
+2709,TNW,Jumandy Airport,Tena,Ecuador
+2710,TOB,Gamal Abdel Nasser Airport,Tobruk,Libya
+2711,TOE,Tozeur Nefta International Airport,Tozeur,Tunisia
+2712,TOF,Bogashevo Airport,Tomsk,Russia
+2713,TOG,Togiak Airport,Togiak Village,United States
+2714,TOH,Torres Airstrip,Loh/Linua,Vanuatu
+2715,TOL,Toledo Express Airport,Toledo,United States
+2716,TOS,"Tromsø Airport,",Tromso,Norway
+2717,TOU,Touho Airport,Touho,New Caledonia
+2718,TOY,Toyama Airport,Toyama,Japan
+2719,TPA,Tampa International Airport,Tampa,United States
+2720,TPE,Taiwan Taoyuan International Airport,Taipei,Taiwan
+2721,TPP,Cadete FAP Guillermo Del Castillo Paredes Airport,Tarapoto,Peru
+2722,TPQ,Amado Nervo National Airport,Tepic,Mexico
+2723,TPS,Vincenzo Florio Airport Trapani-Birgi,Trapani,Italy
+2724,TQL,Tarko-Sale Airport,Tarko-Sale,Russia
+2725,TRC,Francisco Sarabia International Airport,Torreon,Mexico
+2726,TRD,Trondheim Airport Værnes,Trondheim,Norway
+2727,TRE,Tiree Airport,Tiree,United Kingdom
+2728,TRF,"Sandefjord Airport, Torp",Sandefjord,Norway
+2729,TRG,Tauranga Airport,Tauranga,New Zealand
+2730,TRI,Tri-Cities Regional TN/VA Airport,BRISTOL,United States
+2731,TRK,Juwata Airport,Taraken,Indonesia
+2732,TRN,Turin Airport,Torino,Italy
+2733,TRO,Taree Airport,Taree,Australia
+2734,TRR,China Bay Airport,Trinciomalee,Sri Lanka
+2735,TRS,Trieste–Friuli Venezia Giulia Airport,Ronchi De Legionari,Italy
+2736,TRU,Capitan FAP Carlos Martinez De Pinillos International Airport,Trujillo,Peru
+2737,TRV,Trivandrum International Airport,Trivandrum,India
+2738,TRW,Bonriki International Airport,Tarawa,Kiribati
+2739,TRZ,Tiruchirapally Civil Airport Airport,Tiruchirappalli,India
+2740,TSA,Taipei Songshan Airport,Taipei,Taiwan
+2741,TSE,Astana International Airport,Tselinograd,Kazakhstan
+2742,TSF,Treviso-Sant'Angelo Airport,Treviso,Italy
+2743,TSH,Tshikapa Airport,Tshikapa,Congo (Kinshasa)
+2744,TSJ,Tsushima Airport,Tsushima,Japan
+2745,TSN,Tianjin Binhai International Airport,Tianjin,China
+2746,TSR,Timişoara Traian Vuia Airport,Timisoara,Romania
+2747,TST,Trang Airport,Trang,Thailand
+2748,TSV,Townsville Airport,Townsville,Australia
+2749,TTA,Tan Tan Airport,Tan Tan,Morocco
+2750,TTE,Sultan Khairun Babullah Airport,Ternate,Indonesia
+2751,TTJ,Tottori Airport,Tottori,Japan
+2752,TTN,Trenton Mercer Airport,Trenton,United States
+2753,TTQ,Aerotortuguero Airport,Roxana,Costa Rica
+2754,TTT,Taitung Airport,Fengnin,Taiwan
+2755,TTU,Saniat R'mel Airport,Tetouan,Morocco
+2756,TUA,Teniente Coronel Luis a Mantilla Airport,Tulcan,Ecuador
+2757,TUB,Tubuai Airport,Tubuai,French Polynesia
+2758,TUC,Teniente Benjamin Matienzo Airport,Tucuman,Argentina
+2759,TUF,Tours-Val-de-Loire Airport,Tours,France
+2760,TUG,Tuguegarao Airport,Tuguegarao,Philippines
+2761,TUI,Turaif Domestic Airport,Turaif,Saudi Arabia
+2762,TUK,Turbat International Airport,Turbat,Pakistan
+2763,TUL,Tulsa International Airport,Tulsa,United States
+2764,TUN,Tunis Carthage International Airport,Tunis,Tunisia
+2765,TUO,Taupo Airport,Taupo,New Zealand
+2766,TUP,Tupelo Regional Airport,Tupelo,United States
+2767,TUR,Tucuruí Airport,Tucurui,Brazil
+2768,TUS,Tucson International Airport,Tucson,United States
+2769,TUU,Tabuk Airport,Tabuk,Saudi Arabia
+2770,TVC,Cherry Capital Airport,Traverse City,United States
+2771,TVF,Thief River Falls Regional Airport,Thief River Falls,United States
+2772,TVU,Matei Airport,Matei,Fiji
+2773,TVY,Dawei Airport,Dawei,Burma
+2774,TWB,Toowoomba Airport,Toowoomba,Australia
+2775,TWF,Joslin Field Magic Valley Regional Airport,Twin Falls,United States
+2776,TWU,Tawau Airport,Tawau,Malaysia
+2777,TXK,Texarkana Regional Webb Field,Texarkana,United States
+2778,TXL,Berlin-Tegel Airport,Berlin,Germany
+2779,TXN,Tunxi International Airport,Huangshan,China
+2780,TYF,Torsby Airport,Torsby,Sweden
+2781,TYN,Taiyuan Wusu Airport,Taiyuan,China
+2782,TYR,Tyler Pounds Regional Airport,Tyler,United States
+2783,TYS,McGhee Tyson Airport,Knoxville,United States
+2784,TZL,Tuzla International Airport,Null,Bosnia and Herzegovina
+2785,TZX,Trabzon International Airport,Trabzon,Turkey
+2786,UAH,Ua Huka Airport,Ua Huka,French Polynesia
+2787,UAK,Narsarsuaq Airport,Narssarssuaq,Greenland
+2788,UAP,Ua Pou Airport,Ua Pou,French Polynesia
+2789,UAQ,Domingo Faustino Sarmiento Airport,San Juan,Argentina
+2790,UAS,Buffalo Spring,Samburu South,Kenya
+2791,UBA,Mário de Almeida Franco Airport,Uberaba,Brazil
+2792,UBJ,Yamaguchi Ube Airport,Yamaguchi,Japan
+2793,UBP,Ubon Ratchathani Airport,Ubon Ratchathani,Thailand
+2794,UCT,Ukhta Airport,Ukhta,Russia
+2795,UDI,Ten. Cel. Aviador César Bombonato Airport,Uberlandia,Brazil
+2796,UDJ,Uzhhorod International Airport,Uzhgorod,Ukraine
+2797,UDR,Maharana Pratap Airport,Udaipur,India
+2798,UEL,Quelimane Airport,Quelimane,Mozambique
+2799,UEO,Kumejima Airport,Kumejima,Japan
+2800,UET,Quetta International Airport,Quetta,Pakistan
+2801,UFA,Ufa International Airport,Ufa,Russia
+2802,UGC,Urgench Airport,Urgench,Uzbekistan
+2803,UIB,El Caraño Airport,Quibdo,Colombia
+2804,UIH,Phu Cat Airport,Phucat,Vietnam
+2805,UII,Utila Airport,Utila,Honduras
+2806,UIN,Quincy Regional Baldwin Field,Quincy,United States
+2807,UIO,Mariscal Sucre International Airport,Quito,Ecuador
+2808,UIP,Quimper-Cornouaille Airport,Quimper,France
+2809,UKA,Ukunda Airstrip,Ukunda,Kenya
+2810,UKB,Kobe Airport,Kobe,Japan
+2811,UKK,Ust-Kamennogorsk Airport,Ust Kamenogorsk,Kazakhstan
+2812,UKS,Belbek Airport,Sevastopol,Ukraine
+2813,UKX,Ust-Kut Airport,Ust-Kut,Russia
+2814,ULB,Uléi Airport,Ambryn Island,Vanuatu
+2815,ULG,Ulgii Mongolei Airport,Olgii,Mongolia
+2816,ULH,Majeed Bin Abdulaziz Airport,Al-Ula,Saudi Arabia
+2817,ULK,Lensk Airport,Lensk,Russia
+2818,ULN,Chinggis Khaan International Airport,Ulan Bator,Mongolia
+2819,ULO,Ulaangom Airport,Ulaangom,Mongolia
+2820,ULP,Quilpie Airport,Quilpie,Australia
+2821,ULV,Ulyanovsk Baratayevka Airport,Ulyanovsk,Russia
+2822,ULZ,Donoi Airport,Uliastai,Mongolia
+2823,UMD,Uummannaq Heliport,Uummannaq,Greenland
+2824,UME,Umeå Airport,Umea,Sweden
+2825,UNG,Kiunga Airport,Kiunga,Papua New Guinea
+2826,UNK,Unalakleet Airport,Unalakleet,United States
+2827,UNN,Ranong Airport,Ranong,Thailand
+2828,UPG,Hasanuddin International Airport,Ujung Pandang,Indonesia
+2829,UPN,Licenciado y General Ignacio Lopez Rayon Airport,Uruapan,Mexico
+2830,URA,Uralsk Airport,Uralsk,Kazakhstan
+2831,URC,Ürümqi Diwopu International Airport,Urumqi,China
+2832,URE,Kuressaare Airport,Kuressaare,Estonia
+2833,URG,Rubem Berta Airport,Uruguaiana,Brazil
+2834,URJ,Uray Airport,Uraj,Russia
+2835,URS,Kursk East Airport,Kursk,Russia
+2836,URT,Surat Thani Airport,Surat Thani,Thailand
+2837,URY,Gurayat Domestic Airport,Guriat,Saudi Arabia
+2838,USH,Malvinas Argentinas Airport,Ushuaia,Argentina
+2839,USK,Usinsk Airport,Usinsk,Russia
+2840,USM,Samui Airport,Ko Samui,Thailand
+2841,USN,Ulsan Airport,Ulsan,South Korea
+2842,UST,Northeast Florida Regional Airport,St. Augustine Airport,United States
+2843,USU,Francisco B. Reyes Airport,Busuanga,Philippines
+2844,UTH,Udon Thani Airport,Udon Thani,Thailand
+2845,UTN,Pierre Van Ryneveld Airport,Upington,South Africa
+2846,UTP,U-Tapao International Airport,Pattaya,Thailand
+2847,UTS,Ust-Tsylma Airport,Ust-Tsylma,Russia
+2848,UTT,K. D. Matanzima Airport,Umtata,South Africa
+2849,UUA,Bugulma Airport,Bugulma,Russia
+2850,UUD,Ulan-Ude Airport (Mukhino),Ulan-ude,Russia
+2851,UUS,Yuzhno-Sakhalinsk Airport,Yuzhno-sakhalinsk,Russia
+2852,UVE,Ouvéa Airport,Ouvea,New Caledonia
+2853,UVF,Hewanorra International Airport,Hewandorra,Saint Lucia
+2854,UYL,Nyala Airport,Nyala,Sudan
+2855,UYN,Yulin Yuyang Airport,Yulin,China
+2856,UYU,Uyuni Airport,Uyuni,Bolivia
+2857,VAA,Vaasa Airport,Vaasa,Finland
+2858,VAI,Vanimo Airport,Vanimo,Papua New Guinea
+2859,VAK,Chevak Airport,Chevak,United States
+2860,VAN,Van Ferit Melen Airport,Van,Turkey
+2861,VAO,Suavanao Airport,Suavanao,Solomon Islands
+2862,VAR,Varna Airport,Varna,Bulgaria
+2863,VAS,Sivas Nuri Demirağ Airport,Sivas,Turkey
+2864,VAW,"Vardø Airport, Svartnes",Vardø,Norway
+2865,VBV,Vanua Balavu Airport,Vanua Balavu,Fiji
+2866,VBY,Visby Airport,Visby,Sweden
+2867,VCA,Can Tho International Airport,Can Tho,Vietnam
+2868,VCE,Venice Marco Polo Airport,Venice,Italy
+2869,VCL,Chu Lai International Airport,Chu Lai,Vietnam
+2870,VCP,Viracopos International Airport,Campinas,Brazil
+2871,VCS,Co Ong Airport,Conson,Vietnam
+2872,VCT,Victoria Regional Airport,Victoria,United States
+2873,VDA,Ovda International Airport,Ovda,Israel
+2874,VDB,Leirin Airport,Fagernes,Norway
+2875,VDC,Vitória da Conquista Airport,Vitória Da Conquista,Brazil
+2876,VDE,Hierro Airport,Hierro,Spain
+2877,VDH,Dong Hoi Airport,Dong Hoi,Vietnam
+2878,VDM,Gobernador Castello Airport,Viedma,Argentina
+2879,VDS,Vadsø Airport,Vadsø,Norway
+2880,VDZ,Valdez Pioneer Field,Valdez,United States
+2881,VEE,Venetie Airport,Venetie,United States
+2882,VEL,Vernal Regional Airport,Vernal,United States
+2883,VER,General Heriberto Jara International Airport,Vera Cruz,Mexico
+2884,VFA,Victoria Falls International Airport,Victoria Falls,Zimbabwe
+2885,VGA,Vijayawada Airport,Vijayawada,India
+2886,VGO,Vigo Airport,Vigo,Spain
+2887,VGZ,Villa Garzón Airport,Villa Garzon,Colombia
+2888,VHC,Saurimo Airport,Saurimo,Angola
+2889,VHM,Vilhelmina Airport,Vilhelmina,Sweden
+2890,VIE,Vienna International Airport,Vienna,Austria
+2891,VIG,Juan Pablo Pérez Alfonso Airport,El Vigía,Venezuela
+2892,VII,Vinh Airport,Vinh,Vietnam
+2893,VIJ,Virgin Gorda Airport,Spanish Town,British Virgin Islands
+2894,VIL,Dakhla Airport,Dakhla,Western Sahara
+2895,VIN,Vinnytsia/Gavyryshivka Airport,Vinnitsa,Ukraine
+2896,VIS,Visalia Municipal Airport,Visalia,United States
+2897,VIX,Eurico de Aguiar Salles Airport,Vitoria,Brazil
+2898,VKG,Rach Gia Airport,Rach Gia,Vietnam
+2899,VKO,Vnukovo International Airport,Moscow,Russia
+2900,VKT,Vorkuta Airport,Vorkuta,Russia
+2901,VLC,Valencia Airport,Valencia,Spain
+2902,VLD,Valdosta Regional Airport,Valdosta,United States
+2903,VLI,Bauerfield International Airport,Port-vila,Vanuatu
+2904,VLL,Valladolid Airport,Valladolid,Spain
+2905,VLN,Arturo Michelena International Airport,Valencia,Venezuela
+2906,VLS,Valesdir Airport,Valesdir,Vanuatu
+2907,VLV,Dr. Antonio Nicolás Briceño Airport,Valera,Venezuela
+2908,VLY,Anglesey Airport,Angelsey,United Kingdom
+2909,VNO,Vilnius International Airport,Vilnius,Lithuania
+2910,VNS,Lal Bahadur Shastri Airport,Varanasi,India
+2911,VNX,Vilankulo Airport,Vilankulu,Mozambique
+2912,VOG,Volgograd International Airport,Volgograd,Russia
+2913,VOL,Nea Anchialos Airport,Nea Anghialos,Greece
+2914,VOZ,Voronezh International Airport,Voronezh,Russia
+2915,VPE,Ngjiva Pereira Airport,Ondjiva,Angola
+2916,VPS,Destin-Ft Walton Beach Airport,Valparaiso,United States
+2917,VPY,Chimoio Airport,Chimoio,Mozambique
+2918,VQS,Vieques Airport,Vieques Island,Puerto Rico
+2919,VRA,Juan Gualberto Gomez International Airport,Varadero,Cuba
+2920,VRC,Virac Airport,Virac,Philippines
+2921,VRN,Verona Villafranca Airport,Villafranca,Italy
+2922,VSA,Carlos Rovirosa Pérez International Airport,Villahermosa,Mexico
+2923,VST,Stockholm Västerås Airport,Vasteras,Sweden
+2924,VTE,Wattay International Airport,Vientiane,Laos
+2925,VTZ,Vishakhapatnam Airport,Vishakhapatnam,India
+2926,VUP,Alfonso López Pumarejo Airport,Valledupar,Colombia
+2927,VUS,Velikiy Ustyug Airport,Veliky Ustyug,Russia
+2928,VVC,Vanguardia Airport,Villavicencio,Colombia
+2929,VVI,Viru Viru International Airport,Santa Cruz,Bolivia
+2930,VVO,Vladivostok International Airport,Vladivostok,Russia
+2931,VXC,Lichinga Airport,Lichinga,Mozambique
+2932,VXE,São Pedro Airport,Sao Vicente Island,Cape Verde
+2933,VXO,Växjö Kronoberg Airport,Vaxjo,Sweden
+2934,WAA,Wales Airport,Wales,United States
+2935,WAE,Wadi Al Dawasir Airport,Wadi-al-dawasir,Saudi Arabia
+2936,WAG,Wanganui Airport,Wanganui,New Zealand
+2937,WAT,Waterford Airport,Waterford,Ireland
+2938,WAW,Warsaw Chopin Airport,Warsaw,Poland
+2939,WBM,Wapenamanda Airport,Wapenamanda,Papua New Guinea
+2940,WBQ,Beaver Airport,Beaver,United States
+2941,WDH,Hosea Kutako International Airport,Windhoek,Namibia
+2942,WEF,Weifang Airport,Weifang,China
+2943,WEI,Weipa Airport,Weipa,Australia
+2944,WGA,Wagga Wagga City Airport,Wagga Wagga,Australia
+2945,WGP,Umbu Mehang Kunda Airport,Waingapu,Indonesia
+2946,WHK,Whakatane Airport,Whakatane,New Zealand
+2947,WIC,Wick Airport,Wick,United Kingdom
+2948,WIL,Nairobi Wilson Airport,Nairobi,Kenya
+2949,WIN,Winton Airport,Winton,Australia
+2950,WJR,Wajir Airport,Wajir,Kenya
+2951,WJU,Wonju/Hoengseong Air Base (K-38/K-46),Wonju,South Korea
+2952,WKJ,Wakkanai Airport,Wakkanai,Japan
+2953,WLG,Wellington International Airport,Wellington,New Zealand
+2954,WLH,Walaha Airport,Walaha,Vanuatu
+2955,WLK,Selawik Airport,Selawik,United States
+2956,WLS,Hihifo Airport,Wallis,Wallis and Futuna
+2957,WMI,Modlin Airport,Warsaw,Poland
+2958,WMN,Maroantsetra Airport,Maroantsetra,Madagascar
+2959,WMO,White Mountain Airport,White Mountain,United States
+2960,WMR,Mananara Nord Airport,Mananara,Madagascar
+2961,WMX,Wamena Airport,Wamena,Indonesia
+2962,WNA,Napakiak Airport,Napakiak,United States
+2963,WNN,Wunnumin Lake Airport,Wunnumin Lake,Canada
+2964,WNP,Naga Airport,Naga,Philippines
+2965,WNR,Windorah Airport,Windorah,Australia
+2966,WNZ,Wenzhou Longwan International Airport,Wenzhou,China
+2967,WRE,Whangarei Airport,Whangarei,New Zealand
+2968,WRG,Wrangell Airport,Wrangell,United States
+2969,WRL,Worland Municipal Airport,Worland,United States
+2970,WRO,Copernicus Wrocław Airport,Wroclaw,Poland
+2971,WRY,Westray Airport,Westray,United Kingdom
+2972,WSN,South Naknek Nr 2 Airport,South Naknek,United States
+2973,WSZ,Westport Airport,Westport,New Zealand
+2974,WTK,Noatak Airport,Noatak,United States
+2975,WUA,Wuhai Airport,Wuhai,China
+2976,WUH,Wuhan Tianhe International Airport,Wuhan,China
+2977,WUS,Nanping Wuyishan Airport,Wuyishan,China
+2978,WUX,Sunan Shuofang International Airport,Wuxi,China
+2979,WUZ,Wuzhou Changzhoudao Airport,Wuzhou,China
+2980,WVB,Walvis Bay Airport,Walvis Bay,Namibia
+2981,WWK,Wewak International Airport,Wewak,Papua New Guinea
+2982,WXN,Wanxian Airport,Wanxian,China
+2983,WYA,Whyalla Airport,Whyalla,Australia
+2984,XAP,Serafin Enoss Bertaso Airport,Chapeco,Brazil
+2985,XBE,Bearskin Lake Airport,Bearskin Lake,Canada
+2986,XBJ,Birjand Airport,Birjand,Iran
+2987,XCH,Christmas Island Airport,Christmas Island,Christmas Island
+2988,XCR,Châlons-Vatry Airport,Chalons,France
+2989,XFN,Xiangyang Liuji Airport,Xiangfan,China
+2990,XFW,Hamburg-Finkenwerder Airport,Hamburg,Germany
+2991,XGR,Kangiqsualujjuaq (Georges River) Airport,Kangiqsualujjuaq,Canada
+2992,XIC,Xichang Qingshan Airport,Xichang,China
+2993,XIL,Xilinhot Airport,Xilinhot,China
+2994,XIY,Xi'an Xianyang International Airport,Xi'an,China
+2995,XKH,Xieng Khouang Airport,Phon Savan,Laos
+2996,XKS,Kasabonika Airport,Kasabonika,Canada
+2997,XMH,Manihi Airport,Manihi,French Polynesia
+2998,XMN,Xiamen Gaoqi International Airport,Xiamen,China
+2999,XMS,Coronel E Carvajal Airport,Macas,Ecuador
+3000,XNA,Northwest Arkansas Regional Airport,Bentonville,United States
+3001,XNN,Xining Caojiabu Airport,Xining,China
+3002,XQP,Quepos Managua Airport,Quepos,Costa Rica
+3003,XRY,Jerez Airport,Jerez,Spain
+3004,XSB,Sir Bani Yas Airport,Sir Bani Yas Island,United Arab Emirates
+3005,XSC,South Caicos Airport,South Caicos,Turks and Caicos Islands
+3006,XTG,Thargomindah Airport,Thargomindah,Australia
+3007,XUZ,Xuzhou Guanyin Airport,Xuzhou,China
+3008,YAA,Anahim Lake Airport,Anahim Lake,Canada
+3009,YAB,Old Arctic Bay Airport,Arctic Bay,Canada
+3010,YAC,Cat Lake Airport,Cat Lake,Canada
+3011,YAG,Fort Frances Municipal Airport,Fort Frances,Canada
+3012,YAK,Yakutat Airport,Yakutat,United States
+3013,YAM,Sault Ste Marie Airport,Sault Sainte Marie,Canada
+3014,YAP,Yap International Airport,Yap,Micronesia
+3015,YAT,Attawapiskat Airport,Attawapiskat,Canada
+3016,YAX,Wapekeka Airport,Angling Lake,Canada
+3017,YAY,St. Anthony Airport,St. Anthony,Canada
+3018,YBC,Baie Comeau Airport,Baie Comeau,Canada
+3019,YBG,CFB Bagotville,Bagotville,Canada
+3020,YBK,Baker Lake Airport,Baker Lake,Canada
+3021,YBL,Campbell River Airport,Campbell River,Canada
+3022,YBP,Yibin Caiba Airport,Yibin,China
+3023,YBR,Brandon Municipal Airport,Brandon,Canada
+3024,YBX,Lourdes de Blanc Sablon Airport,Lourdes-De-Blanc-Sablon,Canada
+3025,YCB,Cambridge Bay Airport,Cambridge Bay,Canada
+3026,YCD,Nanaimo Airport,Nanaimo,Canada
+3027,YCG,Castlegar/West Kootenay Regional Airport,Castlegar,Canada
+3028,YCL,Charlo Airport,Charlo,Canada
+3029,YCO,Kugluktuk Airport,Coppermine,Canada
+3030,YCS,Chesterfield Inlet Airport,Chesterfield Inlet,Canada
+3031,YCU,Yuncheng Guangong Airport,Yuncheng,China
+3032,YCY,Clyde River Airport,Clyde River,Canada
+3033,YDF,Deer Lake Airport,Deer Lake,Canada
+3034,YDP,Nain Airport,Nain,Canada
+3035,YDQ,Dawson Creek Airport,Dawson Creek,Canada
+3036,YEG,Edmonton International Airport,Edmonton,Canada
+3037,YEK,Arviat Airport,Eskimo Point,Canada
+3038,YER,Fort Severn Airport,Fort Severn,Canada
+3039,YES,Yasouj Airport,Yasuj,Iran
+3040,YEV,Inuvik Mike Zubko Airport,Inuvik,Canada
+3041,YFA,Fort Albany Airport,Fort Albany,Canada
+3042,YFB,Iqaluit Airport,Iqaluit,Canada
+3043,YFC,Fredericton Airport,Fredericton,Canada
+3044,YFH,Fort Hope Airport,Fort Hope,Canada
+3045,YFJ,Wekweètì Airport,Wekweeti,Canada
+3046,YFO,Flin Flon Airport,Flin Flon,Canada
+3047,YFS,Fort Simpson Airport,Fort Simpson,Canada
+3048,YGH,Fort Good Hope Airport,Fort Good Hope,Canada
+3049,YGJ,Miho Yonago Airport,Miho,Japan
+3050,YGK,Kingston Norman Rogers Airport,Kingston,Canada
+3051,YGL,La Grande Rivière Airport,La Grande Riviere,Canada
+3052,YGP,Gaspé (Michel-Pouliot) Airport,Gaspe,Canada
+3053,YGR,Îles-de-la-Madeleine Airport,Iles De La Madeleine,Canada
+3054,YGT,Igloolik Airport,Igloolik,Canada
+3055,YGV,Havre St Pierre Airport,Havre-Saint-Pierre,Canada
+3056,YGW,Kuujjuarapik Airport,Kuujjuarapik,Canada
+3057,YGX,Gillam Airport,Gillam,Canada
+3058,YGZ,Grise Fiord Airport,Grise Fiord,Canada
+3059,YHD,Dryden Regional Airport,Dryden,Canada
+3060,YHI,Ulukhaktok Holman Airport,Holman Island,Canada
+3061,YHK,Gjoa Haven Airport,Gjoa Haven,Canada
+3062,YHM,John C. Munro Hamilton International Airport,Hamilton,Canada
+3063,YHO,Hopedale Airport,Hopedale,Canada
+3064,YHP,Poplar Hill Airport,Poplar Hill,Canada
+3065,YHR,Chevery Airport,Chevery,Canada
+3066,YHU,Montréal / Saint-Hubert Airport,Montreal,Canada
+3067,YHY,Hay River / Merlyn Carter Airport,Hay River,Canada
+3068,YHZ,Halifax / Stanfield International Airport,Halifax,Canada
+3069,YIC,Yichun Mingyueshan Airport,Yichun,China
+3070,YIE,Arxan Yi'ershi Airport,Arxan,China
+3071,YIF,St Augustin Airport,St-Augustin,Canada
+3072,YIH,Yichang Sanxia Airport,Yichang,China
+3073,YIK,Ivujivik Airport,Ivujivik,Canada
+3074,YIN,Yining Airport,Yining,China
+3075,YIO,Pond Inlet Airport,Pond Inlet,Canada
+3076,YIW,Yiwu Airport,Yiwu,China
+3077,YJT,Stephenville Airport,Stephenville,Canada
+3078,YKA,Kamloops Airport,Kamloops,Canada
+3079,YKF,Waterloo Airport,Waterloo,Canada
+3080,YKG,Kangirsuk Airport,Kangirsuk,Canada
+3081,YKL,Schefferville Airport,Schefferville,Canada
+3082,YKM,Yakima Air Terminal McAllister Field,Yakima,United States
+3083,YKQ,Waskaganish Airport,Waskaganish,Canada
+3084,YKS,Yakutsk Airport,Yakutsk,Russia
+3085,YKU,Chisasibi Airport,Chisasibi,Canada
+3086,YLC,Kimmirut Airport,Kimmirut,Canada
+3087,YLE,Whatì Airport,Whatì,Canada
+3088,YLH,Lansdowne House Airport,Lansdowne House,Canada
+3089,YLL,Lloydminster Airport,Lloydminster,Canada
+3090,YLW,Kelowna International Airport,Kelowna,Canada
+3091,YMM,Fort McMurray Airport,Fort Mcmurray,Canada
+3092,YMN,Makkovik Airport,Makkovik,Canada
+3093,YMO,Moosonee Airport,Moosonee,Canada
+3094,YMT,Chapais Airport,Chibougamau,Canada
+3095,YNA,Natashquan Airport,Natashquan,Canada
+3096,YNB,Prince Abdulmohsin Bin Abdulaziz Airport,Yenbo,Saudi Arabia
+3097,YNC,Wemindji Airport,Wemindji,Canada
+3098,YNG,Youngstown Warren Regional Airport,Youngstown,United States
+3099,YNJ,Yanji Chaoyangchuan Airport,Yanji,China
+3100,YNO,North Spirit Lake Airport,North Spirit Lake,Canada
+3101,YNP,Natuashish Airport,Natuashish,Canada
+3102,YNS,Nemiscau Airport,Nemiscau,Canada
+3103,YNT,Yantai Laishan Airport,Yantai,China
+3104,YNY,Yangyang International Airport,Sokcho / Gangneung,South Korea
+3105,YNZ,Yancheng Airport,Yancheng,China
+3106,YOG,Ogoki Post Airport,Ogoki Post,Canada
+3107,YOJ,High Level Airport,High Level,Canada
+3108,YOL,Yola Airport,Yola,Nigeria
+3109,YOP,Rainbow Lake Airport,Rainbow Lake,Canada
+3110,YOW,Ottawa Macdonald-Cartier International Airport,Ottawa,Canada
+3111,YPC,Paulatuk (Nora Aliqatchialuk Ruben) Airport,Paulatuk,Canada
+3112,YPH,Inukjuak Airport,Inukjuak,Canada
+3113,YPJ,Aupaluk Airport,Aupaluk,Canada
+3114,YPL,Pickle Lake Airport,Pickle Lake,Canada
+3115,YPM,Pikangikum Airport,Pikangikum,Canada
+3116,YPN,Port Menier Airport,Port Menier,Canada
+3117,YPO,Peawanuck Airport,Peawanuck,Canada
+3118,YPR,Prince Rupert Airport,Prince Pupert,Canada
+3119,YPW,Powell River Airport,Powell River,Canada
+3120,YPX,Puvirnituq Airport,Puvirnituq,Canada
+3121,YPY,Fort Chipewyan Airport,Fort Chipewyan,Canada
+3122,YQB,Quebec Jean Lesage International Airport,Quebec,Canada
+3123,YQC,Quaqtaq Airport,Quaqtaq,Canada
+3124,YQD,The Pas Airport,The Pas,Canada
+3125,YQF,Red Deer Regional Airport,Red Deer Industrial,Canada
+3126,YQG,Windsor Airport,Windsor,Canada
+3127,YQK,Kenora Airport,Kenora,Canada
+3128,YQL,Lethbridge County Airport,Lethbridge,Canada
+3129,YQM,Greater Moncton International Airport,Moncton,Canada
+3130,YQQ,Comox Airport,Comox,Canada
+3131,YQR,Regina International Airport,Regina,Canada
+3132,YQT,Thunder Bay Airport,Thunder Bay,Canada
+3133,YQU,Grande Prairie Airport,Grande Prairie,Canada
+3134,YQX,Gander International Airport,Gander,Canada
+3135,YQY,Sydney / J.A. Douglas McCurdy Airport,Sydney,Canada
+3136,YQZ,Quesnel Airport,Quesnel,Canada
+3137,YRA,Rae Lakes Airport,Gamètì,Canada
+3138,YRB,Resolute Bay Airport,Resolute,Canada
+3139,YRG,Rigolet Airport,Rigolet,Canada
+3140,YRL,Red Lake Airport,Red Lake,Canada
+3141,YRT,Rankin Inlet Airport,Rankin Inlet,Canada
+3142,YSB,Sudbury Airport,Sudbury,Canada
+3143,YSG,Lutselk'e Airport,Lutselk'e,Canada
+3144,YSJ,Saint John Airport,St. John,Canada
+3145,YSK,Sanikiluaq Airport,Sanikiluaq,Canada
+3146,YSM,Fort Smith Airport,Fort Smith,Canada
+3147,YSO,Postville Airport,Postville,Canada
+3148,YSY,Sachs Harbour (David Nasogaluak Jr. Saaryuaq) Airport,Sachs Harbour,Canada
+3149,YTE,Cape Dorset Airport,Cape Dorset,Canada
+3150,YTH,Thompson Airport,Thompson,Canada
+3151,YTL,Big Trout Lake Airport,Big Trout Lake,Canada
+3152,YTQ,Tasiujaq Airport,Tasiujaq,Canada
+3153,YTS,Timmins/Victor M. Power,Timmins,Canada
+3154,YTY,Yangzhou Taizhou Airport,Yangzhou,China
+3155,YTZ,Billy Bishop Toronto City Centre Airport,Toronto,Canada
+3156,YUB,Tuktoyaktuk Airport,Tuktoyaktuk,Canada
+3157,YUD,Umiujaq Airport,Umiujaq,Canada
+3158,YUL,Montreal / Pierre Elliott Trudeau International Airport,Montreal,Canada
+3159,YUM,Yuma MCAS/Yuma International Airport,Yuma,United States
+3160,YUS,Yushu Batang Airport,Yushu,China
+3161,YUT,Repulse Bay Airport,Repulse Bay,Canada
+3162,YUX,Hall Beach Airport,Hall Beach,Canada
+3163,YUY,Rouyn Noranda Airport,Rouyn,Canada
+3164,YVB,Bonaventure Airport,Bonaventure,Canada
+3165,YVM,Qikiqtarjuaq Airport,Broughton Island,Canada
+3166,YVO,Val-d'Or Airport,Val D'or,Canada
+3167,YVP,Kuujjuaq Airport,Quujjuaq,Canada
+3168,YVQ,Norman Wells Airport,Norman Wells,Canada
+3169,YVR,Vancouver International Airport,Vancouver,Canada
+3170,YVZ,Deer Lake Airport,Deer Lake,Canada
+3171,YWB,Kangiqsujuaq (Wakeham Bay) Airport,Kangiqsujuaq,Canada
+3172,YWG,Winnipeg / James Armstrong Richardson International Airport,Winnipeg,Canada
+3173,YWH,Victoria Harbour Seaplane Base,Victoria,Canada
+3174,YWJ,Déline Airport,Deline,Canada
+3175,YWK,Wabush Airport,Wabush,Canada
+3176,YWL,Williams Lake Airport,Williams Lake,Canada
+3177,YWP,Webequie Airport,Webequie,Canada
+3178,YXC,Cranbrook/Canadian Rockies International Airport,Cranbrook,Canada
+3179,YXE,Saskatoon John G. Diefenbaker International Airport,Saskatoon,Canada
+3180,YXH,Medicine Hat Airport,Medicine Hat,Canada
+3181,YXJ,Fort St John Airport,Fort Saint John,Canada
+3182,YXL,Sioux Lookout Airport,Sioux Lookout,Canada
+3183,YXN,Whale Cove Airport,Whale Cove,Canada
+3184,YXP,Pangnirtung Airport,Pangnirtung,Canada
+3185,YXS,Prince George Airport,Prince George,Canada
+3186,YXT,Northwest Regional Airport Terrace-Kitimat,Terrace,Canada
+3187,YXU,London Airport,London,Canada
+3188,YXX,Abbotsford Airport,Abbotsford,Canada
+3189,YXY,Whitehorse / Erik Nielsen International Airport,Whitehorse,Canada
+3190,YYB,North Bay Jack Garland Airport,North Bay,Canada
+3191,YYC,Calgary International Airport,Calgary,Canada
+3192,YYD,Smithers Airport,Smithers,Canada
+3193,YYE,Fort Nelson Airport,Fort Nelson,Canada
+3194,YYF,Penticton Airport,Penticton,Canada
+3195,YYG,Charlottetown Airport,Charlottetown,Canada
+3196,YYH,Taloyoak Airport,Spence Bay,Canada
+3197,YYJ,Victoria International Airport,Victoria,Canada
+3198,YYQ,Churchill Airport,Churchill,Canada
+3199,YYR,Goose Bay Airport,Goose Bay,Canada
+3200,YYT,St. John's International Airport,St. John's,Canada
+3201,YYU,Kapuskasing Airport,Kapuskasing,Canada
+3202,YYY,Mont Joli Airport,Mont Joli,Canada
+3203,YYZ,Lester B. Pearson International Airport,Toronto,Canada
+3204,YZF,Yellowknife Airport,Yellowknife,Canada
+3205,YZG,Salluit Airport,Salluit,Canada
+3206,YZP,Sandspit Airport,Sandspit,Canada
+3207,YZR,Chris Hadfield Airport,Sarnia,Canada
+3208,YZS,Coral Harbour Airport,Coral Harbour,Canada
+3209,YZT,Port Hardy Airport,Port Hardy,Canada
+3210,YZV,Sept-Îles Airport,Sept-iles,Canada
+3211,YZY,Zhangye Ganzhou Airport,Zhangye,China
+3212,YZZ,Trail Airport,Trail,Canada
+3213,ZAD,Zadar Airport,Zadar,Croatia
+3214,ZAG,Zagreb Airport,Zagreb,Croatia
+3215,ZAH,Zahedan International Airport,Zahedan,Iran
+3216,ZAL,Pichoy Airport,Valdivia,Chile
+3217,ZAM,Zamboanga International Airport,Zamboanga,Philippines
+3218,ZAT,Zhaotong Airport,Zhaotong,China
+3219,ZAZ,Zaragoza Air Base,Zaragoza,Spain
+3220,ZBF,Bathurst Airport,Bathurst,Canada
+3221,ZBR,Konarak Airport,Chah Bahar,Iran
+3222,ZCL,General Leobardo C. Ruiz International Airport,Zacatecas,Mexico
+3223,ZCO,La Araucanía Airport,Temuco,Chile
+3224,ZEM,Eastmain River Airport,Eastmain River,Canada
+3225,ZFM,Fort Mcpherson Airport,Fort Mcpherson,Canada
+3226,ZFN,Tulita Airport,Tulita,Canada
+3227,ZGS,La Romaine Airport,La Romaine,Canada
+3228,ZGU,Gaua Island Airport,Gaua Island,Vanuatu
+3229,ZHA,Zhanjiang Airport,Zhanjiang,China
+3230,ZHY,Zhongwei Shapotou Airport,Zhongwei,China
+3231,ZIG,Ziguinchor Airport,Ziguinchor,Senegal
+3232,ZIH,Ixtapa Zihuatanejo International Airport,Zihuatanejo,Mexico
+3233,ZKE,Kashechewan Airport,Kashechewan,Canada
+3234,ZKG,Kegaska Airport,Kegaska,Canada
+3235,ZLO,Playa De Oro International Airport,Manzanillo,Mexico
+3236,ZLT,La Tabatière Airport,La Tabatière,Canada
+3237,ZMT,Masset Airport,Masset,Canada
+3238,ZNE,Newman Airport,Newman,Australia
+3239,ZNZ,Abeid Amani Karume International Airport,Zanzibar,Tanzania
+3240,ZOS,Cañal Bajo Carlos - Hott Siebert Airport,Osorno,Chile
+3241,ZPB,Sachigo Lake Airport,Sachigo Lake,Canada
+3242,ZQN,Queenstown International Airport,Queenstown International,New Zealand
+3243,ZQW,Zweibrücken Airport,Zweibruecken,Germany
+3244,ZQZ,Zhangjiakou Ningyuan Airport,Zhangjiakou,China
+3245,ZRH,Zürich Airport,Zurich,Switzerland
+3246,ZRJ,Round Lake (Weagamow Lake) Airport,Round Lake,Canada
+3247,ZSA,San Salvador Airport,Cockburn Town,Bahamas
+3248,ZSE,Pierrefonds Airport,St.-pierre,Reunion
+3249,ZSJ,Sandy Lake Airport,Sandy Lake,Canada
+3250,ZTB,Tête-à-la-Baleine Airport,Tête-à-la-Baleine,Canada
+3251,ZTH,"Zakynthos International Airport ""Dionysios Solomos""",Zakynthos,Greece
+3252,ZUH,Zhuhai Jinwan Airport,Zhuhai,China
+3253,ZUM,Churchill Falls Airport,Churchill Falls,Canada
+3254,ZVK,Savannakhet Airport,Savannakhet,Laos
+3255,ZYI,Zunyi Xinzhou Airport,Zunyi,China
+3256,ZYL,Osmany International Airport,Sylhet Osmani,Bangladesh

@@ -1,0 +1,1 @@
+var e=4294967295;export{e as t};

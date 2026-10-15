@@ -1,0 +1,120 @@
+{
+ "id": "ghcn-stations",
+ "version": 1,
+ "kind": "points",
+ "count": 6135,
+ "bbox": [
+  -92.0,
+  24.0,
+  -74.0,
+  40.0
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "position": {
+   "file": "position.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 6135
+  },
+  "elevation": {
+   "file": "elevation.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 6135,
+   "unit": "m"
+  },
+  "prcp": {
+   "file": "prcp.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 6135,
+   "unit": "mm",
+   "description": "GHCN-D PRCP 2024-09-27 (observation day, local morning to morning)"
+  },
+  "prcpPrevDay": {
+   "file": "prcpPrevDay.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 6135,
+   "unit": "mm",
+   "nan": "missing",
+   "description": "PRCP 2024-09-26"
+  },
+  "tmax": {
+   "file": "tmax.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 6135,
+   "unit": "degC",
+   "nan": "missing",
+   "description": "TMAX 2024-09-27"
+  },
+  "tmaxPrevDay": {
+   "file": "tmaxPrevDay.bin",
+   "dtype": "float32",
+   "components": 1,
+   "length": 6135,
+   "unit": "degC",
+   "nan": "missing"
+  }
+ },
+ "properties": {
+  "event": "Hurricane Helene, 2024-09-26/27 (landfall Perry FL ~03Z 09-27; record flooding in the southern Appalachians)",
+  "stations": "stations.csv (ID, name, state; row order = column order)",
+  "source": "NOAA NCEI GHCN-Daily via AWS Open Data (noaa-ghcn-pds), quality-flagged values removed",
+  "stationsWithTmax": 1100,
+  "prcpSummary": {
+   "maxMm": 343.40000000000003,
+   "p99Mm": 220.38799999999975,
+   "meanMm": 37.651605541972295,
+   "fractionAbove100mm": 0.13202933985330073,
+   "fractionDry": 0.13056234718826407
+  },
+  "wettest": [
+   {
+    "ID": "US1NCTR0030",
+    "name": "CONNESTEE FALLS 1.0 SW",
+    "state": "NC",
+    "prcp27": 343.40000000000003,
+    "elev": 913.5
+   },
+   {
+    "ID": "US1SCED0005",
+    "name": "EDGEFIELD 10.5 N",
+    "state": "SC",
+    "prcp27": 318.3,
+    "elev": 143.0
+   },
+   {
+    "ID": "US1SCED0018",
+    "name": "MCCORMICK 12.9 E",
+    "state": "SC",
+    "prcp27": 310.1,
+    "elev": 125.0
+   },
+   {
+    "ID": "US1GARC0018",
+    "name": "MARTINEZ 1.3 SE",
+    "state": "GA",
+    "prcp27": 303.5,
+    "elev": 87.5
+   },
+   {
+    "ID": "USC00311624",
+    "name": "CELO 2 S",
+    "state": "NC",
+    "prcp27": 302.0,
+    "elev": 823.0
+   }
+  ],
+  "storyNotes": [
+   "6135 stations with a valid 2024-09-27 precipitation total across the Southeast (lon -92..-74, lat 24..40); elevation from the GHCN station file.",
+   "Wettest station: CONNESTEE FALLS 1.0 SW (NC) with 343 mm in the day; 13.2% of stations exceed 100 mm.",
+   "Rain concentrates along Helene's track and on the windward Blue Ridge: elevation is a real covariate, so regression-kriging beats plain IDW and cross-validation shows the gain.",
+   "Station density is very uneven (dense in cities, sparse in Appalachian valleys and the Gulf): a good demo of kriging variance and leave-one-out error.",
+   "TMAX (cool under the rain shield, hot far from it) is a second interpolation target with a clear lapse-rate relation to elevation.",
+   "Units: precipitation mm, temperature degC (converted from tenths); NaN = missing."
+  ]
+ }
+}

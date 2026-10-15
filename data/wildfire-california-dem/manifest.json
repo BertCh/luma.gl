@@ -1,0 +1,53 @@
+{
+ "id": "wildfire-california-dem",
+ "version": 1,
+ "kind": "raster",
+ "count": 2504568,
+ "bbox": [
+  -123.30230712890625,
+  36.39917828607655,
+  -120.09979248046876,
+  41.000629848685385
+ ],
+ "crs": "EPSG:4326",
+ "raster": {
+  "file": "dem.png",
+  "encoding": "terrarium",
+  "width": 1166,
+  "height": 2148,
+  "bounds": [
+   -123.30230712890625,
+   36.39917828607655,
+   -120.09979248046876,
+   41.000629848685385
+  ],
+  "boundsMercator": [
+   -13725950.04322567,
+   4355687.619802484,
+   -13369447.743303608,
+   5012434.566828718
+  ],
+  "projection": "EPSG:3857",
+  "cellSizeMercatorM": 305.748113140705,
+  "cellSizeGroundM": 238.61544455916055,
+  "noData": -9999,
+  "unit": "m",
+  "verticalQuantisationM": 1,
+  "spikesRepaired": 37,
+  "webMercatorTile": {
+   "zoom": 9,
+   "tileSize": 256,
+   "originPixel": [
+    20643,
+    49142
+   ]
+  }
+ },
+ "properties": {
+  "source": "Terrain Tiles on AWS (Mapzen/Tilezen: USGS NED, SRTM, GMTED2010, ETOPO1 and others), Terrarium encoding, zoom 9",
+  "landFraction": 0.8566299657266243,
+  "minElevationM": 1.0,
+  "maxElevationM": 3142.0,
+  "notes": "Cells at or below 0 m (ocean, bays, some delta land) are noData."
+ }
+}

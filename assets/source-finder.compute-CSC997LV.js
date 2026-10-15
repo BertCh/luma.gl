@@ -1,0 +1,47 @@
+import"./layer-DFQ5HqjV.js";import"./dist-CCh72y72.js";import"./analysis-frame-Blu0tYdw.js";import{N as e,t}from"./resources-CwvhEOBe.js";import{a as n,s as r}from"./index-Bjk18V2I.js";import{t as i}from"./graph-buffers-B4_80RlX.js";import{t as a}from"./summary-reader-CsgWxENf.js";import{t as o}from"./frontier-kernel-F8YIHMy_.js";function s(e,t=new Float32Array(12)){return t.set(e.bounds,0),t.set(e.wind,4),t.set([e.emissionRate,e.dispersionBase,e.dispersionGrowth,e.decayLength,e.noiseSigma,e.background??0],6),t}var c=class{id;props;constructor(e){if(this.id=e.id??`frontier-source`,this.props=e,e.sensorCount<1||e.sensorCount>64)throw Error(`FrontierSourceInference supports 1 to 64 sensors`)}getCommandNodes(e){let t=this.props,n=t.width*t.height;return[o(e,{id:`${this.id}-clear`,operation:`FrontierSourceInference`,variant:`clear`,bindings:[{name:`summary`,view:t.summary,type:`atomic<u32>`,access:`read_write`}],invocationCount:1,body:`atomicStore(&summary[summaryOffset], 0u);
+  atomicStore(&summary[summaryOffset + 1u], 0xffffffffu);`}),o(e,{id:`${this.id}-score`,operation:`FrontierSourceInference`,variant:`gaussian-plume`,bindings:[{name:`sensors`,view:t.sensorPositions,type:`f32`,access:`read`},{name:`observations`,view:t.sensorValues,type:`f32`,access:`read`},{name:`parameters`,view:t.parameters,type:`f32`,access:`read`},{name:`scores`,view:t.scores,type:`f32`,access:`read_write`},{name:`summary`,view:t.summary,type:`atomic<u32>`,access:`read_write`}],invocationCount:n,declarations:`const WIDTH: u32 = ${t.width}u;
+const HEIGHT: u32 = ${t.height}u;
+const SENSOR_COUNT: u32 = ${t.sensorCount}u;`,body:`let minimum = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
+  let maximum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]);
+  let cellSize = (maximum - minimum) / vec2<f32>(f32(WIDTH), f32(HEIGHT));
+  let column = index % WIDTH;
+  let row = index / WIDTH;
+  let source = minimum + (vec2<f32>(f32(column), f32(row)) + 0.5) * cellSize;
+  let rawWind = vec2<f32>(parameters[parametersOffset + 4u], parameters[parametersOffset + 5u]);
+  let wind = rawWind / max(length(rawWind), 1.0e-6);
+  let crosswindAxis = vec2<f32>(-wind.y, wind.x);
+  let emissionRate = max(parameters[parametersOffset + 6u], 0.0);
+  let dispersionBase = max(parameters[parametersOffset + 7u], 1.0e-6);
+  let dispersionGrowth = max(parameters[parametersOffset + 8u], 0.0);
+  let decayLength = max(parameters[parametersOffset + 9u], 1.0e-6);
+  let noiseSigma = max(parameters[parametersOffset + 10u], 1.0e-6);
+  let background = parameters[parametersOffset + 11u];
+  var squaredError = 0.0;
+  for (var sensor = 0u; sensor < SENSOR_COUNT; sensor++) {
+    let positionIndex = sensorsOffset + 2u * sensor;
+    let sensorPosition = vec2<f32>(sensors[positionIndex], sensors[positionIndex + 1u]);
+    let delta = sensorPosition - source;
+    let downwind = dot(delta, wind);
+    var predicted = background;
+    if (downwind > 0.0) {
+      let sigma = dispersionBase + dispersionGrowth * sqrt(downwind);
+      let crosswind = dot(delta, crosswindAxis);
+      let centerline = emissionRate / (1.0 + downwind / decayLength);
+      predicted += centerline * exp(-0.5 * crosswind * crosswind / (sigma * sigma));
+    }
+    let residual = (observations[observationsOffset + sensor] - predicted) / noiseSigma;
+    squaredError += residual * residual;
+  }
+  let score = exp(-0.5 * squaredError / f32(SENSOR_COUNT));
+  scores[scoresOffset + index] = score;
+  atomicMax(&summary[summaryOffset], bitcast<u32>(score));`}),o(e,{id:`${this.id}-select`,operation:`FrontierSourceInference`,variant:`select`,bindings:[{name:`scores`,view:t.scores,type:`f32`,access:`read`},{name:`summary`,view:t.summary,type:`atomic<u32>`,access:`read_write`}],invocationCount:n,body:`let maximumBits = atomicLoad(&summary[summaryOffset]);
+  if (bitcast<u32>(scores[scoresOffset + index]) == maximumBits) {
+    atomicMin(&summary[summaryOffset + 1u], index);
+  }`}),o(e,{id:`${this.id}-publish`,operation:`FrontierSourceInference`,variant:`publish-position`,bindings:[{name:`parameters`,view:t.parameters,type:`f32`,access:`read`},{name:`summary`,view:t.summary,type:`u32`,access:`read`},{name:`bestPosition`,view:t.bestPosition,type:`f32`,access:`read_write`}],invocationCount:1,declarations:`const WIDTH: u32 = ${t.width}u;
+const HEIGHT: u32 = ${t.height}u;`,body:`let winner = summary[summaryOffset + 1u];
+  let minimum = vec2<f32>(parameters[parametersOffset], parameters[parametersOffset + 1u]);
+  let maximum = vec2<f32>(parameters[parametersOffset + 2u], parameters[parametersOffset + 3u]);
+  let cellSize = (maximum - minimum) / vec2<f32>(f32(WIDTH), f32(HEIGHT));
+  let position = minimum + (vec2<f32>(f32(winner % WIDTH), f32(winner / WIDTH)) + 0.5) * cellSize;
+  bestPosition[bestPositionOffset] = position.x;
+  bestPosition[bestPositionOffset + 1u] = position.y;`})]}},l=180,u=200,d=32,f=[-87.655,41.885],p=65,m=new Set([`windBearing`,`emissionRate`,`dispersion`,`decayLength`,`noiseSigma`]),h=e=>{let t=e*Math.PI/180;return[Math.sin(t),Math.cos(t)]};function g(e,t,n,r){let i=[],a=0,o=0;for(let r=0;r<n;r++)t[r]!==0&&t[r]!==3||(i.push(r),a+=e[r*2],o+=e[r*2+1]);if(i.length<=r)return i;a/=i.length,o/=i.length;let s=i[0],c=1/0;for(let t of i){let n=e[t*2]-a,r=e[t*2+1]-o,i=n*n+r*r;i<c&&(c=i,s=t)}let l=[s],u=new Set(l),d=new Map;for(;l.length<r;){let t=l[l.length-1],n=-1,r=-1;for(let a of i){if(u.has(a))continue;let i=e[a*2]-e[t*2],o=e[a*2+1]-e[t*2+1],s=Math.min(d.get(a)??1/0,i*i+o*o);d.set(a,s),s>r&&(r=s,n=a)}l.push(n),u.add(n)}return l}async function _(o){let _=o.datasets.get(`chicago-facilities`),v=_.getProjection(),y=_.projectColumn(`position`),b=g(y,_.column(`category`),_.count,d);if(b.length!==d)throw Error(`Source finder requires 32 eligible facility sites`);let x=new Float32Array(d*2);b.forEach((e,t)=>{x[t*2]=y[e*2],x[t*2+1]=y[e*2+1]});let[S,C]=v.project(...f),w=h(p),T=new Float32Array(d),E=new Float32Array(d),D=new Uint8Array(d);for(let e=0;e<d;e++){let t=x[e*2]-S,n=x[e*2+1]-C,r=t*w[0]+n*w[1];E[e]=r/1e3,D[e]=r>0?1:0;let i=.025;if(r>0){let e=525+7.5*Math.sqrt(r),a=t*-w[1]+n*w[0];i+=1.04/(1+r/11200)*Math.exp(-.5*a*a/(e*e))}let a=Math.sin(t/2400+.7)*Math.cos(n/3100-.4)*.65+Math.sin((e+1)*12.9898)*.35;i+=(.006+.018*Math.sqrt(Math.max(i,0)))*a,T[e]=Math.max(0,i)}let[O,k,A,j]=_.manifest.bbox,[M,N]=v.project(O,k),[P,F]=v.project(A,j),I=[M,N,P,F],{device:L}=o,R=new t(L,`source-finder`),z=R.createBuffer(`sensor-positions`,x),B=R.createBuffer(`sensor-values`,T),V=R.createBuffer(`relative-fit-score`,l*u*4),H=R.createBuffer(`summary`,8),U=R.createBuffer(`best-position`,8),W=R.createBuffer(`true-position`,Float32Array.of(S,C)),G=R.createParameterBuffer(`parameters`,`float32`,12),K=new e(L,{id:`source-finder`});K.add(new c({width:l,height:u,sensorCount:d,sensorPositions:i(K,`sensor-positions`,z,`float32x2`,d),sensorValues:i(K,`sensor-values`,B,`float32`,d),parameters:G.importToGraph(K),scores:i(K,`relative-fit-score`,V,`float32`,l*u),summary:i(K,`summary`,H,`uint32`,2),bestPosition:i(K,`best-position`,U,`float32x2`,1)}));let q=R.track(await K.compileAsync()),J=()=>{let e=o.options;G.write(s({bounds:I,wind:h(e.windBearing),emissionRate:e.emissionRate,dispersionBase:e.dispersion,dispersionGrowth:9,decayLength:e.decayLength,noiseSigma:e.noiseSigma,background:.025}))};J();let Y=!0,X=new a(R,`source-finder-diagnostics`,[{buffer:H,size:8}],e=>{let t=new Uint32Array(e),n=new Float32Array(e),r=t[1],i=(I[2]-I[0])/l,a=(I[3]-I[1])/u,s=I[0]+(r%l+.5)*i,c=I[1]+(Math.floor(r/l)+.5)*a,d=Math.hypot(s-S,c-C);o.setReadout(`bestScore`,n[0].toFixed(3)),o.setReadout(`localizationError`,`${Math.round(d).toLocaleString()} m`)});o.setReadout(`sensors`,d),o.setReadout(`candidates`,l*u);let Z=0;for(let e=1;e<d;e++)T[e]>T[Z]&&(Z=e);return o.setChart(`sensorProfile`,{kind:`scatter`,title:`Synthetic readings along the generating wind axis`,xLabel:`Distance downwind from source (km)`,yLabel:`Synthetic concentration`,x:E,y:T,colorIndex:D,palette:[[122,132,154,210],[255,190,70,230]],ringed:[Z],markers:[{x:0,label:`source crosswind plane`}],guides:[{y:.025,label:`background`}],description:`Synthetic sensor concentration against signed downwind distance from the known generating source. Grey sites are upwind, gold sites are downwind, and the highest reading is ringed.`}),{getCompiledGraphs:()=>[q],encode(e){Y?(q.encode(e,{parameters:void 0}),X.request(e),Y=!1):X.flush(e)},getLayers(){let e=o.options,t=[_.defaultOrigin[0],_.defaultOrigin[1],0],i=[new r({id:`source-finder-relative-fit`,coordinateOrigin:t,gridSize:[l,u],bounds:I,rowOrigin:`south`,values:V,valueFormat:`float32`,colormap:`magma`,valueRange:[.05,1],discardAtOrBelow:.03,color:[255,255,255,Math.round(e.opacity*255)]}),new n({id:`source-finder-best`,coordinateOrigin:t,positions:U,instanceCount:1,radiusPixels:8,color:[0,190,255,255]})];return e.showSensors&&i.push(new n({id:`source-finder-sensors`,coordinateOrigin:t,positions:z,values:B,valueFormat:`float32`,colormap:`cividis`,valueRange:[0,1],instanceCount:d,radiusPixels:4,color:[255,255,255,255]})),e.revealSource&&i.push(new n({id:`source-finder-truth`,coordinateOrigin:t,positions:W,instanceCount:1,radiusPixels:5,color:[255,88,70,255]})),i},setOption(e){if(m.has(e)){J(),Y=!0;return}o.requestLayers()},onThemeChange(){o.requestLayers()},destroy(){X.stop(),R.destroy()}}}export{_ as createSourceFinder};

@@ -1,0 +1,147 @@
+import{h as e}from"./layer-DFQ5HqjV.js";import{n as t}from"./earth-xB16XgAa.js";import{E as n}from"./analysis-frame-Blu0tYdw.js";import{N as r,_ as i,d as a,h as o,n as s,t as c,w as l,y as u}from"./resources-CwvhEOBe.js";import{t as d}from"./gpu-scan-BuGhTLDQ.js";import{t as f}from"./draw-command-buffer-BeqRkhBa.js";import{l as p,s as m}from"./wgsl-kernel-nodes-Bm5c4bxp.js";import{t as h}from"./geodesic-wgsl-DS0CJZ42.js";import{n as g,t as _}from"./geodesic-kernels-Cg1Javw7.js";import{a as v,i as y,n as b,o as x,r as S,t as ee}from"./gpu-geodesic-pairs-DbRNHH6g.js";import{i as C}from"./line-segmentize-kernels-JWzYlmh-.js";import{n as te,t as ne}from"./gpu-great-circle-arcs-D0WZYJJk.js";import{n as w,t as T}from"./line-geometry-output-kdXG4gz1.js";import{n as E,t as D}from"./gpu-line-simplification-3HMpu60w.js";import{F as re,I as O,N as k,P as A,a as j,j as M}from"./index-Bjk18V2I.js";import{t as ie}from"./graph-swap-41Ru7LVu.js";import{t as N}from"./summary-reader-CsgWxENf.js";import{t as P}from"./mode-kernels-Dxm2GWvI.js";import{i as F,n as ae}from"./b3-layers-B2V1ljKW.js";import{a as I,d as oe,i as se,l as L,o as ce,p as le,s as R}from"./b3-common-BbHtVprn.js";var z=`GPUGeodesicDestination`,ue=class{id;props;spatialContext;model;radius;ellipsoid;maximumIterations;constructor(e){this.id=e.id??`geodesic-destination`,this.props=e,this.spatialContext=e.spatialContext;let t=S(this.id,this.spatialContext);this.model=t.model,this.radius=t.radius,this.ellipsoid=t.ellipsoid,this.maximumIterations=e.maximumIterations??16,v(this.id,this.model,this.radius,this.maximumIterations);let{id:n}=this;for(let[t,r,i]of[[`origins`,e.origins,`float32x2`],[`bearings`,e.bearings,`float32`],[`distances`,e.distances,`float32`]])u(r,[i],`${n} ${t}`);let r=e.origins.length;if(r<1||e.bearings.length!==r||e.distances.length!==r)throw Error(`${n} needs at least one row and bearings and distances aligned with origins`);if(y(n,e.output,{destinations:`float32x2`,finalBearings:`float32`,"status.converged":`uint32`},r),e.output.status?.converged&&this.model!==`wgs84`)throw Error(`${n} output.status.converged requires model 'wgs84'`);o(n,Object.values(b(e.output)),[e.origins,e.bearings,e.distances])}getCommandNodes(e){let{props:t,id:n}=this,{output:r}=t;i(n,e,[t.origins,t.bearings,t.distances,...Object.values(b(r))]);let a=[{name:`origins`,view:t.origins,type:`f32`,access:`read`},{name:`bearings`,view:t.bearings,type:`f32`,access:`read`},{name:`distances`,view:t.distances,type:`f32`,access:`read`}],o=[];r.destinations&&(a.push({name:`destinations`,view:r.destinations,type:`f32`,access:`read_write`}),o.push(`destinations[destinationsOffset + 2u * index] = destination.x;
+  destinations[destinationsOffset + 2u * index + 1u] = destination.y;`)),r.finalBearings&&(a.push({name:`finalBearings`,view:r.finalBearings,type:`f32`,access:`read_write`}),o.push(`finalBearings[finalBearingsOffset + index] = finalBearing;`)),r.status?.converged&&(a.push({name:`converged`,view:r.status.converged,type:`u32`,access:`read_write`}),o.push(`converged[convergedOffset + index] = select(0u, 1u, isConverged);`));let s=this.model===`wgs84`,c=this.model===`rhumb`;return[m(e,{id:`${n}-destination`,operation:z,variant:this.model,bindings:a,invocationCount:t.origins.length,declarations:`${h}
+${s?g(this.maximumIterations,this.ellipsoid):``}
+${_}
+${this.model===`rhumb`?x:``}
+const RADIUS: f32 = ${p(this.radius)};`,body:`let origin = vec2<f32>(origins[originsOffset + 2u * index], origins[originsOffset + 2u * index + 1u]);
+  let bearing = bearings[bearingsOffset + index];
+  let distance = distances[distancesOffset + index];
+  ${s?`let direct = vincentyDirect(origin, bearing, distance);
+  let destination = direct.destination;
+  let finalBearing = direct.finalBearing;
+  let isConverged = direct.converged;`:c?`let rhumbResult = rhumbDestination(origin, bearing, distance / RADIUS);
+  let destination = rhumbResult.destination;
+  let finalBearing = rhumbResult.finalBearing;
+  let isConverged = true;`:`let destination = geodesicDestination(origin, bearing, distance / RADIUS);
+  let finalBearing = sphereFinalBearingDegrees(origin, destination);
+  let isConverged = true;`}
+  ${o.join(`
+  `)}`})]}};function de(e,t){let n=t.lineOffsets.length-1;return m(e,{id:t.id,operation:t.operation,variant:`smooth-prepare`,bindings:[{name:`positions`,view:t.positions,type:`f32`,access:`read`},{name:`lineOffsets`,view:t.lineOffsets,type:`u32`,access:`read`},{name:`smoothCounts`,view:t.smoothCounts,type:`u32`,access:`read_write`},{name:`plainCounts`,view:t.plainCounts,type:`u32`,access:`read_write`},{name:`smoothFlags`,view:t.smoothFlags,type:`u32`,access:`read_write`}],invocationCount:n+1,declarations:`const LINE_COUNT: u32 = ${n}u;
+const ROW_COUNT: u32 = ${t.positions.length}u;
+const CLOSED: bool = ${t.closed};
+
+fn getPosition(row: u32) -> vec2<f32> {
+  return vec2<f32>(positions[positionsOffset + 2u * row], positions[positionsOffset + 2u * row + 1u]);
+}`,body:`var smoothCount = 0u;
+  var plainCount = 0u;
+  if (index < LINE_COUNT) {
+    let start = min(lineOffsets[lineOffsetsOffset + index], ROW_COUNT);
+    let end = min(max(lineOffsets[lineOffsetsOffset + index + 1u], start), ROW_COUNT);
+    let count = end - start;
+    var effectiveCount = count;
+    if (CLOSED && count >= 2u && all(getPosition(start) == getPosition(end - 1u))) {
+      effectiveCount = count - 1u;
+    }
+    let smoothable = select(count >= 2u, effectiveCount >= 3u, CLOSED);
+    smoothCount = select(0u, effectiveCount, smoothable);
+    plainCount = select(count, 0u, smoothable);
+  }
+  smoothCounts[smoothCountsOffset + index] = smoothCount;
+  plainCounts[plainCountsOffset + index] = plainCount;
+  smoothFlags[smoothFlagsOffset + index] = select(0u, 1u, smoothCount > 0u);`})}var B=`
+fn getLevelOffset(line: u32, scale: u32, withClosing: bool) -> u32 {
+  var offset = smoothStarts[smoothStartsOffset + line] * scale + plainStarts[plainStartsOffset + line];
+  if (withClosing) {
+    offset += getClosingStart(line);
+  }
+  return offset;
+}
+`;function V(e,t){let n=t.isFinal&&t.closed,r=[{name:`source`,view:t.source,type:`f32`,access:`read`},{name:`lineOffsets`,view:t.lineOffsets,type:`u32`,access:`read`},{name:`smoothStarts`,view:t.smoothStarts,type:`u32`,access:`read`},{name:`plainStarts`,view:t.plainStarts,type:`u32`,access:`read`},{name:`parameters`,view:t.parameters,type:`f32`,access:`read`},{name:`destination`,view:t.destination,type:`f32`,access:`read_write`},{name:`levelState`,view:t.levelState,type:`u32`,access:`read`}];n&&t.smoothFlagStarts&&r.push({name:`smoothFlagStarts`,view:t.smoothFlagStarts,type:`u32`,access:`read`});let i=t.destination.length;return m(e,{id:t.id,operation:t.operation,variant:`smooth-level-${t.level}`,bindings:r,invocationCount:i,declarations:`const LINE_COUNT: u32 = ${t.lineCount}u;
+const CAPACITY: u32 = ${i}u;
+const SOURCE_LENGTH: u32 = ${t.source.length}u;
+const IS_FIRST_LEVEL: bool = ${t.level===0};
+const CLOSED: bool = ${t.closed};
+const WITH_CLOSING: bool = ${n};
+
+fn getClosingStart(line: u32) -> u32 {
+  ${n?`return smoothFlagStarts[smoothFlagStartsOffset + line];`:`return 0u;`}
+}
+${B}
+
+fn getSource(row: u32) -> vec2<f32> {
+  return vec2<f32>(source[sourceOffset + 2u * row], source[sourceOffset + 2u * row + 1u]);
+}`,body:`// The level lives in a GPU word, so no pipeline depends on the level (rule 12).
+  let sourceScale = 1u << levelState[levelStateOffset];
+  let destinationScale = sourceScale << 1u;
+  let total = getLevelOffset(LINE_COUNT, destinationScale, WITH_CLOSING);
+  if (index >= total) {
+    return;
+  }
+  // Largest line whose destination offset is at most index.
+  var low = 0u;
+  var high = LINE_COUNT;
+  while (high - low > 1u) {
+    let middle = (low + high) / 2u;
+    if (getLevelOffset(middle, destinationScale, WITH_CLOSING) <= index) {
+      low = middle;
+    } else {
+      high = middle;
+    }
+  }
+  let line = low;
+  let local = index - getLevelOffset(line, destinationScale, WITH_CLOSING);
+  let smoothCount = smoothStarts[smoothStartsOffset + line + 1u] - smoothStarts[smoothStartsOffset + line];
+  var sourceStart = getLevelOffset(line, sourceScale, false);
+  if (IS_FIRST_LEVEL) {
+    sourceStart = lineOffsets[lineOffsetsOffset + line];
+  }
+  var vertex: vec2<f32>;
+  if (smoothCount == 0u) {
+    // Copied line.
+    if (sourceStart + local >= SOURCE_LENGTH) {
+      return;
+    }
+    vertex = getSource(sourceStart + local);
+  } else {
+    let count = smoothCount * sourceScale;
+    let ratio = parameters[parametersOffset];
+    var edge = 0u;
+    var isSecond = false;
+    var copyRow = 0xffffffffu;
+    if (CLOSED) {
+      let wrapped = select(local, 0u, local == 2u * count);
+      edge = wrapped / 2u;
+      isSecond = (wrapped & 1u) == 1u;
+    } else if (local == 0u) {
+      copyRow = 0u;
+    } else if (local == 2u * count - 1u) {
+      copyRow = count - 1u;
+    } else {
+      edge = (local - 1u) / 2u;
+      isSecond = ((local - 1u) & 1u) == 1u;
+    }
+    if (copyRow != 0xffffffffu) {
+      if (sourceStart + copyRow >= SOURCE_LENGTH) {
+        return;
+      }
+      vertex = getSource(sourceStart + copyRow);
+    } else {
+      let nextEdge = select(edge + 1u, 0u, edge + 1u == count);
+      if (sourceStart + max(edge, nextEdge) >= SOURCE_LENGTH) {
+        return;
+      }
+      let start = getSource(sourceStart + edge);
+      let end = getSource(sourceStart + nextEdge);
+      vertex = mix(start, end, select(ratio, 1.0 - ratio, isSecond));
+    }
+  }
+  if (index < CAPACITY) {
+    destination[destinationOffset + 2u * index] = vertex.x;
+    destination[destinationOffset + 2u * index + 1u] = vertex.y;
+  }`})}function H(e,t){let n=[{name:`smoothStarts`,view:t.smoothStarts,type:`u32`,access:`read`},{name:`plainStarts`,view:t.plainStarts,type:`u32`,access:`read`}];return t.closed&&t.smoothFlagStarts&&n.push({name:`smoothFlagStarts`,view:t.smoothFlagStarts,type:`u32`,access:`read`}),n.push({name:`outputLineOffsets`,view:t.outputLineOffsets,type:`u32`,access:`read_write`},{name:`countOut`,view:t.count,type:`u32`,access:`read_write`},{name:`overflowOut`,view:t.overflow,type:`u32`,access:`read_write`}),t.requiredCount&&n.push({name:`totalOut`,view:t.requiredCount,type:`u32`,access:`read_write`}),t.lineCountOutput&&n.push({name:`lineCountOut`,view:t.lineCountOutput,type:`u32`,access:`read_write`}),m(e,{id:t.id,operation:t.operation,variant:`smooth-publish`,bindings:n,invocationCount:t.lineCount+1,declarations:`const LINE_COUNT: u32 = ${t.lineCount}u;
+const CAPACITY: u32 = ${t.capacity}u;
+const SCALE: u32 = ${2**t.iterationCount}u;
+
+fn getClosingStart(line: u32) -> u32 {
+  ${t.closed?`return smoothFlagStarts[smoothFlagStartsOffset + line];`:`return 0u;`}
+}
+${B}`,body:`let total = getLevelOffset(LINE_COUNT, SCALE, true);
+  outputLineOffsets[outputLineOffsetsOffset + index] = min(getLevelOffset(index, SCALE, true), CAPACITY);
+  if (index == 0u) {
+    countOut[countOutOffset] = min(total, CAPACITY);
+    overflowOut[overflowOutOffset] = select(0u, 1u, total > CAPACITY);
+    ${t.requiredCount?`totalOut[totalOutOffset] = total;`:``}
+    ${t.lineCountOutput?`lineCountOut[lineCountOutOffset] = LINE_COUNT;`:``}
+  }`})}function U(e,t){return m(e,{id:t.id,operation:t.operation,variant:t.reset?`smooth-level-reset`:`smooth-level-advance`,bindings:[{name:`levelState`,view:t.levelState,type:`u32`,access:`read_write`}],invocationCount:1,body:t.reset?`levelState[levelStateOffset] = 0u;`:`levelState[levelStateOffset] = levelState[levelStateOffset] + 1u;`})}var W=`GPULineSmooth`;function G(e={},t=new Float32Array(4)){if(t.length<4)throw Error(`Line smooth target must hold 4 elements`);let n=e.ratio??.25;if(!(n>0&&n<=.5))throw Error(`Line smooth ratio must be in (0, 0.5]`);return t.set([n,0,0,0]),t}var fe=class{id;props;spatialContext;closed;constructor(e){this.id=e.id??`line-smooth`,this.props=e,this.closed=e.closed??!1,this.spatialContext=n(this.id,e.spatialContext);let{id:t}=this,{iterationCount:r}=e;a(t,`iterationCount`,r,1,10),u(e.positions,[`float32x2`],`${t} positions`);let i=e.positions.length;if(i<1)throw Error(`${t} needs at least one position`);if(u(e.lineOffsets,[`uint32`],`${t} lineOffsets`),e.lineOffsets.length<2)throw Error(`${t} lineOffsets needs two rows`);let s=e.lineOffsets.length-1;if(i*2**r+s>4294967295)throw Error(`${t} positions.length * 2^iterationCount must fit in 32 bits`);if(u(e.parameters,[`float32`],`${t} parameters`),e.parameters.length<4)throw Error(`${t} parameters must hold 4 float32 values`);if(w(t,e.output,s),e.output.sourceRows||e.output.measures)throw Error(`${t} output.sourceRows and output.measures are not supported`);o(t,T(e.output),[e.positions,e.lineOffsets,e.parameters])}getCommandNodes(e){let{props:t,id:n,closed:r}=this,{output:a,iterationCount:o}=t;i(n,e,[t.positions,t.lineOffsets,t.parameters,...T(a)]);let s=t.lineOffsets.length-1,c=a.positions.length,u=t=>l(e,`${n}-${t}`,`uint32`,s+1),f=u(`smooth-counts`),p=u(`plain-counts`),m=u(`smooth-flags`),h=u(`smooth-starts`),g=u(`plain-starts`),_=r?u(`smooth-flag-starts`):void 0,v=[de(e,{id:`${n}-prepare`,operation:W,positions:t.positions,lineOffsets:t.lineOffsets,closed:r,smoothCounts:f,plainCounts:p,smoothFlags:m}),...new d({id:`${n}-smooth-scan`,input:f,output:h}).getCommandNodes(e),...new d({id:`${n}-plain-scan`,input:p,output:g}).getCommandNodes(e)];_&&v.push(...new d({id:`${n}-flag-scan`,input:m,output:_}).getCommandNodes(e));let y=[0,1].slice(0,Math.min(o-1,2)).map(t=>l(e,`${n}-level-${t}`,`float32x2`,c)),b=l(e,`${n}-level-state`,`uint32`,1);v.push(U(e,{id:`${n}-level-reset`,operation:W,levelState:b,reset:!0}));let x=t.positions;for(let i=0;i<o;i++){let c=i===o-1,l=c?a.positions:y[i%2];v.push(V(e,{id:`${n}-level-${i}`,operation:W,level:i,levelState:b,isFinal:c,closed:r,lineCount:s,source:x,lineOffsets:t.lineOffsets,smoothStarts:h,plainStarts:g,smoothFlagStarts:_,parameters:t.parameters,destination:l})),c||v.push(U(e,{id:`${n}-level-${i}-advance`,operation:W,levelState:b,reset:!1})),x=l}return v.push(H(e,{id:`${n}-publish`,operation:W,iterationCount:o,closed:r,lineCount:s,smoothStarts:h,plainStarts:g,smoothFlagStarts:_,capacity:c,outputLineOffsets:a.lineOffsets,count:a.status.count,overflow:a.status.overflow,requiredCount:a.status.requiredCount,lineCountOutput:a.status.lineCount})),a.sourceLineIndices&&v.push(C(e,{id:`${n}-source-line-indexs`,operation:W,sourceLineIndices:a.sourceLineIndices})),v}},K=e.METER_OFFSETS,q=e.LNGLAT,J=5;async function pe(e){let{ctx:t,vessels:n}=e,{device:i}=t,a=new c(i,`tracks`),o=n.defaultOrigin,l=n.getProjection(o),u=[o[0],o[1],0],d=n.projectColumn(`vertices`,o),p=n.column(`pathOffsets`),m=n.column(`timestamp`),h=d.length/2,g=p.length-1,_=0;for(let e=1;e<g;e++)p[e+1]-p[e]>p[_+1]-p[_]&&(_=e);let v=p[_],y=p[_+1],b=d.slice(v*2,y*2),x=(e,t)=>{let n=Array.from({length:b.length/2},(e,t)=>[b[t*2],b[t*2+1]]);for(let r=0;r<e;r++){let e=[n[0]];for(let r=1;r<n.length;r++){let i=n[r-1],a=n[r];e.push([i[0]+(a[0]-i[0])*t,i[1]+(a[1]-i[1])*t],[i[0]+(a[0]-i[0])*(1-t),i[1]+(a[1]-i[1])*(1-t)])}e.push(n.at(-1)),n=e}let r=0;for(let e of n){let t=1/0;for(let n=1;n<b.length/2;n++){let r=b[(n-1)*2],i=b[(n-1)*2+1],a=b[n*2],o=b[n*2+1],s=a-r,c=o-i,l=Math.max(0,Math.min(1,((e[0]-r)*s+(e[1]-i)*c)/Math.max(s*s+c*c,1e-9)));t=Math.min(t,Math.hypot(e[0]-(r+l*s),e[1]-(i+l*c)))}r=Math.max(r,t)}return r},S=a.createBuffer(`positions`,d),ee=a.createBuffer(`track-offsets`,p),C=new Float32Array(h);for(let e=0;e<h;e++)C[e]=m[e];let te=a.createBuffer(`timestamps`,C),ne=new Uint32Array(h);for(let e=0;e<g;e++)for(let t=p[e];t<p[e+1];t++)ne[t]=e;let w=a.createBuffer(`vertex-lines`,ne),T=R(a,`tracks-static`,d,p),re=a.createParameterBuffer(`tolerance`,`float32`,4),O=new Map,k=null,A=NaN,j=!0,M=null,P=null,z=0,ue=new Float32Array(4),de=async e=>{let t=`${e.simplifyMetric}|${e.simplifyRounds}`,n=O.get(t);if(n)return n;let o=Number(e.simplifyRounds),s=a.createBuffer(`importance-${t}`,h*4),c=a.createBuffer(`converged-${t}`,4),u=a.createBuffer(`rounds-${t}`,4),d=a.createBuffer(`ids-${t}`,h*4),p=a.createBuffer(`count-${t}`,4),m=a.createBuffer(`overflow-${t}`,4),_=a.createBuffer(`total-${t}`,4),v=t=>{let n=I(t);return{imp:n,base:{positions:n(`positions`,S,`float32x2`,h),lineOffsets:n(`track-offsets`,ee,`uint32`,g+1),timestamps:n(`timestamps`,te,`float32`,h),metric:e.simplifyMetric,importance:n(`importance`,s,`float32`,h)}}},y=new r(i,{id:`simplify-importance-${t}`});{let{imp:e,base:t}=v(y);y.add(new D({spatialContext:l.spatialContext,id:`importance`,...t,maximumIterations:o,output:{status:{converged:e(`converged`,c,`uint32`,1),iterationCount:e(`rounds`,u,`uint32`,1)}}}))}let b=new r(i,{id:`simplify-selection-${t}`});{let{imp:e,base:t}=v(b);b.add(new D({spatialContext:l.spatialContext,id:`selection`,...t,computeImportance:!1,parameters:re.importToGraph(b),output:{ids:e(`ids`,d,`uint32`,h),status:{count:e(`count`,p,`uint32`,1),overflow:e(`overflow`,m,`uint32`,1),requiredCount:e(`total`,_,`uint32`,1)}}}))}let x={key:t,importance:s,converged:c,rounds:u,compiled:a.track(await y.compileAsync()),encoded:!1,selection:{compiled:a.track(await b.compileAsync()),ids:d,count:p,overflow:m,total:_,drawCommands:a.track(new f(i,{id:`simplify-draw-${t}`,type:`draw`,commands:[{vertexCount:6,instanceCount:0}]}))}};return O.set(t,x),x},B=(e,n)=>{M?.stop(),P=e,M=new N(a,`simplify-${e.key}`,[{buffer:e.selection.count,size:4},{buffer:e.selection.overflow,size:4},{buffer:e.selection.total,size:4},{buffer:e.converged,size:4},{buffer:e.rounds,size:4}],r=>{if(P!==e)return;let i=new Uint32Array(r);t.setReadout(`tracksKept`,`${s(i[0])} of ${s(h)}${i[1]?` (overflow)`:``}`),t.setReadout(`tracksRatio`,`${(100*i[2]/h).toFixed(1)}% kept`),t.setReadout(`tracksConverged`,i[3]?`yes: equals classic Douglas-Peucker`:`no: stopped at the ${n}-round cap (a superset)`),t.setReadout(`tracksRounds`,`${i[4]} of ${n}`)})},V=new Map,H=a.createParameterBuffer(`smooth-parameters`,`float32`,4),U=!0,W=async e=>{let n=V.get(e);if(n)return n;let o=h*2**e+16,c=ce(a,`smooth-${e}`,o,g),u=new r(i,{id:`smooth-${e}`}),d=I(u);u.add(new fe({spatialContext:l.spatialContext,id:`smooth-${e}`,positions:d(`positions`,S,`float32x2`,h),lineOffsets:d(`offsets`,ee,`uint32`,g+1),iterationCount:e,closed:!1,parameters:H.importToGraph(u),output:le(u,c)}));let f=new N(a,`smooth-${e}`,[{buffer:c.count,size:4},{buffer:c.overflow,size:4}],e=>{let n=new Uint32Array(e);t.setReadout(`tracksSmoothVertices`,`${s(n[0])} (${(n[0]/h).toFixed(1)}× the input)${n[1]?`, overflow`:``}`)}),p={iterations:e,compiled:a.track(await u.compileAsync()),output:c,reader:f};return V.set(e,p),p},q=async e=>e.trackTool===`simplify`?await de(e):(await W(Math.min(e.smoothIterations,J)),null),pe=(e,n)=>{e.trackTool===`simplify`?(k=n,me(e)):(H.write(G({ratio:e.smoothRatio})),U=!0,t.setReadout(`tracksMaxDisplacement`,L(x(Math.min(e.smoothIterations,J),e.smoothRatio)))),t.setReadout(`tracksInputs`,`${s(g)} tracks, ${s(h)} fixes`)},me=e=>{k&&P!==k&&(B(k,Number(e.simplifyRounds)),A=NaN,j=!0)},Y=a.track(new ie);return pe(t.options,await q(t.options)),{getCompiledGraphs(){let e=[];for(let t of O.values())e.push(t.compiled,t.selection.compiled);for(let t of V.values())e.push(t.compiled);return e},setOption(e,n){(e===`trackTool`||e===`simplifyMetric`||e===`simplifyRounds`||e===`smoothIterations`)&&Y.request({build:()=>q(t.options),commit:e=>{pe(t.options,e),t.requestLayers()}}),e===`smoothRatio`&&(H.write(G({ratio:n.smoothRatio})),U=!0,t.setReadout(`tracksMaxDisplacement`,L(x(Math.min(n.smoothIterations,J),n.smoothRatio))))},encode(e,n){let r=t.options;if(r.trackTool===`smooth`){let t=V.get(Math.min(r.smoothIterations,J));t&&U?(t.compiled.encode(e,{parameters:void 0}),se(e,t.output.count,t.output.drawCommands),t.reader.request(e),U=!1):t?.reader.flush(e);return}let i=k;if(!i)return;z=r.simplifyAuto?r.simplifyPixels*oe(n.viewport.zoom,n.viewport.unproject([n.viewport.width/2,n.viewport.height/2])[1]):10**r.simplifyTolerance;let a=Math.fround(z);i.encoded||(i.compiled.encode(e,{parameters:void 0}),i.encoded=!0,A=NaN),a!==A&&(A=a,re.write(E({tolerance:a},ue)),i.selection.compiled.encode(e,{parameters:void 0}),se(e,i.selection.count,i.selection.drawCommands),t.setReadout(`tracksTolerance`,L(a)),j=!0),j?(M?.request(e),j=!1):M?.flush(e)},getLayers(){let e=t.options,n=t.theme()===`dark`,r=[];if(e.showOriginal&&r.push(new F({id:`tracks-original`,coordinateSystem:K,coordinateOrigin:u,positions:T.positions,pathOffsets:T.offsets,pathOffsetCount:T.offsetCount,vertexCount:T.vertexCount,drawCommands:T.drawCommands,color:n?[120,170,255,80]:[60,90,150,70],widthPixels:1})),e.trackTool===`smooth`){let t=V.get(Math.min(e.smoothIterations,J));t&&r.push(new F({id:`tracks-smooth`,coordinateSystem:K,coordinateOrigin:u,positions:t.output.positions,pathOffsets:t.output.offsets,pathOffsetCount:t.output.offsetCount,vertexCount:t.output.count,drawCommands:t.output.drawCommands,color:[240,150,60,255],widthPixels:1.8}))}else k&&r.push(new ae({id:`tracks-kept`,coordinateSystem:K,coordinateOrigin:u,positions:S,keptIds:k.selection.ids,vertexLines:w,keptCount:k.selection.count,drawCommands:k.selection.drawCommands,color:[240,150,60,255],widthPixels:1.8}));return r},destroy(){M?.stop();for(let e of V.values())e.reader.stop();a.destroy()}}}var me=64,Y=361,he=[-360,0,360];async function X(e){let{ctx:n,flows:i,airportRows:a}=e,{device:o}=n,l=new c(o,`world`),u=i.column(`locations`),d=u.length/2,f=i.column(`origin`),p=i.column(`destination`),m=f.length,h=new Float32Array(m*2),g=new Float32Array(m*2);for(let e=0;e<m;e++)h.set(u.subarray(f[e]*2,f[e]*2+2),e*2),g.set(u.subarray(p[e]*2,p[e]*2+2),e*2);let _=i.column(`distanceKm`),v=Float32Array.from(_,e=>e<750?0:e<2500?1:e<5e3?2:e<9e3?3:4),y=new Float32Array(d);for(let e=0;e<m;e++)y[f[e]]++,y[p[e]]++;let b=Float32Array.from(i.column(`airlineCount`)),x=Float32Array.from(i.column(`count`)),S=0;for(let e=1;e<m;e++)_[e]>_[S]&&(S=e);let C=[h[S*2],h[S*2+1]],w=[g[S*2],g[S*2+1]],T=e=>{let t=[],n=[0];for(let r of e){for(let e of r)t.push(e[0],e[1]);n.push(t.length/2)}return{positions:Float32Array.from(t),offsets:Uint32Array.from(n)}},E=R(l,`comparison-great-circle`,...(()=>{let e=T(k(C,w));return[e.positions,e.offsets]})()),D=R(l,`comparison-rhumb`,...(()=>{let e=T(O(C,w));return[e.positions,e.offsets]})()),ae=(()=>{let e=O(C,w,128),t=0;for(let n of e)for(let e=1;e<n.length;e++)t+=A(n[e-1],n[e]);return t})(),oe=A(C,w);n.setReadout(`rhumbPair`,`loaded pair ${S+1}`),n.setReadout(`rhumbLengths`,`${s(oe/1e3)} km / ${s(ae/1e3)} km`),n.setReadout(`rhumbExcess`,`${((ae/oe-1)*100).toFixed(1)}%`),n.setReadout(`rhumbHeading`,`great circle ${re(C,w).toFixed(0)}°; rhumb constant`);let L=l.createBuffer(`arc-sources`,h),z=l.createBuffer(`arc-targets`,g),de={distance:l.createBuffer(`arc-distance`,_),haul:l.createBuffer(`arc-haul-class`,v),airlines:l.createBuffer(`arc-airlines`,b),routes:l.createBuffer(`arc-routes`,x)},B=ce(l,`arcs`,m*(me+1),m),V=l.createParameterBuffer(`arc-parameters`,`float32`,4),H=new r(o,{id:`arcs`});{let e=I(H);H.add(new ne({id:`arcs`,sources:e(`sources`,L,`float32x2`,m),targets:e(`targets`,z,`float32x2`,m),maximumSegmentCount:me,parameters:V.importToGraph(H),output:le(H,B)}))}let U=l.track(await H.compileAsync()),W=l.createBuffer(`hub-origins`,new Float32Array(d*2)),G=l.createBuffer(`airports`,u),fe=l.createBuffer(`airport-degree`,y),K=l.createBuffer(`airport-distances`,d*4),J=l.createBuffer(`airport-bearings`,d*4),pe=l.createBuffer(`airport-converged`,d*4),X=new Map,ge=async e=>{let t=X.get(e);if(!t){let n=new r(o,{id:`geodesic-pairs-${e}`}),i=I(n);n.add(new ee({spatialContext:{coordinateSpace:`longitude-latitude`,datum:`EPSG:4326`,metric:e===`wgs84`?`ellipsoidal`:`great-circle`,units:`meters`},id:`pairs-${e}`,origins:i(`origins`,W,`float32x2`,d),targets:i(`airports`,G,`float32x2`,d),output:{distances:i(`distances`,K,`float32`,d),initialBearings:i(`bearings`,J,`float32`,d),...e===`wgs84`?{status:{converged:i(`converged`,pe,`uint32`,d)}}:{}}})),t=l.track(await n.compileAsync()),X.set(e,t)}return t},_e=l.createBuffer(`ring-origins`,new Float32Array(Y*2)),ve=l.createBuffer(`ring-bearings`,Float32Array.from({length:Y},(e,t)=>t)),ye=l.createBuffer(`ring-distances`,Y*4),be=l.createBuffer(`ring-destinations`,Y*8);R(l,`ring-paths`,new Float32Array(Y*2),Uint32Array.of(0,Y));let xe=new Map,Se=async e=>{let t=xe.get(e);if(!t){let n=new r(o,{id:`geodesic-ring-${e}`}),i=I(n);n.add(new ue({spatialContext:{coordinateSpace:`longitude-latitude`,datum:`EPSG:4326`,metric:e===`wgs84`?`ellipsoidal`:`great-circle`,units:`meters`},id:`ring-${e}`,origins:i(`origins`,_e,`float32x2`,Y),bearings:i(`bearings`,ve,`float32`,Y),distances:i(`distances`,ye,`float32`,Y),output:{destinations:i(`destinations`,be,`float32x2`,Y)}})),t=l.track(await n.compileAsync()),xe.set(e,t)}return t},Ce=l.createBuffer(`airport-values`,d*4),we=l.createBuffer(`airport-bearing-values`,d*4),Te=new r(o,{id:`airport-values`});{let e=I(Te);P(Te,{id:`airport-values`,invocationCount:d,bindings:[{name:`distances`,view:e(`distances`,K,`float32`,d),type:`f32`,access:`read`},{name:`bearings`,view:e(`bearings`,J,`float32`,d),type:`f32`,access:`read`},{name:`distanceKm`,view:e(`airport-values`,Ce,`float32`,d),type:`f32`,access:`read_write`},{name:`bearing360`,view:e(`airport-bearing-values`,we,`float32`,d),type:`f32`,access:`read_write`}],body:`
+  distanceKm[distanceKmOffset + index] = distances[distancesOffset + index] / 1000.0;
+  bearing360[bearing360Offset + index] = (bearings[bearingsOffset + index] + 360.0) % 360.0;`})}let Ee=l.track(await Te.compileAsync()),De=new N(l,`airport-distances`,[{buffer:Ce,size:d*4}],e=>{let t=new Float32Array(e),r=n.options.ringDistance,i=0,a=0,o=0;for(let e of t)Number.isFinite(e)&&(i=Math.max(i,e),o+=e,e<=r&&a++);n.setReadout(`worldFarthest`,`${s(i)} km`),n.setReadout(`worldInside`,`${s(a)} of ${s(d)} airports within ${s(r)} km`),n.setReadout(`worldMean`,`${s(o/d)} km`)}),Z=0,Q=(()=>{let e=T(M([0,0],1));return R(l,`safe-ring-0`,e.positions,e.offsets)})(),Oe=!0,$=!0,ke=!0,Ae=e=>{Z=a.get(e.worldHub)??0;let r=u[Z*2],i=u[Z*2+1],o=(90-Math.abs(i))*Math.PI*(t/1e3)/180;n.setReadout(`worldPoleThreshold`,`${s(o)} km from the selected hub`),W.write(Float32Array.from({length:d*2},(e,t)=>t%2==0?r:i)),_e.write(Float32Array.from({length:Y*2},(e,t)=>t%2==0?r:i)),$=!0,ke=!0},je=e=>{ye.write(new Float32Array(Y).fill(e.ringDistance*1e3)),ke=!0;let t=T(M([u[Z*2],u[Z*2+1]],e.ringDistance*1e3));Q=R(l,`safe-ring-${e.worldHub}-${e.ringDistance}`,t.positions,t.offsets),$=!0},Me=e=>{V.write(te({maximumSegmentLength:e.arcMaximumLength*1e3,minimumSegments:e.arcMinimumSegments})),Oe=!0};Ae(n.options),je(n.options),Me(n.options),await ge(n.options.geodesicModel),await Se(n.options.geodesicModel),n.setReadout(`worldInputs`,`${s(d)} airports, ${s(m)} routes`);let Ne=new N(l,`arcs`,[{buffer:B.count,size:4},{buffer:B.overflow,size:4}],e=>{let t=new Uint32Array(e);n.setReadout(`worldArcVertices`,`${s(t[0])} vertices (${(t[0]/m).toFixed(1)} per arc)${t[1]?`, overflow`:``}`)}),Pe=l.track(new ie);return{getCompiledGraphs(){return[U,Ee,...X.values(),...xe.values()]},setOption(e,t){e===`worldHub`&&(Ae(t),je(t)),e===`ringDistance`&&je(t),(e===`arcMinimumSegments`||e===`arcMaximumLength`)&&Me(t),e===`geodesicModel`&&Pe.request({build:async()=>{await ge(t.geodesicModel),await Se(t.geodesicModel)},commit:()=>{$=!0,ke=!0,n.requestLayers()}})},encode(e){let t=n.options;Oe?(U.encode(e,{parameters:void 0}),se(e,B.count,B.drawCommands),Ne.request(e),Oe=!1):Ne.flush(e),$?(X.get(t.geodesicModel)?.encode(e,{parameters:void 0}),Ee.encode(e,{parameters:void 0}),De.request(e),$=!1):De.flush(e),ke&&=(xe.get(t.geodesicModel)?.encode(e,{parameters:void 0}),!1)},getLayers(){let e=n.options,t=n.theme()===`dark`,r=[];if(e.showArcs)for(let e of he)r.push(new F({id:`world-arcs-${e}`,coordinateSystem:q,positionOffset:[e,0],positions:B.positions,pathOffsets:B.offsets,pathOffsetCount:B.offsetCount,vertexCount:B.count,drawCommands:B.drawCommands,values:de.haul,colorSource:`path-value`,valueMapping:`category`,valueRange:[0,4],color:[255,255,255,255],widthPixels:.7,opacity:t?.35:.5}));for(let t of he)r.push(new j({id:`world-airports-${t}`,coordinateSystem:q,positions:G,instanceCount:d,radiusPixels:3.2,radiusMinPixels:2,radiusMaxPixels:9,sizeValues:fe,sizeMaximumValue:Math.max(...y),sizeScale:`sqrt`,values:e.airportColor===`distance`?Ce:we,valueFormat:`float32`,colormap:e.airportColor===`distance`?`ylorbr`:`twilight`,valueRange:e.airportColor===`distance`?[0,15e3]:[0,360],positionOffset:[t,0]}));if(e.showRhumbComparison&&r.push(new F({id:`comparison-great-circle`,coordinateSystem:q,positions:E.positions,pathOffsets:E.offsets,pathOffsetCount:E.offsetCount,vertexCount:E.vertexCount,drawCommands:E.drawCommands,color:[0,137,123,255],widthPixels:2.5}),new F({id:`comparison-rhumb`,coordinateSystem:q,positions:D.positions,pathOffsets:D.offsets,pathOffsetCount:D.offsetCount,vertexCount:D.vertexCount,drawCommands:D.drawCommands,color:[230,159,0,255],widthPixels:1.5})),e.showRing)for(let e of he)r.push(new F({id:`world-ring-${e}`,coordinateSystem:q,positionOffset:[e,0],positions:Q.positions,pathOffsets:Q.offsets,pathOffsetCount:Q.offsetCount,vertexCount:Q.vertexCount,drawCommands:Q.drawCommands,color:t?[255,214,120,255]:[200,90,10,255],widthPixels:2.5}));return r},destroy(){Ne.stop(),De.stop(),l.destroy()}}}export{X as n,pe as t};

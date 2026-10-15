@@ -1,0 +1,1 @@
+function e(e,t,n){return{triangles:e.createBuffer(`${n}-triangles`,t.triangles),features:e.createBuffer(`${n}-triangle-features`,t.triangleFeatures),triangleVertexCount:t.triangleFeatures.length,outline:e.createBuffer(`${n}-outline`,t.outlineSegments),outlineSegmentCount:t.outlineSegments.length/4}}export{e as t};

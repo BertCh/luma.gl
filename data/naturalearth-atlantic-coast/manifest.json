@@ -1,0 +1,37 @@
+{
+ "id": "naturalearth-atlantic-coast",
+ "version": 1,
+ "kind": "lines",
+ "count": 274,
+ "bbox": [
+  -104.9384765625,
+  5.010937213897705,
+  14.99609375,
+  61.993408203125
+ ],
+ "crs": "EPSG:4326",
+ "columns": {
+  "pathOffsets": {
+   "file": "pathOffsets.bin",
+   "dtype": "uint32",
+   "components": 1,
+   "length": 275
+  },
+  "vertices": {
+   "file": "vertices.bin",
+   "dtype": "float32",
+   "components": 2,
+   "length": 10676
+  }
+ },
+ "properties": {
+  "source": "Natural Earth ne_50m_coastline (1:50,000,000)",
+  "window": [
+   -105.0,
+   5.0,
+   15.0,
+   62.0
+  ],
+  "note": "Generalised coastline: islands and small bays are simplified, so distances under about 20 km are approximate."
+ }
+}

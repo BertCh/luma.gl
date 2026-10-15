@@ -1,0 +1,76 @@
+{
+  "id": "poopdeck-nyc-taxi",
+  "version": 1,
+  "kind": "flows",
+  "count": 440000,
+  "bbox": [
+    -74.05,
+    40.6,
+    -73.7,
+    40.9
+  ],
+  "crs": "EPSG:4326",
+  "columns": {
+    "origin": {
+      "file": "origin.bin",
+      "dtype": "uint16",
+      "length": 440000,
+      "components": 2,
+      "unit": "uint16 pairs spanning properties.quantBbox (lon, lat)"
+    },
+    "destination": {
+      "file": "destination.bin",
+      "dtype": "uint16",
+      "length": 440000,
+      "components": 2,
+      "unit": "uint16 pairs spanning properties.quantBbox (lon, lat)"
+    },
+    "pickupTime": {
+      "file": "pickupTime.bin",
+      "dtype": "uint16",
+      "length": 440000,
+      "unit": "4-second steps since properties.timeOriginMs"
+    },
+    "duration": {
+      "file": "duration.bin",
+      "dtype": "uint8",
+      "length": 440000,
+      "unit": "15-second steps (derived from the OSRM routed path timestamps)"
+    },
+    "distance": {
+      "file": "distance.bin",
+      "dtype": "uint8",
+      "length": 440000,
+      "unit": "0.1 mile steps (TLC trip_distance)"
+    },
+    "fare": {
+      "file": "fare.bin",
+      "dtype": "uint8",
+      "length": 440000,
+      "unit": "0.5 USD steps (TLC fare_amount, no tips)"
+    },
+    "passengers": {
+      "file": "passengers.bin",
+      "dtype": "uint8",
+      "length": 440000,
+      "unit": "passengers (1-6)"
+    }
+  },
+  "properties": {
+    "timeOriginMs": 1420070400000,
+    "quantBbox": [
+      -74.05,
+      40.6,
+      -73.7,
+      40.9
+    ],
+    "description": "Yellow-taxi trips as origin/destination pairs. Positions are uint16 across quantBbox; decode lon = w + q / 65535 * (e - w).",
+    "source": {
+      "manifestUrl": "https://tiles.poopdeck.gl/data/nyc-taxi-paths/manifest.json",
+      "derivedFrom": "first and last vertex of each OSRM-routed path, grouped by trip_id",
+      "exportedFrom": "build.mjs",
+      "tripsInArchive": 500000,
+      "tripsAfterFilter": 440000
+    }
+  }
+}

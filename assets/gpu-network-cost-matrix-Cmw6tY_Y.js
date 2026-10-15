@@ -1,0 +1,39 @@
+import{_ as e,d as t,h as n,m as r,w as i,y as a}from"./resources-CwvhEOBe.js";import{s as o}from"./wgsl-kernel-nodes-Bm5c4bxp.js";import{i as s,n as c}from"./network-topology-BXzNuj-N.js";import{t as l}from"./network-accessibility-passes-B3hrEHbU.js";import{t as u}from"./gpu-network-reachability-ROiXwwot.js";import{t as d}from"./network-accessibility-lanes-CM32kWYY.js";var f=`GPUNetworkCostMatrix`,p=16,m=64,h=class{id;props;nodeCount;rowCount;columnCount;laneCount;batchCount;startsPerRow;constructor(e){this.id=e.id??`network-cost-matrix`,this.props=e;let{id:r}=this,{costs:i}=e.output,o=e.output.status?.converged,{nodeCount:c,edgeCount:l}=s(r,e.topology,{weights:!0});this.nodeCount=c;for(let[t,n]of[[`startNodes`,e.startNodes],[`startRows`,e.startRows],[`targetNodes`,e.targetNodes],[`output.status.converged`,o]])n&&a(n,[`uint32`],`${r} ${t}`);for(let[t,n]of[[`startCosts`,e.startCosts],[`costLimit`,e.costLimit],[`output.costs`,i]])n&&a(n,[`float32`],`${r} ${t}`);if(e.targetNodes&&e.targetNodes.length<1)throw Error(`${r} targetNodes must contain at least one row`);if(this.columnCount=e.targetNodes?.length??this.nodeCount,i.length<this.columnCount||i.length%this.columnCount!==0)throw Error(`${r} output.costs length must be a positive multiple of the ${e.targetNodes?`target`:`node`} count`);this.rowCount=i.length/this.columnCount;for(let[t,n]of[[`startCosts`,e.startCosts],[`startRows`,e.startRows]])if(n&&n.length!==e.startNodes.length)throw Error(`${r} ${t} length must equal startNodes length`);for(let[t,n]of[[`costLimit`,e.costLimit],[`output.status.converged`,o]])if(n&&n.length!==1)throw Error(`${r} ${t} must contain exactly one row`);if(this.startsPerRow=e.startsPerRow??1,t(r,`startsPerRow`,this.startsPerRow),this.laneCount=e.laneCount??y(d({rowCount:this.rowCount,nodeCount:this.nodeCount,edgeCount:l}),this.nodeCount,this.rowCount),t(r,`laneCount`,this.laneCount,1,this.rowCount),this.laneCount*this.nodeCount>=4294967295)throw Error(`${r} laneCount * nodeCount must fit in uint32`);if(this.batchCount=Math.ceil(this.rowCount/this.laneCount),n(r,[i,o],x(e)),o&&o.buffer===i.buffer)throw Error(`${r} outputs must use separate buffers`)}getCommandNodes(t){let{id:n,props:a,nodeCount:s,rowCount:c,laneCount:d,batchCount:h,startsPerRow:y}=this,{targetNodes:b}=a,{offsets:S,neighbors:C,weights:w}=a.topology,{costs:T}=a.output,E=a.output.status?.converged;e(n,t,[...x(a),T,E]);let D=a.startNodes.length,O=[],k=v(D),A=d*s;r(t.device,n,`frontier queues`,2*A*4,`lower laneCount`);let j=i(t,`${n}-expanded-seeds`,`uint32`,Math.max(h*k,1));if(D>0){let e=[{name:`seedNodes`,view:a.startNodes,type:`u32`,access:`read`},{name:`expandedSeeds`,view:j,type:`u32`,access:`read_write`}];a.startRows&&e.push({name:`seedRows`,view:a.startRows,type:`u32`,access:`read`}),O.push(o(t,{id:`${n}-expand-seeds`,operation:f,variant:`expand-seeds`,bindings:e,invocationCount:h*D,declarations:`const NODE_COUNT: u32 = ${s}u;
+const ROW_COUNT: u32 = ${c}u;
+const LANE_COUNT: u32 = ${d}u;
+const SEED_COUNT: u32 = ${D}u;
+const SEED_STRIDE: u32 = ${k}u;
+const SEEDS_PER_ROW: u32 = ${y}u;`,body:`let batch = index / SEED_COUNT;
+  let seed = index - batch * SEED_COUNT;
+  let row = ${a.startRows?`seedRows[seedRowsOffset + seed]`:`seed / SEEDS_PER_ROW`};
+  let node = seedNodes[seedNodesOffset + seed];
+  let firstRow = batch * LANE_COUNT;
+  let isInBatch = row < ROW_COUNT && row >= firstRow && row - firstRow < LANE_COUNT;
+  expandedSeeds[expandedSeedsOffset + batch * SEED_STRIDE + seed] =
+    select(${l}u, (row - firstRow) * NODE_COUNT + node, isInBatch && node < NODE_COUNT);`}))}let M=E?i(t,`${n}-batch-converged`,`uint32`,h*m):void 0,N=T.byteOffset/4,P=A%m===0&&N%m===0,F=e=>!b&&(e+1)*d<=c&&(h===1||P),I=[...Array(h).keys()].filter(e=>!F(e)).length>0?i(t,`${n}-scratch-costs`,`float32`,A):void 0,L=I?i(t,`${n}-batch-info`,`uint32`,h*m):void 0;L&&b?(r(t.device,n,`output.costs`,T.length*4,`lower rowCount or targetNodes length`),O.push(o(t,{id:`${n}-batch-info`,operation:f,variant:`batch-info-targets`,bindings:[{name:`batchInfo`,view:L,type:`u32`,access:`read_write`}],invocationCount:h,declarations:`const ROW_COUNT: u32 = ${c}u;
+const LANE_COUNT: u32 = ${d}u;
+const SLOT_WORDS: u32 = ${m}u;`,body:`let firstRow = index * LANE_COUNT;
+  batchInfo[batchInfoOffset + index * SLOT_WORDS] = firstRow;
+  batchInfo[batchInfoOffset + index * SLOT_WORDS + 1u] = min(LANE_COUNT, ROW_COUNT - firstRow);`}))):L&&O.push(o(t,{id:`${n}-batch-info`,operation:f,variant:`batch-info`,bindings:[{name:`batchInfo`,view:L,type:`u32`,access:`read_write`}],invocationCount:h,declarations:`const ROW_COUNT: u32 = ${c}u;
+const LANE_COUNT: u32 = ${d}u;
+const NODE_COUNT: u32 = ${s}u;
+const COSTS_ELEMENT_RESIDUE: u32 = ${N%m}u;
+const SLOT_WORDS: u32 = ${m}u;`,body:`let firstRow = index * LANE_COUNT;
+  let firstElement = COSTS_ELEMENT_RESIDUE + firstRow * NODE_COUNT;
+  batchInfo[batchInfoOffset + index * SLOT_WORDS] = firstElement % SLOT_WORDS;
+  batchInfo[batchInfoOffset + index * SLOT_WORDS + 1u] = min(LANE_COUNT, ROW_COUNT - firstRow) * NODE_COUNT;`}));for(let e=0;e<h;e++){let r=F(e),i=r?g(t,T,e*A,A):I;O.push(...new u({id:`${n}-batch-${e}`,topology:{offsets:S,neighbors:C,weights:w},laneCount:d,startNodes:g(t,j,e*k,D),startCosts:a.startCosts,costLimit:a.costLimit,maximumIterations:a.maximumIterations,localIterations:a.localIterations??p,output:{costs:i,status:{converged:M?g(t,M,e*m,1):void 0}}}).getCommandNodes(t)),b&&I&&L?O.push(o(t,{id:`${n}-batch-${e}-gather`,operation:f,variant:`gather`,bindings:[{name:`batchInfo`,view:g(t,L,e*m,2),type:`u32`,access:`read`},{name:`targetNodes`,view:b,type:`u32`,access:`read`},{name:`scratchCosts`,view:I,type:`f32`,access:`read`},{name:`costs`,view:T,type:`f32`,access:`read_write`}],invocationCount:d*b.length,declarations:`const NODE_COUNT: u32 = ${s}u;
+const TARGET_COUNT: u32 = ${b.length}u;`,body:`let lane = index / TARGET_COUNT;
+  if (lane >= batchInfo[batchInfoOffset + 1u]) { return; }
+  let column = index - lane * TARGET_COUNT;
+  let node = targetNodes[targetNodesOffset + column];
+  var costBits = 0x7f800000u;
+  if (node < NODE_COUNT) {
+    costBits = bitcast<u32>(scratchCosts[scratchCostsOffset + lane * NODE_COUNT + node]);
+  }
+  costs[costsOffset + (batchInfo[batchInfoOffset] + lane) * TARGET_COUNT + column] = bitcast<f32>(costBits);`})):!r&&I&&L&&O.push(o(t,{id:`${n}-batch-${e}-copy`,operation:f,variant:`copy`,bindings:[{name:`batchInfo`,view:g(t,L,e*m,2),type:`u32`,access:`read`},{name:`scratchCosts`,view:I,type:`f32`,access:`read`},{name:`costs`,view:_(t,T,e*A,A),type:`f32`,access:`read_write`}],invocationCount:A,body:`if (index >= batchInfo[batchInfoOffset + 1u]) { return; }
+  costs[costsOffset + batchInfo[batchInfoOffset] + index] = scratchCosts[scratchCostsOffset + index];`}))}return E&&M&&O.push(o(t,{id:`${n}-converged`,operation:f,variant:`converged`,bindings:[{name:`batchConverged`,view:M,type:`u32`,access:`read`},{name:`converged`,view:E,type:`u32`,access:`read_write`}],invocationCount:1,declarations:`const BATCH_COUNT: u32 = ${h}u;
+const SLOT_WORDS: u32 = ${m}u;`,body:`var allConverged = 1u;
+  for (var batch = 0u; batch < BATCH_COUNT; batch++) {
+    allConverged = min(allConverged, batchConverged[batchConvergedOffset + batch * SLOT_WORDS]);
+  }
+  converged[convergedOffset] = allConverged;`})),O}};function g(e,t,n,r){return e.createDataView(t.buffer,{format:t.format,length:r,byteOffset:t.byteOffset+n*t.byteStride})}function _(e,t,n,r){let i=t.byteOffset+n*4,a=i-i%(4*m),o=t.byteOffset+t.length*4,s=Math.min(i+r*4,o);return e.createDataView(t.buffer,{format:`float32`,length:(s-a)/4,byteOffset:a})}function v(e){return Math.ceil(e/m)*m}function y(e,t,n){if(e>=n)return e;let r=m/b(t,m);return e>=r?Math.floor(e/r)*r:e}function b(e,t){let n=e,r=t;for(;r!==0;)[n,r]=[r,n%r];return n}function x(e){return[...c(e.topology),e.startNodes,e.startCosts,e.startRows,e.targetNodes,e.costLimit]}export{h as t};
