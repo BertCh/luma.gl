@@ -1,0 +1,61 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.mask",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.mask",
+  "viewId": "formula-card",
+  "caption": "Formula y[i]=0 or 1 after booleanizing inputs by !=0; op is and, or, xor (odd parity), difference (first AND NOT every remaining input), or not (one input). bound symbols: 1/1. structure metadata only.",
+  "description": "Formula y[i]=0 or 1 after booleanizing inputs by !=0; op is and, or, xor (odd parity), difference (first AND NOT every remaining input), or not (one input). bound symbols: 1/1. structure metadata only.",
+  "llms": "Formula y[i]=0 or 1 after booleanizing inputs by !=0; op is and, or, xor (odd parity), difference (first AND NOT every remaining input), or not (one input).\n\n- bound symbols: 1/1\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "1/1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.mask</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\mathbf1[\\operatorname{op}(b_{0i},\\ldots,b_{mi})],\\quad b_{ji}=[x_{ji}\\ne0]</pre><p class=\"lens-ascii\">y[i]=0 or 1 after booleanizing inputs by !=0; op is and, or, xor (odd parity), difference (first AND NOT every remaining input), or not (one input).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mask-compiled:gpu-mask\" data-value=\"y\">y · output · outputMask</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mask-compiled:gpu-mask\">gpu-mask</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "y",
+        "output",
+        "outputMask",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_i}=\\mathbf1[\\operatorname{op}(b_{0i},\\ldots,b_{mi})],\\quad b_{ji}=[x_{ji}\\ne0]",
+    "ascii": "y[i]=0 or 1 after booleanizing inputs by !=0; op is and, or, xor (odd parity), difference (first AND NOT every remaining input), or not (one input).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.484Z",
+    "runId": "run-0a909fdf",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0a909fdf",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-centrality",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-centrality",
+  "viewId": "formula-card",
+  "caption": "Formula closeness = totalCost > 0 ? (reachedPartial[0] - 1) / totalCost : 0, per pivot. Outward closeness: totalCost is the f32 sum of the search costs of every node the pivot reaches (infinite costs are skipped), added by a fixed 256-lane tree redu…",
+  "description": "Formula closeness = totalCost > 0 ? (reachedPartial[0] - 1) / totalCost : 0, per pivot. Outward closeness: totalCost is the f32 sum of the search costs of every node the pivot reaches (infinite costs are skipped), added by a fixed 256-lane tree redu…",
+  "llms": "Formula closeness = totalCost > 0 ? (reachedPartial[0] - 1) / totalCost : 0, per pivot. Outward closeness: totalCost is the f32 sum of the search costs of every node the pivot reaches (infinite costs are skipped), added by a fixed 256-lane tree reduction so the value does not depend on thread order. reachedPartial[0] counts the reached nodes including the pivot itself. The Wasserman-Faust factor (r - 1) / (N - 1) is not applied; the unit is 1 / cost (1 / second on travel-time weights).\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients closeness, reachedCounts, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.centrality.closeness</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{closeness}{C}=\\begin{cases}(\\term{reachedPartial}{r}-1)/\\term{totalCost}{S}&amp;\\term{totalCost}{S}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">closeness = totalCost &gt; 0 ? (reachedPartial[0] - 1) / totalCost : 0, per pivot. Outward closeness: totalCost is the f32 sum of the search costs of every node the pivot reaches (infinite costs are skipped), added by a fixed 256-lane tree reduction so the value does not depend on thread order. reachedPartial[0] counts the reached nodes including the pivot itself. The Wasserman-Faust factor (r - 1) / (N - 1) is not applied; the unit is 1 / cost (1 / second on travel-time weights).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-centrality-compiled:network-centrality-batch-0-closeness\" data-value=\"closeness\">outward closeness · output · closeness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-centrality-compiled:network-centrality-batch-0-closeness\" data-value=\"reachedPartial\">reached nodes, pivot included · intermediate · reachedPartial</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-centrality-compiled:network-centrality-batch-0-closeness\" data-value=\"totalCost\">sum of reached costs · intermediate · totalCost</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-centrality-compiled:network-centrality-batch-0-closeness\">network-centrality-batch-0-closeness</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "outward closeness",
+        "output",
+        "closeness",
+        "—",
+        "metadata"
+      ],
+      [
+        "reached nodes, pivot included",
+        "intermediate",
+        "reachedPartial",
+        "—",
+        "metadata"
+      ],
+      [
+        "sum of reached costs",
+        "intermediate",
+        "totalCost",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{closeness}{C}=\\begin{cases}(\\term{reachedPartial}{r}-1)/\\term{totalCost}{S}&\\term{totalCost}{S}>0\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "closeness = totalCost > 0 ? (reachedPartial[0] - 1) / totalCost : 0, per pivot. Outward closeness: totalCost is the f32 sum of the search costs of every node the pivot reaches (infinite costs are skipped), added by a fixed 256-lane tree reduction so the value does not depend on thread order. reachedPartial[0] counts the reached nodes including the pivot itself. The Wasserman-Faust factor (r - 1) / (N - 1) is not applied; the unit is 1 / cost (1 / second on travel-time weights).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.473Z",
+    "runId": "run-f6949779",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients closeness, reachedCounts, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-f6949779",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

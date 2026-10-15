@@ -1,0 +1,59 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-sampling",
+  "rung": "datum",
+  "datum": 7,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-sampling",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of sample points 7. samplingValues: 1305.3751220703125. values read back from the GPU run. raster-sampling: 1 quantities.",
+  "description": "Receipt of sample points 7. samplingValues: 1305.3751220703125. values read back from the GPU run. raster-sampling: 1 quantities.",
+  "llms": "Receipt of sample points 7\n\n- samplingValues: 1305.3751220703125\n- raster-sampling: 1 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "samplingValues",
+    "value": "1305.3751220703125"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of sample points 7</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-sampling\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-sampling</th></tr><tr data-provenance=\"readback\"><td>raster-sampling</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-sampling-snapshots-samplingValues-0\" title=\"DEM elevation sampled at each point (m)\">samplingValues</button></td><td>1305.3751220703125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-sampling",
+        "samplingValues",
+        "1305.3751220703125",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.659Z",
+    "runId": "run-9152d5ec",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9152d5ec",
+    "rung": "datum",
+    "bindings": {
+      "entity": 7
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

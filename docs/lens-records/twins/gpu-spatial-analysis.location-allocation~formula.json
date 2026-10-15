@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.location-allocation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.location-allocation",
+  "viewId": "formula-card",
+  "caption": "Formula Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| <= p. Unreachable rows (infinite cost to every selected facility) are…",
+  "description": "Formula Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| <= p. Unreachable rows (infinite cost to every selected facility) are…",
+  "llms": "Formula Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| <= p. Unreachable rows (infinite cost to every selected facility) are left out of Z and counted in the uncovered status word. Maximum coverage instead sums the weight of rows within coverageDistance, and set covering counts selected facilities.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>p-median-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{objective}{Z}=\\sum_{j\\ \\text{reachable}}\\term{weight}{w_j}\\,\\term{assignedCost}{\\min_{i\\in S}c_{ji}},\\qquad |S|\\le p</pre><p class=\"lens-ascii\">Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| &lt;= p. Unreachable rows (infinite cost to every selected facility) are left out of Z and counted in the uncovered status word. Maximum coverage instead sums the weight of rows within coverageDistance, and set covering counts selected facilities.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-initialize\" data-value=\"objective\">objective · output · objective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-score-0\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.location-allocation-compiled:location-allocation-assign\" data-value=\"assignedCost\">assignedCost · intermediate · assignedCost</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "objective",
+        "output",
+        "objective",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "assignedCost",
+        "intermediate",
+        "assignedCost",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{objective}{Z}=\\sum_{j\\ \\text{reachable}}\\term{weight}{w_j}\\,\\term{assignedCost}{\\min_{i\\in S}c_{ji}},\\qquad |S|\\le p",
+    "ascii": "Objective of the p-median operation, not the greedy and swap procedure: Z = sum over reachable demand rows j of w_j * min over selected facilities i in S of c_ji, with |S| <= p. Unreachable rows (infinite cost to every selected facility) are left out of Z and counted in the uncovered status word. Maximum coverage instead sums the weight of rows within coverageDistance, and set covering counts selected facilities.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:05.291Z",
+    "runId": "run-c3ac878a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c3ac878a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

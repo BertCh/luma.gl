@@ -30,9 +30,9 @@ the same graph again.
 
 ## Try execution policy safely
 
-Toggle an optional branch, change the per-frame work budget, and deliberately undersize a bounded
-output. The graph topology stays fixed while the execution plan and validation result remain
-visible.
+Pick one of the per-frame invocation budgets recorded from a real run and see which nodes share each
+frame. The graph topology stays fixed; the optional-branch and undersized-output controls were removed
+because that run did not record them.
 
 <GPUCoreExecutionLab />
 

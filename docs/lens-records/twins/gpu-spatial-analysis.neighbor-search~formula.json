@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.neighbor-search",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.neighbor-search",
+  "viewId": "formula-card",
+  "caption": "Formula Binary k-NN self join: retain the k smallest (distance, target ID) pairs among valid unmasked targets within bounds and any finite radius cap, excluding self. This example uses great-circle distance in meters from longitude/latitude degrees,…",
+  "description": "Formula Binary k-NN self join: retain the k smallest (distance, target ID) pairs among valid unmasked targets within bounds and any finite radius cap, excluding self. This example uses great-circle distance in meters from longitude/latitude degrees,…",
+  "llms": "Formula Binary k-NN self join: retain the k smallest (distance, target ID) pairs among valid unmasked targets within bounds and any finite radius cap, excluding self. This example uses great-circle distance in meters from longitude/latitude degrees, binary weights, and no row standardization; CSR IDs are sorted after selection.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>neighbor-search</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\mathbf{1}[j\\in\\operatorname{first}_{\\term{count}{k}}\\operatorname{sort}_{(\\term{distance}{d_{ij}},j)}\\{j:j\\ne i\\}]</pre><p class=\"lens-ascii\">Binary k-NN self join: retain the k smallest (distance, target ID) pairs among valid unmasked targets within bounds and any finite radius cap, excluding self. This example uses great-circle distance in meters from longitude/latitude degrees, binary weights, and no row standardization; CSR IDs are sorted after selection.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighbor-search-compiled:neighbor-search-weights\" data-value=\"weight\">weight · output · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighbor-search-compiled:neighbor-search-knn\" data-value=\"count\">count · parameter · K</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighbor-search-compiled:geometry-measures-features\" data-value=\"distance\">distance · intermediate · distance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weight",
+        "output",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "parameter",
+        "K",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance",
+        "intermediate",
+        "distance",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{weight}{w_{ij}}=\\mathbf{1}[j\\in\\operatorname{first}_{\\term{count}{k}}\\operatorname{sort}_{(\\term{distance}{d_{ij}},j)}\\{j:j\\ne i\\}]",
+    "ascii": "Binary k-NN self join: retain the k smallest (distance, target ID) pairs among valid unmasked targets within bounds and any finite radius cap, excluding self. This example uses great-circle distance in meters from longitude/latitude degrees, binary weights, and no row standardization; CSR IDs are sorted after selection.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "fail",
+      "reason": "metric glyphs need projected coordinates or a geodesic metric"
+    },
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "0 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:01:53.506Z",
+    "runId": "run-28b92cd2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-28b92cd2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-grid-path",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.cell-grid-path",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.cell-grid-path: originPlaces → pathBoundariesCen…",
+  "description": "Result of gpu-spatial-analysis.cell-grid-path: originPlaces → pathBoundariesCenters. points: 112. values read back from the GPU run. input originPlaces: 7 points.",
+  "llms": "Result of gpu-spatial-analysis.cell-grid-path: originPlaces → pathBoundariesCenters\n\n- points: 112\n- input originPlaces: 7 points\n- Simple equirectangular projection (x scaled by cos 41.91°); not equal-area.\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 7 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 112 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "points",
+    "value": "112"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-87.67891693115234,41.901851654052734],[-87.66667938232422,41.91227722167969]]\" role=\"img\" aria-label=\"Result: pathBoundariesCenters\"><defs><pattern id=\"lens-gpu-spatial-analysis-cell-grid-path-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-cell-grid-path-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-cell-grid-path-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"context\"><circle class=\"cv-mark cv-mark--context cv-point\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"#f1f1ef\" stroke=\"#ffffff\" r=\"0.8999999999999999\" aria-hidden=\"true\" cx=\"78.17\" cy=\"40.82\" data-provenance=\"readback\"></circle></g><g data-role=\"output\"><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"44.91\" cy=\"6.06\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"80.82\" cy=\"43.01\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"18\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"66\" cy=\"90\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"48\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"80.82\" cy=\"43.01\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"66\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"113.49\" cy=\"14.45\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"96\"></circle></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:34.265Z",
+    "runId": "run-06e84027",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-06e84027",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

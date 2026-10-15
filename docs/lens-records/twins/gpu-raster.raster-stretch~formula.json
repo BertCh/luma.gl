@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-stretch",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-stretch",
+  "viewId": "formula-card",
+  "caption": "Formula Linear auto-domain, gamma=1, sigmoid disabled: lo/hi are min/max of valid finite cells in the statistics window and region (0/0 if empty); invalid input (NaN, optional sentinel, validity==0) gives NaN; if hi>lo output clamp((x-lo)/(hi-lo),0,…",
+  "description": "Formula Linear auto-domain, gamma=1, sigmoid disabled: lo/hi are min/max of valid finite cells in the statistics window and region (0/0 if empty); invalid input (NaN, optional sentinel, validity==0) gives NaN; if hi>lo output clamp((x-lo)/(hi-lo),0,…",
+  "llms": "Formula Linear auto-domain, gamma=1, sigmoid disabled: lo/hi are min/max of valid finite cells in the statistics window and region (0/0 if empty); invalid input (NaN, optional sentinel, validity==0) gives NaN; if hi>lo output clamp((x-lo)/(hi-lo),0,1); otherwise output 0 if x<lo, 1 if x>hi, else 0.5. Infinities are excluded from statistics but clamp in the apply step. Here DN 0 becomes NaN and valid DN is scaled by 0.0001.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-stretch.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{t}=\\operatorname{clamp}\\!\\left(\\frac{\\term{value}{x}-\\term{low}{l}}{\\term{high}{h}-l},0,1\\right)\\quad(h&gt;l,\\ \\text{valid }x)</pre><p class=\"lens-ascii\">Linear auto-domain, gamma=1, sigmoid disabled: lo/hi are min/max of valid finite cells in the statistics window and region (0/0 if empty); invalid input (NaN, optional sentinel, validity==0) gives NaN; if hi&gt;lo output clamp((x-lo)/(hi-lo),0,1); otherwise output 0 if x&lt;lo, 1 if x&gt;hi, else 0.5. Infinities are excluded from statistics but clamp in the apply step. Here DN 0 becomes NaN and valid DN is scaled by 0.0001.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-stretch-compiled:raster-stretch-apply\" data-value=\"result\">stretched · output · stretchedOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-stretch-compiled:raster-stretch-reduce\" data-value=\"value\">reflectance · input · value</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-stretch-compiled:raster-stretch-finalize\" data-value=\"low\">lo · intermediate · lo</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-stretch-compiled:raster-stretch-finalize\" data-value=\"high\">hi · intermediate · hi</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "stretched",
+        "output",
+        "stretchedOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "reflectance",
+        "input",
+        "value",
+        "—",
+        "metadata"
+      ],
+      [
+        "lo",
+        "intermediate",
+        "lo",
+        "—",
+        "metadata"
+      ],
+      [
+        "hi",
+        "intermediate",
+        "hi",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{result}{t}=\\operatorname{clamp}\\!\\left(\\frac{\\term{value}{x}-\\term{low}{l}}{\\term{high}{h}-l},0,1\\right)\\quad(h>l,\\ \\text{valid }x)",
+    "ascii": "Linear auto-domain, gamma=1, sigmoid disabled: lo/hi are min/max of valid finite cells in the statistics window and region (0/0 if empty); invalid input (NaN, optional sentinel, validity==0) gives NaN; if hi>lo output clamp((x-lo)/(hi-lo),0,1); otherwise output 0 if x<lo, 1 if x>hi, else 0.5. Infinities are excluded from statistics but clamp in the apply step. Here DN 0 becomes NaN and valid DN is scaled by 0.0001.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.332Z",
+    "runId": "run-f9c55159",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f9c55159",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

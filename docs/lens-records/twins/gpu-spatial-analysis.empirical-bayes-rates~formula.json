@@ -1,0 +1,159 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.empirical-bayes-rates",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.empirical-bayes-rates",
+  "viewId": "formula-card",
+  "caption": "Formula r_i = w_i y_i + (1 - w_i) m; w_i = a+ / (a+ + m / b_i) (0 where the denominator is not positive); y_i = e_i / b_i; m = sum e / sum b (pooled, not the mean of rates); a+ = max(a, 0) by default (clampPriorVariance true; false uses w = a / (a +…",
+  "description": "Formula r_i = w_i y_i + (1 - w_i) m; w_i = a+ / (a+ + m / b_i) (0 where the denominator is not positive); y_i = e_i / b_i; m = sum e / sum b (pooled, not the mean of rates); a+ = max(a, 0) by default (clampPriorVariance true; false uses w = a / (a +…",
+  "llms": "Formula r_i = w_i y_i + (1 - w_i) m; w_i = a+ / (a+ + m / b_i) (0 where the denominator is not positive); y_i = e_i / b_i; m = sum e / sum b (pooled, not the mean of rates); a+ = max(a, 0) by default (clampPriorVariance true; false uses w = a / (a + m / b_i), esda parity); a = s2 - m / (sum b / n); s2 = sum b_i (y_i - m)^2 / sum b. Sums over the n included rows (unmasked, finite e, finite b > 0); other rows are NaN.\n\n- bound symbols: 11/11\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "11/11"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>empirical-bayes-rates</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{smoothed}{r_i}&amp;=\\term{weight}{w_i}\\,\\term{rate}{y_i}+(1-w_i)\\,\\term{pooledRate}{m},\n&amp;\\term{weight}{w_i}&amp;=\\frac{\\term{clampedVariance}{a^{+}}}{a^{+}+\\term{noise}{m/b_i}},\n&amp;\\term{rate}{y_i}&amp;=\\frac{e_i}{b_i}\\\\\n\\term{pooledRate}{m}&amp;=\\frac{\\term{eventSum}{\\sum e}}{\\term{populationSum}{\\sum b}},\n&amp;\\term{clampedVariance}{a^{+}}&amp;=\\max(\\term{priorVariance}{a},0),\n&amp;\\term{priorVariance}{a}&amp;=\\term{weightedVariance}{s^2}-\\frac{m}{\\sum b/\\term{count}{n}}\n\\end{aligned}</pre><p class=\"lens-ascii\">r_i = w_i y_i + (1 - w_i) m; w_i = a+ / (a+ + m / b_i) (0 where the denominator is not positive); y_i = e_i / b_i; m = sum e / sum b (pooled, not the mean of rates); a+ = max(a, 0) by default (clampPriorVariance true; false uses w = a / (a + m / b_i), esda parity); a = s2 - m / (sum b / n); s2 = sum b_i (y_i - m)^2 / sum b. Sums over the n included rows (unmasked, finite e, finite b &gt; 0); other rows are NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-rates\" data-value=\"smoothed\">smoothed · output · smoothed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-rates\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-rates\" data-value=\"rate\">rate · intermediate · rate</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-partials-b\" data-value=\"pooledRate\">pooledRate · intermediate · pooledRate</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-rates\" data-value=\"clampedVariance\">clampedVariance · intermediate · clampedVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-rates\" data-value=\"noise\">noise · intermediate · noise</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-partials-a\" data-value=\"eventSum\">eventSum · intermediate · eventSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-partials-a\" data-value=\"populationSum\">populationSum · intermediate · populationSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-summary\" data-value=\"priorVariance\">priorVariance · intermediate · priorVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-summary\" data-value=\"weightedVariance\">weightedVariance · intermediate · weightedVariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.empirical-bayes-rates-compiled:empirical-bayes-rates-partials-a\" data-value=\"count\">included row count · intermediate · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "smoothed",
+        "output",
+        "smoothed",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "rate",
+        "intermediate",
+        "rate",
+        "—",
+        "metadata"
+      ],
+      [
+        "pooledRate",
+        "intermediate",
+        "pooledRate",
+        "—",
+        "metadata"
+      ],
+      [
+        "clampedVariance",
+        "intermediate",
+        "clampedVariance",
+        "—",
+        "metadata"
+      ],
+      [
+        "noise",
+        "intermediate",
+        "noise",
+        "—",
+        "metadata"
+      ],
+      [
+        "eventSum",
+        "intermediate",
+        "eventSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "populationSum",
+        "intermediate",
+        "populationSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "priorVariance",
+        "intermediate",
+        "priorVariance",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightedVariance",
+        "intermediate",
+        "weightedVariance",
+        "—",
+        "metadata"
+      ],
+      [
+        "included row count",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{smoothed}{r_i}&=\\term{weight}{w_i}\\,\\term{rate}{y_i}+(1-w_i)\\,\\term{pooledRate}{m},\n&\\term{weight}{w_i}&=\\frac{\\term{clampedVariance}{a^{+}}}{a^{+}+\\term{noise}{m/b_i}},\n&\\term{rate}{y_i}&=\\frac{e_i}{b_i}\\\\\n\\term{pooledRate}{m}&=\\frac{\\term{eventSum}{\\sum e}}{\\term{populationSum}{\\sum b}},\n&\\term{clampedVariance}{a^{+}}&=\\max(\\term{priorVariance}{a},0),\n&\\term{priorVariance}{a}&=\\term{weightedVariance}{s^2}-\\frac{m}{\\sum b/\\term{count}{n}}\n\\end{aligned}",
+    "ascii": "r_i = w_i y_i + (1 - w_i) m; w_i = a+ / (a+ + m / b_i) (0 where the denominator is not positive); y_i = e_i / b_i; m = sum e / sum b (pooled, not the mean of rates); a+ = max(a, 0) by default (clampPriorVariance true; false uses w = a / (a + m / b_i), esda parity); a = s2 - m / (sum b / n); s2 = sum b_i (y_i - m)^2 / sum b. Sums over the n included rows (unmasked, finite e, finite b > 0); other rows are NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "eb-reference-rate",
+      "label": "EB reference rate",
+      "blocks": [
+        "eb-reference"
+      ],
+      "status": "pass",
+      "reason": "pooled μ = ΣO/ΣP"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.165Z",
+    "runId": "run-db2a5a10",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-db2a5a10",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

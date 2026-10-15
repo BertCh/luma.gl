@@ -9,6 +9,25 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 <ExperimentalDocsTabs active="gpu-dataframe-expressions" />
 
+## `GPUDataFrameQuery`
+
+Filter rows and derive nullable columns from immutable expressions, compiling one WGSL pass with source-aligned masks and compact row ids.
+
+::lens{scenario=gpu-dataframe.data-frame-query rung=result caption="Compare vehicle-access rates and selection masks across 791 Chicago tracts."}
+
+This card demonstrates derived formulas: each formula is generated from the expression tree, and each WGSL
+`expression{N}` statement maps back to its AST node. `compiled.describe()` exposes the linked graph forms,
+formulas, and statement map; recording graphs also retain the kernel source. The datum receipt uses real GPU readback.
+
+#### How it computes
+
+{/* lens:GPUDataFrameQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-query rung=datum bind=page datum=0 caption="Tract 17031010100 passes: 4,284 residents; 885 of 2,322 households have no vehicle."}
+::lens{scenario=gpu-dataframe.data-frame-query rung=formula bind=page datum=0}
+::lens{scenario=gpu-dataframe.data-frame-query rung=kernel caption="Look at expression{N} lines: each realises one node of the tree."}
+::lens{scenario=gpu-dataframe.data-frame-query rung=graph caption="Three forms: expression tree → WGSL statements → command nodes, linked by derivedFrom."}
+
 ## Plan expressions and filters without GPU work
 
 Constructing a dataframe, selecting columns, and creating query plans never allocates GPU outputs,

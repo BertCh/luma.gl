@@ -1,0 +1,133 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-page-rank",
+  "rung": "datum",
+  "datum": 409,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-page-rank",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 409. page-rank-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 1 quantities.",
+  "description": "Receipt of station 409. page-rank-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 1 quantities.",
+  "llms": "Receipt of station 409\n\n- page-rank-stations: 5.109869956970215, 52.08945083618164\n- topology: 1 quantities\n- iteration: 8 quantities\n- publication: 1 quantities\n- compute passes were not coalesced as in production\n- 1782 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "page-rank-stations",
+    "value": "5.109869956970215, 52.08945083618164"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 409</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"iteration\"><tr><th scope=\"rowgroup\" colspan=\"5\">iteration</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-0\">page-rank</button></td><td>0.006</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-1\">page-rank</button></td><td>0.0073</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-2\">page-rank</button></td><td>0.0073</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-4\">page-rank</button></td><td>0.0078</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-8\">page-rank</button></td><td>0.008</td><td>8</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-16\">page-rank</button></td><td>0.0081</td><td>16</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-32\">page-rank</button></td><td>0.0081</td><td>32</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-39\">page-rank</button></td><td>0.008062252774834633</td><td>39</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"page-rank-stations\">page-rank-stations</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.006",
+        "0",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.0073",
+        "1",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.0073",
+        "2",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.0078",
+        "4",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.008",
+        "8",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.0081",
+        "16",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.0081",
+        "32",
+        "readback"
+      ],
+      [
+        "iteration",
+        "page-rank",
+        "0.008062252774834633",
+        "39",
+        "readback"
+      ],
+      [
+        "publication",
+        "page-rank-stations",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.634Z",
+    "runId": "run-e4f3dc41",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "1782 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-e4f3dc41",
+    "rung": "datum",
+    "bindings": {
+      "entity": 409
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

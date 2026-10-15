@@ -1,0 +1,70 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-distance-functions",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.ripley-distance-functions",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Observation 0. positions: 8101.26171875, 14639.115234375. values read back from the GPU run. ripley-distance-functions: 1 quantities.",
+  "description": "Receipt of Observation 0. positions: 8101.26171875, 14639.115234375. values read back from the GPU run. ripley-distance-functions: 1 quantities.",
+  "llms": "Receipt of Observation 0\n\n- positions: 8101.26171875, 14639.115234375\n- ripley-distance-functions: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "positions",
+    "value": "8101.26171875, 14639.115234375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"ripley-distance-functions\"><tr><th scope=\"rowgroup\" colspan=\"5\">ripley-distance-functions</th></tr><tr data-provenance=\"readback\"><td>ripley-distance-functions</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.ripley-distance-functions-snapshots-positions-0\">positions</button></td><td>8101.26171875, 14639.115234375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "ripley-distance-functions",
+        "positions",
+        "8101.26171875, 14639.115234375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.866Z",
+    "runId": "run-3a1dcea5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3a1dcea5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

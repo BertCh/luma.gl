@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.catchment-accessibility",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "// facilityWeights and demandWeights: binary 2 km radius searches (Euclidean, not network paths)\ngraph.add(\n  new GPUCatchmentAccessibility({\n    method: '2sfca',\n    supply,\n    demand: population,\n    facilityWeights: libraryCatchments.outputWeights,\n    demandWeights: tractReach.outputWeights,\n    output: {accessibility, ratios, reachableFacilities}\n  })\n);\n// accessibility: libraries per resident reachable from each tract centroid",
+    "language": "ts",
+    "lineCount": 12
+  },
+  "scenarioId": "gpu-spatial-analysis.catchment-accessibility",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.catchment-accessibility: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, libraries, supply, tractCentroids, population → tractOverflow. rows: 1. values read…",
+  "description": "Result of gpu-spatial-analysis.catchment-accessibility: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, libraries, supply, tractCentroids, population → tractOverflow. rows: 1. values read…",
+  "llms": "Result of gpu-spatial-analysis.catchment-accessibility: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, libraries, supply, tractCentroids, population → tractOverflow\n\n- rows: 1\n- input tractsVertices: 4646 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input libraries: 14 points\n- input supply: 14 rows\n- input tractCentroids: 199 points\n- input population: 199 rows\n- Planar coordinates (m); uniform scale.\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">tractsVertices</th><th scope=\"col\">tractsFeatureOffsets</th><th scope=\"col\">tractsPolygonOffsets</th><th scope=\"col\">tractsRingOffsets</th><th scope=\"col\">tractsDisplayOffsets</th><th scope=\"col\">supply</th><th scope=\"col\">population</th><th class=\"cv-col--output\" scope=\"col\">accessibility</th><th class=\"cv-col--output\" scope=\"col\">ratios</th><th class=\"cv-col--output\" scope=\"col\">reachableFacilities</th><th class=\"cv-col--output\" scope=\"col\">facilityOverflow</th><th class=\"cv-col--output\" scope=\"col\">tractOverflow</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1500</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">4284</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000915</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.000011</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1560</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">11</td><td data-provenance=\"readback\">12</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">8210</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0000186</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000909</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1970</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">22</td><td data-provenance=\"readback\">24</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">2865</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0000186</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000969</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1990</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">36</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">6237</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000915</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0000116</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">2120</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">47</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">4473</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0000208</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00001</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1800</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">68</td><td data-provenance=\"readback\">73</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">3913</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000915</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00000963</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"12\">… 4640 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, libraries, supply, tractCentroids, population · blue: output resultTracts, accessibility, ratios, reachableFacilities, facilityOverflow, tractOverflow</p><p class=\"cv-note\">2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 14 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 199 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.072Z",
+    "runId": "run-3d666c7c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3d666c7c",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

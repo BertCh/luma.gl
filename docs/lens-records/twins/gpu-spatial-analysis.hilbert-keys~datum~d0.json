@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.hilbert-keys",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.hilbert-keys",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of place 0. placesByKey: 3696.409912109375, 10259.349609375. values read back from the GPU run. hilbert-keys: 3 quantities.",
+  "description": "Receipt of place 0. placesByKey: 3696.409912109375, 10259.349609375. values read back from the GPU run. hilbert-keys: 3 quantities.",
+  "llms": "Receipt of place 0\n\n- placesByKey: 3696.409912109375, 10259.349609375\n- hilbert-keys: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "placesByKey",
+    "value": "3696.409912109375, 10259.349609375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"hilbert-keys\"><tr><th scope=\"rowgroup\" colspan=\"5\">hilbert-keys</th></tr><tr data-provenance=\"readback\"><td>hilbert-keys</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hilbert-keys-snapshots-places-0\">places</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>hilbert-keys</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hilbert-keys-snapshots-keys-0\" title=\"Hilbert curve index of the place in [0, 4096) at order 6\">keys</button></td><td>1331</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>hilbert-keys</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-hilbert-keys-snapshots-placesByKey-0\" title=\"places coloured by Hilbert key\">placesByKey</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "hilbert-keys",
+        "places",
+        "3696.409912109375, 10259.349609375",
+        "0",
+        "readback"
+      ],
+      [
+        "hilbert-keys",
+        "keys",
+        "1331",
+        "0",
+        "readback"
+      ],
+      [
+        "hilbert-keys",
+        "placesByKey",
+        "3696.409912109375, 10259.349609375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:51.397Z",
+    "runId": "run-b89f524d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b89f524d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

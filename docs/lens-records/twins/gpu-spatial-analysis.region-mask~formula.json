@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.region-mask",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.region-mask",
+  "viewId": "formula-card",
+  "caption": "Formula m_i = 1 when the bounds are finite with min <= max, the point is finite and min <= p_i <= max on both axes (inclusive); otherwise 0. The lasso polygon uses an even-odd crossing test instead. The rectangle form is shown. bound symbols: 4/4. s…",
+  "description": "Formula m_i = 1 when the bounds are finite with min <= max, the point is finite and min <= p_i <= max on both axes (inclusive); otherwise 0. The lasso polygon uses an even-odd crossing test instead. The rectangle form is shown. bound symbols: 4/4. s…",
+  "llms": "Formula m_i = 1 when the bounds are finite with min <= max, the point is finite and min <= p_i <= max on both axes (inclusive); otherwise 0. The lasso polygon uses an even-odd crossing test instead. The rectangle form is shown.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>region-mask</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mask}{m_i}=\\begin{cases}1&amp;\\term{valid}{\\text{bounds valid}}\\ \\wedge\\ \\term{minimum}{p_{\\min}}\\le p_i\\le\\term{maximum}{p_{\\max}}\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">m_i = 1 when the bounds are finite with min &lt;= max, the point is finite and min &lt;= p_i &lt;= max on both axes (inclusive); otherwise 0. The lasso polygon uses an even-odd crossing test instead. The rectangle form is shown.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-mask-compiled:region-mask\" data-value=\"mask\">mask · output · outputMask</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-mask-compiled:region-mask\" data-value=\"valid\">valid · intermediate · validBounds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-mask-compiled:region-mask\" data-value=\"minimum\">minimum · parameter · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-mask-compiled:region-mask\" data-value=\"maximum\">maximum · parameter · maximum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mask",
+        "output",
+        "outputMask",
+        "—",
+        "metadata"
+      ],
+      [
+        "valid",
+        "intermediate",
+        "validBounds",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum",
+        "parameter",
+        "minimum",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximum",
+        "parameter",
+        "maximum",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{mask}{m_i}=\\begin{cases}1&\\term{valid}{\\text{bounds valid}}\\ \\wedge\\ \\term{minimum}{p_{\\min}}\\le p_i\\le\\term{maximum}{p_{\\max}}\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "m_i = 1 when the bounds are finite with min <= max, the point is finite and min <= p_i <= max on both axes (inclusive); otherwise 0. The lasso polygon uses an even-odd crossing test instead. The rectangle form is shown.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.892Z",
+    "runId": "run-bb19269c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-bb19269c",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

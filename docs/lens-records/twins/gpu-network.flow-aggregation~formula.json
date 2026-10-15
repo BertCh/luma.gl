@@ -1,0 +1,70 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.flow-aggregation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.flow-aggregation",
+  "viewId": "formula-card",
+  "caption": "Formula rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair's contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a s…",
+  "description": "Formula rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair's contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a s…",
+  "llms": "Formula rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair's contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a strided partial sum and a fixed binary tree, so the float sum is bitwise reproducible. It is a sum of the weights (trips), not a mean and not the record count; flowCounts counts the records of the pair separately.\n\n- bound symbols: 2/2\n- compute passes were not coalesced as in production\n- lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.flow-aggregation.pair-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{rowWeights}{W}=\\sum_{x\\in\\text{pair}}\\term{sortedContributions}{x}</pre><p class=\"lens-ascii\">rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair&#39;s contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a strided partial sum and a fixed binary tree, so the float sum is bitwise reproducible. It is a sum of the weights (trips), not a mean and not the record count; flowCounts counts the records of the pair separately.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum\" data-value=\"rowWeights\">weight sum of the pair · output · rowWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum-gather\" data-value=\"sortedContributions\">record weights of the pair, sorted · input · sortedContributions</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.flow-aggregation-compiled:flow-aggregation-pair-sum\">flow-aggregation-pair-sum</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weight sum of the pair",
+        "output",
+        "rowWeights",
+        "—",
+        "metadata"
+      ],
+      [
+        "record weights of the pair, sorted",
+        "input",
+        "sortedContributions",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{rowWeights}{W}=\\sum_{x\\in\\text{pair}}\\term{sortedContributions}{x}",
+    "ascii": "rowWeights[row] = fixed_tree_sum(sortedContributions[begin:end]): one workgroup per stored origin-destination pair sums the pair's contributions (the weights of its records, in source row order, 0 for rejected or non-finite weights) with a strided partial sum and a fixed binary tree, so the float sum is bitwise reproducible. It is a sum of the weights (trips), not a mean and not the record count; flowCounts counts the records of the pair separately.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:44:26.473Z",
+    "runId": "run-ee6dcb38",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients flowKeys, flowOriginZones, flowDestinationZones, flowCounts, flowWeights, flowCount, flowOverflow, flowRequiredCount, flowPairOverflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-ee6dcb38",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-merge",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-merge",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-line-merge. nodes: 78. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-line-merge. nodes: 78. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-line-merge\n\n- nodes: 78\n- 1 visible units vs budget 24\n- 78 hidden nodes\n- Edges by kind: raw 185, waw 24, war 71\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "78"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-line-merge-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-line-merge-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-line-merge-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:line-merge\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:line-merge\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">line-merge</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:line-merge\" aria-label=\"Expand line-merge\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">line-merge-keys: commandCount=1 · line-merge-keys: maximumWorkgroupCount=2 · line-merge-keys: maximumInvocationCount=446</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:line-merge\" aria-label=\"Inspect line-merge\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.541Z",
+    "runId": "run-006fe722",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-006fe722",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

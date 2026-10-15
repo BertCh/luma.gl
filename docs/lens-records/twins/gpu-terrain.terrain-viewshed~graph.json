@@ -1,0 +1,47 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-viewshed",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-viewshed",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of Visibility from ridge cell (45, 49). nodes: 2. structure metadata only. 2 visible units vs budget 24.",
+  "description": "compiled command graph of Visibility from ridge cell (45, 49). nodes: 2. structure metadata only. 2 visible units vs budget 24.",
+  "llms": "compiled command graph of Visibility from ridge cell (45, 49)\n\n- nodes: 2\n- 2 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 2\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"128\" style=\"grid-column:1;grid-row:1 / span 2\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-terrain-terrain-viewshed-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-viewshed-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-viewshed-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"2\" data-kind=\"raw\" data-count=\"2\"><title>node:terrain-viewshed-elevation → node:terrain-viewshed-viewshed: raw ×2; terrain-viewshed-elevation-values, terrain-viewshed-elevation-validity</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-viewshed-elevation\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-viewshed-elevation\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-viewshed-elevation</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-viewshed-viewshed\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-viewshed-viewshed\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-viewshed-viewshed</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=16 · maximumInvocationCount=4096</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:terrain-viewshed-viewshed\" aria-label=\"Inspect terrain-viewshed-viewshed\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 128
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.225Z",
+    "runId": "run-a2f0bea0",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a2f0bea0",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-playhead",
+  "rung": "datum",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-playhead",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of vessel track 1. currentPositions: 11227.0537109375, 9332.833984375. values read back from the GPU run. trajectory-playhead: 6 quantities.",
+  "description": "Receipt of vessel track 1. currentPositions: 11227.0537109375, 9332.833984375. values read back from the GPU run. trajectory-playhead: 6 quantities.",
+  "llms": "Receipt of vessel track 1\n\n- currentPositions: 11227.0537109375, 9332.833984375\n- trajectory-playhead: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "currentPositions",
+    "value": "11227.0537109375, 9332.833984375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of vessel track 1</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"trajectory-playhead\"><tr><th scope=\"rowgroup\" colspan=\"5\">trajectory-playhead</th></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-trackStatus-0\" title=\"status at the playhead: 0 empty, 1 active, 2 before start, 3 after end, 4 gap\">trackStatus</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-speeds-0\" title=\"speed at the playhead in m/s; zero unless the track is active\">speeds</button></td><td>2.1842164993286133</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-headings-0\" title=\"heading in radians counterclockwise from east\">headings</button></td><td>1.0658046007156372</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-segmentRows-0\" title=\"first row of the bracketing segment\">segmentRows</button></td><td>80</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-segmentFractions-0\" title=\"interpolation fraction inside the bracketing segment\">segmentFractions</button></td><td>0.9428571462631226</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-playhead</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-playhead-snapshots-currentPositions-0\" title=\"position of each track at 3600 s after 14:00Z (clamped outside its range)\">currentPositions</button></td><td>11227.0537109375, 9332.833984375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "trajectory-playhead",
+        "trackStatus",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-playhead",
+        "speeds",
+        "2.1842164993286133",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-playhead",
+        "headings",
+        "1.0658046007156372",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-playhead",
+        "segmentRows",
+        "80",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-playhead",
+        "segmentFractions",
+        "0.9428571462631226",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-playhead",
+        "currentPositions",
+        "11227.0537109375, 9332.833984375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.185Z",
+    "runId": "run-dd06f4cc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-dd06f4cc",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

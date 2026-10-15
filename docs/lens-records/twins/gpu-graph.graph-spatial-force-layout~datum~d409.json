@@ -1,0 +1,141 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-spatial-force-layout",
+  "rung": "datum",
+  "datum": 409,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-spatial-force-layout",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 409. spatial-force-layout-geometry: -35.94029998779297, 3.1679303646087646. values read back from the GPU run. topology: 1 quantities.",
+  "description": "Receipt of station 409. spatial-force-layout-geometry: -35.94029998779297, 3.1679303646087646. values read back from the GPU run. topology: 1 quantities.",
+  "llms": "Receipt of station 409\n\n- spatial-force-layout-geometry: -35.94029998779297, 3.1679303646087646\n- topology: 1 quantities\n- parameters: 1 quantities\n- iteration: 8 quantities\n- publication: 1 quantities\n- compute passes were not coalesced as in production\n- 5034 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "spatial-force-layout-geometry",
+    "value": "-35.94029998779297, 3.1679303646087646"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 409</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"parameters\"><tr><th scope=\"rowgroup\" colspan=\"5\">parameters</th></tr><tr data-provenance=\"readback\"><td>parameters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-start\">spatial-force-layout-start</button></td><td>-37.4976806640625, 6.005127429962158</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"iteration\"><tr><th scope=\"rowgroup\" colspan=\"5\">iteration</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-0\">spatial-force-layout</button></td><td>-39, 5.2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-1\">spatial-force-layout</button></td><td>-41, 3.8</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-2\">spatial-force-layout</button></td><td>-42, 2.1</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-4\">spatial-force-layout</button></td><td>-44, -0.78</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-8\">spatial-force-layout</button></td><td>-41, 2.4</td><td>8</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-16\">spatial-force-layout</button></td><td>-42, 5.3</td><td>16</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-32\">spatial-force-layout</button></td><td>-39, 0.33</td><td>32</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-63\">spatial-force-layout</button></td><td>-35.94029998779297, 3.1679303646087646</td><td>63</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"spatial-force-layout-geometry\">spatial-force-layout-geometry</button></td><td>-35.94029998779297, 3.1679303646087646</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ],
+      [
+        "parameters",
+        "spatial-force-layout-start",
+        "-37.4976806640625, 6.005127429962158",
+        "—",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-39, 5.2",
+        "0",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-41, 3.8",
+        "1",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-42, 2.1",
+        "2",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-44, -0.78",
+        "4",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-41, 2.4",
+        "8",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-42, 5.3",
+        "16",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-39, 0.33",
+        "32",
+        "readback"
+      ],
+      [
+        "iteration",
+        "spatial-force-layout",
+        "-35.94029998779297, 3.1679303646087646",
+        "63",
+        "readback"
+      ],
+      [
+        "publication",
+        "spatial-force-layout-geometry",
+        "-35.94029998779297, 3.1679303646087646",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:15:34.359Z",
+    "runId": "run-6d090660",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "5034 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-6d090660",
+    "rung": "datum",
+    "bindings": {
+      "entity": 409
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

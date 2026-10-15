@@ -1,0 +1,65 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.polygon-triangulation",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.polygon-triangulation",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of park 0. triangleCount: 14. values read back from the GPU run. gpu-gather: 2 quantities.",
+  "description": "Receipt of park 0. triangleCount: 14. values read back from the GPU run. gpu-gather: 2 quantities.",
+  "llms": "Receipt of park 0\n\n- triangleCount: 14\n- gpu-gather: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "triangleCount",
+    "value": "14"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"gpu-gather\"><tr><th scope=\"rowgroup\" colspan=\"5\">gpu-gather</th></tr><tr data-provenance=\"readback\"><td>gpu-gather</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-polygon-triangulation-snapshots-valid-0\" title=\"1 when the park triangulated, 0 when Earcut failed\">valid</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>gpu-gather</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-polygon-triangulation-snapshots-triangleCount-0\" title=\"triangles in the park (count)\">triangleCount</button></td><td>14</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "gpu-gather",
+        "valid",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "gpu-gather",
+        "triangleCount",
+        "14",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.791Z",
+    "runId": "run-7c345b92",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7c345b92",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-envelope",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'envelope-parameters',\n  format: 'float32',\n  length: GPU_RIPLEY_PARAMETER_LENGTH,\n  values: getGPURipleyParameterValues({bounds: studyWindow, maximumDistance: 2000, seed: 2024})\n});\nconst common = {\n  positions,\n  parameters: parameters.importToGraph(graph),\n  gridSize: [32, 32] as const,\n  radiusCount\n};\ngraph.add(new GPURipley({...common, output: {k: observedK, lMinusR: observedLMinusR, radii}}));\ngraph.add(\n  new GPURipleyEnvelope({\n    ...common,\n    simulationCount: 39,\n    observedK,\n    output: {lower, upper, globalLower, globalUpper, statistics}\n  })\n);\n// lower[b], upper[b]: pointwise CSR band of L - r; statistics[4]: Monte Carlo p-value",
+    "language": "ts",
+    "lineCount": 22
+  },
+  "scenarioId": "gpu-dataframe.ripley-envelope",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.ripley-envelope: positions, radii, observedK, observedLMinusR → statistics. rows: 6. values read back from the GPU run. input positions: 1500 points.",
+  "description": "Result of gpu-dataframe.ripley-envelope: positions, radii, observedK, observedLMinusR → statistics. rows: 6. values read back from the GPU run. input positions: 1500 points.",
+  "llms": "Result of gpu-dataframe.ripley-envelope: positions, radii, observedK, observedLMinusR → statistics\n\n- rows: 6\n- input positions: 1500 points\n- input radii: 10 rows\n- input observedK: 10 rows\n- input observedLMinusR: 10 rows\n- Planar coordinates (m); uniform scale.\n- 1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">radii</th><th scope=\"col\">observedK</th><th scope=\"col\">observedLMinusR</th><th class=\"cv-col--output\" scope=\"col\">lower</th><th class=\"cv-col--output\" scope=\"col\">upper</th><th class=\"cv-col--output\" scope=\"col\">globalLower</th><th class=\"cv-col--output\" scope=\"col\">globalUpper</th><th class=\"cv-col--output\" scope=\"col\">statistics</th></tr></thead><tbody><tr><td data-provenance=\"readback\">200</td><td data-provenance=\"readback\">23905202</td><td data-provenance=\"readback\">2560</td><td class=\"cv-col--output\" data-provenance=\"readback\">-31.6</td><td class=\"cv-col--output\" data-provenance=\"readback\">20.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">1500</td></tr><tr><td data-provenance=\"readback\">400</td><td data-provenance=\"readback\">36412900</td><td data-provenance=\"readback\">3000</td><td class=\"cv-col--output\" data-provenance=\"readback\">-33.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">16.8</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">39</td></tr><tr><td data-provenance=\"readback\">600</td><td data-provenance=\"readback\">42457236</td><td data-provenance=\"readback\">3080</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">19.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">3700</td></tr><tr><td data-provenance=\"readback\">800</td><td data-provenance=\"readback\">48655896</td><td data-provenance=\"readback\">3140</td><td class=\"cv-col--output\" data-provenance=\"readback\">-30.2</td><td class=\"cv-col--output\" data-provenance=\"readback\">36.8</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td></tr><tr><td data-provenance=\"readback\">1000</td><td data-provenance=\"readback\">55678548</td><td data-provenance=\"readback\">3210</td><td class=\"cv-col--output\" data-provenance=\"readback\">-26.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">24.2</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.025</td></tr><tr><td data-provenance=\"readback\">1200</td><td data-provenance=\"readback\">62960348</td><td data-provenance=\"readback\">3280</td><td class=\"cv-col--output\" data-provenance=\"readback\">-26.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">30</td><td class=\"cv-col--output\" data-provenance=\"readback\">-41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">41.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td colspan=\"8\">… 4 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions, radii, observedK, observedLMinusR · blue: output lower, upper, globalLower, globalUpper, statistics</p><p class=\"cv-note\">1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.937Z",
+    "runId": "run-d20ff9ef",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d20ff9ef",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

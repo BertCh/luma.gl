@@ -1,0 +1,132 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-flow",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-flow",
+  "viewId": "formula-card",
+  "caption": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min ov…",
+  "description": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min ov…",
+  "llms": "Formula r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A >= threshold\n\n- bound symbols: 7/7\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-flow.d8</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{receiver}{r}(c) = \\operatorname*{arg\\,max}_{k}\\ \\frac{\\term{surface}{\\tilde z_c} - \\term{neighborSurface}{\\tilde z_k}}{\\term{groundDistance}{d_k}},\\quad \\tilde z_c = \\max\\!\\bigl(z_c,\\ \\min_n \\tilde z_n + \\term{epsilon}{\\varepsilon}\\bigr),\\quad \\term{accumulation}{A}(c) = \\term{weight}{w_c} + \\sum_{u:\\ r(u) = c} A(u)</pre><p class=\"lens-ascii\">r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops &gt; 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A &gt;= threshold</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"receiver\">r · output · bestNeighbor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"surface\">z̃_c · input · centerSurface</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-flow-direction\" data-value=\"neighborSurface\">z̃_k · input · neighborSurface</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-fill-init\" data-value=\"groundDistance\">d_k · parameter · getD8Distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-spill-select\" data-value=\"epsilon\">ε · parameter · epsilon</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-accumulate-round-0\" data-value=\"accumulation\">A · output · acc</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-compiled:terrain-flow-accumulate-round-0\" data-value=\"weight\">w_c · parameter · getWeight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "r",
+        "output",
+        "bestNeighbor",
+        "—",
+        "metadata"
+      ],
+      [
+        "z̃_c",
+        "input",
+        "centerSurface",
+        "—",
+        "metadata"
+      ],
+      [
+        "z̃_k",
+        "input",
+        "neighborSurface",
+        "—",
+        "metadata"
+      ],
+      [
+        "d_k",
+        "parameter",
+        "getD8Distance",
+        "—",
+        "metadata"
+      ],
+      [
+        "ε",
+        "parameter",
+        "epsilon",
+        "—",
+        "metadata"
+      ],
+      [
+        "A",
+        "output",
+        "acc",
+        "—",
+        "metadata"
+      ],
+      [
+        "w_c",
+        "parameter",
+        "getWeight",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{receiver}{r}(c) = \\operatorname*{arg\\,max}_{k}\\ \\frac{\\term{surface}{\\tilde z_c} - \\term{neighborSurface}{\\tilde z_k}}{\\term{groundDistance}{d_k}},\\quad \\tilde z_c = \\max\\!\\bigl(z_c,\\ \\min_n \\tilde z_n + \\term{epsilon}{\\varepsilon}\\bigr),\\quad \\term{accumulation}{A}(c) = \\term{weight}{w_c} + \\sum_{u:\\ r(u) = c} A(u)",
+    "ascii": "r(c) = argmax over the 8 neighbours k of (zf(c) - zf(k)) / d_k where zf is the filled surface, d_k = cell size (cardinal) or sqrt(2) * cell size (diagonal), only drops > 0 route, ties keep the lowest direction index; zf(c) = max(z(c), min over neighbours of zf(n) + epsilon) with boundary cells keeping z; A(c) = w(c) + sum of A(u) over donors u with r(u) = c, w = runoff (1 here), solved by pull rounds: a thread finalizes a cell once every donor is final and then walks downstream (up to 1024 steps); streams = A >= threshold",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    },
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:21:12.342Z",
+    "runId": "run-c9f3ef8c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c9f3ef8c",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

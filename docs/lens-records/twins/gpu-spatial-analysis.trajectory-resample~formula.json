@@ -1,0 +1,152 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-resample",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-resample",
+  "viewId": "formula-card",
+  "caption": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks o…",
+  "description": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks o…",
+  "llms": "Formula Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.\n\n- bound symbols: 8/11\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/11"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-resample</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{progress}{q_k}=\\begin{cases}\\term{total}{Q}\\term{index}{k}/(\\term{count}{n}-1)&amp;\\text{time or arc length},\\ \\term{count}{n}&gt;1\\\\\\term{offset}{c}+\\term{index}{k}\\term{step}{h}&amp;\\text{clock}\\end{cases},\\quad \\term{position}{p_k}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t})</pre><p class=\"lens-ascii\">Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n&gt;1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"progress\">progress · intermediate · targetProgress</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-arc-length\" data-value=\"total\">total · input · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"count\">count · parameter · SAMPLE_COUNT</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"offset\">offset · parameter · unknown — wgsl getClockOffset not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"step\">step · parameter · unknown — wgsl clockStep not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"position\">position · output · samples</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"start\">start · input · startPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-samples\" data-value=\"end\">end · input · endPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-arc-length\" data-value=\"fraction\">fraction · input · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-resample-compiled:trajectory-resample-arc-length\" data-value=\"interpolate\">interpolate · intermediate · interpolatePosition</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "progress",
+        "intermediate",
+        "targetProgress",
+        "—",
+        "metadata"
+      ],
+      [
+        "total",
+        "input",
+        "total",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "parameter",
+        "SAMPLE_COUNT",
+        "—",
+        "metadata"
+      ],
+      [
+        "offset",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "step",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "position",
+        "output",
+        "samples",
+        "—",
+        "metadata"
+      ],
+      [
+        "start",
+        "input",
+        "startPosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "end",
+        "input",
+        "endPosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "fraction",
+        "input",
+        "fraction",
+        "—",
+        "metadata"
+      ],
+      [
+        "interpolate",
+        "intermediate",
+        "interpolatePosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "index",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{progress}{q_k}=\\begin{cases}\\term{total}{Q}\\term{index}{k}/(\\term{count}{n}-1)&\\text{time or arc length},\\ \\term{count}{n}>1\\\\\\term{offset}{c}+\\term{index}{k}\\term{step}{h}&\\text{clock}\\end{cases},\\quad \\term{position}{p_k}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t})",
+    "ascii": "Target progress q[k]=Q*k/(n-1) for time or arc-length spacing with n>1 (0 for n=1); clock mode uses clockOffset+k*clockStep. Locate the bracketing progress rows and interpolate p[k]=I(a,b,t), linearly or spherically. Empty non-clock tracks output zero; absent clock samples are NaN. Clock sampleTimes are k*clockStep relative to clock start, while other sampleTimes are relative to track start.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.223Z",
+    "runId": "run-36263f2a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-36263f2a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

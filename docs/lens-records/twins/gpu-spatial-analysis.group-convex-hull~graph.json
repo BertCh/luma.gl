@@ -1,0 +1,46 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.group-convex-hull",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.group-convex-hull",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-group-convex-hull. nodes: 107. structure metadata only. 2 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-group-convex-hull. nodes: 107. structure metadata only. 2 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-group-convex-hull\n\n- nodes: 107\n- 2 visible units vs budget 24\n- 107 hidden nodes\n- Edges by kind: raw 200, war 37, waw 24\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "107"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"128\" style=\"grid-column:1;grid-row:1 / span 2\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-group-convex-hull-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-group-convex-hull-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-group-convex-hull-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>group:spatial-clustering → group:group-convex-hull: raw ×1; labels</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:spatial-clustering\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:spatial-clustering\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">spatial-clustering</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:spatial-clustering\" aria-label=\"Expand spatial-clustering\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">spatial-clustering-grid-bounds: commandCount=1 · spatial-clustering-grid-bounds: maximumWorkgroupCount=1 · spatial-clustering-grid-bounds: maximumInvocationCount=1</span></div><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:group-convex-hull\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:group-convex-hull\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">group-convex-hull</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:group-convex-hull\" aria-label=\"Expand group-convex-hull\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">group-convex-hull-fill-extreme-values: commandCount=1 · group-convex-hull-fill-extreme-values: maximumWorkgroupCount=2 · group-convex-hull-fill-extreme-values: maximumInvocationCount=512</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:group-convex-hull\" aria-label=\"Inspect group-convex-hull\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 128
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:23.532Z",
+    "runId": "run-4980ef16",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-4980ef16",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

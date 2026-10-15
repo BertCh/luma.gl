@@ -7,9 +7,25 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Counts station positions into an 18 by 16 grid of 1° cells, producing one station count per cell.
+
+::lens{scenario=gpu-core.grid-binning rung=result caption="The densest of 167 occupied cells holds 23 of 1,024 stations; the other 121 stay empty."}
+
 `GPUGridBinning` counts packed `float32x2` positions into a row-major two-dimensional grid.
 
 <GPUOperationContract operation="gpu-grid-binning" />
+
+#### How it computes
+
+{/* lens:GPUGridBinning */}
+
+::lens{scenario=gpu-core.grid-binning rung=kernel caption="Inspect 256 lanes mapping each station to a 1° cell and incrementing its global counter."}
+
+::lens{scenario=gpu-core.grid-binning rung=graph caption="Trace the clear node followed by the global accumulation node."}
+
+::lens{scenario=gpu-core.grid-binning rung=datum caption="Follow one station to the cell counter it increments."}
+
+::lens{scenario=gpu-core.grid-binning rung=formula caption="Read the cell index derived from longitude, latitude, bounds, and 18 by 16 cells."}
 
 ## Concepts
 

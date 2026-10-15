@@ -7,9 +7,25 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Compacts flagged values into a stable output prefix and reports its length.
+
+::lens{scenario=gpu-core.compaction rung=result caption="Rainfall flags select original row identifiers; inspect the first 16 compacted values."}
+
 `GPUCompaction` stably selects packed `uint32` values using packed `uint32` flags.
 
 <GPUOperationContract operation="gpu-compaction" />
+
+#### How it computes
+
+{/* lens:GPUCompaction */}
+
+::lens{scenario=gpu-core.compaction rung=kernel caption="Inspect the scatter kernel after its 256-lane nested scan."}
+
+::lens{scenario=gpu-core.compaction rung=graph caption="Follow selection offsets into 1 stable scatter pass."}
+
+::lens{scenario=gpu-core.compaction rung=datum caption="Follow station 9 through its flag, offset, and selected destination."}
+
+::lens{scenario=gpu-core.compaction rung=formula caption="Read how each flag of 1 assigns an output position."}
 
 ## Concepts
 

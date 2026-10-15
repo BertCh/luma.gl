@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.group-aggregation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.group-aggregation",
+  "viewId": "formula-card",
+  "caption": "Formula Dense groups g<groupCount; ignore out-of-range keys and zero mask (missing mask selects all). count counts rows without values; sum|min|max|mean accept only finite f32 values and optional counts count those values. sum[g]=sum(x), mean=sum/co…",
+  "description": "Formula Dense groups g<groupCount; ignore out-of-range keys and zero mask (missing mask selects all). count counts rows without values; sum|min|max|mean accept only finite f32 values and optional counts count those values. sum[g]=sum(x), mean=sum/co…",
+  "llms": "Formula Dense groups g<groupCount; ignore out-of-range keys and zero mask (missing mask selects all). count counts rows without values; sum|min|max|mean accept only finite f32 values and optional counts count those values. sum[g]=sum(x), mean=sum/count; empty count/sum=0, empty min/max/mean=NaN.\n\n- bound symbols: 4/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.group-aggregation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">S_g=\\{i:\\term{keys}{k_i}=g,\\term{mask}{m_i}\\ne0\\},\\quad\\term{y}{y_g}=\\operatorname{op}_{i\\in S_g}\\term{x}{x_i},\\quad\\term{counts}{n_g}=|S_g|</pre><p class=\"lens-ascii\">Dense groups g&lt;groupCount; ignore out-of-range keys and zero mask (missing mask selects all). count counts rows without values; sum|min|max|mean accept only finite f32 values and optional counts count those values. sum[g]=sum(x), mean=sum/count; empty count/sum=0, empty min/max/mean=NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:totals-sum\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:totals-clear\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:counts-local\" data-value=\"keys\">keys · input · groupKeys</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mask\">mask · input · unknown — wgsl selectionMask not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:counts-clear\" data-value=\"counts\">counts · output · outputCounts</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:counts-local\">counts-local</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:totals-sum\">totals-sum</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:means-mean\">means-mean</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-group-aggregation-compiled:means-finalize\">means-finalize</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "keys",
+        "input",
+        "groupKeys",
+        "—",
+        "metadata"
+      ],
+      [
+        "mask",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "outputCounts",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "S_g=\\{i:\\term{keys}{k_i}=g,\\term{mask}{m_i}\\ne0\\},\\quad\\term{y}{y_g}=\\operatorname{op}_{i\\in S_g}\\term{x}{x_i},\\quad\\term{counts}{n_g}=|S_g|",
+    "ascii": "Dense groups g<groupCount; ignore out-of-range keys and zero mask (missing mask selects all). count counts rows without values; sum|min|max|mean accept only finite f32 values and optional counts count those values. sum[g]=sum(x), mean=sum/count; empty count/sum=0, empty min/max/mean=NaN.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:31.000Z",
+    "runId": "run-8bf122c6",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-8bf122c6",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.transition-matrix",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.transition-matrix",
+  "viewId": "formula-card",
+  "caption": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 5/5…",
+  "description": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored). bound symbols: 5/5…",
+  "llms": "Formula p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored).\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.transition-matrix</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{\\term{rowTotal}{n_{a}}}, \\quad n_{ab} = \\#\\{(t, i) : \\term{fromClass}{x_{t,i}} = a,\\ \\term{toClass}{x_{t+\\ell,i}} = b\\}, \\quad n_a = \\sum_b n_{ab}</pre><p class=\"lens-ascii\">p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class &gt;= K are not counted (see ignored).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-normalize\" data-value=\"probability\">p_ab · output · probabilities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-clear\" data-value=\"count\">n_ab · intermediate · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:class-breaks-quantiles-select-0\" data-value=\"rowTotal\">n_a · intermediate · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-count\" data-value=\"fromClass\">class at t · input · fromClass</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-transition-matrix-compiled:transition-matrix-count\" data-value=\"toClass\">class at t + lag · input · toClass</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "p_ab",
+        "output",
+        "probabilities",
+        "—",
+        "metadata"
+      ],
+      [
+        "n_ab",
+        "intermediate",
+        "counts",
+        "—",
+        "metadata"
+      ],
+      [
+        "n_a",
+        "intermediate",
+        "total",
+        "—",
+        "metadata"
+      ],
+      [
+        "class at t",
+        "input",
+        "fromClass",
+        "—",
+        "metadata"
+      ],
+      [
+        "class at t + lag",
+        "input",
+        "toClass",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{probability}{p_{ab}} = \\frac{\\term{count}{n_{ab}}}{\\term{rowTotal}{n_{a}}}, \\quad n_{ab} = \\#\\{(t, i) : \\term{fromClass}{x_{t,i}} = a,\\ \\term{toClass}{x_{t+\\ell,i}} = b\\}, \\quad n_a = \\sum_b n_{ab}",
+    "ascii": "p_ab = n_ab / n_a; n_ab = #{(t, i) : class(t, i) = a and class(t + lag, i) = b}, t = 0 .. T - lag - 1; n_a = sum over b of n_ab. p_ab = 0 when n_a = 0. Pairs with a masked row or a class >= K are not counted (see ignored).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.834Z",
+    "runId": "run-87952b63",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-87952b63",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

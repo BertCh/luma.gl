@@ -7,10 +7,26 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Converts binary flags into exclusive offsets and a total selected count.
+
+::lens{scenario=gpu-core.flag-offsets rung=result caption="Flags mark rainfall of at least 100 mm; offsets assign dense destinations."}
+
 `GPUFlagOffsets` turns one packed binary flag stream into exclusive dense indices and a
 GPU-resident count. It is the smallest useful materialization step after a classifier.
 
 <GPUOperationContract operation="gpu-flag-offsets" />
+
+#### How it computes
+
+{/* lens:GPUFlagOffsets */}
+
+::lens{scenario=gpu-core.flag-offsets rung=kernel caption="Inspect 256 lanes in the nested scan and the scalar count publication."}
+
+::lens{scenario=gpu-core.flag-offsets rung=graph caption="Trace the nested scan into 1 final count publication."}
+
+::lens{scenario=gpu-core.flag-offsets rung=datum caption="Follow station 9 from its wet flag to its dense offset."}
+
+::lens{scenario=gpu-core.flag-offsets rung=formula caption="Compare exclusive offsets with the 1 final selected count."}
 
 ## When to use it
 

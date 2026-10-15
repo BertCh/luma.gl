@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-topology",
+  "rung": "datum",
+  "datum": 409,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-topology",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 409. csr-row-offsets-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 2 quantities.",
+  "description": "Receipt of station 409. csr-row-offsets-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 2 quantities.",
+  "llms": "Receipt of station 409\n\n- csr-row-offsets-stations: 5.109869956970215, 52.08945083618164\n- topology: 2 quantities\n- publication: 1 quantities\n- 4 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "csr-row-offsets-stations",
+    "value": "5.109869956970215, 52.08945083618164"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 409</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"csr-row-offsets\">csr-row-offsets</button></td><td>1190</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"csr-row-offsets-stations\">csr-row-offsets-stations</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ],
+      [
+        "topology",
+        "csr-row-offsets",
+        "1190",
+        "—",
+        "readback"
+      ],
+      [
+        "publication",
+        "csr-row-offsets-stations",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.699Z",
+    "runId": "run-0eb8146e",
+    "observerEffects": [
+      "4 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0eb8146e",
+    "rung": "datum",
+    "bindings": {
+      "entity": 409
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

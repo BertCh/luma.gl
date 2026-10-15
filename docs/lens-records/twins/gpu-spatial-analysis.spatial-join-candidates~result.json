@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-join-candidates",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPUSpatialJoinCandidates({\n    left: input.parks,\n    right: input.tracts,\n    spatialContext: input.spatialContext,\n    output: input.pairs\n  })\n);\ngraph.add(\n  new GPUHistogram({\n    input: input.pairs.rightIds,\n    output: tractMatches,\n    domain: [0, tractMatches.length - 1]\n  })\n);\n// tractMatches colours tracts; pairs identify parks and tracts.",
+    "language": "ts",
+    "lineCount": 16
+  },
+  "scenarioId": "gpu-spatial-analysis.spatial-join-candidates",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.spatial-join-candidates: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDispl…",
+  "description": "Result of gpu-spatial-analysis.spatial-join-candidates: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDispl…",
+  "llms": "Result of gpu-spatial-analysis.spatial-join-candidates: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts → tractMatches\n\n- rows: 199\n- input parksVertices: 2862 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- input tractsVertices: 4646 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- Planar coordinates (m); uniform scale.\n- 1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "199"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">parksVertices</th><th scope=\"col\">parksFeatureOffsets</th><th scope=\"col\">parksPolygonOffsets</th><th scope=\"col\">parksRingOffsets</th><th scope=\"col\">parksDisplayOffsets</th><th scope=\"col\">tractsVertices</th><th scope=\"col\">tractsFeatureOffsets</th><th scope=\"col\">tractsPolygonOffsets</th><th scope=\"col\">tractsRingOffsets</th><th scope=\"col\">tractsDisplayOffsets</th><th class=\"cv-col--output\" scope=\"col\">leftIds</th><th class=\"cv-col--output\" scope=\"col\">rightIds</th><th class=\"cv-col--output\" scope=\"col\">pairCount</th><th class=\"cv-col--output\" scope=\"col\">pairOverflow</th><th class=\"cv-col--output\" scope=\"col\">tractMatches</th></tr></thead><tbody><tr><td data-provenance=\"readback\">3620</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">1500</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">33</td><td class=\"cv-col--output\" data-provenance=\"readback\">240</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">3630</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">331</td><td data-provenance=\"readback\">332</td><td data-provenance=\"readback\">1560</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">11</td><td data-provenance=\"readback\">12</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">35</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">3660</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">348</td><td data-provenance=\"readback\">350</td><td data-provenance=\"readback\">1970</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">22</td><td data-provenance=\"readback\">24</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">37</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td></tr><tr><td data-provenance=\"readback\">3700</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">361</td><td data-provenance=\"readback\">364</td><td data-provenance=\"readback\">1990</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">36</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">39</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">3760</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">370</td><td data-provenance=\"readback\">374</td><td data-provenance=\"readback\">2120</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">47</td><td data-provenance=\"readback\">51</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">45</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">5</td></tr><tr><td data-provenance=\"readback\">3820</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">377</td><td data-provenance=\"readback\">382</td><td data-provenance=\"readback\">1800</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">68</td><td data-provenance=\"readback\">73</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">46</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td colspan=\"15\">… 20292 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks, tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts · blue: output leftIds, rightIds, pairCount, pairOverflow, joinedTracts, tractMatches</p><p class=\"cv-note\">1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.357Z",
+    "runId": "run-271ed7d4",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-271ed7d4",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

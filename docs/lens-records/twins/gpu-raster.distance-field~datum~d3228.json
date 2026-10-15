@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.distance-field",
+  "rung": "datum",
+  "datum": 3228,
+  "size": "full",
+  "scenarioId": "gpu-raster.distance-field",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 3228. waterDistance: 360. values read back from the GPU run. distance-field: 3 quantities.",
+  "description": "Receipt of grid cells 3228. waterDistance: 360. values read back from the GPU run. distance-field: 3 quantities.",
+  "llms": "Receipt of grid cells 3228\n\n- waterDistance: 360\n- distance-field: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "waterDistance",
+    "value": "360"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3228</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"distance-field\"><tr><th scope=\"rowgroup\" colspan=\"5\">distance-field</th></tr><tr data-provenance=\"readback\"><td>distance-field</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-distance-field-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1390.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>distance-field</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-distance-field-snapshots-waterSeeds-0\" title=\"water seed mask (WorldCover class 80)\">waterSeeds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>distance-field</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-distance-field-snapshots-waterDistance-0\" title=\"exact Euclidean distance to water (m)\">waterDistance</button></td><td>360</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-distance-field-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-distance-field-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-distance-field-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3163\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3163: 1416.5999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3163</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3164\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3164: 1386.9000244140625</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3164</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3165\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3165: 1336.199951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3165</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3227\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3227: 1409.4000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3227</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3228\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3228: 1390.0999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3228</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3229\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3229: 1336.0999755859375</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3229</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3291\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3291: 1390</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3291</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3292\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3292: 1381.5</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3292</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3293\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3293: 1341.9000244140625</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3293</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "distance-field",
+        "landscapeElevation",
+        "1390.0999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "distance-field",
+        "waterSeeds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "distance-field",
+        "waterDistance",
+        "360",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.247Z",
+    "runId": "run-901e640b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-901e640b",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3228
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

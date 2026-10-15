@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.histogram",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.histogram",
+  "viewId": "formula-card",
+  "caption": "Formula H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes…",
+  "description": "Formula H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes…",
+  "llms": "Formula H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes last edge; invalid GPU edges yield zeros. Integer uniform binning uses exact multiply/divide floor; float uses f32 arithmetic.\n\n- bound symbols: 2/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.histogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{counts}{H_b}=\\sum_{i\\in S}\\mathbf1[\\operatorname{bin}(\\term{x}{x_i})=b],\\quad\\operatorname{bin}(v)=\\operatorname{min}(B-1,\\lfloor B(v-a)/(z-a)\\rfloor)</pre><p class=\"lens-ascii\">H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes last edge; invalid GPU edges yield zeros. Integer uniform binning uses exact multiply/divide floor; float uses f32 arithmetic.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-histogram-compiled:rainfall-histogram-local\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-histogram-compiled:rainfall-histogram-clear\" data-value=\"counts\">counts · output · outputCounts</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mask\">mask · input · unknown — wgsl selectionMask not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"edges\">edges · parameter · unknown — wgsl edgeValues not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-histogram-compiled:rainfall-histogram-local\">rainfall-histogram-local</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "outputCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "mask",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "edges",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{counts}{H_b}=\\sum_{i\\in S}\\mathbf1[\\operatorname{bin}(\\term{x}{x_i})=b],\\quad\\operatorname{bin}(v)=\\operatorname{min}(B-1,\\lfloor B(v-a)/(z-a)\\rfloor)",
+    "ascii": "H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes last edge; invalid GPU edges yield zeros. Integer uniform binning uses exact multiply/divide floor; float uses f32 arithmetic.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.477Z",
+    "runId": "run-732bbc24",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-732bbc24",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

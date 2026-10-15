@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.isolines",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.isolines",
+  "viewId": "formula-card",
+  "caption": "Formula Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segmen…",
+  "description": "Formula Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segmen…",
+  "llms": "Formula Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segment joins each high-to-low exit edge to its paired entry edge (saddles are joined when the mean of the four corners >= level); a cell with a nodata corner emits nothing; vertices are relative to localOrigin; segments sharing an edge are stitched into polylines.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.isolines.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{vertex}{p}=p_a+\\term{t}{t}\\,(p_b-p_a),\\qquad \\term{t}{t}=\\frac{\\term{level}{L}-\\term{startValue}{v_a}}{\\term{endValue}{v_b}-\\term{startValue}{v_a}}</pre><p class=\"lens-ascii\">Samples sit at cell centres; a corner is high when value &gt;= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segment joins each high-to-low exit edge to its paired entry edge (saddles are joined when the mean of the four corners &gt;= level); a cell with a nodata corner emits nothing; vertices are relative to localOrigin; segments sharing an edge are stitched into polylines.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-isolines-compiled:isolines-scatter\" data-value=\"vertex\">vertex · output · segments</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-isolines-compiled:isolines-scatter\" data-value=\"t\">t · intermediate · t</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-isolines-compiled:isolines-count\" data-value=\"level\">level · parameter · level</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-isolines-compiled:isolines-count\" data-value=\"startValue\">start sample · input · a</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-isolines-compiled:isolines-scatter\" data-value=\"endValue\">end sample · input · b</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "vertex",
+        "output",
+        "segments",
+        "—",
+        "metadata"
+      ],
+      [
+        "t",
+        "intermediate",
+        "t",
+        "—",
+        "metadata"
+      ],
+      [
+        "level",
+        "parameter",
+        "level",
+        "—",
+        "metadata"
+      ],
+      [
+        "start sample",
+        "input",
+        "a",
+        "—",
+        "metadata"
+      ],
+      [
+        "end sample",
+        "input",
+        "b",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{vertex}{p}=p_a+\\term{t}{t}\\,(p_b-p_a),\\qquad \\term{t}{t}=\\frac{\\term{level}{L}-\\term{startValue}{v_a}}{\\term{endValue}{v_b}-\\term{startValue}{v_a}}",
+    "ascii": "Samples sit at cell centres; a corner is high when value >= level. On each cell edge whose ends differ, with a and b the canonical start and end samples (+x or +y), the vertex is p_a + t (p_b - p_a), t = (level - v_a) / (v_b - v_a). A segment joins each high-to-low exit edge to its paired entry edge (saddles are joined when the mean of the four corners >= level); a cell with a nodata corner emits nothing; vertices are relative to localOrigin; segments sharing an edge are stitched into polylines.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.115Z",
+    "runId": "run-58759974",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-58759974",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -8,6 +8,12 @@ import {TempestOceanExample} from '@site/src/examples';
 
 ## Overview
 
+Transforms a 64 × 64 Alps elevation tile into spatial frequencies; log magnitude shows where the energy sits.
+
+::lens{scenario=gpu-core.fft2d rung=result caption="DC dominates at 11.4 million m; the strongest other, (0, 63), mirrors (0, 1) at 0.80 million m."}
+
+The input is the whole elevation tile as a complex field (imaginary parts 0, mean not removed). The output tile shows `log10(1 + sqrt(re² + im²))` of each frequency `(u, v)`; no `fftshift` is applied, so the DC term `(0, 0)` is the top-left cell.
+
 `GPUFFT2D` adds an out-of-place two-dimensional complex fast Fourier transform to a
 `GPUCommandGraph`. It accepts borrowed `GraphDataView<'float32x2'>` or
 `GraphVectorView<'float32x2'>` operands and declares graph-owned scratch. The compiled graph
@@ -24,6 +30,18 @@ fields into waves, normals, and whitecaps without reading intermediate results b
 <TempestOceanExample embedded />
 
 <GPUOperationContract operation="gpu-fft2d" />
+
+#### How it computes
+
+{/* lens:GPUFFT2D */}
+
+::lens{scenario=gpu-core.fft2d rung=kernel caption="Inspect one 8 × 8 workgroup pass applying a bit reversal or butterfly along one axis."}
+
+::lens{scenario=gpu-core.fft2d rung=graph caption="Trace the horizontal then vertical bit-reversal and butterfly passes."}
+
+::lens{scenario=gpu-core.fft2d rung=datum caption="Follow one tile cell into the frequency cells it feeds."}
+
+::lens{scenario=gpu-core.fft2d rung=formula caption="Read each frequency as a double sum of cells times complex exponentials."}
 
 ## Concepts
 

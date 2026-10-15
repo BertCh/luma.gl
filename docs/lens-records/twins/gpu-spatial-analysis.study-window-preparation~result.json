@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.study-window-preparation",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const {communityAreas, spatialContext} = input;\nconst summary = createTransientView(\n  graph,\n  'summary',\n  'float32',\n  8,\n  Buffer.STORAGE | Buffer.COPY_SRC\n);\nconst studyWindow = new GPUStudyWindowPreparation({\n  ...communityAreas,\n  spatialContext,\n  samplingGrid: [64, 64],\n  output: {summary}\n});\ngraph.add(studyWindow);\n// studyWindow: prepared community-area polygons; summary: bounds, area, perimeter, edges, flags",
+    "language": "ts",
+    "lineCount": 16
+  },
+  "scenarioId": "gpu-spatial-analysis.study-window-preparation",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.study-window-preparation: ringOffsets, polygonOffsets, featureOffsets → summary. rows: 8. values read back from the GPU run. input ringOffsets: 14 rows.",
+  "description": "Result of gpu-spatial-analysis.study-window-preparation: ringOffsets, polygonOffsets, featureOffsets → summary. rows: 8. values read back from the GPU run. input ringOffsets: 14 rows.",
+  "llms": "Result of gpu-spatial-analysis.study-window-preparation: ringOffsets, polygonOffsets, featureOffsets → summary\n\n- rows: 8\n- input ringOffsets: 14 rows\n- input polygonOffsets: 14 rows\n- input featureOffsets: 2 rows\n- Planar coordinates (m); uniform scale.\n- 2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">ringOffsets</th><th scope=\"col\">polygonOffsets</th><th scope=\"col\">featureOffsets</th><th class=\"cv-col--output\" scope=\"col\">summary</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-4830</td></tr><tr><td data-provenance=\"readback\">213</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">13</td><td class=\"cv-col--output\" data-provenance=\"readback\">-5470</td></tr><tr><td data-provenance=\"readback\">340</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">5800</td></tr><tr><td data-provenance=\"readback\">613</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">7000</td></tr><tr><td data-provenance=\"readback\">774</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">86952192</td></tr><tr><td data-provenance=\"readback\">949</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">164000</td></tr><tr><td colspan=\"4\">… 8 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input ringOffsets, polygonOffsets, featureOffsets · blue: output preparedWindow, summary</p><p class=\"cv-note\">2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.799Z",
+    "runId": "run-f2deea30",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f2deea30",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

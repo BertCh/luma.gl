@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segment-ring-assembly",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.segment-ring-assembly",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of assembled ring 0. ringIsHole: 0. values read back from the GPU run. segment-ring-assembly: 2 quantities.",
+  "description": "Receipt of assembled ring 0. ringIsHole: 0. values read back from the GPU run. segment-ring-assembly: 2 quantities.",
+  "llms": "Receipt of assembled ring 0\n\n- ringIsHole: 0\n- segment-ring-assembly: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "ringIsHole",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of assembled ring 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"segment-ring-assembly\"><tr><th scope=\"rowgroup\" colspan=\"5\">segment-ring-assembly</th></tr><tr data-provenance=\"readback\"><td>segment-ring-assembly</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-ring-assembly-snapshots-ringAreas-0\" title=\"signed shoelace area of each ring in m² (counter-clockwise positive)\">ringAreas</button></td><td>119839136</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segment-ring-assembly</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-ring-assembly-snapshots-ringIsHole-0\" title=\"1 when the ring is a hole, 0 for a shell\">ringIsHole</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "segment-ring-assembly",
+        "ringAreas",
+        "119839136",
+        "0",
+        "readback"
+      ],
+      [
+        "segment-ring-assembly",
+        "ringIsHole",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:06.783Z",
+    "runId": "run-899a5cb5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-899a5cb5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

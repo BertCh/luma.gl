@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.profile-peaks",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.profile-peaks",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence.",
+  "description": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence. cells: 64. values read back from the GPU run. input profileValues: 64 cells.",
+  "llms": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence\n\n- cells: 64\n- input profileValues: 64 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "64"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[64,1]]\" role=\"img\" aria-label=\"Result: profilePeakProminence\"><defs><pattern id=\"lens-gpu-terrain-profile-peaks-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-profile-peaks-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-profile-peaks-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"148\" height=\"2.319999999999993\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"6\" y=\"46.84\" data-provenance=\"readback\" data-raster-width=\"64\" data-raster-height=\"1\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAABCAMAAABZs1glAAAAElBMVEXZ2dnG2+9KmMkIPX8ca7CKv91Ms19tAAAATElEQVR4AQFBAL7/AAAAAAAAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAQAAAAFAAAAAAABbgAQ40lV4gAAAABJRU5ErkJggg==\"></image></g><g data-role=\"highlight\"><rect class=\"cv-mark cv-mark--highlight cv-cell\" data-role=\"highlight\" stroke-width=\"0.6\" fill=\"none\" stroke=\"#ffffff\" x=\"103.13\" y=\"46.84\" width=\"2.3100000000000023\" height=\"2.319999999999993\" data-provenance=\"readback\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.536Z",
+    "runId": "run-4c5e725b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4c5e725b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.buffer-selection",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.buffer-selection",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 0. distances: -1. values read back from the GPU run. buffer-selection: 4 quantities.",
+  "description": "Receipt of observation 0. distances: -1. values read back from the GPU run. buffer-selection: 4 quantities.",
+  "llms": "Receipt of observation 0\n\n- distances: -1\n- buffer-selection: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "distances",
+    "value": "-1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"buffer-selection\"><tr><th scope=\"rowgroup\" colspan=\"5\">buffer-selection</th></tr><tr data-provenance=\"readback\"><td>buffer-selection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-buffer-selection-snapshots-observations-0\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>buffer-selection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-buffer-selection-snapshots-resultObservations-0\">resultObservations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>buffer-selection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-buffer-selection-snapshots-selected-0\">selected</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>buffer-selection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-buffer-selection-snapshots-distances-0\">distances</button></td><td>-1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.buffer-selection</h4><div><pre class=\"lens-tex\">\\term{selected}{0}=\\mathbf{1}[0\\le\\min_{\\term{feature}{j}}\\term{distance}{\\left(300\\right)}\\le\\term{radius}{r}]</pre><p class=\"lens-ascii\">For finite nonnegative radius r, select a point iff its nearest-library planar distance is &gt;= 0 and &lt;= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "buffer-selection",
+        "observations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "buffer-selection",
+        "resultObservations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "buffer-selection",
+        "selected",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "buffer-selection",
+        "distances",
+        "-1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.752Z",
+    "runId": "run-b58999d4",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b58999d4",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

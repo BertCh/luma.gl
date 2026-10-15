@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-neighborhood",
+  "rung": "datum",
+  "datum": 1088,
+  "size": "full",
+  "scenarioId": "gpu-network.network-neighborhood",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of network node 1088. ego-network-nodes: -87.63471221923828, 41.88323974609375. values read back from the GPU run. search: 1 quantities.",
+  "description": "Receipt of network node 1088. ego-network-nodes: -87.63471221923828, 41.88323974609375. values read back from the GPU run. search: 1 quantities.",
+  "llms": "Receipt of network node 1088\n\n- ego-network-nodes: -87.63471221923828, 41.88323974609375\n- search: 1 quantities\n- network-neighborhood: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients hopDistances retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "ego-network-nodes",
+    "value": "-87.63471221923828, 41.88323974609375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of network node 1088</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"search\"><tr><th scope=\"rowgroup\" colspan=\"5\">search</th></tr><tr data-provenance=\"readback\"><td>search</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"hopDistances\" title=\"GPU hopDistances readback; the NONE sentinel (0xffffffff, outside the ego network) is shown as no data\">hopDistances</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-neighborhood\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-neighborhood</th></tr><tr data-provenance=\"readback\"><td>network-neighborhood</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"road-context\" title=\"context: uploaded road graph (offsets, neighbors and node positions read back)\">road-context</button></td><td>-87.63471221923828, 41.88323974609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-neighborhood</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"ego-network-nodes\" title=\"output: intersections within 6 hops of the start, coloured by hop distance; others are no data\">ego-network-nodes</button></td><td>-87.63471221923828, 41.88323974609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.neighborhood.hops</h4><div><pre class=\"lens-tex\">\\term{hopDistances}{0}=\\begin{cases}\\operatorname{u32}(\\term{cost}{c_v})&amp;\\term{cost}{c_v}\\le\\term{limit}{k}\\\\\\term{none}{\\mathrm{NONE}}&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">hopDistances[v] = cost[v] &lt;= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network.</p></div></div><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "search",
+        "hopDistances",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "network-neighborhood",
+        "road-context",
+        "-87.63471221923828, 41.88323974609375",
+        "0",
+        "readback"
+      ],
+      [
+        "network-neighborhood",
+        "ego-network-nodes",
+        "-87.63471221923828, 41.88323974609375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.892Z",
+    "runId": "run-a5e2a440",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients hopDistances retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-a5e2a440",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1088
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

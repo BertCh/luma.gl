@@ -209,6 +209,12 @@ application outcomes to the operations that compose them.
 | **Validation** | Binding aliases, device limits, unsupported features, and incomplete estimates fail before submission | Compilation and preflight reports |
 | **Explicit ownership** | Applications retain submission, readback cadence, cancellation, and UI publication | Compile-and-encode lifecycle |
 
+## Catalog
+
+One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.
+
+::lens-catalog{entry=gpu-core}
+
 ## Examples
 
 - [GPU Sort](/examples/experimental/gpu-sort) compares graph-native segmented and unsegmented GPU

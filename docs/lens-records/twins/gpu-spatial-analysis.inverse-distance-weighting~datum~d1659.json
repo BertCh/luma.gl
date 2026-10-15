@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.inverse-distance-weighting",
+  "rung": "datum",
+  "datum": 1659,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.inverse-distance-weighting",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. inverse-distance-weighting: 2 quantities.",
+  "description": "Receipt of 10 km cell 1659. counts: 8. values read back from the GPU run. inverse-distance-weighting: 2 quantities.",
+  "llms": "Receipt of 10 km cell 1659\n\n- counts: 8\n- inverse-distance-weighting: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "counts",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 10 km cell 1659</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"inverse-distance-weighting\"><tr><th scope=\"rowgroup\" colspan=\"5\">inverse-distance-weighting</th></tr><tr data-provenance=\"readback\"><td>inverse-distance-weighting</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-rainfall-0\">rainfall</button></td><td>118.3607177734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>inverse-distance-weighting</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-snapshots-counts-0\">counts</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.inverse-distance-weighting</h4><div><pre class=\"lens-tex\">\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}</pre><p class=\"lens-ascii\">z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "inverse-distance-weighting",
+        "rainfall",
+        "118.3607177734375",
+        "0",
+        "readback"
+      ],
+      [
+        "inverse-distance-weighting",
+        "counts",
+        "8",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.011Z",
+    "runId": "run-849303e9",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-849303e9",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1659
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

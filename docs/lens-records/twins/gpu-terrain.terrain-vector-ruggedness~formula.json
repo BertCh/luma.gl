@@ -1,0 +1,105 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-vector-ruggedness",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-vector-ruggedness",
+  "viewId": "formula-card",
+  "caption": "Formula Unit normal per cell from Horn gradients p = zFactor*(east - west 1-2-1 sums)/(8*wx), q = northSign*zFactor*(south - north 1-2-1 sums)/(8*wy): n = (-p, -q, 1)/|(-p, -q, 1)|. VRM = clamp(1 - |sum of n over the (2r+1)^2 window, clipped to the…",
+  "description": "Formula Unit normal per cell from Horn gradients p = zFactor*(east - west 1-2-1 sums)/(8*wx), q = northSign*zFactor*(south - north 1-2-1 sums)/(8*wy): n = (-p, -q, 1)/|(-p, -q, 1)|. VRM = clamp(1 - |sum of n over the (2r+1)^2 window, clipped to the…",
+  "llms": "Formula Unit normal per cell from Horn gradients p = zFactor*(east - west 1-2-1 sums)/(8*wx), q = northSign*zFactor*(south - north 1-2-1 sums)/(8*wy): n = (-p, -q, 1)/|(-p, -q, 1)|. VRM = clamp(1 - |sum of n over the (2r+1)^2 window, clipped to the raster and to cells with a valid normal| / N, 0, 1), N = number of those cells. radius is a per-frame setting in [1, maximumRadius]. An invalid centre normal gives NaN. borderMode clamp repeats edge samples for the normals; nodata invalidates border normals.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-vector-ruggedness.sappington</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{vrm}{\\mathrm{VRM}} = \\operatorname{clamp}\\!\\left(1 - \\frac{\\left\\lVert \\term{vectorSum}{\\textstyle\\sum_{j} \\hat{n}_j} \\right\\rVert}{\\term{count}{N}},\\ 0,\\ 1\\right),\\quad \\hat{n} = \\frac{(-\\term{eastGradient}{p},\\ -\\term{northGradient}{q},\\ 1)}{\\lVert(-p,\\ -q,\\ 1)\\rVert}</pre><p class=\"lens-ascii\">Unit normal per cell from Horn gradients p = zFactor*(east - west 1-2-1 sums)/(8*wx), q = northSign*zFactor*(south - north 1-2-1 sums)/(8*wy): n = (-p, -q, 1)/|(-p, -q, 1)|. VRM = clamp(1 - |sum of n over the (2r+1)^2 window, clipped to the raster and to cells with a valid normal| / N, 0, 1), N = number of those cells. radius is a per-frame setting in [1, maximumRadius]. An invalid centre normal gives NaN. borderMode clamp repeats edge samples for the normals; nodata invalidates border normals.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-vector-ruggedness-compiled:terrain-vector-ruggedness-window\" data-value=\"vrm\">VRM · output · ruggedness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-vector-ruggedness-compiled:terrain-vector-ruggedness-window\" data-value=\"vectorSum\">normal sum · intermediate · vectorSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-vector-ruggedness-compiled:terrain-vector-ruggedness-window\" data-value=\"count\">valid normals · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-vector-ruggedness-compiled:terrain-vector-ruggedness-normals\" data-value=\"eastGradient\">p · intermediate · eastGradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-vector-ruggedness-compiled:terrain-vector-ruggedness-normals\" data-value=\"northGradient\">q · intermediate · northGradient</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "VRM",
+        "output",
+        "ruggedness",
+        "—",
+        "metadata"
+      ],
+      [
+        "normal sum",
+        "intermediate",
+        "vectorSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "valid normals",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "p",
+        "intermediate",
+        "eastGradient",
+        "—",
+        "metadata"
+      ],
+      [
+        "q",
+        "intermediate",
+        "northGradient",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{vrm}{\\mathrm{VRM}} = \\operatorname{clamp}\\!\\left(1 - \\frac{\\left\\lVert \\term{vectorSum}{\\textstyle\\sum_{j} \\hat{n}_j} \\right\\rVert}{\\term{count}{N}},\\ 0,\\ 1\\right),\\quad \\hat{n} = \\frac{(-\\term{eastGradient}{p},\\ -\\term{northGradient}{q},\\ 1)}{\\lVert(-p,\\ -q,\\ 1)\\rVert}",
+    "ascii": "Unit normal per cell from Horn gradients p = zFactor*(east - west 1-2-1 sums)/(8*wx), q = northSign*zFactor*(south - north 1-2-1 sums)/(8*wy): n = (-p, -q, 1)/|(-p, -q, 1)|. VRM = clamp(1 - |sum of n over the (2r+1)^2 window, clipped to the raster and to cells with a valid normal| / N, 0, 1), N = number of those cells. radius is a per-frame setting in [1, maximumRadius]. An invalid centre normal gives NaN. borderMode clamp repeats edge samples for the normals; nodata invalidates border normals.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.214Z",
+    "runId": "run-3b89bedb",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3b89bedb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

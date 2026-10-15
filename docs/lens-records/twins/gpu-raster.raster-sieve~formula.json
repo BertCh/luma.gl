@@ -1,0 +1,89 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-sieve",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-sieve",
+  "viewId": "formula-card",
+  "caption": "Formula remove mode: a patch with n pixels keeps its label when n >= minimumPixels and otherwise becomes 0 (background), so patchTargets[p-1] = p or 0 and every pixel takes patchTargets[label-1]; background stays 0; merge mode instead gives a small…",
+  "description": "Formula remove mode: a patch with n pixels keeps its label when n >= minimumPixels and otherwise becomes 0 (background), so patchTargets[p-1] = p or 0 and every pixel takes patchTargets[label-1]; background stays 0; merge mode instead gives a small…",
+  "llms": "Formula remove mode: a patch with n pixels keeps its label when n >= minimumPixels and otherwise becomes 0 (background), so patchTargets[p-1] = p or 0 and every pixel takes patchTargets[label-1]; background stays 0; merge mode instead gives a small patch the label of its largest adjacent patch that is not small (lowest label on ties; none leaves it removed). sievedCount counts non-empty patches with n < minimumPixels; unconverged labels fill every output word with the unresolved sentinel.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-sieve.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{label}{\\ell&#39;(c)}=\\begin{cases}\\ell(c)&amp;\\term{count}{n_{\\ell(c)}}\\ge\\term{minimum}{m}\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">remove mode: a patch with n pixels keeps its label when n &gt;= minimumPixels and otherwise becomes 0 (background), so patchTargets[p-1] = p or 0 and every pixel takes patchTargets[label-1]; background stays 0; merge mode instead gives a small patch the label of its largest adjacent patch that is not small (lowest label on ties; none leaves it removed). sievedCount counts non-empty patches with n &lt; minimumPixels; unconverged labels fill every output word with the unresolved sentinel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sieve-compiled:raster-sieve-relabel\" data-value=\"label\">sieved label · output · sievedLabels</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sieve-compiled:raster-sieve-counts\" data-value=\"count\">patch size · intermediate · pixelCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sieve-compiled:raster-sieve-patch-targets\" data-value=\"minimum\">minimum pixels · parameter · parameters</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sieved label",
+        "output",
+        "sievedLabels",
+        "—",
+        "metadata"
+      ],
+      [
+        "patch size",
+        "intermediate",
+        "pixelCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum pixels",
+        "parameter",
+        "parameters",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{label}{\\ell'(c)}=\\begin{cases}\\ell(c)&\\term{count}{n_{\\ell(c)}}\\ge\\term{minimum}{m}\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "remove mode: a patch with n pixels keeps its label when n >= minimumPixels and otherwise becomes 0 (background), so patchTargets[p-1] = p or 0 and every pixel takes patchTargets[label-1]; background stays 0; merge mode instead gives a small patch the label of its largest adjacent patch that is not small (lowest label on ties; none leaves it removed). sievedCount counts non-empty patches with n < minimumPixels; unconverged labels fill every output word with the unresolved sentinel.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.402Z",
+    "runId": "run-a5f7cbc1",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a5f7cbc1",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

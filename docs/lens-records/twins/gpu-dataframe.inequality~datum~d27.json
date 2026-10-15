@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.inequality",
+  "rung": "datum",
+  "datum": 27,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.inequality",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Community area 27. mean: 85683.640625. values read back from the GPU run. inequality: 3 quantities.",
+  "description": "Receipt of Community area 27. mean: 85683.640625. values read back from the GPU run. inequality: 3 quantities.",
+  "llms": "Receipt of Community area 27\n\n- mean: 85683.640625\n- inequality: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "mean",
+    "value": "85683.640625"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Community area 27</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"inequality\"><tr><th scope=\"rowgroup\" colspan=\"5\">inequality</th></tr><tr data-provenance=\"readback\"><td>inequality</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-inequality-snapshots-gini-0\" title=\"Population-weighted Gini of per-capita income; NaN for an empty zone.\">gini</button></td><td>0.3067132830619812</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>inequality</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-inequality-snapshots-counts-0\">counts</button></td><td>20</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>inequality</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-inequality-snapshots-mean-0\">mean</button></td><td>85683.640625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "inequality",
+        "gini",
+        "0.3067132830619812",
+        "0",
+        "readback"
+      ],
+      [
+        "inequality",
+        "counts",
+        "20",
+        "0",
+        "readback"
+      ],
+      [
+        "inequality",
+        "mean",
+        "85683.640625",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:16:19.449Z",
+    "runId": "run-59f2a763",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-59f2a763",
+    "rung": "datum",
+    "bindings": {
+      "entity": 27
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

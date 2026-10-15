@@ -1,0 +1,153 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.column-profile",
+  "rung": "formula",
+  "datum": 3,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.column-profile",
+  "viewId": "formula-card",
+  "caption": "Formula numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema. bound symbols: 11/11. values read back from the GPU run.",
+  "description": "Formula numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema. bound symbols: 11/11. values read back from the GPU run.",
+  "llms": "Formula numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema.\n\n- bound symbols: 11/11\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "11/11"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUColumnProfile</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\mu}=\\frac{\\term{sum}{S}}{\\term{finiteCount}{n_f}},\\quad \\term{variance}{v}=\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}},\\quad \\term{statistics}{\\mathrm{statistics}}=(\\term{count}{n},\\term{nullCount}{n_{\\rm null}},\\term{minimum}{\\min x},\\term{maximum}{\\max x},\\term{sum}{S},\\term{mean}{\\mu},\\term{variance}{v},\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}-1},\\sqrt{\\term{variance}{v}},\\term{distinctEstimate}{\\widehat D},0)</pre><p class=\"lens-ascii\">numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema.</p></div><div class=\"lens-worked-example\"><h4>Entity 3</h4><div><pre class=\"lens-tex\">\\term{mean}{\\left(80466.9\\right)}=\\frac{\\term{sum}{\\left(62120432\\right)}}{\\term{finiteCount}{n_f}},\\quad \\term{variance}{\\left(1716193920\\right)}=\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}},\\quad \\term{statistics}{\\mathrm{statistics}}=(\\term{count}{\\left(772\\right)},\\term{nullCount}{\\left(19\\right)},\\term{minimum}{\\left(13585\\right)},\\term{maximum}{\\left(250001\\right)},\\term{sum}{\\left(62120432\\right)},\\term{mean}{\\left(80466.9\\right)},\\term{variance}{\\left(1716193920\\right)},\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}-1},\\sqrt{\\term{variance}{\\left(1716193920\\right)}},\\term{distinctEstimate}{\\left(761.616\\right)},0)</pre><p class=\"lens-ascii\">numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-finish\" data-value=\"statistics\">statistics · output · statistics</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"count\">count · intermediate · count<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"nullCount\">nullCount · intermediate · nullCount<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"minimum\">decoded minimum key · intermediate · minimumKey<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"maximum\">decoded maximum key · intermediate · maximumKey<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"sum\">sum · intermediate · sum<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"mean\">mean · intermediate · mean<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-finish\" data-value=\"variance\">variance · intermediate · variance<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"m2\">m2 · intermediate · m2</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-moments-tile\" data-value=\"finiteCount\">finiteCount · intermediate · finiteCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-profile-compiled:column-profile-column-0-finish\" data-value=\"distinctEstimate\">distinctEstimate · intermediate · estimate<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "statistics",
+        "output",
+        "statistics",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "intermediate",
+        "count",
+        "772",
+        "readback"
+      ],
+      [
+        "nullCount",
+        "intermediate",
+        "nullCount",
+        "19",
+        "readback"
+      ],
+      [
+        "decoded minimum key",
+        "intermediate",
+        "minimumKey",
+        "13585",
+        "readback"
+      ],
+      [
+        "decoded maximum key",
+        "intermediate",
+        "maximumKey",
+        "250001",
+        "readback"
+      ],
+      [
+        "sum",
+        "intermediate",
+        "sum",
+        "62120432",
+        "readback"
+      ],
+      [
+        "mean",
+        "intermediate",
+        "mean",
+        "80466.8828125",
+        "readback"
+      ],
+      [
+        "variance",
+        "intermediate",
+        "variance",
+        "1716193920",
+        "readback"
+      ],
+      [
+        "m2",
+        "intermediate",
+        "m2",
+        "—",
+        "metadata"
+      ],
+      [
+        "finiteCount",
+        "intermediate",
+        "finiteCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "distinctEstimate",
+        "intermediate",
+        "estimate",
+        "761.6158447265625",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "readback"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{mean}{\\mu}=\\frac{\\term{sum}{S}}{\\term{finiteCount}{n_f}},\\quad \\term{variance}{v}=\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}},\\quad \\term{statistics}{\\mathrm{statistics}}=(\\term{count}{n},\\term{nullCount}{n_{\\rm null}},\\term{minimum}{\\min x},\\term{maximum}{\\max x},\\term{sum}{S},\\term{mean}{\\mu},\\term{variance}{v},\\frac{\\term{m2}{M_2}}{\\term{finiteCount}{n_f}-1},\\sqrt{\\term{variance}{v}},\\term{distinctEstimate}{\\widehat D},0)",
+    "ascii": "numeric statistics=(count,nullCount,min,max,sum,mean,M2/nFinite,M2/(nFinite-1),sqrt(M2/nFinite),HLL,0); infinities only enter count/extrema.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.759Z",
+    "runId": "run-1bdc61b5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1bdc61b5",
+    "rung": "formula",
+    "bindings": {
+      "entity": 3
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

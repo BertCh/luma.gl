@@ -1,6 +1,7 @@
 const {getDocusaurusConfig} = require('@vis.gl/docusaurus-website');
 const {OptionDefaults: typedocOptionDefaults} = require('typedoc');
 const path = require('path');
+const remarkLensDirective = require('./src/remark/lens-directive');
 
 const examplesDirectory = path.resolve(__dirname, '../examples');
 const modulesDirectory = path.resolve(__dirname, '../modules');
@@ -30,7 +31,7 @@ const config = getDocusaurusConfig({
   search: 'local',
   // TODO: Remove after @vis.gl/docusaurus-website handles an omitted webpack resolve config.
   webpackConfig: {resolve: {}},
-  customCss: ['./src/custom.css'],
+  customCss: ['./src/custom.css', require.resolve('katex/dist/katex.min.css'), './src/css/lens-twin.css', './src/css/lens-card.css'],
   // The shared website package deep-merges this field and currently requires an object.
   webpackConfig: {resolve: {}},
   navbarItems: [
@@ -193,7 +194,19 @@ module.exports = {
   staticDirectories: [...staticDirectories, '.generated/example-assets'],
   presets: basePresets.map(preset => {
     if (Array.isArray(preset) && preset[0] === 'classic') {
-      return [preset[0], {...preset[1], blog: false}];
+      return [preset[0], {
+        ...preset[1],
+        blog: false,
+        docs: {
+          ...preset[1].docs,
+          remarkPlugins: [
+            ...(preset[1].docs?.remarkPlugins ?? []),
+            [remarkLensDirective, {docsDirectory: path.resolve(__dirname, '../docs')}],
+            require('./src/remark/lens-how-collapse'),
+            [require('./src/remark/lens-catalog'), {docsDirectory: path.resolve(__dirname, '../docs')}]
+          ]
+        }
+      }];
     }
     return preset;
   }),
@@ -229,7 +242,11 @@ module.exports = {
       return {
         name: 'example-navigation-lifecycle',
         getClientModules() {
-          return [path.resolve(__dirname, 'src/client-modules/example-navigation.ts')];
+          return [
+            path.resolve(__dirname, 'src/client-modules/example-navigation.ts'),
+            path.resolve(__dirname, 'src/client-modules/ladder-lens.ts'),
+            path.resolve(__dirname, 'src/client-modules/moved-doc-anchors.ts')
+          ];
         }
       };
     },

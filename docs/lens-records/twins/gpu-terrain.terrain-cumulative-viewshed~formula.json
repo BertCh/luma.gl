@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-cumulative-viewshed",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-cumulative-viewshed",
+  "viewId": "formula-card",
+  "caption": "Formula Start counts at zero; atomically add 1 per (observer,cell) whose shared curvature-aware sight-line code is VISIBLE (1). Marginal, hidden, invalid observers/targets and out-of-range pairs add zero; coincident valid observer cells count as vis…",
+  "description": "Formula Start counts at zero; atomically add 1 per (observer,cell) whose shared curvature-aware sight-line code is VISIBLE (1). Marginal, hidden, invalid observers/targets and out-of-range pairs add zero; coincident valid observer cells count as vis…",
+  "llms": "Formula Start counts at zero; atomically add 1 per (observer,cell) whose shared curvature-aware sight-line code is VISIBLE (1). Marginal, hidden, invalid observers/targets and out-of-range pairs add zero; coincident valid observer cells count as visible. Target ground is the raw pixel elevation.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-cumulative-viewshed.count</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{count}{N(p)}=\\sum_{o\\in\\term{observers}{O}}\\mathbf{1}\\!\\left[\\term{result}{v(o,p)}=\\term{visible}{1}\\right]</pre><p class=\"lens-ascii\">Start counts at zero; atomically add 1 per (observer,cell) whose shared curvature-aware sight-line code is VISIBLE (1). Marginal, hidden, invalid observers/targets and out-of-range pairs add zero; coincident valid observer cells count as visible. Target ground is the raw pixel elevation.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cumulative-viewshed-compiled:terrain-cumulative-viewshed-batch-0\" data-value=\"count\">visible observers · output · visibleCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cumulative-viewshed-compiled:terrain-cumulative-viewshed-observer-records\" data-value=\"observers\">observers · input · observers</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cumulative-viewshed-compiled:terrain-cumulative-viewshed-batch-0\" data-value=\"result\">sight-line result · intermediate · result</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cumulative-viewshed-compiled:terrain-cumulative-viewshed-batch-0\" data-value=\"visible\">VISIBLE · constant · VISIBLE</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "visible observers",
+        "output",
+        "visibleCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "observers",
+        "input",
+        "observers",
+        "—",
+        "metadata"
+      ],
+      [
+        "sight-line result",
+        "intermediate",
+        "result",
+        "—",
+        "metadata"
+      ],
+      [
+        "VISIBLE",
+        "constant",
+        "VISIBLE",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{count}{N(p)}=\\sum_{o\\in\\term{observers}{O}}\\mathbf{1}\\!\\left[\\term{result}{v(o,p)}=\\term{visible}{1}\\right]",
+    "ascii": "Start counts at zero; atomically add 1 per (observer,cell) whose shared curvature-aware sight-line code is VISIBLE (1). Marginal, hidden, invalid observers/targets and out-of-range pairs add zero; coincident valid observer cells count as visible. Target ground is the raw pixel elevation.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.096Z",
+    "runId": "run-37dfbff5",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-37dfbff5",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

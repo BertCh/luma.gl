@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-summits",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-summits",
+  "viewId": "formula-card",
+  "caption": "Formula p is a summit iff it is the strict maximum of its metric disc (ties: lowest row-major index wins) and drop(p) = h(p) - max(h(q)) over the disc ring >= minimumDrop; the disc is ((dx*cx)^2 + (dy*cy)^2) <= radius^2 at the centre row; reject pol…",
+  "description": "Formula p is a summit iff it is the strict maximum of its metric disc (ties: lowest row-major index wins) and drop(p) = h(p) - max(h(q)) over the disc ring >= minimumDrop; the disc is ((dx*cx)^2 + (dy*cy)^2) <= radius^2 at the centre row; reject pol…",
+  "llms": "Formula p is a summit iff it is the strict maximum of its metric disc (ties: lowest row-major index wins) and drop(p) = h(p) - max(h(q)) over the disc ring >= minimumDrop; the disc is ((dx*cx)^2 + (dy*cy)^2) <= radius^2 at the centre row; reject policy: a disc leaving the grid or touching nodata is no summit; drop is +Infinity with an empty ring; NaN where there is no summit\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-summits.drop</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{drop}{\\delta}(p) = \\term{ownHeight}{h_p} - \\max_{q \\in \\mathrm{Ring}(p)\\setminus\\{p\\}} \\term{ringHeight}{h_q},\\quad p \\text{ is a summit} \\iff h_p \\text{ is the disc maximum and } \\delta(p) \\ge \\term{minimumDrop}{\\delta_{\\min}}</pre><p class=\"lens-ascii\">p is a summit iff it is the strict maximum of its metric disc (ties: lowest row-major index wins) and drop(p) = h(p) - max(h(q)) over the disc ring &gt;= minimumDrop; the disc is ((dx*cx)^2 + (dy*cy)^2) &lt;= radius^2 at the centre row; reject policy: a disc leaving the grid or touching nodata is no summit; drop is +Infinity with an empty ring; NaN where there is no summit</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-summits-compiled:terrain-summits-summits\" data-value=\"drop\">δ · output · dropValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-summits-compiled:terrain-summits-summits\" data-value=\"ownHeight\">h_p · input · ownHeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-summits-compiled:terrain-summits-summits\" data-value=\"ringHeight\">h_q · intermediate · ringHeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-summits-compiled:terrain-summits-summits\" data-value=\"minimumDrop\">δ_min · parameter · minimumDrop</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "δ",
+        "output",
+        "dropValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "h_p",
+        "input",
+        "ownHeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "h_q",
+        "intermediate",
+        "ringHeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "δ_min",
+        "parameter",
+        "minimumDrop",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{drop}{\\delta}(p) = \\term{ownHeight}{h_p} - \\max_{q \\in \\mathrm{Ring}(p)\\setminus\\{p\\}} \\term{ringHeight}{h_q},\\quad p \\text{ is a summit} \\iff h_p \\text{ is the disc maximum and } \\delta(p) \\ge \\term{minimumDrop}{\\delta_{\\min}}",
+    "ascii": "p is a summit iff it is the strict maximum of its metric disc (ties: lowest row-major index wins) and drop(p) = h(p) - max(h(q)) over the disc ring >= minimumDrop; the disc is ((dx*cx)^2 + (dy*cy)^2) <= radius^2 at the centre row; reject policy: a disc leaving the grid or touching nodata is no summit; drop is +Infinity with an empty ring; NaN where there is no summit",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:58.591Z",
+    "runId": "run-b839e2e8",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-b839e2e8",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

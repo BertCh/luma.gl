@@ -1,0 +1,79 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.conjugate-gradient-program",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.conjugate-gradient-program",
+  "viewId": "formula-card",
+  "caption": "Formula r0=b-A*x0; p0=r0; rr=r dot r. While rr>toleranceSquared, at most maxIterations: q=A*p; pq=p dot q; breakdown=(pq<=0), active=(pq>0); alpha=rr/pq; x+=alpha*p; r-=alpha*q; newRR=r dot r; beta=newRR/rr; p=r+beta*p; rr=newRR; active=(rr>toleranc…",
+  "description": "Formula r0=b-A*x0; p0=r0; rr=r dot r. While rr>toleranceSquared, at most maxIterations: q=A*p; pq=p dot q; breakdown=(pq<=0), active=(pq>0); alpha=rr/pq; x+=alpha*p; r-=alpha*q; newRR=r dot r; beta=newRR/rr; p=r+beta*p; rr=newRR; active=(rr>toleranc…",
+  "llms": "Formula r0=b-A*x0; p0=r0; rr=r dot r. While rr>toleranceSquared, at most maxIterations: q=A*p; pq=p dot q; breakdown=(pq<=0), active=(pq>0); alpha=rr/pq; x+=alpha*p; r-=alpha*q; newRR=r dot r; beta=newRR/rr; p=r+beta*p; rr=newRR; active=(rr>toleranceSquared). Active gates subsequent lowered operations; no preconditioner and no relative tolerance.\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients gpu-value-arena-buffer, smooth-r, smooth-p retained instead of aliased\n- transients smooth-r, smooth-p allocated with COPY_SRC for observation\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.conjugate-gradient</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">r_0=b-Ax_0,\\ p_0=r_0,\\ q=Ap,\\quad\\term{alpha}{\\alpha}=\\frac{r^Tr}{p^Tq},\\quad\\term{solution}{x&#39;}=x+\\alpha p,\\quad r&#39;=r-\\alpha q,\\quad\\term{beta}{\\beta}=\\frac{r&#39;^Tr&#39;}{r^Tr},\\quad p&#39;=r&#39;+\\beta p</pre><p class=\"lens-ascii\">r0=b-A*x0; p0=r0; rr=r dot r. While rr&gt;toleranceSquared, at most maxIterations: q=A*p; pq=p dot q; breakdown=(pq&lt;=0), active=(pq&gt;0); alpha=rr/pq; x+=alpha*p; r-=alpha*q; newRR=r dot r; beta=newRR/rr; p=r+beta*p; rr=newRR; active=(rr&gt;toleranceSquared). Active gates subsequent lowered operations; no preconditioner and no relative tolerance.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"smooth-compiled:smooth-rr0-chunk-0-level-0\" data-value=\"alpha\">alpha · intermediate · gpuValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"smooth-compiled:smooth-rr0-chunk-0-level-0\" data-value=\"beta\">beta · intermediate · gpuValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"smooth-compiled:smooth-initial-spmv-rows-0-nonzeros-0-vector-0-subgroup-row\" data-value=\"solution\">solution · output · outputValues</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"smooth-intent:smooth-loop\">smooth-loop</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "alpha",
+        "intermediate",
+        "gpuValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "beta",
+        "intermediate",
+        "gpuValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "solution",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "r_0=b-Ax_0,\\ p_0=r_0,\\ q=Ap,\\quad\\term{alpha}{\\alpha}=\\frac{r^Tr}{p^Tq},\\quad\\term{solution}{x'}=x+\\alpha p,\\quad r'=r-\\alpha q,\\quad\\term{beta}{\\beta}=\\frac{r'^Tr'}{r^Tr},\\quad p'=r'+\\beta p",
+    "ascii": "r0=b-A*x0; p0=r0; rr=r dot r. While rr>toleranceSquared, at most maxIterations: q=A*p; pq=p dot q; breakdown=(pq<=0), active=(pq>0); alpha=rr/pq; x+=alpha*p; r-=alpha*q; newRR=r dot r; beta=newRR/rr; p=r+beta*p; rr=newRR; active=(rr>toleranceSquared). Active gates subsequent lowered operations; no preconditioner and no relative tolerance.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:37:09.694Z",
+    "runId": "run-23805b54",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients gpu-value-arena-buffer, smooth-r, smooth-p retained instead of aliased",
+      "transients smooth-r, smooth-p allocated with COPY_SRC for observation"
+    ]
+  },
+  "state": {
+    "runId": "run-23805b54",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

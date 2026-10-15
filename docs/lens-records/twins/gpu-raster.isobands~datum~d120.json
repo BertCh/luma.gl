@@ -1,0 +1,59 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.isobands",
+  "rung": "datum",
+  "datum": 120,
+  "size": "full",
+  "scenarioId": "gpu-raster.isobands",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of band triangles 120. isobandsTriangleBands: 3. values read back from the GPU run. isobands: 1 quantities.",
+  "description": "Receipt of band triangles 120. isobandsTriangleBands: 3. values read back from the GPU run. isobands: 1 quantities.",
+  "llms": "Receipt of band triangles 120\n\n- isobandsTriangleBands: 3\n- isobands: 1 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "isobandsTriangleBands",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of band triangles 120</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"isobands\"><tr><th scope=\"rowgroup\" colspan=\"5\">isobands</th></tr><tr data-provenance=\"readback\"><td>isobands</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-isobands-snapshots-isobandsTriangleBands-0\" title=\"band index of each triangle (band 3 = 1300 m up to 1400 m)\">isobandsTriangleBands</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "isobands",
+        "isobandsTriangleBands",
+        "3",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:20.966Z",
+    "runId": "run-d333ea3b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d333ea3b",
+    "rung": "datum",
+    "bindings": {
+      "entity": 120
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

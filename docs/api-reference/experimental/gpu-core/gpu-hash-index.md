@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Indexes sparse station row numbers in a 2,048-slot hash table, producing slot keys and station indices with probe statistics.
+
+::lens{scenario=gpu-core.hash-index rung=result caption="Slots 88 to 93 hold station rows with their station index; 1,024 keys fill half of 2,048 slots."}
+
 `GPUHashIndex` builds a fixed-capacity `uint32` key/value lookup table, and `GPUHashIndexQuery`
 looks up one logical sequence of packed keys without submission or CPU readback. Together they provide the
 sparse identity lookup that dense group arrays cannot: map stable object IDs to rows, join sparse
@@ -19,6 +23,16 @@ publish collision-work statistics. This makes worst-case GPU work and memory vis
 graph consumers instead of hiding resize, allocation, or readback behind a map-like API.
 
 <GPUOperationContract operation="gpu-hash-index" />
+
+#### How it computes
+
+{/* lens:GPUHashIndex */}
+
+::lens{scenario=gpu-core.hash-index rung=kernel caption="Inspect lanes hashing each station row and claiming a table slot by atomic compare-exchange."}
+
+::lens{scenario=gpu-core.hash-index rung=graph caption="Trace initialize, build, and finalize nodes that fill slot keys, then values."}
+
+::lens{scenario=gpu-core.hash-index rung=datum caption="Follow one station row to the slot it claims after probing."}
 
 ## Choosing the right hash-graph feature
 

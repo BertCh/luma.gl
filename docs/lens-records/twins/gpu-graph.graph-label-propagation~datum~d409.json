@@ -1,0 +1,117 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-label-propagation",
+  "rung": "datum",
+  "datum": 409,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-label-propagation",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 409. label-propagation-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 1 quantities.",
+  "description": "Receipt of station 409. label-propagation-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 1 quantities.",
+  "llms": "Receipt of station 409\n\n- label-propagation-stations: 5.109869956970215, 52.08945083618164\n- topology: 1 quantities\n- iteration: 6 quantities\n- publication: 1 quantities\n- compute passes were not coalesced as in production\n- 336 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "label-propagation-stations",
+    "value": "5.109869956970215, 52.08945083618164"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 409</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"iteration\"><tr><th scope=\"rowgroup\" colspan=\"5\">iteration</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-0\">label-propagation</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-1\">label-propagation</button></td><td>0</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-2\">label-propagation</button></td><td>0</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-4\">label-propagation</button></td><td>0</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-8\">label-propagation</button></td><td>0</td><td>8</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-15\">label-propagation</button></td><td>0</td><td>15</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"label-propagation-stations\">label-propagation-stations</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "1",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "2",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "4",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "8",
+        "readback"
+      ],
+      [
+        "iteration",
+        "label-propagation",
+        "0",
+        "15",
+        "readback"
+      ],
+      [
+        "publication",
+        "label-propagation-stations",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.313Z",
+    "runId": "run-45ec757e",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "336 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-45ec757e",
+    "rung": "datum",
+    "bindings": {
+      "entity": 409
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

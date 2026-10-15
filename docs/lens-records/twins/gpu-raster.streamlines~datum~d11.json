@@ -1,0 +1,59 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.streamlines",
+  "rung": "datum",
+  "datum": 11,
+  "size": "full",
+  "scenarioId": "gpu-raster.streamlines",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of streamlines 11. streamlinesLineIds: 15. values read back from the GPU run. streamlines: 1 quantities.",
+  "description": "Receipt of streamlines 11. streamlinesLineIds: 15. values read back from the GPU run. streamlines: 1 quantities.",
+  "llms": "Receipt of streamlines 11\n\n- streamlinesLineIds: 15\n- streamlines: 1 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "streamlinesLineIds",
+    "value": "15"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of streamlines 11</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"streamlines\"><tr><th scope=\"rowgroup\" colspan=\"5\">streamlines</th></tr><tr data-provenance=\"readback\"><td>streamlines</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-streamlines-snapshots-streamlinesLineIds-0\" title=\"seed index (0 to 29) of each published line\">streamlinesLineIds</button></td><td>15</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "streamlines",
+        "streamlinesLineIds",
+        "15",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.763Z",
+    "runId": "run-2897b63d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-2897b63d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 11
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

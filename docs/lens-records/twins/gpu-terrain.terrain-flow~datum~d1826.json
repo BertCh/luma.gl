@@ -1,0 +1,170 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-flow",
+  "rung": "datum",
+  "datum": 1826,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-flow",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1826. flowStreams: 1. values read back from the GPU run. terrain-flow: 12 quantities.",
+  "description": "Receipt of grid cells 1826. flowStreams: 1. values read back from the GPU run. terrain-flow: 12 quantities.",
+  "llms": "Receipt of grid cells 1826\n\n- flowStreams: 1\n- terrain-flow: 12 quantities\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "flowStreams",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1826</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-flow\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-flow</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-29-round-0\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>Infinity</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-31-round-1\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>Infinity</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-33-round-2\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>1100</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-35-round-3\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>1100</td><td>3</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-39-round-4\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>1100</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFillRelaxation-571-round-5\" title=\"filled elevation during relaxation (m)\">flowFillRelaxation</button></td><td>1091.199951171875</td><td>5</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-dem-571\" title=\"elevation (m)\">dem</button></td><td>1091.199951171875</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowFilledElevation-571\" title=\"filled elevation (m)\">flowFilledElevation</button></td><td>1091.199951171875</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowDirections-571\" title=\"D8 flow direction (ESRI code)\">flowDirections</button></td><td>2</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowCellClasses-571\" title=\"cell class (0 draining, 1 flat, 2 pit, 3 outlet, 4 invalid)\">flowCellClasses</button></td><td>0</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowAccumulation-571\" title=\"upstream cells\">flowAccumulation</button></td><td>1097</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-snapshots-flowStreams-571\" title=\"stream mask (1 where upstream cells ≥ 40)\">flowStreams</button></td><td>1</td><td>571</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-flow-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-flow-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-flow-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g filter=\"url(#lens-gpu-terrain-terrain-flow-datum-neighbourhood-0-provisional)\" data-provisional=\"provisional\"><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1761\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1761: Infinity</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1761</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1762\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1762: Infinity</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1762</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1763\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1763: Infinity</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1763</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1825\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1825: Infinity</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1825</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1826\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1826: Infinity</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1826</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1827\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1827: Infinity</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1827</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1889\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1889: Infinity</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1889</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1890\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1890: Infinity</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1890</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1891\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#d9d9d9\"></rect><title>1891: Infinity</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1891</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "Infinity",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "Infinity",
+        "1",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "1100",
+        "2",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "1100",
+        "3",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "1100",
+        "4",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFillRelaxation",
+        "1091.199951171875",
+        "5",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "dem",
+        "1091.199951171875",
+        "571",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowFilledElevation",
+        "1091.199951171875",
+        "571",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowDirections",
+        "2",
+        "571",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowCellClasses",
+        "0",
+        "571",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowAccumulation",
+        "1097",
+        "571",
+        "readback"
+      ],
+      [
+        "terrain-flow",
+        "flowStreams",
+        "1",
+        "571",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    },
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:21:12.342Z",
+    "runId": "run-c9f3ef8c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c9f3ef8c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1826
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

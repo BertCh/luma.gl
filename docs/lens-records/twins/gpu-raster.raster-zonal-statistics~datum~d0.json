@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-zonal-statistics",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-zonal-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of land-cover zones 0. zoneMaximums: 1785.699951171875. values read back from the GPU run. raster-zonal-statistics: 4 quantities.",
+  "description": "Receipt of land-cover zones 0. zoneMaximums: 1785.699951171875. values read back from the GPU run. raster-zonal-statistics: 4 quantities.",
+  "llms": "Receipt of land-cover zones 0\n\n- zoneMaximums: 1785.699951171875\n- raster-zonal-statistics: 4 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "zoneMaximums",
+    "value": "1785.699951171875"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of land-cover zones 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-zonal-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-zonal-statistics</th></tr><tr data-provenance=\"readback\"><td>raster-zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-zonal-statistics-snapshots-zoneCellCounts-0\" title=\"column cells per zone (zones: tree cover, grassland, cropland, built-up, water)\">zoneCellCounts</button></td><td>3682</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-zonal-statistics-snapshots-zoneMeans-0\" title=\"column mean elevation per zone (m; zones: tree cover, grassland, cropland, built-up, water)\">zoneMeans</button></td><td>1324.0855712890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-zonal-statistics-snapshots-zoneMinimums-0\" title=\"column lowest elevation per zone (m)\">zoneMinimums</button></td><td>1073.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-zonal-statistics-snapshots-zoneMaximums-0\" title=\"column highest elevation per zone (m)\">zoneMaximums</button></td><td>1785.699951171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-zonal-statistics",
+        "zoneCellCounts",
+        "3682",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-zonal-statistics",
+        "zoneMeans",
+        "1324.0855712890625",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-zonal-statistics",
+        "zoneMinimums",
+        "1073.9000244140625",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-zonal-statistics",
+        "zoneMaximums",
+        "1785.699951171875",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.446Z",
+    "runId": "run-9d7f36f2",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9d7f36f2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

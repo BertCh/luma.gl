@@ -1,0 +1,105 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.point-density",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.point-density",
+  "viewId": "formula-card",
+  "caption": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 2/4. structure metadata only.",
+  "description": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area. bound symbols: 2/4. structure metadata only.",
+  "llms": "Formula v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.\n\n- bound symbols: 2/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.point-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{field}{v_c}=\\term{count}{n_c}=\\sum_{\\term{point}{i}\\,\\in\\,\\term{cell}{C_c}}1</pre><p class=\"lens-ascii\">v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\" data-value=\"field\">v_c · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\" data-value=\"count\">n_c · intermediate · counts</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"point\">point i · input · unknown — wgsl positions not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"cell\">cell C_c · parameter · unknown — wgsl gridSize not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-density-compiled:point-density-finalize\">point-density-finalize</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "v_c",
+        "output",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "n_c",
+        "intermediate",
+        "counts",
+        "—",
+        "metadata"
+      ],
+      [
+        "point i",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "cell C_c",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{field}{v_c}=\\term{count}{n_c}=\\sum_{\\term{point}{i}\\,\\in\\,\\term{cell}{C_c}}1",
+    "ascii": "v_c = n_c = number of accepted points in cell C_c; inclusive domain maxima map to the last cell. No smoothing or division by area.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.373Z",
+    "runId": "run-bc3fc1eb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-bc3fc1eb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

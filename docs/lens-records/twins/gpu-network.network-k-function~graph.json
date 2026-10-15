@@ -1,0 +1,36 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-k-function",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-network.network-k-function",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-network.network-k-function. nodes: 163. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-network.network-k-function. nodes: 163. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-network.network-k-function\n\n- nodes: 163\n- 1 visible units vs budget 24\n- 163 hidden nodes\n- Edges by kind: raw 701, war 120, indirect 120\n- compute passes were not coalesced as in production\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "163"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-network-network-k-function-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-network-network-k-function-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-network-network-k-function-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:network-k-function\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:network-k-function\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">network-k-function</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:network-k-function\" aria-label=\"Expand network-k-function\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">network-k-function-snap-edge-sources-clear: commandCount=1 · network-k-function-snap-edge-sources-clear: maximumWorkgroupCount=16 · network-k-function-snap-edge-sources-clear: maximumInvocationCount=3938</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:network-k-function\" aria-label=\"Inspect network-k-function\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:06.860Z",
+    "runId": "run-9a9fc58c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-9a9fc58c",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

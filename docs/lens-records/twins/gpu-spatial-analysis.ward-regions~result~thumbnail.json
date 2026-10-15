@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.ward-regions",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.ward-regions",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.ward-regions: values.geometry → labels.geometry.",
+  "description": "Result of gpu-spatial-analysis.ward-regions: values.geometry → labels.geometry. polygons: 136. values read back from the GPU run. input values.geometry: 136 polygons.",
+  "llms": "Result of gpu-spatial-analysis.ward-regions: values.geometry → labels.geometry\n\n- polygons: 136\n- input values.geometry: 136 polygons\n- Simple equirectangular projection (x scaled by cos 41.95°); not equal-area.\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1730 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "136"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-87.71067810058594,41.88645935058594],[-87.60225677490234,42.023128509521484]]\" role=\"img\" aria-label=\"Result: labels.geometry\"><defs><pattern id=\"lens-gpu-spatial-analysis-ward-regions-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-ward-regions-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-ward-regions-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:58:56.241Z",
+    "runId": "run-2324b314",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-2324b314",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

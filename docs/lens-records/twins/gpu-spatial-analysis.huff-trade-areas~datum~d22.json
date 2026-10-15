@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.huff-trade-areas",
+  "rung": "datum",
+  "datum": 22,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.huff-trade-areas",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. huff-trade-areas: 5 quantities.",
+  "description": "Receipt of tracts 22. tradeArea: 1. values read back from the GPU run. huff-trade-areas: 5 quantities.",
+  "llms": "Receipt of tracts 22\n\n- tradeArea: 1\n- huff-trade-areas: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "tradeArea",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"huff-trade-areas\"><tr><th scope=\"rowgroup\" colspan=\"5\">huff-trade-areas</th></tr><tr data-provenance=\"readback\"><td>huff-trade-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tracts-0\" title=\"context\">tracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>huff-trade-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-population-0\">population</button></td><td>8715</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>huff-trade-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-resultTracts-0\">resultTracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>huff-trade-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeAreaProbability-0\">tradeAreaProbability</button></td><td>0.2811562418937683</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>huff-trade-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-huff-trade-areas-snapshots-tradeArea-0\">tradeArea</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.huff-trade-areas</h4><div><pre class=\"lens-tex\">\\term{probability}{p_{ij}}=\\frac{\\term{attractiveness}{\\left(0.0514\\right)}^{\\term{exponent}{\\alpha}}\\,\\term{weight}{w_{ij}}}{\\term{denominator}{\\sum_k A_k^{\\alpha}\\,w_{ik}}}</pre><p class=\"lens-ascii\">p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "huff-trade-areas",
+        "tracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "huff-trade-areas",
+        "population",
+        "8715",
+        "0",
+        "readback"
+      ],
+      [
+        "huff-trade-areas",
+        "resultTracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "huff-trade-areas",
+        "tradeAreaProbability",
+        "0.2811562418937683",
+        "0",
+        "readback"
+      ],
+      [
+        "huff-trade-areas",
+        "tradeArea",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.979Z",
+    "runId": "run-16b69eeb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-16b69eeb",
+    "rung": "datum",
+    "bindings": {
+      "entity": 22
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

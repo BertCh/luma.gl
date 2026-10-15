@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-closest-approach",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "// UTM 18N metres, seconds: tracks within 200 m at the same instant, from the raw fixes.\ngraph.add(\n  new GPUTrajectoryClosestApproach({\n    ...tracks,\n    distance,\n    cellSize: 250,\n    timeCellSize: 120,\n    entryCapacity: 1 << 17,\n    hitCapacity: 1 << 16,\n    output\n  })\n);\nconst {pairs} = output;",
+    "language": "ts",
+    "lineCount": 13
+  },
+  "scenarioId": "gpu-spatial-analysis.trajectory-closest-approach",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs. count: 0. values read back from the GPU run. 0 output panels from the recorded run.",
+  "description": "Read captured inputs into recorded array outputs. count: 0. values read back from the GPU run. 0 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- count: 0\n- 0 output panels from the recorded run\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "count",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"640\" height=\"60\" viewBox=\"0 0 640 60\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-spatial-analysis-trajectory-closest-approach-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g></svg></section>",
+    "width": 640,
+    "height": 60
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:44.798Z",
+    "runId": "run-35a35b79",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-35a35b79",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

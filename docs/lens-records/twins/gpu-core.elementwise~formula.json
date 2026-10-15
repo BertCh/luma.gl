@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.elementwise",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.elementwise",
+  "viewId": "formula-card",
+  "caption": "Formula copy:a; add:a+b; subtract:a-b; multiply:a*b; multiply-add:a*b+c; min:min(a,b); max:max(a,b), per element in the declared scalar type (32-bit integer wrap). bound symbols: 3/4. structure metadata only.",
+  "description": "Formula copy:a; add:a+b; subtract:a-b; multiply:a*b; multiply-add:a*b+c; min:min(a,b); max:max(a,b), per element in the declared scalar type (32-bit integer wrap). bound symbols: 3/4. structure metadata only.",
+  "llms": "Formula copy:a; add:a+b; subtract:a-b; multiply:a*b; multiply-add:a*b+c; min:min(a,b); max:max(a,b), per element in the declared scalar type (32-bit integer wrap).\n\n- bound symbols: 3/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.elementwise</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_i}=\\operatorname{op}(\\term{x}{a_i},\\term{b}{b_i},\\term{c}{c_i}),\\quad\\operatorname{op}\\in\\{\\operatorname{copy},\\operatorname{add},\\operatorname{subtract},\\operatorname{multiply},\\operatorname{multiply\\text{-}add},\\operatorname{min},\\operatorname{max}\\}</pre><p class=\"lens-ascii\">copy:a; add:a+b; subtract:a-b; multiply:a*b; multiply-add:a*b+c; min:min(a,b); max:max(a,b), per element in the declared scalar type (32-bit integer wrap).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-elementwise-compiled:two-day-rainfall\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-elementwise-compiled:two-day-rainfall\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-elementwise-compiled:two-day-rainfall\" data-value=\"b\">b · input · inputBValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"c\">c · input · unknown — wgsl inputCValues not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-elementwise-compiled:two-day-rainfall\">two-day-rainfall</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "b",
+        "input",
+        "inputBValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "c",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_i}=\\operatorname{op}(\\term{x}{a_i},\\term{b}{b_i},\\term{c}{c_i}),\\quad\\operatorname{op}\\in\\{\\operatorname{copy},\\operatorname{add},\\operatorname{subtract},\\operatorname{multiply},\\operatorname{multiply\\text{-}add},\\operatorname{min},\\operatorname{max}\\}",
+    "ascii": "copy:a; add:a+b; subtract:a-b; multiply:a*b; multiply-add:a*b+c; min:min(a,b); max:max(a,b), per element in the declared scalar type (32-bit integer wrap).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.428Z",
+    "runId": "run-6a3e618f",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-6a3e618f",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

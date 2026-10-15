@@ -1,0 +1,112 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.linear-referencing",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.linear-referencing",
+  "viewId": "formula-card",
+  "caption": "Formula For a matched planar segment s: measure = vertexMeasures[s] + fraction*sqrt(lengthSquared); normalizedMeasure = measure/lineLength when lineLength > 0, else 0. Segment selection minimizes distance within radius, ties to the lowest source row…",
+  "description": "Formula For a matched planar segment s: measure = vertexMeasures[s] + fraction*sqrt(lengthSquared); normalizedMeasure = measure/lineLength when lineLength > 0, else 0. Segment selection minimizes distance within radius, ties to the lowest source row…",
+  "llms": "Formula For a matched planar segment s: measure = vertexMeasures[s] + fraction*sqrt(lengthSquared); normalizedMeasure = measure/lineLength when lineLength > 0, else 0. Segment selection minimizes distance within radius, ties to the lowest source row. Spherical mode adds along-angle times sphere radius, or copies the endpoint prefix for endpoint matches. Unmatched measures are NaN.\n\n- bound symbols: 5/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.linear-referencing</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{measure}{m}=\\term{prefix}{M_s}+\\term{fraction}{t}\\sqrt{\\term{length}{\\ell_s^2}},\\qquad \\term{normalized}{\\widehat m}=\\begin{cases}\\term{measure}{m}/\\term{total}{L}&amp;\\term{total}{L}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">For a matched planar segment s: measure = vertexMeasures[s] + fraction*sqrt(lengthSquared); normalizedMeasure = measure/lineLength when lineLength &gt; 0, else 0. Segment selection minimizes distance within radius, ties to the lowest source row. Spherical mode adds along-angle times sphere radius, or copies the endpoint prefix for endpoint matches. Unmatched measures are NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-linear-referencing-compiled:linear-referencing-output\" data-value=\"measure\">measure · output · measures</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"normalized\">normalized · output · unknown — wgsl normalizedMeasures not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-linear-referencing-compiled:linear-referencing-project\" data-value=\"prefix\">prefix · input · vertexMeasures</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-linear-referencing-compiled:linear-referencing-project\" data-value=\"fraction\">fraction · input · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-linear-referencing-compiled:linear-referencing-project\" data-value=\"length\">Squared planar segment length · input · lengthSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-linear-referencing-compiled:linear-referencing-project\" data-value=\"total\">total · input · lineLength</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "measure",
+        "output",
+        "measures",
+        "—",
+        "metadata"
+      ],
+      [
+        "normalized",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "prefix",
+        "input",
+        "vertexMeasures",
+        "—",
+        "metadata"
+      ],
+      [
+        "fraction",
+        "input",
+        "fraction",
+        "—",
+        "metadata"
+      ],
+      [
+        "Squared planar segment length",
+        "input",
+        "lengthSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "total",
+        "input",
+        "lineLength",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{measure}{m}=\\term{prefix}{M_s}+\\term{fraction}{t}\\sqrt{\\term{length}{\\ell_s^2}},\\qquad \\term{normalized}{\\widehat m}=\\begin{cases}\\term{measure}{m}/\\term{total}{L}&\\term{total}{L}>0\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "For a matched planar segment s: measure = vertexMeasures[s] + fraction*sqrt(lengthSquared); normalizedMeasure = measure/lineLength when lineLength > 0, else 0. Segment selection minimizes distance within radius, ties to the lowest source row. Spherical mode adds along-angle times sphere radius, or copies the endpoint prefix for endpoint matches. Unmatched measures are NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.724Z",
+    "runId": "run-f3428b5a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f3428b5a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

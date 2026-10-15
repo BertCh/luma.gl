@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-rgb-decode",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-rgb-decode",
+  "viewId": "formula-card",
+  "caption": "Formula Unpack R=word&255, G=(word>>8)&255, B=(word>>16)&255, A=word>>24; Terrarium height=f32((R<<16)|(G<<8)|B)*0.00390625-32768 exactly. Alpha zero (by default), encoded nodata, invalid source or height outside closed validRange [-11000,9000] give…",
+  "description": "Formula Unpack R=word&255, G=(word>>8)&255, B=(word>>16)&255, A=word>>24; Terrarium height=f32((R<<16)|(G<<8)|B)*0.00390625-32768 exactly. Alpha zero (by default), encoded nodata, invalid source or height outside closed validRange [-11000,9000] give…",
+  "llms": "Formula Unpack R=word&255, G=(word>>8)&255, B=(word>>16)&255, A=word>>24; Terrarium height=f32((R<<16)|(G<<8)|B)*0.00390625-32768 exactly. Alpha zero (by default), encoded nodata, invalid source or height outside closed validRange [-11000,9000] gives NaN and validity 0; otherwise validity 1. Optional sea clamp maps -12000<h<0 to 0 after validity; disabled here. Mapbox uses f32(i32(N)-100000)*f32(0.1).\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-rgb-decode.terrarium</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{code}{N}=65536\\term{red}{R}+256\\term{green}{G}+\\term{blue}{B},\\quad\\term{height}{h}=\\operatorname{f32}(N)\\,2^{-8}-32768</pre><p class=\"lens-ascii\">Unpack R=word&amp;255, G=(word&gt;&gt;8)&amp;255, B=(word&gt;&gt;16)&amp;255, A=word&gt;&gt;24; Terrarium height=f32((R&lt;&lt;16)|(G&lt;&lt;8)|B)*0.00390625-32768 exactly. Alpha zero (by default), encoded nodata, invalid source or height outside closed validRange [-11000,9000] gives NaN and validity 0; otherwise validity 1. Optional sea clamp maps -12000&lt;h&lt;0 to 0 after validity; disabled here. Mapbox uses f32(i32(N)-100000)*f32(0.1).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-rgb-decode-compiled:terrain-rgb-decode-decode\" data-value=\"code\">RGB code · intermediate · code</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-rgb-decode-compiled:terrain-rgb-decode-decode\" data-value=\"red\">red byte · input · red</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-rgb-decode-compiled:terrain-rgb-decode-decode\" data-value=\"green\">green byte · input · green</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-rgb-decode-compiled:terrain-rgb-decode-decode\" data-value=\"blue\">blue byte · input · blue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-rgb-decode-compiled:terrain-rgb-decode-decode\" data-value=\"height\">decoded height · output · height</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "RGB code",
+        "intermediate",
+        "code",
+        "—",
+        "metadata"
+      ],
+      [
+        "red byte",
+        "input",
+        "red",
+        "—",
+        "metadata"
+      ],
+      [
+        "green byte",
+        "input",
+        "green",
+        "—",
+        "metadata"
+      ],
+      [
+        "blue byte",
+        "input",
+        "blue",
+        "—",
+        "metadata"
+      ],
+      [
+        "decoded height",
+        "output",
+        "height",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{code}{N}=65536\\term{red}{R}+256\\term{green}{G}+\\term{blue}{B},\\quad\\term{height}{h}=\\operatorname{f32}(N)\\,2^{-8}-32768",
+    "ascii": "Unpack R=word&255, G=(word>>8)&255, B=(word>>16)&255, A=word>>24; Terrarium height=f32((R<<16)|(G<<8)|B)*0.00390625-32768 exactly. Alpha zero (by default), encoded nodata, invalid source or height outside closed validRange [-11000,9000] gives NaN and validity 0; otherwise validity 1. Optional sea clamp maps -12000<h<0 to 0 after validity; disabled here. Mapbox uses f32(i32(N)-100000)*f32(0.1).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.147Z",
+    "runId": "run-41e8bc9b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-41e8bc9b",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

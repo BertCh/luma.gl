@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.nearest-feature-weights",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.nearest-feature-weights",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 0. neighborCounts: 3. values read back from the GPU run. nearest-feature-weights: 2 quantities.",
+  "description": "Receipt of observation 0. neighborCounts: 3. values read back from the GPU run. nearest-feature-weights: 2 quantities.",
+  "llms": "Receipt of observation 0\n\n- neighborCounts: 3\n- nearest-feature-weights: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "neighborCounts",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"nearest-feature-weights\"><tr><th scope=\"rowgroup\" colspan=\"5\">nearest-feature-weights</th></tr><tr data-provenance=\"readback\"><td>nearest-feature-weights</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-snapshots-observations-0\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>nearest-feature-weights</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-snapshots-neighborCounts-0\">neighborCounts</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "nearest-feature-weights",
+        "observations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "nearest-feature-weights",
+        "neighborCounts",
+        "3",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.090Z",
+    "runId": "run-3136c377",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3136c377",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.histogram",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-core.histogram",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of Stations per 20 mm rainfall bin. nodes: 2. structure metadata only. 2 visible units vs budget 24.",
+  "description": "compiled command graph of Stations per 20 mm rainfall bin. nodes: 2. structure metadata only. 2 visible units vs budget 24.",
+  "llms": "compiled command graph of Stations per 20 mm rainfall bin\n\n- nodes: 2\n- 2 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 1\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"128\" style=\"grid-column:1;grid-row:1 / span 2\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-core-histogram-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-core-histogram-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-core-histogram-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:rainfall-histogram-clear → node:rainfall-histogram-local: raw ×1; stationsPerBin</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:rainfall-histogram-clear\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"rainfall-histogram-clear\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">rainfall-histogram-clear</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=256</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:rainfall-histogram-local\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"rainfall-histogram-local\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">rainfall-histogram-local</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=1024</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:rainfall-histogram-local\" aria-label=\"Inspect rainfall-histogram-local\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 128
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.477Z",
+    "runId": "run-732bbc24",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-732bbc24",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-weights-minimum-spanning-tree",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-weights-minimum-spanning-tree",
+  "viewId": "formula-card",
+  "caption": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant…",
+  "description": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant…",
+  "llms": "Formula Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>minimum-spanning-tree-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{standardized}{z_{ic}}&amp;=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}}\\\\\n\\term{cost}{d_{ij}}&amp;=\\sum_{c}\\term{delta}{(z_{ic}-z_{jc})^2},\\qquad T=\\arg\\min_{\\text{spanning forest}}\\sum_{(i,j)\\in T}d_{ij}\n\\end{aligned}</pre><p class=\"lens-ascii\">Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"standardized\">standardized · intermediate · scaled</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"deviation\">deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-slot-costs\" data-value=\"cost\">cost · output · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-minimum-spanning-tree-compiled:minimum-spanning-tree-standardize\" data-value=\"delta\">delta · intermediate · delta</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "standardized",
+        "intermediate",
+        "scaled",
+        "—",
+        "metadata"
+      ],
+      [
+        "deviation",
+        "intermediate",
+        "deviation",
+        "—",
+        "metadata"
+      ],
+      [
+        "cost",
+        "output",
+        "cost",
+        "—",
+        "metadata"
+      ],
+      [
+        "delta",
+        "intermediate",
+        "delta",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{standardized}{z_{ic}}&=\\frac{x_{ic}-\\bar{x}_c}{\\term{deviation}{s_c}}\\\\\n\\term{cost}{d_{ij}}&=\\sum_{c}\\term{delta}{(z_{ic}-z_{jc})^2},\\qquad T=\\arg\\min_{\\text{spanning forest}}\\sum_{(i,j)\\in T}d_{ij}\n\\end{aligned}",
+    "ascii": "Edge cost, not the procedure: d_ij = sum over columns c of (z_ic - z_jc)^2, the squared Euclidean distance between standardized attribute rows, on each contiguity link. z = (x - mean) / s with s the population standard deviation (a constant column becomes 0). The tree T minimizes the total cost of a spanning forest; ties break on the lower-row CSR slot, so the forest is unique.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:06.595Z",
+    "runId": "run-6bdf9050",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-6bdf9050",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

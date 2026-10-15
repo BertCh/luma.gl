@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.great-circle-arcs",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.great-circle-arcs",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.great-circle-arcs: targets → arcs.",
+  "description": "Result of gpu-spatial-analysis.great-circle-arcs: targets → arcs. lines: 40. values read back from the GPU run. input targets: 40 points.",
+  "llms": "Result of gpu-spatial-analysis.great-circle-arcs: targets → arcs\n\n- lines: 40\n- input targets: 40 points\n- Simple equirectangular projection (x scaled by cos 47.36°); not equal-area.\n- 1 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 40 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1320 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "40"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-243.4149932861328,18.43939971923828],[140.38600158691406,76.27330017089844]]\" role=\"img\" aria-label=\"Result: arcs\"><defs><pattern id=\"lens-gpu-spatial-analysis-great-circle-arcs-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-great-circle-arcs-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-great-circle-arcs-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"context\"><circle class=\"cv-mark cv-mark--context cv-point\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"#f1f1ef\" stroke=\"#ffffff\" r=\"0.8999999999999999\" aria-hidden=\"true\" cx=\"65.97\" cy=\"51.06\" data-provenance=\"readback\"></circle></g><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:45.976Z",
+    "runId": "run-dbacf017",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-dbacf017",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

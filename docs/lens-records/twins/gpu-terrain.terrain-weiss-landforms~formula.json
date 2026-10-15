@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-weiss-landforms",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-weiss-landforms",
+  "viewId": "formula-card",
+  "caption": "Formula Per scale (small and large, radii in cells) the TPI plane comes from the summed-area table; global standardization gives z = (TPI - mean)/standardDeviation over all valid cells of that scale (population statistics; z = 0 when the deviation i…",
+  "description": "Formula Per scale (small and large, radii in cells) the TPI plane comes from the summed-area table; global standardization gives z = (TPI - mean)/standardDeviation over all valid cells of that scale (population statistics; z = 0 when the deviation i…",
+  "llms": "Formula Per scale (small and large, radii in cells) the TPI plane comes from the summed-area table; global standardization gives z = (TPI - mean)/standardDeviation over all valid cells of that scale (population statistics; z = 0 when the deviation is 0; local uses the window DEV instead). Class c(z): 0 if z <= -standardThreshold, 2 if z >= standardThreshold, else 1. With cs from the small scale and cl from the large one: cs 0 -> 1 + cl (canyon, midslope drainage, upland drainage); cs 1 -> cl 0: U-shaped valley 4, cl 1: plain 5 if Horn slope <= slopeThresholdDegrees else open slope 6, cl 2: upper slope 7; cs 2 -> 8 + cl (local ridge, midslope ridge, mountain top). Cells with an invalid elevation, position or slope get 0.\n\n- bound symbols: 8/8\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-weiss-landforms.classes</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{small}{s} = \\frac{\\term{position}{\\mathrm{TPI}_3} - \\term{mean}{\\mu}}{\\term{deviation}{\\sigma}},\\quad c(x) = \\begin{cases} 0 &amp; x \\le -\\term{threshold}{t} \\\\ 2 &amp; x \\ge t \\\\ 1 &amp; \\text{otherwise} \\end{cases},\\quad \\term{landform}{L} = \\begin{cases} 1 + c_l &amp; c_s = 0 \\\\ \\begin{cases} 4 &amp; c_l = 0 \\\\ 5\\text{ if }\\term{slope}{\\theta} \\le \\term{slopeThreshold}{\\beta}\\text{ else }6 &amp; c_l = 1 \\\\ 7 &amp; c_l = 2 \\end{cases} &amp; c_s = 1 \\\\ 8 + c_l &amp; c_s = 2 \\end{cases}</pre><p class=\"lens-ascii\">Per scale (small and large, radii in cells) the TPI plane comes from the summed-area table; global standardization gives z = (TPI - mean)/standardDeviation over all valid cells of that scale (population statistics; z = 0 when the deviation is 0; local uses the window DEV instead). Class c(z): 0 if z &lt;= -standardThreshold, 2 if z &gt;= standardThreshold, else 1. With cs from the small scale and cl from the large one: cs 0 -&gt; 1 + cl (canyon, midslope drainage, upland drainage); cs 1 -&gt; cl 0: U-shaped valley 4, cl 1: plain 5 if Horn slope &lt;= slopeThresholdDegrees else open slope 6, cl 2: upper slope 7; cs 2 -&gt; 8 + cl (local ridge, midslope ridge, mountain top). Cells with an invalid elevation, position or slope get 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-position-summed-area-quantize\" data-value=\"small\">standardized small TPI · intermediate · small</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-slope\" data-value=\"position\">TPI planes · input · positionValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-position-evaluate\" data-value=\"mean\">scale mean · intermediate · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-position-evaluate\" data-value=\"deviation\">scale deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-classify\" data-value=\"threshold\">standard threshold · parameter · threshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-slope\" data-value=\"slope\">slope · intermediate · slope</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-classify\" data-value=\"slopeThreshold\">slope threshold · parameter · slopeThreshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-weiss-landforms-compiled:terrain-weiss-landforms-classify\" data-value=\"landform\">landform code · output · landform</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "standardized small TPI",
+        "intermediate",
+        "small",
+        "—",
+        "metadata"
+      ],
+      [
+        "TPI planes",
+        "input",
+        "positionValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "scale mean",
+        "intermediate",
+        "mean",
+        "—",
+        "metadata"
+      ],
+      [
+        "scale deviation",
+        "intermediate",
+        "deviation",
+        "—",
+        "metadata"
+      ],
+      [
+        "standard threshold",
+        "parameter",
+        "threshold",
+        "—",
+        "metadata"
+      ],
+      [
+        "slope",
+        "intermediate",
+        "slope",
+        "—",
+        "metadata"
+      ],
+      [
+        "slope threshold",
+        "parameter",
+        "slopeThreshold",
+        "—",
+        "metadata"
+      ],
+      [
+        "landform code",
+        "output",
+        "landform",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{small}{s} = \\frac{\\term{position}{\\mathrm{TPI}_3} - \\term{mean}{\\mu}}{\\term{deviation}{\\sigma}},\\quad c(x) = \\begin{cases} 0 & x \\le -\\term{threshold}{t} \\\\ 2 & x \\ge t \\\\ 1 & \\text{otherwise} \\end{cases},\\quad \\term{landform}{L} = \\begin{cases} 1 + c_l & c_s = 0 \\\\ \\begin{cases} 4 & c_l = 0 \\\\ 5\\text{ if }\\term{slope}{\\theta} \\le \\term{slopeThreshold}{\\beta}\\text{ else }6 & c_l = 1 \\\\ 7 & c_l = 2 \\end{cases} & c_s = 1 \\\\ 8 + c_l & c_s = 2 \\end{cases}",
+    "ascii": "Per scale (small and large, radii in cells) the TPI plane comes from the summed-area table; global standardization gives z = (TPI - mean)/standardDeviation over all valid cells of that scale (population statistics; z = 0 when the deviation is 0; local uses the window DEV instead). Class c(z): 0 if z <= -standardThreshold, 2 if z >= standardThreshold, else 1. With cs from the small scale and cl from the large one: cs 0 -> 1 + cl (canyon, midslope drainage, upland drainage); cs 1 -> cl 0: U-shaped valley 4, cl 1: plain 5 if Horn slope <= slopeThresholdDegrees else open slope 6, cl 2: upper slope 7; cs 2 -> 8 + cl (local ridge, midslope ridge, mountain top). Cells with an invalid elevation, position or slope get 0.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.924Z",
+    "runId": "run-6c70f9e9",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-6c70f9e9",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

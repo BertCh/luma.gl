@@ -1,0 +1,40 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-zonal-statistics",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPURasterZonalStatistics({\n    grid, // 64 × 64 cells of 120 m\n    zones, // dense zone ID per cell: 0 tree, 1 grass, 2 crop, 3 built-up, 4 water\n    values: makeGPURasterBand(dem, grid), // elevation in metres\n    zoneCapacity: 5, // one output row per zone\n    output: {cellCounts, means, minimums, maximums} // elevation in metres per zone\n  })\n);",
+    "language": "ts",
+    "lineCount": 9
+  },
+  "scenarioId": "gpu-raster.raster-zonal-statistics",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums. rows: 5. values read back from the GPU run. input zonalElevation: 4096 cells.",
+  "description": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums. rows: 5. values read back from the GPU run. input zonalElevation: 4096 cells.",
+  "llms": "Result of gpu-raster.raster-zonal-statistics: zonalElevation, zonalZones → zoneMaximums\n\n- rows: 5\n- input zonalElevation: 4096 cells\n- input zonalZones: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">zoneCellCounts</th><th class=\"cv-col--output\" scope=\"col\">zoneMeans</th><th class=\"cv-col--output\" scope=\"col\">zoneMinimums</th><th class=\"cv-col--output\" scope=\"col\">zoneMaximums</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3682</td><td class=\"cv-col--output\" data-provenance=\"readback\">1320</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1790</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">272</td><td class=\"cv-col--output\" data-provenance=\"readback\">1150</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1780</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">13</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td><td class=\"cv-col--output\" data-provenance=\"readback\">1070</td><td class=\"cv-col--output\" data-provenance=\"readback\">1370</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">34</td><td class=\"cv-col--output\" data-provenance=\"readback\">1090</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1100</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">95</td><td class=\"cv-col--output\" data-provenance=\"readback\">1350</td><td class=\"cv-col--output\" data-provenance=\"readback\">1080</td><td class=\"cv-col--output\" data-provenance=\"readback\">1360</td></tr></tbody></table><p class=\"cv-legend\">grey: input zonalElevation, zonalZones · blue: output zoneCellCounts, zoneMeans, zoneMinimums, zoneMaximums</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded · cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.446Z",
+    "runId": "run-9d7f36f2",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9d7f36f2",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

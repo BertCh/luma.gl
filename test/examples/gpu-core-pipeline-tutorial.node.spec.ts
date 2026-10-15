@@ -12,11 +12,24 @@ import {
   GPU_CORE_TUTORIAL_VALUES
 } from '../../website/src/components/docs/gpu-core-pipeline-model';
 import {
-  GPU_CORE_COMPILER_RESOURCES,
-  GPU_CORE_COMPILER_STAGES,
-  planGPUCoreExecutionSlices
+  buildGPUCoreAnatomyModel,
+  GPU_CORE_ANATOMY_SCENARIO_ID,
+  GPU_CORE_COMPILER_STAGES
 } from '../../website/src/components/docs/gpu-core-compiler-model';
 
+import {fromRecordedLensFile} from '../../modules/experimental/src/computation-lenses/registry';
+
+const ANATOMY_RECORD = fromRecordedLensFile(
+  JSON.parse(
+    readFileSync(
+      path.join(process.cwd(), `docs/lens-records/${GPU_CORE_ANATOMY_SCENARIO_ID}.json`),
+      'utf8'
+    )
+  )
+);
+
+// The anatomy and execution lab now display recorded GPUScan work, replacing the hand-modelled
+// classify/scan/style/render pipeline. Test the recorded allocation and slicing evidence.
 describe('GPU Core pipeline tutorial', () => {
   test('explains the default stable compaction result', () => {
     expect(
@@ -88,7 +101,7 @@ describe('GPU Core pipeline tutorial', () => {
     expect(componentSource).toContain('drawIndirect');
   });
 
-  test('exposes every compiler view and a real non-overlapping alias example', () => {
+  test('exposes every compiler view and the recorded non-overlapping alias example', () => {
     expect(GPU_CORE_COMPILER_STAGES.map(stage => stage.id)).toEqual([
       'declared',
       'hazards',
@@ -98,27 +111,60 @@ describe('GPU Core pipeline tutorial', () => {
       'encoded',
       'slices'
     ]);
-    const allocationC = GPU_CORE_COMPILER_RESOURCES.filter(resource => resource.allocation === 'C');
-    expect(allocationC.map(resource => resource.id)).toEqual(['scan-scratch', 'style-scratch']);
-    expect(allocationC[0].lastNode).toBeLessThan(allocationC[1].firstNode);
+    const model = buildGPUCoreAnatomyModel(ANATOMY_RECORD);
+    expect(model.status).toBe('ready');
+    if (model.status !== 'ready') throw new Error(model.reason);
+    expect(model.provenance.runId).toBe(ANATOMY_RECORD.record.runId);
+    expect(model.nodes.some(node => node.operator === 'GPUScan')).toBe(true);
+
+    const sharedAllocations = model.allocations.filter(
+      allocation => allocation.resourceIds.length > 1
+    );
+    expect(sharedAllocations.length).toBeGreaterThan(0);
+    for (const allocation of sharedAllocations) {
+      const resources = model.resources
+        .filter(resource => allocation.resourceIds.includes(resource.id))
+        .sort((first, second) => first.firstNode! - second.firstNode!);
+      for (let index = 1; index < resources.length; index++) {
+        expect(resources[index - 1].lastNode).toBeLessThan(resources[index].firstNode!);
+      }
+    }
   });
 
-  test('plans frame slices only at node boundaries and surfaces oversized steps', () => {
-    const slices = planGPUCoreExecutionSlices(1_100_000);
-    expect(slices.map(slice => slice.nodeIds)).toEqual([
-      ['classify'],
-      ['scan-blocks', 'scan-carry'],
-      ['scatter'],
-      ['style', 'instances', 'render']
-    ]);
-    expect(slices.every(slice => !slice.oversized)).toBe(true);
+  test('displays recorded frame slices at node boundaries and surfaces oversized steps', () => {
+    const model = buildGPUCoreAnatomyModel(ANATOMY_RECORD);
+    expect(model.status).toBe('ready');
+    if (model.status !== 'ready') throw new Error(model.reason);
+    expect(model.sliceSeries.map(series => series.budget)).toEqual([512, 2048, 8192]);
+    for (const series of model.sliceSeries) {
+      expect(series.slices.flatMap(slice => slice.nodeIds)).toEqual(
+        model.nodes.map(node => node.id)
+      );
+      const recordedSeries = ANATOMY_RECORD.record.metrics
+        ?.flatMap(metrics => metrics.series ?? [])
+        .find(candidate => candidate.name === `slices@${series.budget}`);
+      expect(recordedSeries).toBeDefined();
+      expect(
+        model.nodes.map(node => series.slices.find(slice => slice.nodeIds.includes(node.id))?.index)
+      ).toEqual(Array.from(recordedSeries!.values));
+      for (const slice of series.slices) {
+        expect(slice.invocationCount).toBeDefined();
+        if (slice.oversized) {
+          expect(slice.nodeIds).toHaveLength(1);
+          expect(slice.invocationCount).toBeGreaterThan(series.budget);
+        }
+      }
+    }
+    expect(model.sliceSeries[0].slices.some(slice => slice.oversized)).toBe(true);
+    expect(model.sliceSeries[2].slices).toHaveLength(1);
 
-    const constrained = planGPUCoreExecutionSlices(256_000);
-    expect(constrained.filter(slice => slice.oversized).map(slice => slice.nodeIds)).toEqual([
-      ['classify'],
-      ['scan-blocks'],
-      ['scatter']
-    ]);
+    const withoutSlices = buildGPUCoreAnatomyModel({
+      ...ANATOMY_RECORD,
+      record: {...ANATOMY_RECORD.record, metrics: []}
+    });
+    expect(withoutSlices.status).toBe('ready');
+    if (withoutSlices.status !== 'ready') throw new Error(withoutSlices.reason);
+    expect(withoutSlices.sliceSeries).toEqual([]);
   });
 
   test('connects the compiler anatomy, execution lab, glossary, and trace walkthrough', () => {

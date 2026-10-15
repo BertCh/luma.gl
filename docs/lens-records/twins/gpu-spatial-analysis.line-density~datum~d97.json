@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-density",
+  "rung": "datum",
+  "datum": 97,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-density",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of 100 m cell, rows from south 97. lengths: 200.01010131835938. values read back from the GPU run. line-density: 2 quantities.",
+  "description": "Receipt of 100 m cell, rows from south 97. lengths: 200.01010131835938. values read back from the GPU run. line-density: 2 quantities.",
+  "llms": "Receipt of 100 m cell, rows from south 97\n\n- lengths: 200.01010131835938\n- line-density: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lengths",
+    "value": "200.01010131835938"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 100 m cell, rows from south 97</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"line-density\"><tr><th scope=\"rowgroup\" colspan=\"5\">line-density</th></tr><tr data-provenance=\"readback\"><td>line-density</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-density-snapshots-densities-0\" title=\"metres of road per square metre of cell (cell area 10,000 m²)\">densities</button></td><td>0.020001009106636047</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-density</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-density-snapshots-lengths-0\" title=\"metres of road inside each 100 m cell\">lengths</button></td><td>200.01010131835938</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-core.segmented-reduction</h4><div><pre class=\"lens-tex\">\\term{y}{y_s}=\\operatorname{op}_{\\term{offsets}{o_s}\\le j&lt;o_{s+1}}\\term{x}{x_j},\\quad\\operatorname{op}\\in\\{\\operatorname{sum},\\operatorname{min},\\operatorname{max}\\}</pre><p class=\"lens-ascii\">y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "line-density",
+        "densities",
+        "0.020001009106636047",
+        "0",
+        "readback"
+      ],
+      [
+        "line-density",
+        "lengths",
+        "200.01010131835938",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:51.599Z",
+    "runId": "run-ce993984",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ce993984",
+    "rung": "datum",
+    "bindings": {
+      "entity": 97
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

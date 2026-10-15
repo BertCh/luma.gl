@@ -1,0 +1,47 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-summits",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-summits",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of GPUTerrainSummits on the Dixie Fire DEM. nodes: 6. structure metadata only. 6 visible units vs budget 24.",
+  "description": "compiled command graph of GPUTerrainSummits on the Dixie Fire DEM. nodes: 6. structure metadata only. 6 visible units vs budget 24.",
+  "llms": "compiled command graph of GPUTerrainSummits on the Dixie Fire DEM\n\n- nodes: 6\n- 6 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 9\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"384\" style=\"grid-column:1;grid-row:1 / span 6\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-terrain-terrain-summits-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-summits-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-summits-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"2\" data-kind=\"raw\" data-count=\"2\"><title>node:terrain-summits-elevation → node:terrain-summits-pyramid-input: raw ×2; terrain-summits-elevation-values, terrain-summits-elevation-validity</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"2\" data-kind=\"raw\" data-count=\"2\"><title>node:terrain-summits-pyramid-input → node:terrain-summits-pyramid-level-0: raw ×2; terrain-summits-pyramid-values, terrain-summits-pyramid-validity</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 152 C 81.33333333333334 152, 81.33333333333334 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-summits-pyramid-level-0 → node:terrain-summits-pyramid-levels-1-4: raw ×1; terrain-summits-pyramid-maximum</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 216 C 81.33333333333334 216, 81.33333333333334 280, 110 280\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-summits-pyramid-levels-1-4 → node:terrain-summits-pyramid-levels-5-5: raw ×1; terrain-summits-pyramid-maximum</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 38.66666666666666 24, 38.66666666666666 344, 110 344\" opacity=\"1\" stroke-width=\"2\" data-kind=\"raw\" data-count=\"2\"><title>node:terrain-summits-elevation → node:terrain-summits-summits: raw ×2; terrain-summits-elevation-values, terrain-summits-elevation-validity</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 280 C 81.33333333333334 280, 81.33333333333334 344, 110 344\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-summits-pyramid-levels-5-5 → node:terrain-summits-summits: raw ×1; terrain-summits-pyramid-maximum</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-elevation\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-elevation\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-elevation</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-pyramid-input\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-pyramid-input\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-pyramid-input</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=16 · maximumInvocationCount=4096</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-pyramid-level-0\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-pyramid-level-0\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-pyramid-level-0</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=1024</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-pyramid-levels-1-4\" data-tier=\"subject\" style=\"grid-column:2;grid-row:4;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-pyramid-levels-1-4\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-pyramid-levels-1-4</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=1024</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-pyramid-levels-5-5\" data-tier=\"subject\" style=\"grid-column:2;grid-row:5;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-pyramid-levels-5-5\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-pyramid-levels-5-5</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=256</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-summits-summits\" data-tier=\"subject\" style=\"grid-column:2;grid-row:6;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-summits-summits\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-summits-summits</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=16 · maximumInvocationCount=4096</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:terrain-summits-summits\" aria-label=\"Inspect terrain-summits-summits\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 384
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:58.591Z",
+    "runId": "run-b839e2e8",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-b839e2e8",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

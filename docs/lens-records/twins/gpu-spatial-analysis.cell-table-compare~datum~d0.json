@@ -1,0 +1,108 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-table-compare",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-table-compare",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of union cell 0. zScore: 0.8944271802902222. values read back from the GPU run. boundaries-offsets: 6 quantities.",
+  "description": "Receipt of union cell 0. zScore: 0.8944271802902222. values read back from the GPU run. boundaries-offsets: 6 quantities.",
+  "llms": "Receipt of union cell 0\n\n- zScore: 0.8944271802902222\n- boundaries-offsets: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "zScore",
+    "value": "0.8944271802902222"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of union cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"boundaries-offsets\"><tr><th scope=\"rowgroup\" colspan=\"5\">boundaries-offsets</th></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-cells-0\" title=\"union Quadbin cell key (zoom 17) as (low, high) uint32 words; rows past the count are empty (0xffffffff)\">cells</button></td><td>1801977855, 1225992884</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-presence-0\" title=\"bit 1: cell in the restaurant table, bit 2: cell in the shop table\">presence</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-before-0\" title=\"restaurants and cafes per cell (a count)\">before</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-after-0\" title=\"shops per cell (a count)\">after</button></td><td>12</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-delta-0\" title=\"shops minus restaurants per cell (count difference)\">delta</button></td><td>4</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-table-compare-snapshots-zScore-0\" title=\"Poisson z-score: delta / sqrt(before + after)\">zScore</button></td><td>0.8944271802902222</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "boundaries-offsets",
+        "cells",
+        "1801977855, 1225992884",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "presence",
+        "3",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "before",
+        "8",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "after",
+        "12",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "delta",
+        "4",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "zScore",
+        "0.8944271802902222",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:04.868Z",
+    "runId": "run-b3477729",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b3477729",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

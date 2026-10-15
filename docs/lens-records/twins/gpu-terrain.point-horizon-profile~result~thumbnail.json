@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.point-horizon-profile",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.point-horizon-profile",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHoriz…",
+  "description": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHorizonSkylineAngle. cells: 108. values read back from the GPU run. input dem: 4096 cells.",
+  "llms": "Result of gpu-terrain.point-horizon-profile: dem, horizonObservers → pointHorizonSkylineAngle\n\n- cells: 108\n- input dem: 4096 cells\n- input horizonObservers: 12 values\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "108"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7680,7680]]\" role=\"img\" aria-label=\"Result: pointHorizonSkylineAngle\"><defs><pattern id=\"lens-gpu-terrain-point-horizon-profile-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-point-horizon-profile-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-point-horizon-profile-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"0.39000000000000057\" height=\"0.030000000000001137\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#1c6bb0\" stroke=\"#ffffff\" x=\"38\" y=\"89.97\" data-provenance=\"readback\" data-raster-width=\"36\" data-raster-height=\"3\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACQAAAADCAMAAADMd10kAAAAD1BMVEWKv91KmMnG2+8ca7AIPX+N1hSIAAAAeklEQVR4AQFvAJD/AAAAAQICAgICAgIAAQMBAAIAAgICAgICAgEEBAQDBAMDAwEAAAAAAAAAAQEAAAADBAMDAQEBAQMDBAQEBAQEBAQEBAQEBAQDAwEAAQEBAAEAAAABAQEBAwMDAwMEBAQDAwMDAAICAgICAgIAAQABLU4A2jGVnOQAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.006Z",
+    "runId": "run-ad247c2d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-ad247c2d",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

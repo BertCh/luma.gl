@@ -1,0 +1,91 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.ward-regions",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.ward-regions",
+  "viewId": "formula-card",
+  "caption": "Formula Merge cost, not the procedure: joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. Every tract starts alone with W = 0 and each merge adds its…",
+  "description": "Formula Merge cost, not the procedure: joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. Every tract starts alone with W = 0 and each merge adds its…",
+  "llms": "Formula Merge cost, not the procedure: joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round and can stop at a different partition.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>ward-merge-cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{increase}{\\Delta W_{ab}}&amp;=\\frac{\\term{firstCount}{n_a}\\,\\term{secondCount}{n_b}}{n_a+n_b}\\sum_{c}\\term{difference}{(\\bar{x}_{ac}-\\bar{x}_{bc})^2}\\\\\n\\term{objective}{W}&amp;=\\sum_{\\text{merges}}\\Delta W_{ab}\n\\end{aligned}</pre><p class=\"lens-ascii\">Merge cost, not the procedure: joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round and can stop at a different partition.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-round-0-nearest-candidates\" data-value=\"increase\">increase · intermediate · increase</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-round-0-nearest-candidates\" data-value=\"firstCount\">firstCount · intermediate · firstCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-round-0-nearest-candidates\" data-value=\"secondCount\">secondCount · intermediate · secondCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-round-0-nearest-candidates\" data-value=\"difference\">difference · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ward-regions-compiled:ward-regions-initialize-status\" data-value=\"objective\">objective · output · objective</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "increase",
+        "intermediate",
+        "increase",
+        "—",
+        "metadata"
+      ],
+      [
+        "firstCount",
+        "intermediate",
+        "firstCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "secondCount",
+        "intermediate",
+        "secondCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "difference",
+        "intermediate",
+        "difference",
+        "—",
+        "metadata"
+      ],
+      [
+        "objective",
+        "output",
+        "objective",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{increase}{\\Delta W_{ab}}&=\\frac{\\term{firstCount}{n_a}\\,\\term{secondCount}{n_b}}{n_a+n_b}\\sum_{c}\\term{difference}{(\\bar{x}_{ac}-\\bar{x}_{bc})^2}\\\\\n\\term{objective}{W}&=\\sum_{\\text{merges}}\\Delta W_{ab}\n\\end{aligned}",
+    "ascii": "Merge cost, not the procedure: joining adjacent regions a and b raises the within-region sum of squares by dW = n_a n_b / (n_a + n_b) * sum over columns c of (mean_ac - mean_bc)^2. Every tract starts alone with W = 0 and each merge adds its dW, so the final W is the exact within-region sum of squares (standardized units unless standardize is false). sequential merges the cheapest adjacent pair per iteration; mutual-nearest merges every mutually cheapest pair per round and can stop at a different partition.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:58:56.241Z",
+    "runId": "run-2324b314",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-2324b314",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,150 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-moran",
+  "rung": "datum",
+  "datum": 420,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-moran",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 420. weightsRowOffsets: 2662. values read back from the GPU run. local-moran: 9 quantities.",
+  "description": "Receipt of Chicago tract 420. weightsRowOffsets: 2662. values read back from the GPU run. local-moran: 9 quantities.",
+  "llms": "Receipt of Chicago tract 420\n\n- weightsRowOffsets: 2662\n- local-moran: 9 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "weightsRowOffsets",
+    "value": "2662"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 420</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"local-moran\"><tr><th scope=\"rowgroup\" colspan=\"5\">local-moran</th></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-values-0\" title=\"Population below 150% poverty line (%)\">values</button></td><td>22.700000762939453</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-localI-0\" title=\"Local Moran I (not significance)\">localI</button></td><td>-0.38134902715682983</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-zScores-0\">zScores</button></td><td>-3.9595789909362793</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-spatialLag-0\">spatialLag</button></td><td>20.314186096191406</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-quadrants-0\">quadrants</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-pValues-0\">pValues</button></td><td>0.00007508198905270547</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-adjustedPValues-0\">adjustedPValues</button></td><td>0.0024613835848867893</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-neighborCounts-0\">neighborCounts</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-moran</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"chicago-local-moran-snapshots-weightsRowOffsets-0\">weightsRowOffsets</button></td><td>2662</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>local-moran</h4><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{localI}{-0.381349}&amp;=\\frac{(\\term{count}{n}-1)\\term{centered}{c_i}\\term{spatialLag}{\\left(20.3142\\right)}}{\\term{sumOfSquares}{M_2}},\n&amp;\\term{spatialLag}{\\left(20.3142\\right)}&amp;=\\sum_j\\term{weight}{w_{ij}}\\term{neighborCentered}{c_j}\\\\\n\\term{zScores}{-3.95958}&amp;=\\frac{\\operatorname{sign}(\\term{centered}{c_i})(\\term{spatialLag}{\\left(20.3142\\right)}-\\term{weightSum}{W_i}\\term{otherMean}{\\mu})}{\\sqrt{\\term{lagVariance}{V_i}}},\n&amp;\\term{lagVariance}{V_i}&amp;=\\term{otherVariance}{\\sigma^2}\\frac{\\term{others}{N}\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{others}{N}-1}\\\\\n\\term{others}{N}&amp;=\\term{count}{n}-1,\n&amp;\\term{otherMean}{\\mu}&amp;=-\\frac{\\term{centered}{c_i}}{\\term{others}{N}},\n&amp;\\term{otherVariance}{\\sigma^2}&amp;=\\frac{\\term{sumOfSquares}{M_2}-\\term{centered}{c_i}^2}{\\term{others}{N}}-\\term{otherMean}{\\mu}^2\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j\\term{weight}{w_{ij}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j\\term{weight}{w_{ij}}^2\n\\end{aligned}</pre><p class=\"lens-ascii\">I_i = (n-1) c_i L_i / M2; L_i = sum_j w_ij c_j; z_i = sign(c_i) (L_i - W_i mu) / sqrt(V_i); V_i = sigma^2 (N S1_i - W_i^2)/(N-1); N = n-1; mu = -c_i/N; sigma^2 = (M2-c_i^2)/N-mu^2; W_i = sum_j w_ij; S1_i = sum_j w_ij^2. c = x - mean; M2 = sum c^2 over analysis rows. Positive weights to other analysis rows only; row weights are re-standardized over unmasked neighbors. Undefined z when n &lt; 3, c_i = 0, too few neighbors, or nonpositive variance.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "local-moran",
+        "values",
+        "22.700000762939453",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "localI",
+        "-0.38134902715682983",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "zScores",
+        "-3.9595789909362793",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "spatialLag",
+        "20.314186096191406",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "quadrants",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "pValues",
+        "0.00007508198905270547",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "adjustedPValues",
+        "0.0024613835848867893",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "neighborCounts",
+        "10",
+        "0",
+        "readback"
+      ],
+      [
+        "local-moran",
+        "weightsRowOffsets",
+        "2662",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    },
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "pass",
+      "reason": "significance available"
+    },
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:01:53.389Z",
+    "runId": "run-d9f28b0c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d9f28b0c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 420
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

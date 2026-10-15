@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.bounds-filter",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.bounds-filter",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 0. ids: 0. values read back from the GPU run. bounds-filter: 5 quantities.",
+  "description": "Receipt of observation 0. ids: 0. values read back from the GPU run. bounds-filter: 5 quantities.",
+  "llms": "Receipt of observation 0\n\n- ids: 0\n- bounds-filter: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "ids",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"bounds-filter\"><tr><th scope=\"rowgroup\" colspan=\"5\">bounds-filter</th></tr><tr data-provenance=\"readback\"><td>bounds-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-bounds-filter-snapshots-observations-0\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bounds-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-bounds-filter-snapshots-bounds-0\">bounds</button></td><td>4595.29931640625, 597.4959106445312, 4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bounds-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-bounds-filter-snapshots-resultObservations-0\">resultObservations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bounds-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-bounds-filter-snapshots-selected-0\">selected</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bounds-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-bounds-filter-snapshots-ids-0\">ids</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.bounds-filter</h4><div><pre class=\"lens-tex\">\\term{selected}{1}=\\mathbf{1}[\\term{finite}{\\mathrm{finite}(F)}\\land\\term{minimum}{F_{\\min,x}}\\ge\\term{boxMin}{B_{\\min,x}}\\land\\term{maximum}{F_{\\max,x}}\\le\\term{boxMax}{B_{\\max,x}}\\land\\term{minimum}{F_{\\min,y}}\\ge\\term{boxMin}{B_{\\min,y}}\\land\\term{maximum}{F_{\\max,y}}\\le\\term{boxMax}{B_{\\max,y}}]</pre><p class=\"lens-ascii\">Within mode: finite bounds AND fMin.x &gt;= boxMin.x AND fMax.x &lt;= boxMax.x AND fMin.y &gt;= boxMin.y AND fMax.y &lt;= boxMax.y. All comparisons are inclusive, directly in f32.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "bounds-filter",
+        "observations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "bounds-filter",
+        "bounds",
+        "4595.29931640625, 597.4959106445312, 4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "bounds-filter",
+        "resultObservations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "bounds-filter",
+        "selected",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "bounds-filter",
+        "ids",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.728Z",
+    "runId": "run-a8ca5511",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a8ca5511",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

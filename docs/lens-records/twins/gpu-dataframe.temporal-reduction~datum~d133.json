@@ -1,0 +1,89 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.temporal-reduction",
+  "rung": "datum",
+  "datum": 133,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.temporal-reduction",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Taxon group and week slot 133. last: 1. values read back from the GPU run. temporal-reduction: 5 quantities.",
+  "description": "Receipt of Taxon group and week slot 133. last: 1. values read back from the GPU run. temporal-reduction: 5 quantities.",
+  "llms": "Receipt of Taxon group and week slot 133\n\n- last: 1\n- temporal-reduction: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "last",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Taxon group and week slot 133</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"temporal-reduction\"><tr><th scope=\"rowgroup\" colspan=\"5\">temporal-reduction</th></tr><tr data-provenance=\"readback\"><td>temporal-reduction</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-temporal-reduction-snapshots-counts-0\" title=\"Observations per slot, slot = category * 53 + week.\">counts</button></td><td>32</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>temporal-reduction</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-temporal-reduction-snapshots-minimums-0\">minimums</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>temporal-reduction</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-temporal-reduction-snapshots-maximums-0\">maximums</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>temporal-reduction</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-temporal-reduction-snapshots-first-0\" title=\"researchGrade at the earliest timestamp of the slot; NaN for an empty slot.\">first</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>temporal-reduction</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-temporal-reduction-snapshots-last-0\" title=\"researchGrade at the latest timestamp of the slot; NaN for an empty slot.\">last</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "temporal-reduction",
+        "counts",
+        "32",
+        "0",
+        "readback"
+      ],
+      [
+        "temporal-reduction",
+        "minimums",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "temporal-reduction",
+        "maximums",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "temporal-reduction",
+        "first",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "temporal-reduction",
+        "last",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.086Z",
+    "runId": "run-57413f26",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-57413f26",
+    "rung": "datum",
+    "bindings": {
+      "entity": 133
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

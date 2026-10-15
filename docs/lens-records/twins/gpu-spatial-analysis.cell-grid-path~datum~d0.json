@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-grid-path",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-grid-path",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of origin/destination pair 0. counts: 3. values read back from the GPU run. pathBoundaries-geometry: 3 quantities.",
+  "description": "Receipt of origin/destination pair 0. counts: 3. values read back from the GPU run. pathBoundaries-geometry: 3 quantities.",
+  "llms": "Receipt of origin/destination pair 0\n\n- counts: 3\n- pathBoundaries-geometry: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "counts",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of origin/destination pair 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"pathBoundaries-geometry\"><tr><th scope=\"rowgroup\" colspan=\"5\">pathBoundaries-geometry</th></tr><tr data-provenance=\"readback\"><td>pathBoundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-grid-path-snapshots-originPlaces-0\" title=\"origin places (every 200th of the 1,275)\">originPlaces</button></td><td>-87.67891693115234, 41.91227722167969</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>pathBoundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-grid-path-snapshots-distances-0\" title=\"H3 grid distance in cells\">distances</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>pathBoundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-grid-path-snapshots-counts-0\" title=\"cells on the path (distance + 1), 0 when no path exists\">counts</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pathBoundaries-geometry",
+        "originPlaces",
+        "-87.67891693115234, 41.91227722167969",
+        "0",
+        "readback"
+      ],
+      [
+        "pathBoundaries-geometry",
+        "distances",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "pathBoundaries-geometry",
+        "counts",
+        "3",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:34.265Z",
+    "runId": "run-06e84027",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-06e84027",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

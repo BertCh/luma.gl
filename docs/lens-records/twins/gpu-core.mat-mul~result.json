@@ -1,0 +1,40 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.mat-mul",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const eastWestSteps = graph.createDataView(eastWestStepsBuffer, {\n  format: 'float32',\n  length: 64\n});\ngraph.add(\n  new GPUMatMul({\n    id: 'east-west-steps',\n    left: elevation,\n    right: forwardDifference,\n    output: eastWestSteps,\n    m: 8,\n    k: 8,\n    n: 8\n  })\n);\n// eastWestSteps[r][c] = elevation[r][c + 1] - elevation[r][c] in m per cell; the last column is 0.\nreturn {eastWestSteps};",
+    "language": "ts",
+    "lineCount": 17
+  },
+  "scenarioId": "gpu-core.mat-mul",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs. eastWestSteps[62]: 198. values read back from the GPU run. 1 output panels from the recorded run.",
+  "description": "Read captured inputs into recorded array outputs. eastWestSteps[62]: 198. values read back from the GPU run. 1 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- eastWestSteps[62]: 198\n- 1 output panels from the recorded run\n- elevation: captured cells at native resolution\n- forwardDifference: captured cells at native resolution\n- eastWestSteps: captured cells at native resolution\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "eastWestSteps[62]",
+    "value": "198"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"640\" height=\"360\" viewBox=\"0 0 640 360\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-core-mat-mul-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"elevation\"><text class=\"cv-label\" x=\"24\" y=\"85.33333333333333\" fill=\"#5c636e\" font-size=\"11\">elevation</text><image width=\"173.33333333333334\" height=\"173.33333333333334\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-area\" data-role=\"input\" stroke-width=\"1\" fill=\"#5f6672\" stroke=\"#5f6672\" fill-opacity=\"0.6599999999999999\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-mul-snapshots-elevation-0\" data-axis=\"entity\" data-key-space=\"left-cells\" x=\"24\" y=\"93.33333333333333\" data-token=\"tile\" data-raster-width=\"8\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAAD1BMVEUhcbXG2+/3+/9rrtYIMGuB7GTfAAAAU0lEQVR4AQFIALf/AAABAgICAgICAAABAgICAgIBAAABAgEBAQMAAAADAgEDAAQEAAAAAQEDAAQEAAQAAwEBAwAEAAQEAAMBAwAEAAQEBAMDAwMEDzMAgKCJS4EAAAAASUVORK5CYII=\"></image></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"forwardDifference\"><text class=\"cv-label\" x=\"221.33333333333334\" y=\"85.33333333333333\" fill=\"#5c636e\" font-size=\"11\">forwardDifference</text><text class=\"cv-label\" x=\"207.33333333333334\" y=\"180\" fill=\"#5c636e\" font-size=\"11\">×</text><image width=\"173.33333333333334\" height=\"173.33333333333334\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-area\" data-role=\"input\" stroke-width=\"1\" fill=\"#5f6672\" stroke=\"#5f6672\" fill-opacity=\"0.18\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-mul-snapshots-forwardDifference-0\" data-axis=\"entity\" data-key-space=\"right-cells\" x=\"221.33333333333334\" y=\"93.33333333333333\" data-token=\"tile\" data-raster-width=\"8\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAABlBMVEX3+/8IMGtHJChIAAAAU0lEQVR4AQFIALf/AAABAQEBAQEBAAEAAQEBAQEBAAEBAAEBAQEBAAEBAQABAQEBAAEBAQEAAQEBAAEBAQEBAAEBAAEBAQEBAQABAAEBAQEBAQEBCCkAOrKCzVgAAAAASUVORK5CYII=\"></image></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"eastWestSteps\"><text class=\"cv-label\" x=\"418.6666666666667\" y=\"85.33333333333333\" fill=\"#5c636e\" font-size=\"11\">eastWestSteps</text><text class=\"cv-label\" x=\"404.6666666666667\" y=\"180\" fill=\"#5c636e\" font-size=\"11\">=</text><image width=\"173.33333333333334\" height=\"173.33333333333334\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.5\" fill=\"#c6dbef\" stroke=\"#ffffff\" fill-opacity=\"1\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-mul-snapshots-eastWestSteps-0\" data-axis=\"entity\" data-key-space=\"product-cells\" x=\"418.6666666666667\" y=\"93.33333333333333\" data-token=\"tile\" data-raster-width=\"8\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAAD1BMVEX3+//G2+9rrtYhcbUIMGtSKc/4AAAAU0lEQVR4AQFIALf/AAAAAQICAwMCAAAAAQIBAwQCAAABAwMDAwQCAAABBAMDBAQCAAEAAQMEBAQCAAEAAQMDBAQCAAAAAQECBAQCAAAAAAEBAwQCEfUAgTF7QyoAAAAASUVORK5CYII=\"></image><rect class=\"cv-mark cv-mark--highlight cv-line\" data-role=\"highlight\" stroke-width=\"2.5\" fill=\"none\" stroke=\"#d55e00\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-mul-snapshots-eastWestSteps-0\" x=\"548.6666666666667\" y=\"245\" width=\"21.666666666666668\" height=\"21.666666666666668\" data-key=\"62\"></rect></g></svg><p class=\"cv-legend\">eastWestSteps: ordered lightness, 5 classes</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.179Z",
+    "runId": "run-21e7d791",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-21e7d791",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.knox-test",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.knox-test",
+  "viewId": "formula-card",
+  "caption": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1…",
+  "description": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1…",
+  "llms": "Formula X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.knox-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{x}{X} = \\sum_{(i,j) \\in \\term{pairs}{S}} \\mathbf{1}\\big[\\,\\lvert t_i - t_j \\rvert \\le \\term{threshold}{\\tau}\\,\\big], \\qquad \\term{p}{p} = \\frac{1 + \\term{greater}{\\#\\{s : X_s \\ge X\\}}}{\\term{permutations}{P} + 1}, \\qquad \\term{expected}{E[X]} = \\frac{\\lvert S \\rvert\\, T}{n(n-1)/2}</pre><p class=\"lens-ascii\">X = number of listed spatial pairs (i &lt; j) with |t_i - t_j| &lt;= tau. p = (1 + #{permutations s with X_s &gt;= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-reduce\" data-value=\"x\">X · output · statistics</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-pair-mask\" data-value=\"pairs\">S · input · pairMask</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-partials\" data-value=\"threshold\">tau · parameter · threshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"p\">p · output · pGreater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"greater\">#{X_s &gt;= X} · intermediate · greater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-partials\" data-value=\"permutations\">P · parameter · permutations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-knox-test-compiled:knox-test-summary\" data-value=\"expected\">E[X] · intermediate · expected</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "X",
+        "output",
+        "statistics",
+        "—",
+        "metadata"
+      ],
+      [
+        "S",
+        "input",
+        "pairMask",
+        "—",
+        "metadata"
+      ],
+      [
+        "tau",
+        "parameter",
+        "threshold",
+        "—",
+        "metadata"
+      ],
+      [
+        "p",
+        "output",
+        "pGreater",
+        "—",
+        "metadata"
+      ],
+      [
+        "#{X_s >= X}",
+        "intermediate",
+        "greater",
+        "—",
+        "metadata"
+      ],
+      [
+        "P",
+        "parameter",
+        "permutations",
+        "—",
+        "metadata"
+      ],
+      [
+        "E[X]",
+        "intermediate",
+        "expected",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{x}{X} = \\sum_{(i,j) \\in \\term{pairs}{S}} \\mathbf{1}\\big[\\,\\lvert t_i - t_j \\rvert \\le \\term{threshold}{\\tau}\\,\\big], \\qquad \\term{p}{p} = \\frac{1 + \\term{greater}{\\#\\{s : X_s \\ge X\\}}}{\\term{permutations}{P} + 1}, \\qquad \\term{expected}{E[X]} = \\frac{\\lvert S \\rvert\\, T}{n(n-1)/2}",
+    "ascii": "X = number of listed spatial pairs (i < j) with |t_i - t_j| <= tau. p = (1 + #{permutations s with X_s >= X}) / (P + 1): one-sided (excess of close pairs), the +1 counts the observed value, ties count as exceedances. E[X] = |S| T / (n (n - 1) / 2) with T the number of time-close pairs among all n (n - 1) / 2 pairs. Times are permuted over fixed locations (swap-or-not shuffle, fixed seed).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:00:10.460Z",
+    "runId": "run-e45b056d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e45b056d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

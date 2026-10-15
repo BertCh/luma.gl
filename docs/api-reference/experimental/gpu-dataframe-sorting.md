@@ -11,6 +11,12 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Sort and select top-K rows per source batch
 
+### `GPUDataFrameSortQuery`
+
+Sort each source batch by a numeric column and publish stable row ids, optionally cut to the top K.
+
+::lens{scenario=gpu-dataframe.data-frame-sort-query rung=result caption="Highest poverty rates: tract row 732 leads at 76.1%, then row 396 at 75.3% (CPU check)."}
+
 Numeric ordering is stable for `uint32`, `sint32`, and `float32` keys. Sorting returns GPU-resident
 stable source-row identifiers rather than rewriting the source table:
 
@@ -40,7 +46,19 @@ Sorting and top-K are performed independently within every original source batch
 implicit global cross-batch materialization. Compiled results expose the original table, sorted
 `rowIndices`, updated `selectionMask`, and one selected count per preserved batch.
 
+#### How it computes
+
+{/* lens:GPUDataFrameSortQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-sort-query rung=datum bind=page datum=0 caption="Rank 0 is source row 732 at 76.1%; ranks 6 and 7 tie at 70.5% in source order."}
+::lens{scenario=gpu-dataframe.data-frame-sort-query rung=kernel caption="Look at the encode, value-sort, class-sort and publish steps: ties keep source order."}
+::lens{scenario=gpu-dataframe.data-frame-sort-query rung=graph caption="Encode keys, stable-sort by value, classify selected, null and NaN rows, stable-sort by class, then publish."}
+
 ### Explicit global ordering and top-K
+
+Order rows across every source batch and publish one global permutation with an optional top-K prefix.
+
+::lens{scenario=gpu-dataframe.data-frame-global-sort-query rung=result caption="The global top 10 takes 2 rows from the first 396-tract batch and 8 from the second."}
 
 Use `sortByGlobal` or `topKGlobal` when ordering must span every source batch. These operations
 explicitly stage numeric sort keys and source identities into GPU scratch; they never concatenate,
@@ -72,6 +90,14 @@ valid prefix. Equal keys retain their original cross-batch source order; null pl
 placement, signed zeros, infinities, filtered rows, and derived values follow the same rules as
 per-batch sorting. A global top-K limit is applied once across all batches; the original
 batch-aligned selection masks and counts are updated to match that same global result.
+
+#### How it computes
+
+{/* lens:GPUDataFrameGlobalSortQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-global-sort-query rung=datum bind=page datum=1 caption="Rank 1 is source row 396, the first row of the second batch, at 75.3%."}
+::lens{scenario=gpu-dataframe.data-frame-global-sort-query rung=kernel caption="Look at the stage kernels: keys and source ids from every batch enter one scratch buffer."}
+::lens{scenario=gpu-dataframe.data-frame-global-sort-query rung=graph caption="Stage keys from both batches into one scratch, sort by value then class, publish, select per batch."}
 
 ### Scaling beyond one-dimensional workgroup limits
 

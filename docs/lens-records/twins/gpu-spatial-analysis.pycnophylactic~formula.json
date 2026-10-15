@@ -1,0 +1,113 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.pycnophylactic",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.pycnophylactic",
+  "viewId": "formula-card",
+  "caption": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z t…",
+  "description": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z t…",
+  "llms": "Formula d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.pycnophylactic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{d_c^{(n+1)}}=\\frac{T_z}{M&#39;_z}\\,\\max\\!\\Big(0,\\ \\term{smooth}{\\bar d_c^{(n)}}+\\frac{\\term{total}{T_z}-\\term{mass}{M_z}}{\\term{area}{A_z}}\\Big)</pre><p class=\"lens-ascii\">d_c(n+1) = (T_z / M&#39;_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M&#39;_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-initialize\" data-value=\"density\">d_c · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-0-smooth\" data-value=\"smooth\">focal mean · intermediate · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-initialize\" data-value=\"total\">T_z · input · totals</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-0-restore-apply\" data-value=\"mass\">M_z · intermediate · zoneSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-zone-areas\" data-value=\"area\">A_z · intermediate · zoneAreas</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-0-restore-apply\">pycnophylactic-iteration-0-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-1-restore-apply\">pycnophylactic-iteration-1-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-2-restore-apply\">pycnophylactic-iteration-2-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-3-restore-apply\">pycnophylactic-iteration-3-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-4-restore-apply\">pycnophylactic-iteration-4-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-5-restore-apply\">pycnophylactic-iteration-5-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-6-restore-apply\">pycnophylactic-iteration-6-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-7-restore-apply\">pycnophylactic-iteration-7-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-8-restore-apply\">pycnophylactic-iteration-8-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-9-restore-apply\">pycnophylactic-iteration-9-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-10-restore-apply\">pycnophylactic-iteration-10-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-11-restore-apply\">pycnophylactic-iteration-11-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-12-restore-apply\">pycnophylactic-iteration-12-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-13-restore-apply\">pycnophylactic-iteration-13-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-14-restore-apply\">pycnophylactic-iteration-14-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-15-restore-apply\">pycnophylactic-iteration-15-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-16-restore-apply\">pycnophylactic-iteration-16-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-17-restore-apply\">pycnophylactic-iteration-17-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-18-restore-apply\">pycnophylactic-iteration-18-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-19-restore-apply\">pycnophylactic-iteration-19-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-20-restore-apply\">pycnophylactic-iteration-20-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-21-restore-apply\">pycnophylactic-iteration-21-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-22-restore-apply\">pycnophylactic-iteration-22-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-23-restore-apply\">pycnophylactic-iteration-23-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-24-restore-apply\">pycnophylactic-iteration-24-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-25-restore-apply\">pycnophylactic-iteration-25-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-26-restore-apply\">pycnophylactic-iteration-26-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-27-restore-apply\">pycnophylactic-iteration-27-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-28-restore-apply\">pycnophylactic-iteration-28-restore-apply</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-pycnophylactic-compiled:pycnophylactic-iteration-29-restore-apply\">pycnophylactic-iteration-29-restore-apply</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "d_c",
+        "output",
+        "destination",
+        "—",
+        "metadata"
+      ],
+      [
+        "focal mean",
+        "intermediate",
+        "source",
+        "—",
+        "metadata"
+      ],
+      [
+        "T_z",
+        "input",
+        "totals",
+        "—",
+        "metadata"
+      ],
+      [
+        "M_z",
+        "intermediate",
+        "zoneSums",
+        "—",
+        "metadata"
+      ],
+      [
+        "A_z",
+        "intermediate",
+        "zoneAreas",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{density}{d_c^{(n+1)}}=\\frac{T_z}{M'_z}\\,\\max\\!\\Big(0,\\ \\term{smooth}{\\bar d_c^{(n)}}+\\frac{\\term{total}{T_z}-\\term{mass}{M_z}}{\\term{area}{A_z}}\\Big)",
+    "ascii": "d_c(n+1) = (T_z / M'_z) * max(0, mean_c(d(n)) + (T_z - M_z) / A_z) for every cell c of zone z. mean_c is the focal mean of in-area neighbours (rook or box), M_z the zone mass of the smoothed surface, M'_z the zone mass after the clamp, A_z the zone cell count. Initial density is T_z / A_z.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid sumBefore"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.852Z",
+    "runId": "run-e18f4b06",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e18f4b06",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

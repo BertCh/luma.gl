@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-local-clustering-coefficient",
+  "rung": "datum",
+  "datum": 26,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-local-clustering-coefficient",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 26. clustering-coefficient-stations: 4.900889873504639, 52.37892150878906. values read back from the GPU run. topology: 1 quantities.",
+  "description": "Receipt of station 26. clustering-coefficient-stations: 4.900889873504639, 52.37892150878906. values read back from the GPU run. topology: 1 quantities.",
+  "llms": "Receipt of station 26\n\n- clustering-coefficient-stations: 4.900889873504639, 52.37892150878906\n- topology: 1 quantities\n- publication: 2 quantities\n- 4 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "clustering-coefficient-stations",
+    "value": "4.900889873504639, 52.37892150878906"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 26</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>4.900889873504639, 52.37892150878906</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"clustering-coefficient\">clustering-coefficient</button></td><td>0.11538461595773697</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"clustering-coefficient-stations\">clustering-coefficient-stations</button></td><td>4.900889873504639, 52.37892150878906</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "4.900889873504639, 52.37892150878906",
+        "—",
+        "readback"
+      ],
+      [
+        "publication",
+        "clustering-coefficient",
+        "0.11538461595773697",
+        "—",
+        "readback"
+      ],
+      [
+        "publication",
+        "clustering-coefficient-stations",
+        "4.900889873504639, 52.37892150878906",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.324Z",
+    "runId": "run-64475890",
+    "observerEffects": [
+      "4 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-64475890",
+    "rung": "datum",
+    "bindings": {
+      "entity": 26
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

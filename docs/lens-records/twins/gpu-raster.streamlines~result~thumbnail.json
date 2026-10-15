@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.streamlines",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.streamlines",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions.",
+  "description": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions. lines: 24. values read back from the GPU run. input streamlinesWindSpeed: 3072 cells.",
+  "llms": "Result of gpu-raster.streamlines: streamlinesWindSpeed → streamlinesPositions\n\n- lines: 24\n- input streamlinesWindSpeed: 3072 cells\n- Simple equirectangular projection (x scaled by cos 36.13°); not equal-area.\n- cell size 0.25 deg\n- 22 categories; 5 largest coloured\n- 1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "24"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-100.125,30.125],[-84.125,42.125]]\" role=\"img\" aria-label=\"Result: streamlinesPositions\"><defs><pattern id=\"lens-gpu-raster-streamlines-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-streamlines-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-streamlines-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-line cv-v cv-nom-5\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#f0e442\" d=\"M112.67,64.77 L104.88,89.48\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M69.33,48.73 L61.14,71.68\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M50.6,51.88 L52.71,76.08\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M84.3,32.93 L84.39,59.04\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M37.01,57.43 L42.4,33.91\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M73.54,14.64 L63.4,37.16\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M80.93,22.81 L79.89,48.61\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M124.63,25.78 L106.82,39.29\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M103.49,14.25 L89.12,31.62\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M108.9,18.1 L91.8,33.77\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.763Z",
+    "runId": "run-2897b63d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-2897b63d",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

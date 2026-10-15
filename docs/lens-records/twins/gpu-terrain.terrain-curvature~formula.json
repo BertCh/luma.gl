@@ -1,0 +1,137 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-curvature",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-curvature",
+  "viewId": "formula-card",
+  "caption": "Formula Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3…",
+  "description": "Formula Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3…",
+  "llms": "Formula Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3 wy^2); s = (z3+z7-z1-z9)/(4 wx wy) with z1 NW, z2 N, z3 NE, z4 W, z6 E, z7 SW, z8 S, z9 SE. profile = -(p^2 r + 2pqs + q^2 t)/(G W^1.5); plan = -(q^2 r - 2pqs + p^2 t)/G^1.5, so a convex hill top is positive. G <= flatGradient^2 gives 0 for both; an invalid or non-finite window sample (or a window leaving the raster with borderMode nodata) gives NaN.\n\n- bound symbols: 9/9\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "9/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-curvature.evans-young</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{profile}{\\kappa_{\\mathrm{prof}}} = -\\frac{\\term{p}{p}^2\\,\\term{r}{r} + 2\\,p\\,\\term{q}{q}\\,\\term{s}{s} + q^2\\,\\term{t}{t}}{\\term{gradientSquared}{G}\\,\\term{weight}{W}^{3/2}},\\quad \\term{plan}{\\kappa_{\\mathrm{plan}}} = -\\frac{q^2 r - 2\\,p\\,q\\,s + p^2 t}{G^{3/2}},\\quad G = p^2 + q^2,\\ W = 1 + G</pre><p class=\"lens-ascii\">Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3 wy^2); s = (z3+z7-z1-z9)/(4 wx wy) with z1 NW, z2 N, z3 NE, z4 W, z6 E, z7 SW, z8 S, z9 SE. profile = -(p^2 r + 2pqs + q^2 t)/(G W^1.5); plan = -(q^2 r - 2pqs + p^2 t)/G^1.5, so a convex hill top is positive. G &lt;= flatGradient^2 gives 0 for both; an invalid or non-finite window sample (or a window leaving the raster with borderMode nodata) gives NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"profile\">profile curvature · output · profile</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"plan\">plan curvature · output · plan</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"p\">p · intermediate · p</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"q\">q · intermediate · q</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"r\">r · intermediate · r</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"s\">s · intermediate · s</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"t\">t · intermediate · t</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"gradientSquared\">G · intermediate · gradientSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-curvature-compiled:terrain-curvature-curvature-0\" data-value=\"weight\">W · intermediate · weight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "profile curvature",
+        "output",
+        "profile",
+        "—",
+        "metadata"
+      ],
+      [
+        "plan curvature",
+        "output",
+        "plan",
+        "—",
+        "metadata"
+      ],
+      [
+        "p",
+        "intermediate",
+        "p",
+        "—",
+        "metadata"
+      ],
+      [
+        "q",
+        "intermediate",
+        "q",
+        "—",
+        "metadata"
+      ],
+      [
+        "r",
+        "intermediate",
+        "r",
+        "—",
+        "metadata"
+      ],
+      [
+        "s",
+        "intermediate",
+        "s",
+        "—",
+        "metadata"
+      ],
+      [
+        "t",
+        "intermediate",
+        "t",
+        "—",
+        "metadata"
+      ],
+      [
+        "G",
+        "intermediate",
+        "gradientSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "W",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{profile}{\\kappa_{\\mathrm{prof}}} = -\\frac{\\term{p}{p}^2\\,\\term{r}{r} + 2\\,p\\,\\term{q}{q}\\,\\term{s}{s} + q^2\\,\\term{t}{t}}{\\term{gradientSquared}{G}\\,\\term{weight}{W}^{3/2}},\\quad \\term{plan}{\\kappa_{\\mathrm{plan}}} = -\\frac{q^2 r - 2\\,p\\,q\\,s + p^2 t}{G^{3/2}},\\quad G = p^2 + q^2,\\ W = 1 + G",
+    "ascii": "Evans-Young 3x3 least squares on heights minus the centre, z factor and ground cell sizes wx, wy: p = (z3+z6+z9-z1-z4-z7)/(6 wx); q = (z1+z2+z3-z7-z8-z9)/(6 wy); r = (z1+z3+z4+z6+z7+z9-2(z2+z8))/(3 wx^2); t = (z1+z2+z3+z7+z8+z9-2(z4+z6))/(3 wy^2); s = (z3+z7-z1-z9)/(4 wx wy) with z1 NW, z2 N, z3 NE, z4 W, z6 E, z7 SW, z8 S, z9 SE. profile = -(p^2 r + 2pqs + q^2 t)/(G W^1.5); plan = -(q^2 r - 2pqs + p^2 t)/G^1.5, so a convex hill top is positive. G <= flatGradient^2 gives 0 for both; an invalid or non-finite window sample (or a window leaving the raster with borderMode nodata) gives NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.112Z",
+    "runId": "run-adf898c3",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-adf898c3",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

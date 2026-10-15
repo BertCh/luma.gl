@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-length-per-polygon",
+  "rung": "datum",
+  "datum": 2,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-length-per-polygon",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of community area 2. lengths: 22322.12890625. values read back from the GPU run. line-length-per-polygon: 2 quantities.",
+  "description": "Receipt of community area 2. lengths: 22322.12890625. values read back from the GPU run. line-length-per-polygon: 2 quantities.",
+  "llms": "Receipt of community area 2\n\n- lengths: 22322.12890625\n- line-length-per-polygon: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lengths",
+    "value": "22322.12890625"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of community area 2</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"line-length-per-polygon\"><tr><th scope=\"rowgroup\" colspan=\"5\">line-length-per-polygon</th></tr><tr data-provenance=\"readback\"><td>line-length-per-polygon</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-length-per-polygon-snapshots-segmentCounts-0\" title=\"road segments with positive length inside the area (count)\">segmentCounts</button></td><td>270</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-length-per-polygon</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-length-per-polygon-snapshots-lengths-0\" title=\"metres of road inside the area\">lengths</button></td><td>22322.12890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-core.segmented-reduction</h4><div><pre class=\"lens-tex\">\\term{y}{y_s}=\\operatorname{op}_{\\term{offsets}{o_s}\\le j&lt;o_{s+1}}\\term{x}{x_j},\\quad\\operatorname{op}\\in\\{\\operatorname{sum},\\operatorname{min},\\operatorname{max}\\}</pre><p class=\"lens-ascii\">y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "line-length-per-polygon",
+        "segmentCounts",
+        "270",
+        "0",
+        "readback"
+      ],
+      [
+        "line-length-per-polygon",
+        "lengths",
+        "22322.12890625",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:08.227Z",
+    "runId": "run-08419a6a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-08419a6a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

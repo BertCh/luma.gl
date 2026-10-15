@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.location-allocation",
+  "rung": "datum",
+  "datum": 40,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.location-allocation",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 40. assignedCosts: 0.4460243284702301. values read back from the GPU run. location-allocation: 4 quantities.",
+  "description": "Receipt of Chicago tract 40. assignedCosts: 0.4460243284702301. values read back from the GPU run. location-allocation: 4 quantities.",
+  "llms": "Receipt of Chicago tract 40\n\n- assignedCosts: 0.4460243284702301\n- location-allocation: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "assignedCosts",
+    "value": "0.4460243284702301"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 40</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"location-allocation\"><tr><th scope=\"rowgroup\" colspan=\"5\">location-allocation</th></tr><tr data-provenance=\"readback\"><td>location-allocation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.location-allocation-snapshots-demandWeights-0\" title=\"Residents per tract: the demand weight\">demandWeights</button></td><td>3431</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>location-allocation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.location-allocation-snapshots-selectedFacilities-0\" title=\"One flag per candidate tract: 1 when a facility is placed there\">selectedFacilities</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>location-allocation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.location-allocation-snapshots-assignments-0\" title=\"Selected facility serving each tract (nominal; label is its tract row)\">assignments</button></td><td>41</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>location-allocation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.location-allocation-snapshots-assignedCosts-0\" title=\"Straight-line kilometres from each tract to its facility\">assignedCosts</button></td><td>0.4460243284702301</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "location-allocation",
+        "demandWeights",
+        "3431",
+        "0",
+        "readback"
+      ],
+      [
+        "location-allocation",
+        "selectedFacilities",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "location-allocation",
+        "assignments",
+        "41",
+        "0",
+        "readback"
+      ],
+      [
+        "location-allocation",
+        "assignedCosts",
+        "0.4460243284702301",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:05.291Z",
+    "runId": "run-c3ac878a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c3ac878a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 40
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

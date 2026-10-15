@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.isoband-rings",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.isoband-rings",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPosition…",
+  "description": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPositions. polygons: 96. values read back from the GPU run. input isobandRingsElevation: 4096 cells.",
+  "llms": "Result of gpu-raster.isoband-rings: isobandRingsElevation → isobandRingPositions\n\n- polygons: 96\n- input isobandRingsElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 3800 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "96"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7680,7680]]\" role=\"img\" aria-label=\"Result: isobandRingPositions\"><defs><pattern id=\"lens-gpu-raster-isoband-rings-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-isoband-rings-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-isoband-rings-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#4a98c9\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M55.72,46.22 L43.91,24.99 L49.16,76.43 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#8abfdd\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M110.84,63.04 L85.91,61.64 L58.65,10.59 L66.22,60.34 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#8abfdd\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M79.92,42.09 L113.47,13.45 L71.47,47.02 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"18\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:20.837Z",
+    "runId": "run-3f73a6c3",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3f73a6c3",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

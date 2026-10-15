@@ -1,0 +1,36 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-analytics-columns",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-network.network-analytics-columns",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-network.network-analytics-columns. nodes: 5. structure metadata only. 4 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-network.network-analytics-columns. nodes: 5. structure metadata only. 4 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-network.network-analytics-columns\n\n- nodes: 5\n- 4 visible units vs budget 24\n- 2 hidden nodes\n- Edges by kind: raw 5\n- compute passes were not coalesced as in production\n- lens twin: transients degree, normalized, extent retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"256\" style=\"grid-column:1;grid-row:1 / span 4\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-network-network-analytics-columns-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-network-network-analytics-columns-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-network-network-analytics-columns-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:network-analytics-columns-degree → loop:network-analytics-columns-degree-extent/levels/level: raw ×1; degree</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>loop:network-analytics-columns-degree-extent/levels/level → node:network-analytics-columns-degree-extent-finalize: raw ×1; network-analytics-columns-degree-extent-level-1-values</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 60 24, 60 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:network-analytics-columns-degree → node:network-analytics-columns-degree-normalize: raw ×1; degree</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 152 C 81.33333333333334 152, 81.33333333333334 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:network-analytics-columns-degree-extent-finalize → node:network-analytics-columns-degree-normalize: raw ×1; extent</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:network-analytics-columns-degree\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"network-analytics-columns-degree\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">network-analytics-columns-degree</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--loop\" data-unit=\"loop:network-analytics-columns-degree-extent/levels/level\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"network-analytics-columns-degree-extent-level-0\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">level ×2</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"loop:network-analytics-columns-degree-extent/levels/level\" aria-label=\"Expand level ×2\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:network-analytics-columns-degree-extent-finalize\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"network-analytics-columns-degree-extent-finalize\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">network-analytics-columns-degree-extent-finalize</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:network-analytics-columns-degree-normalize\" data-tier=\"subject\" style=\"grid-column:2;grid-row:4;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"network-analytics-columns-degree-normalize\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">network-analytics-columns-degree-normalize</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=5 · maximumInvocationCount=1199</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:network-analytics-columns-degree-normalize\" aria-label=\"Inspect network-analytics-columns-degree-normalize\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 256
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.412Z",
+    "runId": "run-90405ee3",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients degree, normalized, extent retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-90405ee3",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

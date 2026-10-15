@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-segmentize",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-segmentize",
+  "viewId": "formula-card",
+  "caption": "Formula Per source segment: n = min(N, max(1, ceil(L / h))) for h > 0 and L > 0; otherwise n = 1. L is Euclidean length or sphere-radius times the central angle. Emit equally spaced linear or great-circle interpolants; preserve input endpoints (impl…",
+  "description": "Formula Per source segment: n = min(N, max(1, ceil(L / h))) for h > 0 and L > 0; otherwise n = 1. L is Euclidean length or sphere-radius times the central angle. Emit equally spaced linear or great-circle interpolants; preserve input endpoints (impl…",
+  "llms": "Formula Per source segment: n = min(N, max(1, ceil(L / h))) for h > 0 and L > 0; otherwise n = 1. L is Euclidean length or sphere-radius times the central angle. Emit equally spaced linear or great-circle interpolants; preserve input endpoints (implicit closure for rings).\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-segmentize</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{pieces}{n}=\\begin{cases}\\min(\\term{cap}{N},\\max(1,\\lceil\\term{length}{L}/\\term{limit}{h}\\rceil))&amp;\\term{limit}{h}&gt;0,\\term{length}{L}&gt;0\\\\1&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">Per source segment: n = min(N, max(1, ceil(L / h))) for h &gt; 0 and L &gt; 0; otherwise n = 1. L is Euclidean length or sphere-radius times the central angle. Emit equally spaced linear or great-circle interpolants; preserve input endpoints (implicit closure for rings).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-segmentize-compiled:line-segmentize-count\" data-value=\"pieces\">Subdivision count before layout scans · output · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-segmentize-compiled:line-segmentize-count\" data-value=\"cap\">maximumPieceCount · parameter · MAXIMUM_PIECES</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-segmentize-compiled:line-segmentize-count\" data-value=\"length\">Segment length in the selected metric · input · segmentLength</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-segmentize-compiled:line-segmentize-count\" data-value=\"limit\">maximumSegmentLength · parameter · maximumLength</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Subdivision count before layout scans",
+        "output",
+        "counts",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximumPieceCount",
+        "parameter",
+        "MAXIMUM_PIECES",
+        "—",
+        "metadata"
+      ],
+      [
+        "Segment length in the selected metric",
+        "input",
+        "segmentLength",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximumSegmentLength",
+        "parameter",
+        "maximumLength",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{pieces}{n}=\\begin{cases}\\min(\\term{cap}{N},\\max(1,\\lceil\\term{length}{L}/\\term{limit}{h}\\rceil))&\\term{limit}{h}>0,\\term{length}{L}>0\\\\1&\\text{otherwise}\\end{cases}",
+    "ascii": "Per source segment: n = min(N, max(1, ceil(L / h))) for h > 0 and L > 0; otherwise n = 1. L is Euclidean length or sphere-radius times the central angle. Emit equally spaced linear or great-circle interpolants; preserve input endpoints (implicit closure for rings).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.560Z",
+    "runId": "run-f4c6a792",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f4c6a792",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-cell-statistics",
+  "rung": "datum",
+  "datum": 2400,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-cell-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2400. nirMean: 0.17720000445842743. values read back from the GPU run. raster-cell-statistics: 4 quantities.",
+  "description": "Receipt of grid cells 2400. nirMean: 0.17720000445842743. values read back from the GPU run. raster-cell-statistics: 4 quantities.",
+  "llms": "Receipt of grid cells 2400\n\n- nirMean: 0.17720000445842743\n- raster-cell-statistics: 4 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nirMean",
+    "value": "0.17720000445842743"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2400</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-cell-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-cell-statistics</th></tr><tr data-provenance=\"readback\"><td>raster-cell-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-cell-statistics-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1115.5999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-cell-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-cell-statistics-snapshots-nirMeanBefore-0\" title=\"NIR reflectance (DN x 0.0001; DN 0 becomes NaN)\">nirMeanBefore</button></td><td>0.30090001225471497</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-cell-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-cell-statistics-snapshots-nirMeanAfter-0\" title=\"NIR reflectance (DN x 0.0001; DN 0 becomes NaN)\">nirMeanAfter</button></td><td>0.05350000038743019</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-cell-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-cell-statistics-snapshots-nirMean-0\" title=\"mean before/after NIR reflectance; both layers required\">nirMean</button></td><td>0.17720000445842743</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-raster-cell-statistics-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-cell-statistics-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-cell-statistics-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2335\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2335: 1153</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2335</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2336\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2336: 1120.5</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2336</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2337\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2337: 1106.5</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2337</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2399\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2399: 1148.5</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2399</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2400\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2400: 1115.5999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2400</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2401\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2401: 1112.4000244140625</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2401</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2463\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2463: 1127.5999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2463</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2464\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2464: 1116.0999755859375</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2464</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2465\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2465: 1118.699951171875</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2465</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-cell-statistics",
+        "landscapeElevation",
+        "1115.5999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-cell-statistics",
+        "nirMeanBefore",
+        "0.30090001225471497",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-cell-statistics",
+        "nirMeanAfter",
+        "0.05350000038743019",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-cell-statistics",
+        "nirMean",
+        "0.17720000445842743",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.274Z",
+    "runId": "run-3c91b4bf",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3c91b4bf",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2400
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

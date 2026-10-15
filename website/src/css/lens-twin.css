@@ -1,0 +1,109 @@
+.lens-twin {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: var(--ifm-global-radius);
+}
+
+.lens-twin ladder-lens {
+  display: block;
+}
+
+.lens-twin__figure {
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+.lens-twin__figure svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.lens-twin__caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.lens-twin__caption-text {
+  flex: 1 1 16rem;
+}
+
+.lens-twin__key-number {
+  font-size: 1.15em;
+  font-variant-numeric: tabular-nums;
+}
+
+.lens-twin__provenance {
+  flex-basis: 100%;
+  color: var(--ifm-color-emphasis-700);
+  font-size: 0.8em;
+}
+
+.lens-twin--pending {
+  color: var(--ifm-color-emphasis-700);
+}
+
+.lens-twin__figure--pending {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent,
+    transparent 8px,
+    var(--ifm-color-emphasis-200) 8px,
+    var(--ifm-color-emphasis-200) 9px
+  );
+}
+
+.lens-twin__formula {
+  overflow-x: auto;
+}
+
+.lens-twin__receipt {
+  margin: 0.75rem 0;
+  font-size: 0.85em;
+}
+
+.lens-twin__receipt th,
+.lens-twin__receipt td {
+  padding: 0.25rem 0.5rem;
+}
+
+.lens-twin__receipt tr[data-provenance] > td:first-child {
+  border-left: 3px solid var(--ifm-color-emphasis-600);
+}
+
+.lens-twin__receipt tr[data-provenance='replay'] > td:first-child,
+.lens-twin__receipt tr[data-provenance='derived'] > td:first-child {
+  border-left-style: dashed;
+}
+
+.lens-twin__receipt tr[data-provenance='metadata'] > td:first-child {
+  border-left-style: dotted;
+}
+
+.lens-twin__live {
+  margin: 0.75rem 0 0;
+}
+
+.lens-twin__live-button {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--ifm-color-emphasis-600);
+  border-radius: var(--ifm-global-radius);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.lens-twin__live-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.lens-twin__live-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}

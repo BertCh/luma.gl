@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.spatial-correlogram",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const bandCount = 8;\nconst parameters = new GPUParameterBuffer(device, {\n  id: 'correlogram-parameters',\n  format: 'float32',\n  length: GPU_SPATIAL_CORRELOGRAM_PARAMETER_LENGTH,\n  values: getGPUSpatialCorrelogramParameterValues({bounds, maximumDistance: 200_000}) // 8 bands of 25 km\n});\nconst [moransI, expectedI, zScores, pValues] = ['moransI', 'expectedI', 'zScores', 'pValues'].map(\n  id => view(id, 'float32', bandCount)\n);\nconst pairCounts = view('pairCounts', 'uint32', bandCount);\nconst statistics = view('statistics', 'float32', GPU_SPATIAL_CORRELOGRAM_STATISTICS_LENGTH);\ngraph.add(\n  new GPUSpatialCorrelogram({\n    positions,\n    values: rainfall,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [64, 64],\n    bandCount,\n    bandMode: 'cumulative',\n    output: {moransI, expectedI, zScores, pValues, pairCounts, statistics}\n  })\n);\n// moransI[b]: Moran's I over all station pairs within band b's upper distance",
+    "language": "ts",
+    "lineCount": 24
+  },
+  "scenarioId": "gpu-dataframe.spatial-correlogram",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.spatial-correlogram: positions, prcp → statistics. rows: 5. values read back from the GPU run. input positions: 1200 points.",
+  "description": "Result of gpu-dataframe.spatial-correlogram: positions, prcp → statistics. rows: 5. values read back from the GPU run. input positions: 1200 points.",
+  "llms": "Result of gpu-dataframe.spatial-correlogram: positions, prcp → statistics\n\n- rows: 5\n- input positions: 1200 points\n- input prcp: 1200 rows\n- Planar coordinates (m); uniform scale.\n- 1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">prcp</th><th class=\"cv-col--output\" scope=\"col\">moransI</th><th class=\"cv-col--output\" scope=\"col\">expectedI</th><th class=\"cv-col--output\" scope=\"col\">zScores</th><th class=\"cv-col--output\" scope=\"col\">pValues</th><th class=\"cv-col--output\" scope=\"col\">pairCounts</th><th class=\"cv-col--output\" scope=\"col\">statistics</th></tr></thead><tbody><tr><td data-provenance=\"readback\">2.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.971</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">40.9</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1752</td><td class=\"cv-col--output\" data-provenance=\"readback\">1200</td></tr><tr><td data-provenance=\"readback\">9.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.969</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">73.1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">5573</td><td class=\"cv-col--output\" data-provenance=\"readback\">37.2</td></tr><tr><td data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.98</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">101</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">10345</td><td class=\"cv-col--output\" data-provenance=\"readback\">2690</td></tr><tr><td data-provenance=\"readback\">19.6</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.977</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">128</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">16561</td><td class=\"cv-col--output\" data-provenance=\"readback\">3230000</td></tr><tr><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.955</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">151</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">23739</td><td class=\"cv-col--output\" data-provenance=\"readback\">6.34</td></tr><tr><td data-provenance=\"readback\">14.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.906</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000834</td><td class=\"cv-col--output\" data-provenance=\"readback\">168</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">32272</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"7\">… 1194 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions, prcp · blue: output moransI, expectedI, zScores, pValues, pairCounts, statistics</p><p class=\"cv-note\">1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.011Z",
+    "runId": "run-58052775",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-58052775",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

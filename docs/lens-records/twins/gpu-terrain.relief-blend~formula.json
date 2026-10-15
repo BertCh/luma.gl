@@ -1,0 +1,101 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.relief-blend",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.relief-blend",
+  "viewId": "formula-card",
+  "caption": "Formula Layers are ordered bottom to top. n_j = clamp((x_j - min_j)/(max_j - min_j), 0, 1), replaced by 1 - n_j when the layer is inverted. The bottom layer is used as is: b_0 = n_0. For j >= 1: b_j = opacity_j * mode(n_j, b_{j-1}) + (1 - opacity_j)…",
+  "description": "Formula Layers are ordered bottom to top. n_j = clamp((x_j - min_j)/(max_j - min_j), 0, 1), replaced by 1 - n_j when the layer is inverted. The bottom layer is used as is: b_0 = n_0. For j >= 1: b_j = opacity_j * mode(n_j, b_{j-1}) + (1 - opacity_j)…",
+  "llms": "Formula Layers are ordered bottom to top. n_j = clamp((x_j - min_j)/(max_j - min_j), 0, 1), replaced by 1 - n_j when the layer is inverted. The bottom layer is used as is: b_0 = n_0. For j >= 1: b_j = opacity_j * mode(n_j, b_{j-1}) + (1 - opacity_j) * b_{j-1}. Modes with foreground a = n_j and background b: normal and luminosity a; multiply a*b; screen 1-(1-a)(1-b); overlay (switches on the background) 2ab if b <= 0.5 else 1-(1-2(b-0.5))(1-a); soft-light (switches on the foreground) 2ba + b^2(1-2a) if a < 0.5 else 2b(1-a) + sqrt(b)(2a-1). Any non-finite layer value gives NaN.\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.relief-blend.composite</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{background}{b_j} = \\term{opacity}{\\alpha_j}\\,\\term{mode}{f_{m_j}}\\!\\left(\\term{normalized}{n_j},\\ b_{j-1}\\right) + \\left(1 - \\alpha_j\\right) b_{j-1},\\quad n_j = \\operatorname{clamp}\\!\\left(\\frac{x_j - \\term{minimum}{x_{\\min}}}{\\term{maximum}{x_{\\max}} - x_{\\min}},\\ 0,\\ 1\\right)</pre><p class=\"lens-ascii\">Layers are ordered bottom to top. n_j = clamp((x_j - min_j)/(max_j - min_j), 0, 1), replaced by 1 - n_j when the layer is inverted. The bottom layer is used as is: b_0 = n_0. For j &gt;= 1: b_j = opacity_j * mode(n_j, b_{j-1}) + (1 - opacity_j) * b_{j-1}. Modes with foreground a = n_j and background b: normal and luminosity a; multiply a*b; screen 1-(1-a)(1-b); overlay (switches on the background) 2ab if b &lt;= 0.5 else 1-(1-2(b-0.5))(1-a); soft-light (switches on the foreground) 2ba + b^2(1-2a) if a &lt; 0.5 else 2b(1-a) + sqrt(b)(2a-1). Any non-finite layer value gives NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"background\">blended value · output · background</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"opacity\">opacity · parameter · opacity</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"mode\">blend mode · intermediate · blendLayer</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"normalized\">stretched layer · intermediate · normalized</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"minimum\">stretch minimum · parameter · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-blend-compiled:relief-blend-blend\" data-value=\"maximum\">stretch maximum · parameter · maximum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "blended value",
+        "output",
+        "background",
+        "—",
+        "metadata"
+      ],
+      [
+        "opacity",
+        "parameter",
+        "opacity",
+        "—",
+        "metadata"
+      ],
+      [
+        "blend mode",
+        "intermediate",
+        "blendLayer",
+        "—",
+        "metadata"
+      ],
+      [
+        "stretched layer",
+        "intermediate",
+        "normalized",
+        "—",
+        "metadata"
+      ],
+      [
+        "stretch minimum",
+        "parameter",
+        "minimum",
+        "—",
+        "metadata"
+      ],
+      [
+        "stretch maximum",
+        "parameter",
+        "maximum",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{background}{b_j} = \\term{opacity}{\\alpha_j}\\,\\term{mode}{f_{m_j}}\\!\\left(\\term{normalized}{n_j},\\ b_{j-1}\\right) + \\left(1 - \\alpha_j\\right) b_{j-1},\\quad n_j = \\operatorname{clamp}\\!\\left(\\frac{x_j - \\term{minimum}{x_{\\min}}}{\\term{maximum}{x_{\\max}} - x_{\\min}},\\ 0,\\ 1\\right)",
+    "ascii": "Layers are ordered bottom to top. n_j = clamp((x_j - min_j)/(max_j - min_j), 0, 1), replaced by 1 - n_j when the layer is inverted. The bottom layer is used as is: b_0 = n_0. For j >= 1: b_j = opacity_j * mode(n_j, b_{j-1}) + (1 - opacity_j) * b_{j-1}. Modes with foreground a = n_j and background b: normal and luminosity a; multiply a*b; screen 1-(1-a)(1-b); overlay (switches on the background) 2ab if b <= 0.5 else 1-(1-2(b-0.5))(1-a); soft-light (switches on the foreground) 2ba + b^2(1-2a) if a < 0.5 else 2b(1-a) + sqrt(b)(2a-1). Any non-finite layer value gives NaN.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.036Z",
+    "runId": "run-0bba101a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0bba101a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

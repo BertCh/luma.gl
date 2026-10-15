@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-histogram-query",
+  "rung": "formula",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-histogram-query",
+  "viewId": "formula-card",
+  "caption": "Formula count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null,…",
+  "description": "Formula count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null,…",
+  "llms": "Formula count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null, nonfinite and out-of-domain rows are skipped\n\n- count: 261\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "count",
+    "value": "261"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUDataFrameHistogramQuery</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{count}{c}_b = \\sum_{i:\\term{accepted}{a}_i}\\mathbb{1}[\\term{bin}{b}_i=b],\\quad \\text{equal-width float, }M&gt;m:\\ b_i=\\min\\left(\\left\\lfloor\\term{binCount}{B}\\frac{\\term{value}{x}_i-\\term{minimum}{m}}{\\term{maximum}{M}-\\term{minimum}{m}}\\right\\rfloor,\\term{binCount}{B}-1\\right)</pre><p class=\"lens-ascii\">count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null, nonfinite and out-of-domain rows are skipped</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{count}{261}_b = \\sum_{i:\\term{accepted}{a}_i}\\mathbb{1}[\\term{bin}{b}_i=b],\\quad \\text{equal-width float, }M&gt;m:\\ b_i=\\min\\left(\\left\\lfloor\\term{binCount}{B}\\frac{\\term{value}{x}_i-\\term{minimum}{m}}{\\term{maximum}{M}-\\term{minimum}{m}}\\right\\rfloor,\\term{binCount}{B}-1\\right)</pre><p class=\"lens-ascii\">count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null, nonfinite and out-of-domain rows are skipped</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-clear\" data-value=\"count\">count · output · outputCounts<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-chunk-0-local\" data-value=\"accepted\">accepted · intermediate · accepted</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-chunk-0-local\" data-value=\"bin\">bin · intermediate · binIndex</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-clear\" data-value=\"binCount\">binCount · parameter · BIN_COUNT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-visibility-batch-0-compact-scan-level-0-scan\" data-value=\"value\">value · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-chunk-0-local\" data-value=\"minimum\">minimum · parameter · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-histogram-query-compiled:gpu-dataframe.data-frame-histogram-query-gpu-dataframe-query-histogram-chunk-0-local\" data-value=\"maximum\">maximum · parameter · maximum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "count",
+        "output",
+        "outputCounts",
+        "261",
+        "readback"
+      ],
+      [
+        "accepted",
+        "intermediate",
+        "accepted",
+        "—",
+        "metadata"
+      ],
+      [
+        "bin",
+        "intermediate",
+        "binIndex",
+        "—",
+        "metadata"
+      ],
+      [
+        "binCount",
+        "parameter",
+        "BIN_COUNT",
+        "—",
+        "metadata"
+      ],
+      [
+        "value",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum",
+        "parameter",
+        "minimum",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximum",
+        "parameter",
+        "maximum",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{count}{c}_b = \\sum_{i:\\term{accepted}{a}_i}\\mathbb{1}[\\term{bin}{b}_i=b],\\quad \\text{equal-width float, }M>m:\\ b_i=\\min\\left(\\left\\lfloor\\term{binCount}{B}\\frac{\\term{value}{x}_i-\\term{minimum}{m}}{\\term{maximum}{M}-\\term{minimum}{m}}\\right\\rfloor,\\term{binCount}{B}-1\\right)",
+    "ascii": "count[b] = sum(1[bin[i] = b] for accepted rows); equal-width float bins use min(u32(((x-min)/(max-min))*B), B-1); max is included, a degenerate domain maps to bin 0; explicit edges use bisect-right with the last edge included; masked, null, nonfinite and out-of-domain rows are skipped",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.334Z",
+    "runId": "run-8336e281",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8336e281",
+    "rung": "formula",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

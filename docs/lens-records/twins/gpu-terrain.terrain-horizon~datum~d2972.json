@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-horizon",
+  "rung": "datum",
+  "datum": 2972,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-horizon",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2972. horizonPositiveOpenness: 73.64689636230469. values read back from the GPU run. terrain-horizon: 3 quantities.",
+  "description": "Receipt of grid cells 2972. horizonPositiveOpenness: 73.64689636230469. values read back from the GPU run. terrain-horizon: 3 quantities.",
+  "llms": "Receipt of grid cells 2972\n\n- horizonPositiveOpenness: 73.64689636230469\n- terrain-horizon: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "horizonPositiveOpenness",
+    "value": "73.64689636230469"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2972</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-horizon\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-horizon</th></tr><tr data-provenance=\"readback\"><td>terrain-horizon</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-horizon-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1233.300048828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-horizon</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-horizon-snapshots-horizonSkyViewFactor-0\" title=\"sky-view factor (0–1)\">horizonSkyViewFactor</button></td><td>0.7223994731903076</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-horizon</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-horizon-snapshots-horizonPositiveOpenness-0\" title=\"positive openness (degrees)\">horizonPositiveOpenness</button></td><td>73.64689636230469</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-horizon-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-horizon-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-horizon-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2907\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2907: 1303.5999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2907</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2908\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2908: 1225.5999755859375</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2908</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2909\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2909: 1209.699951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2909</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2971\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2971: 1303.4000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2971</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2972\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2972: 1233.300048828125</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2972</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2973\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2973: 1219.199951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2973</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3035\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3035: 1329.300048828125</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3035</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3036\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3036: 1275.199951171875</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3036</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3037\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3037: 1239.300048828125</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3037</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-horizon",
+        "dem",
+        "1233.300048828125",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-horizon",
+        "horizonSkyViewFactor",
+        "0.7223994731903076",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-horizon",
+        "horizonPositiveOpenness",
+        "73.64689636230469",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.860Z",
+    "runId": "run-1636d791",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-1636d791",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2972
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

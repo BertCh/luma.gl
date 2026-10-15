@@ -1,0 +1,158 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-table-compare",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-table-compare",
+  "viewId": "formula-card",
+  "caption": "Formula On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^6…",
+  "description": "Formula On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^6…",
+  "llms": "Formula On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^64 before decoding; ratio=a/b and percentChange=100*delta/b (both NaN for b=0). Poisson z=delta/sqrt(b+a), zero for b+a=0. Standardized z=(delta-mu)/sigma, zero for sigma=0; mu and population sigma are reduced in fixed order over retained union deltas, not dropped rows. Empty tail derived values are NaN.\n\n- bound symbols: 8/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-table-compare</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{delta}{\\delta}&amp;=\\term{decode}{D}(\\term{afterInteger}{A}-\\term{beforeInteger}{B})/\\term{scale}{s},\\quad \\term{ratio}{r}=\\term{after}{a}/\\term{before}{b},\\quad \\term{percent}{p}=100\\term{delta}{\\delta}/\\term{before}{b}\\\\\\term{score}{z}&amp;=\\begin{cases}\\term{delta}{\\delta}/\\sqrt{\\term{before}{b}+\\term{after}{a}}&amp;\\text{Poisson}\\\\(\\term{delta}{\\delta}-\\term{mean}{\\mu})/\\term{deviation}{\\sigma}&amp;\\text{standardized}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^64 before decoding; ratio=a/b and percentChange=100*delta/b (both NaN for b=0). Poisson z=delta/sqrt(b+a), zero for b+a=0. Standardized z=(delta-mu)/sigma, zero for sigma=0; mu and population sigma are reduced in fixed order over retained union deltas, not dropped rows. Empty tail derived values are NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-measures\" data-value=\"delta\">delta · output · deltaOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-measures\" data-value=\"decode\">decode · intermediate · cellI64ToF32</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-measures\" data-value=\"afterInteger\">afterInteger · input · afterMeasure</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-measures\" data-value=\"beforeInteger\">beforeInteger · input · beforeMeasure</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-measures\" data-value=\"scale\">sumScale for sums, 1 for counts · parameter · SUM_SCALE</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"ratio\">ratio · output · unknown — wgsl ratioOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"percent\">percent · output · unknown — wgsl percentOut not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-derived\" data-value=\"after\">after · intermediate · afterValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-derived\" data-value=\"before\">before · intermediate · beforeValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-table-compare-compiled:cell-table-compare-derived\" data-value=\"score\">score · output · zScoreOut</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"mean\">mean · intermediate · unknown — wgsl mean not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"deviation\">deviation · intermediate · unknown — wgsl deviation not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "delta",
+        "output",
+        "deltaOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "decode",
+        "intermediate",
+        "cellI64ToF32",
+        "—",
+        "metadata"
+      ],
+      [
+        "afterInteger",
+        "input",
+        "afterMeasure",
+        "—",
+        "metadata"
+      ],
+      [
+        "beforeInteger",
+        "input",
+        "beforeMeasure",
+        "—",
+        "metadata"
+      ],
+      [
+        "sumScale for sums, 1 for counts",
+        "parameter",
+        "SUM_SCALE",
+        "—",
+        "metadata"
+      ],
+      [
+        "ratio",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "percent",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "after",
+        "intermediate",
+        "afterValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "before",
+        "intermediate",
+        "beforeValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "score",
+        "output",
+        "zScoreOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "mean",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "deviation",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{delta}{\\delta}&=\\term{decode}{D}(\\term{afterInteger}{A}-\\term{beforeInteger}{B})/\\term{scale}{s},\\quad \\term{ratio}{r}=\\term{after}{a}/\\term{before}{b},\\quad \\term{percent}{p}=100\\term{delta}{\\delta}/\\term{before}{b}\\\\\\term{score}{z}&=\\begin{cases}\\term{delta}{\\delta}/\\sqrt{\\term{before}{b}+\\term{after}{a}}&\\text{Poisson}\\\\(\\term{delta}{\\delta}-\\term{mean}{\\mu})/\\term{deviation}{\\sigma}&\\text{standardized}\\end{cases}\\end{aligned}",
+    "ascii": "On retained union rows, A/B are after/before integer measures (zero when absent), D decodes a signed 64-bit word pair to f32, and s is sumScale for sums or 1 for counts. a=D(A)/s, b=D(B)/s; delta=D(A-B)/s, with integer subtraction modulo 2^64 before decoding; ratio=a/b and percentChange=100*delta/b (both NaN for b=0). Poisson z=delta/sqrt(b+a), zero for b+a=0. Standardized z=(delta-mu)/sigma, zero for sigma=0; mu and population sigma are reduced in fixed order over retained union deltas, not dropped rows. Empty tail derived values are NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:04.868Z",
+    "runId": "run-b3477729",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b3477729",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

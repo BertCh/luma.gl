@@ -7,10 +7,26 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Combines selection flags into canonical zero-or-one output masks.
+
+::lens{scenario=gpu-core.mask rung=result caption="Intersect rainfall of at least 100 mm with elevation of at least 500 m."}
+
 `GPUMask` composes GPU-resident visibility, hierarchy, selection, and application-filter masks as
 ordinary `GPUCommandGraph` nodes.
 
 <GPUOperationContract operation="gpu-mask" />
+
+#### How it computes
+
+{/* lens:GPUMask */}
+
+::lens{scenario=gpu-core.mask rung=kernel caption="Inspect 256 lanes evaluating the two station flags."}
+
+::lens{scenario=gpu-core.mask rung=graph caption="Follow 2 input masks into their shared output."}
+
+::lens{scenario=gpu-core.mask rung=datum caption="Follow station 9 through both predicates to its output flag."}
+
+::lens{scenario=gpu-core.mask rung=formula caption="Read the 2-predicate intersection producing canonical zero or one."}
 
 ## Concepts
 

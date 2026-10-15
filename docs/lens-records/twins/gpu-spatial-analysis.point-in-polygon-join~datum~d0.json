@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.point-in-polygon-join",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.point-in-polygon-join",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 0. tractIds: 46. values read back from the GPU run. point-in-polygon-join: 4 quantities.",
+  "description": "Receipt of observation 0. tractIds: 46. values read back from the GPU run. point-in-polygon-join: 4 quantities.",
+  "llms": "Receipt of observation 0\n\n- tractIds: 46\n- point-in-polygon-join: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "tractIds",
+    "value": "46"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"point-in-polygon-join\"><tr><th scope=\"rowgroup\" colspan=\"5\">point-in-polygon-join</th></tr><tr data-provenance=\"readback\"><td>point-in-polygon-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-snapshots-observations-0\">observations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>point-in-polygon-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-snapshots-referenceTract-0\" title=\"Precomputed input tract reference; agreement has not been measured for this projected run\">referenceTract</button></td><td>46</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>point-in-polygon-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-snapshots-resultObservations-0\">resultObservations</button></td><td>4595.29931640625, 597.4959106445312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>point-in-polygon-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-snapshots-tractIds-0\">tractIds</button></td><td>46</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "point-in-polygon-join",
+        "observations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "point-in-polygon-join",
+        "referenceTract",
+        "46",
+        "0",
+        "readback"
+      ],
+      [
+        "point-in-polygon-join",
+        "resultObservations",
+        "4595.29931640625, 597.4959106445312",
+        "0",
+        "readback"
+      ],
+      [
+        "point-in-polygon-join",
+        "tractIds",
+        "46",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.403Z",
+    "runId": "run-d4066bc2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d4066bc2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

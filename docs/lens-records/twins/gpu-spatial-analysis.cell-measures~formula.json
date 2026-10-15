@@ -1,0 +1,115 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-measures",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-measures",
+  "viewId": "formula-card",
+  "caption": "Formula For valid H3 cells, c is the center unit vector and a[e], b[e] are consecutive boundary unit vectors. L[e] = R * atan2(length(cross(a[e], b[e])), dot(a[e], b[e])); P = sum(e) L[e]; A = 2*R^2 * sum(e) abs(atan2(dot(c,cross(a[e],b[e])), 1+dot(…",
+  "description": "Formula For valid H3 cells, c is the center unit vector and a[e], b[e] are consecutive boundary unit vectors. L[e] = R * atan2(length(cross(a[e], b[e])), dot(a[e], b[e])); P = sum(e) L[e]; A = 2*R^2 * sum(e) abs(atan2(dot(c,cross(a[e],b[e])), 1+dot(…",
+  "llms": "Formula For valid H3 cells, c is the center unit vector and a[e], b[e] are consecutive boundary unit vectors. L[e] = R * atan2(length(cross(a[e], b[e])), dot(a[e], b[e])); P = sum(e) L[e]; A = 2*R^2 * sum(e) abs(atan2(dot(c,cross(a[e],b[e])), 1+dot(a[e],b[e])+dot(b[e],c)+dot(c,a[e]))). R is the WGS84 authalic radius in the selected meters/kilometers unit. Single-face hexagons evaluate equivalent gnomonic expressions using integer lattice offsets to avoid cancellation; pentagons and face-crossing cells use f32 unit vectors directly. Totals use all boundary edges even if edgeLengths storage is truncated. Invalid cells give zero.\n\n- bound symbols: 6/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-measures</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{edgeLength}{L_e}&amp;=\\term{radius}{R}\\operatorname{atan2}(\\lVert\\term{first}{a_e}\\times\\term{second}{b_e}\\rVert,\\term{first}{a_e}\\cdot\\term{second}{b_e}),\\quad \\term{perimeter}{P}=\\sum_{\\term{edge}{e}}\\term{edgeLength}{L_e}\\\\\\term{area}{A}&amp;=2\\term{radius}{R}^{2}\\sum_{\\term{edge}{e}}\\left|\\operatorname{atan2}\\left(\\term{center}{c}\\cdot(\\term{first}{a_e}\\times\\term{second}{b_e}),1+\\term{first}{a_e}\\cdot\\term{second}{b_e}+\\term{second}{b_e}\\cdot\\term{center}{c}+\\term{center}{c}\\cdot\\term{first}{a_e}\\right)\\right|\\end{aligned}</pre><p class=\"lens-ascii\">For valid H3 cells, c is the center unit vector and a[e], b[e] are consecutive boundary unit vectors. L[e] = R * atan2(length(cross(a[e], b[e])), dot(a[e], b[e])); P = sum(e) L[e]; A = 2*R^2 * sum(e) abs(atan2(dot(c,cross(a[e],b[e])), 1+dot(a[e],b[e])+dot(b[e],c)+dot(c,a[e]))). R is the WGS84 authalic radius in the selected meters/kilometers unit. Single-face hexagons evaluate equivalent gnomonic expressions using integer lattice offsets to avoid cancellation; pentagons and face-crossing cells use f32 unit vectors directly. Totals use all boundary edges even if edgeLengths storage is truncated. Invalid cells give zero.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"edgeLength\">edgeLength · output · unknown — wgsl edgeLengthsOut not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:cell-measures-measures\" data-value=\"perimeter\">perimeter · output · perimetersOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:cell-measures-measures\" data-value=\"area\">area · output · areasOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:cell-measures-measures\" data-value=\"radius\">Authalic radius in selected units · parameter · EARTH_RADIUS</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:placeCells-keys-keys\" data-value=\"first\">First decoded boundary unit vector · intermediate · a</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:placeCells-keys-keys\" data-value=\"second\">Next decoded boundary unit vector · intermediate · b</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-measures-compiled:placeCells-keys-keys\" data-value=\"center\">center · intermediate · center</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"edge\">edge · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "edgeLength",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "perimeter",
+        "output",
+        "perimetersOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "area",
+        "output",
+        "areasOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "Authalic radius in selected units",
+        "parameter",
+        "EARTH_RADIUS",
+        "—",
+        "metadata"
+      ],
+      [
+        "First decoded boundary unit vector",
+        "intermediate",
+        "a",
+        "—",
+        "metadata"
+      ],
+      [
+        "Next decoded boundary unit vector",
+        "intermediate",
+        "b",
+        "—",
+        "metadata"
+      ],
+      [
+        "center",
+        "intermediate",
+        "center",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{edgeLength}{L_e}&=\\term{radius}{R}\\operatorname{atan2}(\\lVert\\term{first}{a_e}\\times\\term{second}{b_e}\\rVert,\\term{first}{a_e}\\cdot\\term{second}{b_e}),\\quad \\term{perimeter}{P}=\\sum_{\\term{edge}{e}}\\term{edgeLength}{L_e}\\\\\\term{area}{A}&=2\\term{radius}{R}^{2}\\sum_{\\term{edge}{e}}\\left|\\operatorname{atan2}\\left(\\term{center}{c}\\cdot(\\term{first}{a_e}\\times\\term{second}{b_e}),1+\\term{first}{a_e}\\cdot\\term{second}{b_e}+\\term{second}{b_e}\\cdot\\term{center}{c}+\\term{center}{c}\\cdot\\term{first}{a_e}\\right)\\right|\\end{aligned}",
+    "ascii": "For valid H3 cells, c is the center unit vector and a[e], b[e] are consecutive boundary unit vectors. L[e] = R * atan2(length(cross(a[e], b[e])), dot(a[e], b[e])); P = sum(e) L[e]; A = 2*R^2 * sum(e) abs(atan2(dot(c,cross(a[e],b[e])), 1+dot(a[e],b[e])+dot(b[e],c)+dot(c,a[e]))). R is the WGS84 authalic radius in the selected meters/kilometers unit. Single-face hexagons evaluate equivalent gnomonic expressions using integer lattice offsets to avoid cancellation; pentagons and face-crossing cells use f32 unit vectors directly. Totals use all boundary edges even if edgeLengths storage is truncated. Invalid cells give zero.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:35.294Z",
+    "runId": "run-c333ee2a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c333ee2a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

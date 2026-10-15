@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.class-breaks",
+  "rung": "formula",
+  "datum": 2,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.class-breaks",
+  "viewId": "formula-card",
+  "caption": "Formula equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges <= x (bisect-right, end-clamped). breaks: 32.12. values read back from the GPU run.",
+  "description": "Formula equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges <= x (bisect-right, end-clamped). breaks: 32.12. values read back from the GPU run.",
+  "llms": "Formula equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges <= x (bisect-right, end-clamped).\n\n- breaks: 32.12\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "breaks",
+    "value": "32.12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUClassBreaks</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{breaks}{e_i}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{e_i}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div><div class=\"lens-worked-example\"><h4>Entity 2</h4><div><pre class=\"lens-tex\">\\term{breaks}{32.12}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{32.12}\\leq\\term{values}{x}]</pre><p class=\"lens-ascii\">equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges &lt;= x (bisect-right, end-clamped).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-publish\" data-value=\"breaks\">breaks · output · breaksOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"minimum\">minimum · intermediate · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"maximum\">maximum · intermediate · maximum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-publish\" data-value=\"classCount\">classCount · output · classCountOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-finish\" data-value=\"edge\">edge · index · edge</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-quantiles-histogram-0\" data-value=\"classIndex\">bisect-right low minus one · intermediate · low</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.class-breaks-compiled:class-breaks-extremes\" data-value=\"values\">values · input · values</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "breaks",
+        "output",
+        "breaksOut",
+        "32.119998931884766",
+        "readback"
+      ],
+      [
+        "minimum",
+        "intermediate",
+        "minimum",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximum",
+        "intermediate",
+        "maximum",
+        "—",
+        "metadata"
+      ],
+      [
+        "classCount",
+        "output",
+        "classCountOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge",
+        "index",
+        "edge",
+        "—",
+        "metadata"
+      ],
+      [
+        "bisect-right low minus one",
+        "intermediate",
+        "low",
+        "—",
+        "metadata"
+      ],
+      [
+        "values",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{breaks}{e_i}=\\term{minimum}{a}+\\frac{\\term{maximum}{b}-\\term{minimum}{a}}{\\term{classCount}{k}}\\term{edge}{i},\\quad \\term{classIndex}{c(x)}=\\sum_{\\term{edge}{i}=1}^{\\term{classCount}{k}-1}\\mathbf{1}[\\term{breaks}{e_i}\\leq\\term{values}{x}]",
+    "ascii": "equal-interval: e[i]=min+((max-min)/k)*i; class(x)=number of inner edges <= x (bisect-right, end-clamped).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.729Z",
+    "runId": "run-b122d2c1",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b122d2c1",
+    "rung": "formula",
+    "bindings": {
+      "entity": 2
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

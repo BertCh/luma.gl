@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.isolines",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.isolines",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.isolines: isolinesElevation → isolinesVertices.",
+  "description": "Result of gpu-raster.isolines: isolinesElevation → isolinesVertices. lines: 32. values read back from the GPU run. input isolinesElevation: 4096 cells.",
+  "llms": "Result of gpu-raster.isolines: isolinesElevation → isolinesVertices\n\n- lines: 32\n- input isolinesElevation: 4096 cells\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 1400 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "32"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7680,7680]]\" role=\"img\" aria-label=\"Result: isolinesVertices\"><defs><pattern id=\"lens-gpu-raster-isolines-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-isolines-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-isolines-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#1c6bb0\" d=\"M60.83,84.09 L56.81,61.78 L49.16,45.02\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></path><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#1c6bb0\" d=\"M60.29,78.84 L70.16,64.17 L53.09,34.11 L49.16,11.84\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></path><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#1c6bb0\" d=\"M115.76,72.28 L88.94,63.09 L95.71,88.03\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></path><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#4a98c9\" d=\"M108.22,60.05 L76.72,69.87 L63.39,42.09 L56.47,22.41\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"12\"></path><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#4a98c9\" d=\"M111.86,55.22 L75.92,63.09 L67.61,28.97\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"13\"></path><path class=\"cv-mark cv-mark--output cv-line cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#c6dbef\" d=\"M114.78,50.05 L78.84,38.16 L93.78,36.96 L118.72,33.57\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"15\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.115Z",
+    "runId": "run-58759974",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-58759974",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

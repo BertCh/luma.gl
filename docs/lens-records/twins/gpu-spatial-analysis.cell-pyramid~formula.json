@@ -1,0 +1,119 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-pyramid",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-pyramid",
+  "viewId": "formula-card",
+  "caption": "Formula Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggreg…",
+  "description": "Formula Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggreg…",
+  "llms": "Formula Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggregation: count accepted rows and sum saturated roundHalfEven(f32(value * sumScale)). Intermediate sums/extremes are retained when coarser levels need them. Conservation compares individual level totals, with no filtering or capacity losses between them; levelCounts counts occupied cells, not input events.\n\n- bound symbols: 3/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-pyramid</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{counts}{n_{\\ell,p}}=\\sum_{\\term{child}{c}\\in\\term{members}{C_{\\ell,p}}}\\term{childCounts}{n_{\\ell-1,c}}\\pmod{2^{32}},\\qquad \\term{sums}{S_{\\ell,p}}=\\sum_{\\term{child}{c}\\in\\term{members}{C_{\\ell,p}}}\\term{childSums}{S_{\\ell-1,c}}\\pmod{2^{64}}</pre><p class=\"lens-ascii\">Coarser levels ell &gt;= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggregation: count accepted rows and sum saturated roundHalfEven(f32(value * sumScale)). Intermediate sums/extremes are retained when coarser levels need them. Conservation compares individual level totals, with no filtering or capacity losses between them; levelCounts counts occupied cells, not input events.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-pyramid-compiled:cell-pyramid-level-0-cells\" data-value=\"counts\">counts · output · countsOut</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sums\">sums · output · unknown — wgsl sums not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-pyramid-compiled:cell-pyramid-level-1-accumulate-sums\" data-value=\"childCounts\">childCounts · input · childCounts</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"childSums\">childSums · input · unknown — wgsl childSums not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-pyramid-compiled:cell-pyramid-level-0-offsets\" data-value=\"members\">Finer rows assigned to this parent and level · intermediate · rowCells</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"child\">child · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "counts",
+        "output",
+        "countsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "sums",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "childCounts",
+        "input",
+        "childCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "childSums",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Finer rows assigned to this parent and level",
+        "intermediate",
+        "rowCells",
+        "—",
+        "metadata"
+      ],
+      [
+        "child",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{counts}{n_{\\ell,p}}=\\sum_{\\term{child}{c}\\in\\term{members}{C_{\\ell,p}}}\\term{childCounts}{n_{\\ell-1,c}}\\pmod{2^{32}},\\qquad \\term{sums}{S_{\\ell,p}}=\\sum_{\\term{child}{c}\\in\\term{members}{C_{\\ell,p}}}\\term{childSums}{S_{\\ell-1,c}}\\pmod{2^{64}}",
+    "ascii": "Coarser levels ell >= 1: counts[ell,p] = sum(c in C[ell,p]) counts[ell-1,c] modulo 2^32; sums[ell,p] = sum(c in C[ell,p]) sums[ell-1,c] modulo 2^64. C[ell,p] groups finer rows by the parent key at resolutions[ell]. Level 0 uses GPUCellAggregation: count accepted rows and sum saturated roundHalfEven(f32(value * sumScale)). Intermediate sums/extremes are retained when coarser levels need them. Conservation compares individual level totals, with no filtering or capacity losses between them; levelCounts counts occupied cells, not input events.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:44.866Z",
+    "runId": "run-65ffdd54",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-65ffdd54",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

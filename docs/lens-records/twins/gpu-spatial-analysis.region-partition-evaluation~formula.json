@@ -1,0 +1,99 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.region-partition-evaluation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.region-partition-evaluation",
+  "viewId": "formula-card",
+  "caption": "Formula W = sum over regions r of sum over rows i in r of |x_i - mean_r|^2; T = sum over labelled rows of |x_i - mean|^2; B = T - W; pseudo-F = (B / (k - 1)) / (W / (n - k)), the Calinski-Harabasz score, with k non-empty regions and n labelled rows.…",
+  "description": "Formula W = sum over regions r of sum over rows i in r of |x_i - mean_r|^2; T = sum over labelled rows of |x_i - mean|^2; B = T - W; pseudo-F = (B / (k - 1)) / (W / (n - k)), the Calinski-Harabasz score, with k non-empty regions and n labelled rows.…",
+  "llms": "Formula W = sum over regions r of sum over rows i in r of |x_i - mean_r|^2; T = sum over labelled rows of |x_i - mean|^2; B = T - W; pseudo-F = (B / (k - 1)) / (W / (n - k)), the Calinski-Harabasz score, with k non-empty regions and n labelled rows. Labels at or above labelCapacity and 0xffffffff are ignored. F is 1 when W = 0 and NaN when k < 2 or n <= k. Larger F means better separated regions of the same table.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>partition-pseudo-f</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{within}{W}&amp;=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2,&amp;\\term{total}{T}&amp;=\\sum_{i}\\lVert x_i-\\bar{x}\\rVert^2\\\\\n\\term{between}{B}&amp;=T-W,&amp;\\term{pseudoF}{F}&amp;=\\frac{B/(\\term{regions}{k}-1)}{W/(\\term{labelled}{n}-k)}\n\\end{aligned}</pre><p class=\"lens-ascii\">W = sum over regions r of sum over rows i in r of |x_i - mean_r|^2; T = sum over labelled rows of |x_i - mean|^2; B = T - W; pseudo-F = (B / (k - 1)) / (W / (n - k)), the Calinski-Harabasz score, with k non-empty regions and n labelled rows. Labels at or above labelCapacity and 0xffffffff are ignored. F is 1 when W = 0 and NaN when k &lt; 2 or n &lt;= k. Larger F means better separated regions of the same table.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-label-tiles\" data-value=\"within\">within · output · withinSsd</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-summary\" data-value=\"total\">total · output · totalSsd</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-summary\" data-value=\"between\">between · output · between</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-summary\" data-value=\"pseudoF\">pseudoF · output · pseudoF</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-summary\" data-value=\"regions\">regions · intermediate · regions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.region-partition-evaluation-compiled:region-partition-evaluation-summary\" data-value=\"labelled\">labelled · intermediate · labelledRows</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "within",
+        "output",
+        "withinSsd",
+        "—",
+        "metadata"
+      ],
+      [
+        "total",
+        "output",
+        "totalSsd",
+        "—",
+        "metadata"
+      ],
+      [
+        "between",
+        "output",
+        "between",
+        "—",
+        "metadata"
+      ],
+      [
+        "pseudoF",
+        "output",
+        "pseudoF",
+        "—",
+        "metadata"
+      ],
+      [
+        "regions",
+        "intermediate",
+        "regions",
+        "—",
+        "metadata"
+      ],
+      [
+        "labelled",
+        "intermediate",
+        "labelledRows",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{within}{W}&=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2,&\\term{total}{T}&=\\sum_{i}\\lVert x_i-\\bar{x}\\rVert^2\\\\\n\\term{between}{B}&=T-W,&\\term{pseudoF}{F}&=\\frac{B/(\\term{regions}{k}-1)}{W/(\\term{labelled}{n}-k)}\n\\end{aligned}",
+    "ascii": "W = sum over regions r of sum over rows i in r of |x_i - mean_r|^2; T = sum over labelled rows of |x_i - mean|^2; B = T - W; pseudo-F = (B / (k - 1)) / (W / (n - k)), the Calinski-Harabasz score, with k non-empty regions and n labelled rows. Labels at or above labelCapacity and 0xffffffff are ignored. F is 1 when W = 0 and NaN when k < 2 or n <= k. Larger F means better separated regions of the same table.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:06.018Z",
+    "runId": "run-ef13522a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ef13522a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

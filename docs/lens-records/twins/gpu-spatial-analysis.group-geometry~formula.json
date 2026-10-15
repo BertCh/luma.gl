@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.group-geometry",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.group-geometry",
+  "viewId": "formula-card",
+  "caption": "Formula Per label group g over the rows with a finite position and a label below groupCount: n_g = rows in g, mean center = sum p_i / n_g, bounds = exact min and max of x and y, medoid = the row i minimizing D_i = sum over rows j of g of |p_i - p_j|…",
+  "description": "Formula Per label group g over the rows with a finite position and a label below groupCount: n_g = rows in g, mean center = sum p_i / n_g, bounds = exact min and max of x and y, medoid = the row i minimizing D_i = sum over rows j of g of |p_i - p_j|…",
+  "llms": "Formula Per label group g over the rows with a finite position and a label below groupCount: n_g = rows in g, mean center = sum p_i / n_g, bounds = exact min and max of x and y, medoid = the row i minimizing D_i = sum over rows j of g of |p_i - p_j| (lowest row on ties; groups over medoidMaximumGroupSize get no medoid). The standard distance and the standard deviational ellipse come from GPUGeographicDistribution on the same groups. Sums are fixed-order, so results are reproducible.\n\n- bound symbols: 3/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>group-geometry-centre-medoid</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{meanCenters}{\\bar{p}_g}&amp;=\\frac{1}{\\term{counts}{n_g}}\\sum_{i\\in g}p_i\\\\\n\\term{medoidCost}{D_i}&amp;=\\sum_{j\\in g}\\lVert p_i-p_j\\rVert,\\qquad \\term{medoid}{m_g}=\\arg\\min_{i\\in g}D_i\n\\end{aligned}</pre><p class=\"lens-ascii\">Per label group g over the rows with a finite position and a label below groupCount: n_g = rows in g, mean center = sum p_i / n_g, bounds = exact min and max of x and y, medoid = the row i minimizing D_i = sum over rows j of g of |p_i - p_j| (lowest row on ties; groups over medoidMaximumGroupSize get no medoid). The standard distance and the standard deviational ellipse come from GPUGeographicDistribution on the same groups. Sums are fixed-order, so results are reproducible.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"meanCenters\">meanCenters · output · unknown — wgsl meanCenters not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-geometry-compiled:spatial-clustering-grid-index-finalize\" data-value=\"counts\">counts · output · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-geometry-compiled:group-geometry-medoid-cost\" data-value=\"medoidCost\">medoidCost · intermediate · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-group-geometry-compiled:group-geometry-medoid-select\" data-value=\"medoid\">medoid · output · medoids</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "meanCenters",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "counts",
+        "—",
+        "metadata"
+      ],
+      [
+        "medoidCost",
+        "intermediate",
+        "cost",
+        "—",
+        "metadata"
+      ],
+      [
+        "medoid",
+        "output",
+        "medoids",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{meanCenters}{\\bar{p}_g}&=\\frac{1}{\\term{counts}{n_g}}\\sum_{i\\in g}p_i\\\\\n\\term{medoidCost}{D_i}&=\\sum_{j\\in g}\\lVert p_i-p_j\\rVert,\\qquad \\term{medoid}{m_g}=\\arg\\min_{i\\in g}D_i\n\\end{aligned}",
+    "ascii": "Per label group g over the rows with a finite position and a label below groupCount: n_g = rows in g, mean center = sum p_i / n_g, bounds = exact min and max of x and y, medoid = the row i minimizing D_i = sum over rows j of g of |p_i - p_j| (lowest row on ties; groups over medoidMaximumGroupSize get no medoid). The standard distance and the standard deviational ellipse come from GPUGeographicDistribution on the same groups. Sums are fixed-order, so results are reproducible.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:23.713Z",
+    "runId": "run-5add9c07",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5add9c07",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

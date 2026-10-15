@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-aggregation-query",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-aggregation-query",
+  "viewId": "formula-card",
+  "caption": "Formula sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits. sum: 2,716,047. values read ba…",
+  "description": "Formula sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits. sum: 2,716,047. values read ba…",
+  "llms": "Formula sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits\n\n- sum: 2,716,047\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sum",
+    "value": "2,716,047"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUDataFrameAggregationQuery</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sum}{S} = \\sum_{i:\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i</pre><p class=\"lens-ascii\">sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{sum}{2716047} = \\sum_{i:\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i</pre><p class=\"lens-ascii\">sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-aggregation-query-compiled:gpu-dataframe.data-frame-aggregation-query-gpu-dataframe-query-visibility-batch-0-compact-scan-level-0-scan\" data-value=\"sum\">sum · output · outputValues<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-aggregation-query-compiled:gpu-dataframe.data-frame-aggregation-query-gpu-dataframe-query-visibility-batch-0-compact-scan-level-0-scan\" data-value=\"value\">value · input · inputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"accepted\">accepted · input · unknown — wgsl inputMask not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sum",
+        "output",
+        "outputValues",
+        "2716047",
+        "readback"
+      ],
+      [
+        "value",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "accepted",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{sum}{S} = \\sum_{i:\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i",
+    "ascii": "sum = sum(value[i] for accepted rows); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition; native integer sums wrap to 32 bits",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:46.676Z",
+    "runId": "run-61a6244b",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-61a6244b",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

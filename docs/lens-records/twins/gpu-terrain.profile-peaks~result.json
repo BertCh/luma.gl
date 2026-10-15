@@ -1,0 +1,52 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.profile-peaks",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'profile-peaks-parameters',\n  format: 'float32',\n  length: GPU_PROFILE_PEAKS_PARAMETER_LENGTH,\n  values: getGPUProfilePeaksParameterValues({minimumProminence: 20}) // m\n});\ngraph.add(\n  new GPUProfilePeaks({\n    values: profile, // 64 elevation samples along row 40\n    offsets,\n    parameters: parameters.importToGraph(graph),\n    window: 8, // samples\n    minimumSide: 4,\n    output: {prominence, refinedIndex, refinedValue, peakMask, status: {converged}}\n  })\n);",
+    "language": "ts",
+    "lineCount": 16
+  },
+  "scenarioId": "gpu-terrain.profile-peaks",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence. cells: 64. values read back from the GPU run. input profileValues: 64 cells.",
+  "description": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence. cells: 64. values read back from the GPU run. input profileValues: 64 cells.",
+  "llms": "Result of gpu-terrain.profile-peaks: profileValues → profilePeakProminence\n\n- cells: 64\n- input profileValues: 64 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "64"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-panels\"><figure class=\"lens-result-panel\" data-role=\"input\"><svg class=\"cv-figure cv-panel\" width=\"312\" height=\"360\" viewBox=\"0 0 312 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[64,1]]\" role=\"img\" aria-label=\"Result: profilePeakProminence\"><defs><pattern id=\"lens-gpu-terrain-profile-peaks-result-panel-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-profile-peaks-result-panel-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-profile-peaks-result-panel-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"input\"><image width=\"264\" height=\"4.1200000000000045\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-cell cv-v cv-seq-1\" data-role=\"input\" stroke-width=\"1\" fill=\"#c6dbef\" stroke=\"#ffffff\" fill-opacity=\"0.35\" x=\"24\" y=\"177.94\" data-provenance=\"readback\" data-raster-width=\"64\" data-raster-height=\"1\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAABCAMAAABZs1glAAAAD1BMVEUIPX8ca7BKmMmKv93G2+8lu7AZAAAATElEQVR4AQFBAL7/AAAAAAAAAAAAAQAAAAABAQABAQEBAQEBAQIDAwMEBAQEBAQEBAMDAgICAgEBAgICAgMDAwMCAgIDAwMDBAQEBAQLpgCBDNJdoAAAAABJRU5ErkJggg==\"></image></g></svg><figcaption class=\"cv-panel-caption\">input: profileValues <span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></figcaption></figure><figure class=\"lens-result-panel\" data-role=\"output\"><svg class=\"cv-figure cv-panel\" width=\"312\" height=\"360\" viewBox=\"0 0 312 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[64,1]]\" role=\"img\" aria-label=\"Result: profilePeakProminence\"><defs><pattern id=\"lens-gpu-terrain-profile-peaks-result-panel-1-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-profile-peaks-result-panel-1-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-profile-peaks-result-panel-1-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"264\" height=\"4.1200000000000045\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"1\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"24\" y=\"177.94\" data-provenance=\"readback\" data-raster-width=\"64\" data-raster-height=\"1\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAABCAMAAABZs1glAAAAElBMVEXZ2dnG2+9KmMkIPX8ca7CKv91Ms19tAAAATElEQVR4AQFBAL7/AAAAAAAAAQAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAAAAAAAAAQAAAAFAAAAAAABbgAQ40lV4gAAAABJRU5ErkJggg==\"></image></g><g data-role=\"highlight\"><rect class=\"cv-mark cv-mark--highlight cv-cell\" data-role=\"highlight\" stroke-width=\"1\" fill=\"none\" stroke=\"#ffffff\" x=\"197.25\" y=\"177.94\" width=\"4.1299999999999955\" height=\"4.1200000000000045\" data-provenance=\"readback\"></rect><text class=\"cv-label cv-label--subject\" x=\"199.315\" y=\"169.94\" text-anchor=\"middle\">most prominent peak: 79 m</text></g></svg><figcaption class=\"cv-panel-caption\">output: profilePeakProminence <span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></figcaption></figure></div><p class=\"cv-legend\">profilePeakProminence: <span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-1\" width=\"12\" height=\"12\" fill=\"#c6dbef\"></rect></svg> 22.60009765625–27</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-2\" width=\"12\" height=\"12\" fill=\"#8abfdd\"></rect></svg> 27–36.8600341797</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-3\" width=\"12\" height=\"12\" fill=\"#4a98c9\"></rect></svg> 36.8600341797–44.7000732422</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-4\" width=\"12\" height=\"12\" fill=\"#1c6bb0\"></rect></svg> 44.7000732422–53.9800537109</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-5\" width=\"12\" height=\"12\" fill=\"#083d7f\"></rect></svg> 53.9800537109–79.0999755859375</span></p><p class=\"cv-note\">Planar coordinates (unit unknown); uniform scale. · cell size unknown · Raster pixel grid; origin not recorded · cell size unknown · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.536Z",
+    "runId": "run-4c5e725b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4c5e725b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

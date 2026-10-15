@@ -1,0 +1,124 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-envelope",
+  "rung": "formula",
+  "datum": 9,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.ripley-envelope",
+  "viewId": "formula-card",
+  "caption": "Formula rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim>=D_obs))/(validSimulations+1). lower: -19.67. values read back from the GPU run.",
+  "description": "Formula rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim>=D_obs))/(validSimulations+1). lower: -19.67. values read back from the GPU run.",
+  "llms": "Formula rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim>=D_obs))/(validSimulations+1).\n\n- lower: -19.67\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lower",
+    "value": "-19.67"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipleyEnvelope</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{lower}{E_-(r)}=\\min_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{upper}{E_+(r)}=\\max_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{pValue}{p}=\\frac{1+\\term{atLeast}{\\#\\{s:D_s\\geq D_{\\rm obs}\\}}}{\\term{validCount}{s_{\\rm valid}}+1}</pre><p class=\"lens-ascii\">rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim&gt;=D_obs))/(validSimulations+1).</p></div><div class=\"lens-worked-example\"><h4>Entity 9</h4><div><pre class=\"lens-tex\">\\term{lower}{-19.6668}=\\min_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{upper}{30.1967}=\\max_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{pValue}{p}=\\frac{1+\\term{atLeast}{\\#\\{s:D_s\\geq D_{\\rm obs}\\}}}{\\term{validCount}{s_{\\rm valid}}+1}</pre><p class=\"lens-ascii\">rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim&gt;=D_obs))/(validSimulations+1).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-envelope\" data-value=\"lower\">lower · output · lower<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-envelope\" data-value=\"upper\">upper · output · upper<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-sim-0-gather\" data-value=\"allK\">simulation K, transformed by fromK · intermediate · allK</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-summary\" data-value=\"pValue\">pValue · output · pValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-summary\" data-value=\"atLeast\">atLeast · intermediate · atLeast</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-envelope-compiled:ripley-envelope-summary\" data-value=\"validCount\">validCount · intermediate · validCount</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "lower",
+        "output",
+        "lower",
+        "-19.666751861572266",
+        "readback"
+      ],
+      [
+        "upper",
+        "output",
+        "upper",
+        "30.196687698364258",
+        "readback"
+      ],
+      [
+        "simulation K, transformed by fromK",
+        "intermediate",
+        "allK",
+        "—",
+        "metadata"
+      ],
+      [
+        "pValue",
+        "output",
+        "pValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "atLeast",
+        "intermediate",
+        "atLeast",
+        "—",
+        "metadata"
+      ],
+      [
+        "validCount",
+        "intermediate",
+        "validCount",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{lower}{E_-(r)}=\\min_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{upper}{E_+(r)}=\\max_{\\text{finite simulations}}\\term{allK}{T(K_s(r))},\\quad \\term{pValue}{p}=\\frac{1+\\term{atLeast}{\\#\\{s:D_s\\geq D_{\\rm obs}\\}}}{\\term{validCount}{s_{\\rm valid}}+1}",
+    "ascii": "rank=1: lower(r)=min_sim transform(K_sim(r)), upper(r)=max_sim transform(K_sim(r)); MAD p=(1+#(D_sim>=D_obs))/(validSimulations+1).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.937Z",
+    "runId": "run-d20ff9ef",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d20ff9ef",
+    "rung": "formula",
+    "bindings": {
+      "entity": 9
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

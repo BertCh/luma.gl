@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.minimum-clearance",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.minimum-clearance",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. minimum-clearance: 4 quantities.",
+  "description": "Receipt of parks 0. vertexIds: 125. values read back from the GPU run. minimum-clearance: 4 quantities.",
+  "llms": "Receipt of parks 0\n\n- vertexIds: 125\n- minimum-clearance: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "vertexIds",
+    "value": "125"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of parks 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"minimum-clearance\"><tr><th scope=\"rowgroup\" colspan=\"5\">minimum-clearance</th></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-parks-0\">parks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-resultParks-0\">resultParks</button></td><td>3615.923095703125, 1492.0489501953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-clearances-0\" title=\"metres; Infinity where a park has no clearance\">clearances</button></td><td>2.2941837310791016</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>minimum-clearance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-minimum-clearance-snapshots-vertexIds-0\" title=\"row of the fragile vertex in the uploaded vertices; 0xffffffff when none\">vertexIds</button></td><td>125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "minimum-clearance",
+        "parks",
+        "3615.923095703125, 1492.0489501953125",
+        "0",
+        "readback"
+      ],
+      [
+        "minimum-clearance",
+        "resultParks",
+        "3615.923095703125, 1492.0489501953125",
+        "0",
+        "readback"
+      ],
+      [
+        "minimum-clearance",
+        "clearances",
+        "2.2941837310791016",
+        "0",
+        "readback"
+      ],
+      [
+        "minimum-clearance",
+        "vertexIds",
+        "125",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.047Z",
+    "runId": "run-b83d782c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b83d782c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

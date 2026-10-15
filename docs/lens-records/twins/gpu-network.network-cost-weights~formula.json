@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-cost-weights",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-cost-weights",
+  "viewId": "formula-card",
+  "caption": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow a…",
+  "description": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow a…",
+  "llms": "Formula Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow ascending neighbor order within each row. The 'none' branch stores 1, 'power' stores max(cost, minimumCost)^-beta and 'gaussian' stores the truncated, rescaled (exp(-0.5 (c/L)^2) - exp(-0.5)) / (1 - exp(-0.5)); they are alternative branches of the same kernel.\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.cost-weights.decay</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weights}{w}=e^{-\\term{beta}{\\beta}\\,\\term{cost}{c}}\\quad\\text{for finite }0\\le c\\le L</pre><p class=\"lens-ascii\">Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 &lt;= cost &lt;= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow ascending neighbor order within each row. The &#39;none&#39; branch stores 1, &#39;power&#39; stores max(cost, minimumCost)^-beta and &#39;gaussian&#39; stores the truncated, rescaled (exp(-0.5 (c/L)^2) - exp(-0.5)) / (1 - exp(-0.5)); they are alternative branches of the same kernel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-weights-compiled:network-cost-matrix-batch-0-relax-0\" data-value=\"weights\">stored decay weight · output · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-weights-compiled:network-cost-weights-fill\" data-value=\"beta\">decay rate · parameter · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-weights-compiled:network-cost-matrix-batch-0-seed\" data-value=\"cost\">matrix cost · input · cost</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-cost-weights-compiled:network-cost-weights-fill\">network-cost-weights-fill</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "stored decay weight",
+        "output",
+        "weights",
+        "—",
+        "metadata"
+      ],
+      [
+        "decay rate",
+        "parameter",
+        "beta",
+        "—",
+        "metadata"
+      ],
+      [
+        "matrix cost",
+        "input",
+        "cost",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{weights}{w}=e^{-\\term{beta}{\\beta}\\,\\term{cost}{c}}\\quad\\text{for finite }0\\le c\\le L",
+    "ascii": "Exponential decay, the branch chosen by the decay parameter: weights = exp(-beta * cost) for every finite matrix cost with 0 <= cost <= costLimit; other entries (unreached +Infinity, negative, beyond the limit) are not stored. Slots follow ascending neighbor order within each row. The 'none' branch stores 1, 'power' stores max(cost, minimumCost)^-beta and 'gaussian' stores the truncated, rescaled (exp(-0.5 (c/L)^2) - exp(-0.5)) / (1 - exp(-0.5)); they are alternative branches of the same kernel.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:44:26.833Z",
+    "runId": "run-6fc767ed",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-6fc767ed",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

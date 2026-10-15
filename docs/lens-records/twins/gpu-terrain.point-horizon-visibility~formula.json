@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.point-horizon-visibility",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.point-horizon-visibility",
+  "viewId": "formula-card",
+  "caption": "Formula tP=(targetGround+targetHeight-eye)/D-c*D; alphaP=atanAccurate(tP) in degrees. March full bearing for skyline and retain the maximum before q=D-max(ignoreDistance,ignoreFraction*D) for occluder; default ignoreDistance is one ground pixel. tau…",
+  "description": "Formula tP=(targetGround+targetHeight-eye)/D-c*D; alphaP=atanAccurate(tP) in degrees. March full bearing for skyline and retain the maximum before q=D-max(ignoreDistance,ignoreFraction*D) for occluder; default ignoreDistance is one ground pixel. tau…",
+  "llms": "Formula tP=(targetGround+targetHeight-eye)/D-c*D; alphaP=atanAccurate(tP) in degrees. March full bearing for skyline and retain the maximum before q=D-max(ignoreDistance,ignoreFraction*D) for occluder; default ignoreDistance is one ground pixel. tau=toleranceDegrees+sigmaZ/D*180/pi; hidden if alphaP<alphaQ-tau, marginal if abs(alphaP-alphaQ)<tau, otherwise visible. onSkyline=(code!=hidden && alphaP>=alphaSky-skylineToleranceDegrees). Empty occluder/skyline angles=-90; invalid endpoints/index/tag give noData; beyond cap gives outOfRange; coincident points give visible; all three exceptional cases have NaN details.\n\n- bound symbols: 7/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.point-horizon-visibility.classification</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{code}{v}=\\begin{cases}0&amp;\\term{target}{\\alpha_P}&lt;\\term{occluder}{\\alpha_Q}-\\term{tolerance}{\\tau}\\\\4&amp;|\\alpha_P-\\alpha_Q|&lt;\\tau\\\\1&amp;\\text{otherwise}\\end{cases},\\quad\\term{skylineFlag}{s}=\\mathbf{1}[v\\ne0\\land\\alpha_P\\ge\\term{skyline}{\\alpha_S}-\\term{settings}{\\tau_S}]</pre><p class=\"lens-ascii\">tP=(targetGround+targetHeight-eye)/D-c*D; alphaP=atanAccurate(tP) in degrees. March full bearing for skyline and retain the maximum before q=D-max(ignoreDistance,ignoreFraction*D) for occluder; default ignoreDistance is one ground pixel. tau=toleranceDegrees+sigmaZ/D*180/pi; hidden if alphaP&lt;alphaQ-tau, marginal if abs(alphaP-alphaQ)&lt;tau, otherwise visible. onSkyline=(code!=hidden &amp;&amp; alphaP&gt;=alphaSky-skylineToleranceDegrees). Empty occluder/skyline angles=-90; invalid endpoints/index/tag give noData; beyond cap gives outOfRange; coincident points give visible; all three exceptional cases have NaN details.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"code\">visibility · output · code</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"target\">target angle · intermediate · targetAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"occluder\">occluder angle · intermediate · occluderAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"tolerance\">angular tolerance · parameter · tolerance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"skylineFlag\">on skyline · output · onSkyline</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"skyline\">skyline angle · intermediate · skylineAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-point-horizon-visibility-compiled:point-horizon-visibility-classify-0\" data-value=\"settings\">skyline tolerance · parameter · settings</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "visibility",
+        "output",
+        "code",
+        "—",
+        "metadata"
+      ],
+      [
+        "target angle",
+        "intermediate",
+        "targetAngle",
+        "—",
+        "metadata"
+      ],
+      [
+        "occluder angle",
+        "intermediate",
+        "occluderAngle",
+        "—",
+        "metadata"
+      ],
+      [
+        "angular tolerance",
+        "parameter",
+        "tolerance",
+        "—",
+        "metadata"
+      ],
+      [
+        "on skyline",
+        "output",
+        "onSkyline",
+        "—",
+        "metadata"
+      ],
+      [
+        "skyline angle",
+        "intermediate",
+        "skylineAngle",
+        "—",
+        "metadata"
+      ],
+      [
+        "skyline tolerance",
+        "parameter",
+        "settings",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{code}{v}=\\begin{cases}0&\\term{target}{\\alpha_P}<\\term{occluder}{\\alpha_Q}-\\term{tolerance}{\\tau}\\\\4&|\\alpha_P-\\alpha_Q|<\\tau\\\\1&\\text{otherwise}\\end{cases},\\quad\\term{skylineFlag}{s}=\\mathbf{1}[v\\ne0\\land\\alpha_P\\ge\\term{skyline}{\\alpha_S}-\\term{settings}{\\tau_S}]",
+    "ascii": "tP=(targetGround+targetHeight-eye)/D-c*D; alphaP=atanAccurate(tP) in degrees. March full bearing for skyline and retain the maximum before q=D-max(ignoreDistance,ignoreFraction*D) for occluder; default ignoreDistance is one ground pixel. tau=toleranceDegrees+sigmaZ/D*180/pi; hidden if alphaP<alphaQ-tau, marginal if abs(alphaP-alphaQ)<tau, otherwise visible. onSkyline=(code!=hidden && alphaP>=alphaSky-skylineToleranceDegrees). Empty occluder/skyline angles=-90; invalid endpoints/index/tag give noData; beyond cap gives outOfRange; coincident points give visible; all three exceptional cases have NaN details.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.021Z",
+    "runId": "run-597a7200",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-597a7200",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

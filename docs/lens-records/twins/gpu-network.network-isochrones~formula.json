@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-isochrones",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-isochrones",
+  "viewId": "formula-card",
+  "caption": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bit…",
+  "description": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bit…",
+  "llms": "Formula Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.\n\n- bound symbols: 6/6\n- compute passes were not coalesced as in production\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.isochrones.cost</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{cost}{c}=\\left|\\term{sourceCost}{d_u}+\\term{t}{t}\\,\\term{weight}{w_{uv}}+\\term{walk}{a}\\,\\term{pixelDistance}{r}\\right|,\\qquad \\text{pixel}=\\min c</pre><p class=\"lens-ascii\">Per edge sample at fraction t along u-&gt;v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-seed\" data-value=\"cost\">pixel cost candidate · output · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-relax-0\" data-value=\"sourceCost\">cost at edge source · input · sourceCost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"t\">sample fraction · intermediate · t</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-search-relax-0\" data-value=\"weight\">edge travel time · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"walk\">walk cost per metre · parameter · walk</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\" data-value=\"pixelDistance\">sample-to-pixel distance · intermediate · pixelDistance</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-isochrones-compiled:network-isochrones-splat\">network-isochrones-splat</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pixel cost candidate",
+        "output",
+        "cost",
+        "—",
+        "metadata"
+      ],
+      [
+        "cost at edge source",
+        "input",
+        "sourceCost",
+        "—",
+        "metadata"
+      ],
+      [
+        "sample fraction",
+        "intermediate",
+        "t",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge travel time",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "walk cost per metre",
+        "parameter",
+        "walk",
+        "—",
+        "metadata"
+      ],
+      [
+        "sample-to-pixel distance",
+        "intermediate",
+        "pixelDistance",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{cost}{c}=\\left|\\term{sourceCost}{d_u}+\\term{t}{t}\\,\\term{weight}{w_{uv}}+\\term{walk}{a}\\,\\term{pixelDistance}{r}\\right|,\\qquad \\text{pixel}=\\min c",
+    "ascii": "Per edge sample at fraction t along u->v and per pixel within the buffer radius: cost = abs(sourceCost + t*weight + walk*pixelDistance); each pixel keeps the minimum cost over all samples (min mode; atomic minimum on order-preserving f32 bits, so the result does not depend on thread order). Samples are linear along straight segments between node positions, so this is a sampled raster, not an exact polygonal travel-time boundary; pixels no sample reaches stay unreached.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.855Z",
+    "runId": "run-cad0081d",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-cad0081d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

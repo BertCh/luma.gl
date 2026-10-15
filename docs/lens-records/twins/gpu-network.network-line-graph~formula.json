@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-line-graph",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-line-graph",
+  "viewId": "formula-card",
+  "caption": "Formula lineWeights[arc e -> f] = baseCost >= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right…",
+  "description": "Formula lineWeights[arc e -> f] = baseCost >= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right…",
+  "llms": "Formula lineWeights[arc e -> f] = baseCost >= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right extra beyond straightAngle; a turn with |angle| >= uTurnAngle pays uTurnCost instead, and a negative uTurnCost bans it (no arc is emitted). Banned pairs are removed too, so every emitted arc has turnCost >= 0. The angle is between the great-circle arrival bearing of e and the departure bearing of f at the turn node, positive to the left. Arcs of one edge are listed in ascending next-edge order.\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.line-graph.arc-weight</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{lineWeights}{w_{ef}}=\\begin{cases}\\term{baseCost}{w_f}+\\max(\\term{getTurnCost}{p_{ef}},0)&amp;\\term{baseCost}{w_f}\\ge0\\\\-1&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">lineWeights[arc e -&gt; f] = baseCost &gt;= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right extra beyond straightAngle; a turn with |angle| &gt;= uTurnAngle pays uTurnCost instead, and a negative uTurnCost bans it (no arc is emitted). Banned pairs are removed too, so every emitted arc has turnCost &gt;= 0. The angle is between the great-circle arrival bearing of e and the departure bearing of f at the turn node, positive to the left. Arcs of one edge are listed in ascending next-edge order.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-line-graph-compiled:network-line-graph-fill-neighbors\" data-value=\"lineWeights\">arc cost · output · lineWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-line-graph-compiled:network-line-graph-fill-neighbors\" data-value=\"baseCost\">cost of the next edge · input · baseCost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-line-graph-compiled:network-line-graph-count\" data-value=\"getTurnCost\">turn cost · intermediate · getTurnCost</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-line-graph-compiled:network-line-graph-fill-neighbors\">network-line-graph-fill-neighbors</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "arc cost",
+        "output",
+        "lineWeights",
+        "—",
+        "metadata"
+      ],
+      [
+        "cost of the next edge",
+        "input",
+        "baseCost",
+        "—",
+        "metadata"
+      ],
+      [
+        "turn cost",
+        "intermediate",
+        "getTurnCost",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{lineWeights}{w_{ef}}=\\begin{cases}\\term{baseCost}{w_f}+\\max(\\term{getTurnCost}{p_{ef}},0)&\\term{baseCost}{w_f}\\ge0\\\\-1&\\text{otherwise}\\end{cases}",
+    "ascii": "lineWeights[arc e -> f] = baseCost >= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right extra beyond straightAngle; a turn with |angle| >= uTurnAngle pays uTurnCost instead, and a negative uTurnCost bans it (no arc is emitted). Banned pairs are removed too, so every emitted arc has turnCost >= 0. The angle is between the great-circle arrival bearing of e and the departure bearing of f at the turn node, positive to the left. Arcs of one edge are listed in ascending next-edge order.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.666Z",
+    "runId": "run-dbd219e1",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-dbd219e1",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

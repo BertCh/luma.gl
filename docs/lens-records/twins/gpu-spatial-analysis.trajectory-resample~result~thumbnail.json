@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-resample",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.trajectory-resample",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.trajectory-resample: tracks → samples.",
+  "description": "Result of gpu-spatial-analysis.trajectory-resample: tracks → samples. lines: 12. values read back from the GPU run. input tracks: 12 lines.",
+  "llms": "Result of gpu-spatial-analysis.trajectory-resample: tracks → samples\n\n- lines: 12\n- input tracks: 12 lines\n- Planar coordinates (m); uniform scale.\n- 771 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 192 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[8202.58984375,7061.5],[15286.7001953125,16980.05078125]]\" role=\"img\" aria-label=\"Result: samples\"><defs><pattern id=\"lens-gpu-spatial-analysis-trajectory-resample-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-trajectory-resample-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-trajectory-resample-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M92.07,44 L64.19,48.02 L97.27,24.89\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M72.59,79.55 L85.75,56.62 L88.05,34.71\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M89.52,50 L70.12,63.02\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M74.19,27.16 L82.84,18.38 L77.03,17.42\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M77.15,33.24 L88.4,43.28 L89.2,43.72\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M96.14,23.97 L92.35,16.56\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M52.28,71.04 L94.33,16.81 L77.2,23.9\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"6\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M92.42,27.99 L82.97,63.57 L99.49,12.69\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"7\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M107.83,10.21 L87.5,43.93\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"8\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M74.68,23.03 L79.35,7.88 L74.31,27.49\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"9\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M77.55,16.28 L76.5,20.77 L73.26,26.17\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"10\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"none\" stroke=\"#0072b2\" d=\"M69.46,48.02 L64.51,42.25\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"11\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.223Z",
+    "runId": "run-36263f2a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-36263f2a",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-viewshed",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-viewshed",
+  "viewId": "formula-card",
+  "caption": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+…",
+  "description": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+…",
+  "llms": "Formula D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S>T+beta, visible=1 if S<=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D>maximumDistance>0 gives outOfRange=2, D=0 gives visible; no tested samples give visible.\n\n- bound symbols: 5/10\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/10"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-viewshed.tangent</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{maximum}{S}=\\max_k\\frac{\\term{sample}{h_k}-\\term{curvature}{c}\\,\\term{sampleDistance}{s_k}^{2}-\\term{eye}{z_o}}{\\term{sampleDistance}{s_k}},\\quad \\term{target}{T}=\\frac{\\term{targetTop}{z_t}-c\\,\\term{distance}{D}^{2}-z_o}{D},\\quad \\term{code}{v}=\\begin{cases}0&amp;S&gt;T+\\term{band}{\\beta}\\\\1&amp;S\\le T-\\beta\\\\4&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S&gt;T+beta, visible=1 if S&lt;=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D&gt;maximumDistance&gt;0 gives outOfRange=2, D=0 gives visible; no tested samples give visible.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"maximum\">maximum sample tangent · intermediate · unknown — wgsl maxSlope not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-viewshed-compiled:terrain-viewshed-viewshed\" data-value=\"sample\">bilinear sample · input · elevationSample</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-viewshed-compiled:terrain-viewshed-viewshed\" data-value=\"curvature\">curvature coefficient · parameter · curvature</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-viewshed-compiled:terrain-viewshed-viewshed\" data-value=\"sampleDistance\">sample distance · intermediate · sampleDistance</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"eye\">eye elevation · input · unknown — wgsl eye not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-viewshed-compiled:terrain-viewshed-viewshed\" data-value=\"target\">target tangent · intermediate · targetSlope</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"targetTop\">target elevation · input · unknown — wgsl targetTop not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-viewshed-compiled:terrain-viewshed-viewshed\" data-value=\"distance\">target distance · intermediate · targetDistance</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"code\">visibility code · output · unknown — wgsl code not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"band\">tolerance band · parameter · unknown — wgsl band not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "maximum sample tangent",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "bilinear sample",
+        "input",
+        "elevationSample",
+        "—",
+        "metadata"
+      ],
+      [
+        "curvature coefficient",
+        "parameter",
+        "curvature",
+        "—",
+        "metadata"
+      ],
+      [
+        "sample distance",
+        "intermediate",
+        "sampleDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "eye elevation",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "target tangent",
+        "intermediate",
+        "targetSlope",
+        "—",
+        "metadata"
+      ],
+      [
+        "target elevation",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "target distance",
+        "intermediate",
+        "targetDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "visibility code",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "tolerance band",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{maximum}{S}=\\max_k\\frac{\\term{sample}{h_k}-\\term{curvature}{c}\\,\\term{sampleDistance}{s_k}^{2}-\\term{eye}{z_o}}{\\term{sampleDistance}{s_k}},\\quad \\term{target}{T}=\\frac{\\term{targetTop}{z_t}-c\\,\\term{distance}{D}^{2}-z_o}{D},\\quad \\term{code}{v}=\\begin{cases}0&S>T+\\term{band}{\\beta}\\\\1&S\\le T-\\beta\\\\4&\\text{otherwise}\\end{cases}",
+    "ascii": "D=length((target-observer)*cellSize); S=max((bilinearHeight-c*s*s-eye)/s) at k=1..ceil(max(abs(delta)))-1, skipping invalid samples and stopping beyond D-max(ignoreDistance,ignoreFraction*D); T=(targetTop-c*D*D-eye)/D; beta=(toleranceMeters+tolerancePerKilometer*D/1000)/D; hidden=0 if S>T+beta, visible=1 if S<=T-beta, otherwise marginal=4; invalid endpoints give noData=3, D>maximumDistance>0 gives outOfRange=2, D=0 gives visible; no tested samples give visible.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.225Z",
+    "runId": "run-a2f0bea0",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a2f0bea0",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

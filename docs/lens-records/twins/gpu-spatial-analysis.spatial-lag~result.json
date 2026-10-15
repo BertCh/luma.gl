@@ -1,0 +1,58 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-lag",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const queen = new GPUContiguityWeights({\n  polygons: tracts,\n  criterion: 'queen',\n  output: sourceOutput\n});\ngraph.add(queen);\nconst row = new GPUSpatialWeightsTransform({weights: queen.outputWeights, operation: 'row'});\ngraph.add(row);\nconst weights = row.outputWeights;\ngraph.add(new GPUSpatialLag({values, weights, normalize: false, output: lag}));\nconst result = {values, lag};",
+    "language": "ts",
+    "lineCount": 11
+  },
+  "scenarioId": "gpu-spatial-analysis.spatial-lag",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.spatial-lag: values.geometry → lag.geometry. polygons: 791. values read back from the GPU run. input values.geometry: 791 polygons.",
+  "description": "Result of gpu-spatial-analysis.spatial-lag: values.geometry → lag.geometry. polygons: 791. values read back from the GPU run. input values.geometry: 791 polygons.",
+  "llms": "Result of gpu-spatial-analysis.spatial-lag: values.geometry → lag.geometry\n\n- polygons: 791\n- input values.geometry: 791 polygons\n- Simple equirectangular projection (x scaled by cos 41.83°); not equal-area.\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "791"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div class=\"cv-panels\"><figure class=\"lens-result-panel\" data-role=\"input\"><svg class=\"cv-figure cv-panel\" width=\"312\" height=\"360\" viewBox=\"0 0 312 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-87.94024658203125,41.644290924072266],[-87.52416229248047,42.023128509521484]]\" role=\"img\" aria-label=\"Result: lag.geometry\"><defs><pattern id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"input\"></g></svg><figcaption class=\"cv-panel-caption\">input: values.geometry <span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></figcaption></figure><figure class=\"lens-result-panel\" data-role=\"output\"><svg class=\"cv-figure cv-panel\" width=\"312\" height=\"360\" viewBox=\"0 0 312 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-87.94024658203125,41.644290924072266],[-87.52416229248047,42.023128509521484]]\" role=\"img\" aria-label=\"Result: lag.geometry\"><defs><pattern id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-1-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-1-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-spatial-lag-result-panel-1-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg><figcaption class=\"cv-panel-caption\">output: lag.geometry <span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></figcaption></figure></div><p class=\"cv-legend\">grey: input values.geometry · blue: output lag.geometry</p><p class=\"cv-note\">Simple equirectangular projection (x scaled by cos 41.83°); not equal-area. · 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 10580 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    },
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "1 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:01:53.536Z",
+    "runId": "run-3402ffaf",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3402ffaf",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

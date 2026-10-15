@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.region-statistics",
+  "rung": "datum",
+  "datum": 420,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.region-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 420. mask: 0. values read back from the GPU run. region-statistics: 3 quantities.",
+  "description": "Receipt of Chicago tract 420. mask: 0. values read back from the GPU run. region-statistics: 3 quantities.",
+  "llms": "Receipt of Chicago tract 420\n\n- mask: 0\n- region-statistics: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "mask",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 420</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"region-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">region-statistics</th></tr><tr data-provenance=\"readback\"><td>region-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.region-statistics-snapshots-positions-0\" title=\"Tract area centroids in local metres (azimuthal equidistant frame)\">positions</button></td><td>6367.17138671875, -18553.763671875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>region-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.region-statistics-snapshots-values-0\" title=\"People below 150% of the poverty line (count)\">values</button></td><td>308</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>region-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.region-statistics-snapshots-mask-0\" title=\"Tracts whose centroid is inside the lasso (1)\">mask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "region-statistics",
+        "positions",
+        "6367.17138671875, -18553.763671875",
+        "0",
+        "readback"
+      ],
+      [
+        "region-statistics",
+        "values",
+        "308",
+        "0",
+        "readback"
+      ],
+      [
+        "region-statistics",
+        "mask",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:37.064Z",
+    "runId": "run-05c561d5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-05c561d5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 420
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

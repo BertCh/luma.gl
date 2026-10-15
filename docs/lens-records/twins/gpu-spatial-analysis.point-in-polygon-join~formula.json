@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.point-in-polygon-join",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.point-in-polygon-join",
+  "viewId": "formula-card",
+  "caption": "Formula Half-open: evaluate crossing parity at x_epsilon = x + (epsilon^2, epsilon), epsilon infinitesimal. Toggle when endpoint y sides differ and the exact orientation (ties: sign(dx), then sign(-dy)) agrees with edge direction. XOR rings within a…",
+  "description": "Formula Half-open: evaluate crossing parity at x_epsilon = x + (epsilon^2, epsilon), epsilon infinitesimal. Toggle when endpoint y sides differ and the exact orientation (ties: sign(dx), then sign(-dy)) agrees with edge direction. XOR rings within a…",
+  "llms": "Formula Half-open: evaluate crossing parity at x_epsilon = x + (epsilon^2, epsilon), epsilon infinitesimal. Toggle when endpoint y sides differ and the exact orientation (ties: sign(dx), then sign(-dy)) agrees with edge direction. XOR rings within a part, OR parts; assign the smallest qualifying feature row. Uncertain candidates are not assigned; no owner is 0xffffffff.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.point-in-polygon-join</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{inside}{P_j(\\mathbf{x}_{\\epsilon})}=\\bigoplus_{\\term{edge}{e}\\in\\partial\\term{polygon}{j}}\\term{crossing}{C_e(\\mathbf{x}_{\\epsilon})},\\quad \\term{owner}{a(\\mathbf{x})}=\\min\\{\\term{polygon}{j}:\\term{inside}{P_j(\\mathbf{x}_{\\epsilon})}=1\\}</pre><p class=\"lens-ascii\">Half-open: evaluate crossing parity at x_epsilon = x + (epsilon^2, epsilon), epsilon infinitesimal. Toggle when endpoint y sides differ and the exact orientation (ties: sign(dx), then sign(-dy)) agrees with edge direction. XOR rings within a part, OR parts; assign the smallest qualifying feature row. Uncertain candidates are not assigned; no owner is 0xffffffff.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-classify\" data-value=\"inside\">crossing parity · intermediate · polygonOwned</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-classify\" data-value=\"edge\">edge endpoints · input · current</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-probe\" data-value=\"polygon\">polygon feature · input · featureRow</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-classify\" data-value=\"crossing\">exact half-open crossing · intermediate · side</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-assign\" data-value=\"owner\">assigned feature · output · pointFeatureIds</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-point-in-polygon-join-compiled:point-in-polygon-join-classify\">point-in-polygon-join-classify</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "crossing parity",
+        "intermediate",
+        "polygonOwned",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge endpoints",
+        "input",
+        "current",
+        "—",
+        "metadata"
+      ],
+      [
+        "polygon feature",
+        "input",
+        "featureRow",
+        "—",
+        "metadata"
+      ],
+      [
+        "exact half-open crossing",
+        "intermediate",
+        "side",
+        "—",
+        "metadata"
+      ],
+      [
+        "assigned feature",
+        "output",
+        "pointFeatureIds",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{inside}{P_j(\\mathbf{x}_{\\epsilon})}=\\bigoplus_{\\term{edge}{e}\\in\\partial\\term{polygon}{j}}\\term{crossing}{C_e(\\mathbf{x}_{\\epsilon})},\\quad \\term{owner}{a(\\mathbf{x})}=\\min\\{\\term{polygon}{j}:\\term{inside}{P_j(\\mathbf{x}_{\\epsilon})}=1\\}",
+    "ascii": "Half-open: evaluate crossing parity at x_epsilon = x + (epsilon^2, epsilon), epsilon infinitesimal. Toggle when endpoint y sides differ and the exact orientation (ties: sign(dx), then sign(-dy)) agrees with edge direction. XOR rings within a part, OR parts; assign the smallest qualifying feature row. Uncertain candidates are not assigned; no owner is 0xffffffff.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.403Z",
+    "runId": "run-d4066bc2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d4066bc2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

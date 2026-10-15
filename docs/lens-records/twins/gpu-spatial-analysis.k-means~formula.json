@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.k-means",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.k-means",
+  "viewId": "formula-card",
+  "caption": "Formula Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its me…",
+  "description": "Formula Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its me…",
+  "llms": "Formula Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its members, c_k = sum x_i / n_k, summed in fixed order. A center that gets no point is relocated to the points farthest from their centers. Initial centers are k-means++ (seeded) or the first k valid points; with restarts the lowest J wins.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>kmeans-inertia</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{inertia}{J}&amp;=\\sum_i \\term{distance}{\\lVert x_i-c_{\\ell(i)}\\rVert^2},\\qquad \\ell(i)=\\arg\\min_k\\lVert x_i-c_k\\rVert^2\\\\\n\\term{center}{c_k}&amp;\\leftarrow\\frac{\\sum_{i:\\,\\ell(i)=k}x_i}{\\term{size}{n_k}}\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its members, c_k = sum x_i / n_k, summed in fixed order. A center that gets no point is relocated to the points farthest from their centers. Initial centers are k-means++ (seeded) or the first k valid points; with restarts the lowest J wins.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-k-means-compiled:kmeans-inertia\" data-value=\"inertia\">inertia · output · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-k-means-compiled:kmeans-iteration-0-assign\" data-value=\"distance\">distance · intermediate · bestDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-k-means-compiled:kmeans-iteration-0-relocate\" data-value=\"center\">center · intermediate · nextX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-k-means-compiled:kmeans-iteration-0-relocate\" data-value=\"size\">size · intermediate · size</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "inertia",
+        "output",
+        "total",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance",
+        "intermediate",
+        "bestDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "center",
+        "intermediate",
+        "nextX",
+        "—",
+        "metadata"
+      ],
+      [
+        "size",
+        "intermediate",
+        "size",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{inertia}{J}&=\\sum_i \\term{distance}{\\lVert x_i-c_{\\ell(i)}\\rVert^2},\\qquad \\ell(i)=\\arg\\min_k\\lVert x_i-c_k\\rVert^2\\\\\n\\term{center}{c_k}&\\leftarrow\\frac{\\sum_{i:\\,\\ell(i)=k}x_i}{\\term{size}{n_k}}\n\\end{aligned}",
+    "ascii": "Objective, not the procedure: inertia J = sum over valid points i of |x_i - c_l(i)|^2, with l(i) the nearest center (lowest center id wins ties) in f32. Each Lloyd iteration reassigns every point, then moves each center to the mean of its members, c_k = sum x_i / n_k, summed in fixed order. A center that gets no point is relocated to the points farthest from their centers. Initial centers are k-means++ (seeded) or the first k valid points; with restarts the lowest J wins.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:24.989Z",
+    "runId": "run-ddde3c28",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ddde3c28",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

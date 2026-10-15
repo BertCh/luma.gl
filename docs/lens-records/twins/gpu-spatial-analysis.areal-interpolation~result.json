@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.areal-interpolation",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "// tractZones and areaZones: both systems rasterized to one grid by GPUPolygonRasterization\ngraph.add(\n  new GPUArealInterpolation({\n    grid,\n    spatialContext,\n    mode: 'extensive',\n    denominator: 'zone',\n    sourceZones: tractZones,\n    targetZones: areaZones,\n    sourceZoneCount: tractCount,\n    targetZoneCount: areaCount,\n    output: {\n      weights,\n      areas: overlapAreas,\n      sourceTransferredFractions: transferredFractions,\n      status: {overflow: pairOverflow}\n    }\n  })\n);\ngraph.add(new GPUSpatialLag({weights, values: population, output: areaPopulation}));\n// areaPopulation: tract residents shared out to the 13 community areas by overlap area",
+    "language": "ts",
+    "lineCount": 21
+  },
+  "scenarioId": "gpu-spatial-analysis.areal-interpolation",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.areal-interpolation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, areasVertices, areasFeatureOffsets, areasPolygonOffsets, areasRingOffsets, areasDisplayO…",
+  "description": "Result of gpu-spatial-analysis.areal-interpolation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, areasVertices, areasFeatureOffsets, areasPolygonOffsets, areasRingOffsets, areasDisplayO…",
+  "llms": "Result of gpu-spatial-analysis.areal-interpolation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, areasVertices, areasFeatureOffsets, areasPolygonOffsets, areasRingOffsets, areasDisplayOffsets, areas, population → areaRasterOverflow\n\n- rows: 1\n- input tractsVertices: 4646 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input areasVertices: 5200 rows\n- input areasFeatureOffsets: 14 rows\n- input areasPolygonOffsets: 14 rows\n- input areasRingOffsets: 14 rows\n- input areasDisplayOffsets: 14 rows\n- input areas: 13 polygons\n- input population: 199 rows\n- Planar coordinates (m); uniform scale.\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">tractsVertices</th><th scope=\"col\">tractsFeatureOffsets</th><th scope=\"col\">tractsPolygonOffsets</th><th scope=\"col\">tractsRingOffsets</th><th scope=\"col\">tractsDisplayOffsets</th><th scope=\"col\">areasVertices</th><th scope=\"col\">areasFeatureOffsets</th><th scope=\"col\">areasPolygonOffsets</th><th scope=\"col\">areasRingOffsets</th><th scope=\"col\">areasDisplayOffsets</th><th scope=\"col\">population</th><th class=\"cv-col--output\" scope=\"col\">areaPopulation</th><th class=\"cv-col--output\" scope=\"col\">transferredFractions</th><th class=\"cv-col--output\" scope=\"col\">pairOverflow</th><th class=\"cv-col--output\" scope=\"col\">tractRasterOverflow</th><th class=\"cv-col--output\" scope=\"col\">areaRasterOverflow</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1500</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">2840</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">4284</td><td class=\"cv-col--output\" data-provenance=\"readback\">55500</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1560</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">11</td><td data-provenance=\"readback\">12</td><td data-provenance=\"readback\">2830</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">212</td><td data-provenance=\"readback\">213</td><td data-provenance=\"readback\">8210</td><td class=\"cv-col--output\" data-provenance=\"readback\">79265</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1980</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">22</td><td data-provenance=\"readback\">24</td><td data-provenance=\"readback\">2820</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">338</td><td data-provenance=\"readback\">340</td><td data-provenance=\"readback\">2865</td><td class=\"cv-col--output\" data-provenance=\"readback\">57100</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1990</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">36</td><td data-provenance=\"readback\">2740</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">610</td><td data-provenance=\"readback\">613</td><td data-provenance=\"readback\">6237</td><td class=\"cv-col--output\" data-provenance=\"readback\">42200</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">2130</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">47</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">2610</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">770</td><td data-provenance=\"readback\">774</td><td data-provenance=\"readback\">4473</td><td class=\"cv-col--output\" data-provenance=\"readback\">35900</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.963</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">1800</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">68</td><td data-provenance=\"readback\">73</td><td data-provenance=\"readback\">2520</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">944</td><td data-provenance=\"readback\">949</td><td data-provenance=\"readback\">3913</td><td class=\"cv-col--output\" data-provenance=\"readback\">95400</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"16\">… 5194 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, areasVertices, areasFeatureOffsets, areasPolygonOffsets, areasRingOffsets, areasDisplayOffsets, areas, population · blue: output resultAreas, areaPopulation, transferredFractions, pairOverflow, tractRasterOverflow, areaRasterOverflow</p><p class=\"cv-note\">2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2613 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid sumBefore"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.700Z",
+    "runId": "run-49c4c1de",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-49c4c1de",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

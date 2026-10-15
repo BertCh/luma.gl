@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.polygon-rasterization",
+  "rung": "datum",
+  "datum": 3360,
+  "size": "full",
+  "scenarioId": "gpu-raster.polygon-rasterization",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 3360. polygonBoundary: 0. values read back from the GPU run. polygon-rasterization: 2 quantities.",
+  "description": "Receipt of grid cells 3360. polygonBoundary: 0. values read back from the GPU run. polygon-rasterization: 2 quantities.",
+  "llms": "Receipt of grid cells 3360\n\n- polygonBoundary: 0\n- polygon-rasterization: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygonBoundary",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3360</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"polygon-rasterization\"><tr><th scope=\"rowgroup\" colspan=\"5\">polygon-rasterization</th></tr><tr data-provenance=\"readback\"><td>polygon-rasterization</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-polygon-rasterization-snapshots-polygonZones-0\" title=\"zone raster: feature row 0, or 4294967295 where no polygon covers the cell centre\">polygonZones</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>polygon-rasterization</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-polygon-rasterization-snapshots-polygonBoundary-0\" title=\"1 where a polygon edge touches the closed cell\">polygonBoundary</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-polygon-rasterization-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-polygon-rasterization-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-polygon-rasterization-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3295\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3295: 0</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3295</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3296\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3296: 0</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3296</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3297\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3297: 0</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3297</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3359\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3359: 0</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3359</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3360\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3360: 0</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3360</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3361\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3361: 0</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3361</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3423\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3423: 0</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3423</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3424\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3424: 4294967295</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3424</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3425\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3425: 0</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3425</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "polygon-rasterization",
+        "polygonZones",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "polygon-rasterization",
+        "polygonBoundary",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.187Z",
+    "runId": "run-5ad30eb1",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-5ad30eb1",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3360
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

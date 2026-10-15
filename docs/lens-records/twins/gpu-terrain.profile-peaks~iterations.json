@@ -1,0 +1,47 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.profile-peaks",
+  "rung": "iterations",
+  "size": "full",
+  "scenarioId": "gpu-terrain.profile-peaks",
+  "viewId": "realized-view",
+  "caption": "Realized iterations of profile-peaks-nms-0. iterations executed: 1. values read back from the GPU run.",
+  "description": "Realized iterations of profile-peaks-nms-0. iterations executed: 1. values read back from the GPU run.",
+  "llms": "Realized iterations of profile-peaks-nms-0\n\n- iterations executed: 1\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "iterations executed",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-realized-view\"><h3>profile-peaks-nms-0</h3><input type=\"range\" class=\"lens-scrubber\" min=\"0\" max=\"0\" step=\"1\" value=\"0\" data-action=\"scrub\" data-axis=\"iteration\" aria-label=\"Iteration\"><div class=\"lens-key-frames\"><figure data-iteration=\"0\"><figcaption>iteration 0<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></figcaption><svg class=\"lens-value-strip\" viewBox=\"0 0 64 1\" width=\"96\" height=\"96\" preserveAspectRatio=\"xMidYMid meet\" role=\"img\" aria-label=\"iteration 0\"><defs><pattern id=\"lens-gpu-terrain-profile-peaks-iterations-frame-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-profile-peaks-iterations-frame-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-profile-peaks-iterations-frame-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><image width=\"64\" height=\"1\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" data-provenance=\"readback\" data-raster-width=\"64\" data-raster-height=\"1\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAABCAMAAABZs1glAAAAD1BMVEUIMGshcbVrrtbG2+/3+/9iJ9wDAAAATElEQVR4AQFBAL7/AAAAAAAAAAAAAQAAAAABAQABAQEBAQEBAQIDAwMEBAQEBAQEBAMDAgICAgEBAgICAgMDAwMCAgIDAwMDBAQEBAQLpgCBDNJdoAAAAABJRU5ErkJggg==\"></image></svg></figure></div><p class=\"lens-caption\">State after each recorded iteration on apple.</p></section>",
+    "width": 96,
+    "height": 96
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.536Z",
+    "runId": "run-4c5e725b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4c5e725b",
+    "rung": "iterations",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

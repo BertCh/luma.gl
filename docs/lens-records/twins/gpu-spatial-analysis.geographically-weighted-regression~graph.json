@@ -1,0 +1,64 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geographically-weighted-regression",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geographically-weighted-regression",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis.geographically-weighted-regression. nodes: 61. structure metadata only. 3 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis.geographically-weighted-regression. nodes: 61. structure metadata only. 3 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis.geographically-weighted-regression\n\n- nodes: 61\n- 3 visible units vs budget 24\n- 59 hidden nodes\n- Edges by kind: raw 173, war 119, indirect 33\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "61"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"192\" style=\"grid-column:1;grid-row:1 / span 3\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-geographically-weighted-regression-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-geographically-weighted-regression-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-geographically-weighted-regression-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>group:geographically-weighted-regression → node:coefficientColumns: raw ×1; coefficients</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>group:geographically-weighted-regression → node:povertyTValueColumn: raw ×1; tValues</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:geographically-weighted-regression\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:geographically-weighted-regression\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">geographically-weighted-regression</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:geographically-weighted-regression\" aria-label=\"Expand geographically-weighted-regression\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">geographically-weighted-regression-validate: commandCount=1 · geographically-weighted-regression-validate: maximumWorkgroupCount=4 · geographically-weighted-regression-validate: maximumInvocationCount=788</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:coefficientColumns\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"coefficientColumns\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">coefficientColumns</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=788</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:povertyTValueColumn\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"povertyTValueColumn\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">povertyTValueColumn</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=788</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:povertyTValueColumn\" aria-label=\"Inspect povertyTValueColumn\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 192
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: adjusted-alpha"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:19.595Z",
+    "runId": "run-f87097cc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f87097cc",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

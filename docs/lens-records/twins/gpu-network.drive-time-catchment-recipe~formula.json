@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.drive-time-catchment-recipe",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.drive-time-catchment-recipe",
+  "viewId": "formula-card",
+  "caption": "Formula band = first k with time < bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (>= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the sn…",
+  "description": "Formula band = first k with time < bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (>= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the sn…",
+  "llms": "Formula band = first k with time < bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (>= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the snapped edge, from the demand-time kernel.\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.catchment.band</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{band}{b}=\\min\\{k:\\ \\term{time}{t}&lt;\\term{bandBreaks}{B}[\\term{k}{k}]\\}</pre><p class=\"lens-ascii\">band = first k with time &lt; bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (&gt;= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the snapped edge, from the demand-time kernel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.drive-time-catchment-recipe-compiled:drive-time-catchment-demand-bands-kernel\" data-value=\"band\">drive-time band · output · bands</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.drive-time-catchment-recipe-compiled:drive-time-catchment-demand-bands-kernel\" data-value=\"time\">demand drive time · input · time</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.drive-time-catchment-recipe-compiled:drive-time-catchment-demand-bands-kernel\" data-value=\"bandBreaks\">ascending band bounds · input · bandBreaks</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.drive-time-catchment-recipe-compiled:drive-time-catchment-service-areas-reachability-relax-0\" data-value=\"k\">band index · intermediate · k</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.drive-time-catchment-recipe-compiled:drive-time-catchment-demand-bands-kernel\">drive-time-catchment-demand-bands-kernel</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "drive-time band",
+        "output",
+        "bands",
+        "—",
+        "metadata"
+      ],
+      [
+        "demand drive time",
+        "input",
+        "time",
+        "—",
+        "metadata"
+      ],
+      [
+        "ascending band bounds",
+        "input",
+        "bandBreaks",
+        "—",
+        "metadata"
+      ],
+      [
+        "band index",
+        "intermediate",
+        "k",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{band}{b}=\\min\\{k:\\ \\term{time}{t}<\\term{bandBreaks}{B}[\\term{k}{k}]\\}",
+    "ascii": "band = first k with time < bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (>= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the snapped edge, from the demand-time kernel.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.601Z",
+    "runId": "run-90295232",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-90295232",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

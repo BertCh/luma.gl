@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.label-point",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.label-point",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of park 0. labelPoints: 3557.1982421875, 17041.58984375. values read back from the GPU run. label-point: 3 quantities.",
+  "description": "Receipt of park 0. labelPoints: 3557.1982421875, 17041.58984375. values read back from the GPU run. label-point: 3 quantities.",
+  "llms": "Receipt of park 0\n\n- labelPoints: 3557.1982421875, 17041.58984375\n- label-point: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "labelPoints",
+    "value": "3557.1982421875, 17041.58984375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"label-point\"><tr><th scope=\"rowgroup\" colspan=\"5\">label-point</th></tr><tr data-provenance=\"readback\"><td>label-point</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-label-point-snapshots-inscribedRadii-0\" title=\"radius in m of the largest circle found around the label point\">inscribedRadii</button></td><td>102.76729583740234</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>label-point</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-label-point-snapshots-degenerate-0\" title=\"1 when no strictly interior point exists, else 0\">degenerate</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>label-point</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-label-point-snapshots-labelPoints-0\" title=\"label point of each park, coloured by its inscribed radius in m\">labelPoints</button></td><td>3557.1982421875, 17041.58984375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "label-point",
+        "inscribedRadii",
+        "102.76729583740234",
+        "0",
+        "readback"
+      ],
+      [
+        "label-point",
+        "degenerate",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "label-point",
+        "labelPoints",
+        "3557.1982421875, 17041.58984375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.314Z",
+    "runId": "run-febff665",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-febff665",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

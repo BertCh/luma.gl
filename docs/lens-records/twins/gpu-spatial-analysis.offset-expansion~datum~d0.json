@@ -1,0 +1,89 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.offset-expansion",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.offset-expansion",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation grouped by supplied tract 0. localIndex: 0. values read back from the GPU run. offset-expansion: 5 quantities.",
+  "description": "Receipt of observation grouped by supplied tract 0. localIndex: 0. values read back from the GPU run. offset-expansion: 5 quantities.",
+  "llms": "Receipt of observation grouped by supplied tract 0\n\n- localIndex: 0\n- offset-expansion: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "localIndex",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation grouped by supplied tract 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"offset-expansion\"><tr><th scope=\"rowgroup\" colspan=\"5\">offset-expansion</th></tr><tr data-provenance=\"readback\"><td>offset-expansion</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-offset-expansion-snapshots-observations-0\">observations</button></td><td>502.27294921875, 6449.33251953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>offset-expansion</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-offset-expansion-snapshots-sourceRows-0\">sourceRows</button></td><td>144</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>offset-expansion</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-offset-expansion-snapshots-resultObservations-0\">resultObservations</button></td><td>502.27294921875, 6449.33251953125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>offset-expansion</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-offset-expansion-snapshots-owners-0\">owners</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>offset-expansion</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-offset-expansion-snapshots-localIndex-0\">localIndex</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "offset-expansion",
+        "observations",
+        "502.27294921875, 6449.33251953125",
+        "0",
+        "readback"
+      ],
+      [
+        "offset-expansion",
+        "sourceRows",
+        "144",
+        "0",
+        "readback"
+      ],
+      [
+        "offset-expansion",
+        "resultObservations",
+        "502.27294921875, 6449.33251953125",
+        "0",
+        "readback"
+      ],
+      [
+        "offset-expansion",
+        "owners",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "offset-expansion",
+        "localIndex",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.149Z",
+    "runId": "run-3480551a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3480551a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

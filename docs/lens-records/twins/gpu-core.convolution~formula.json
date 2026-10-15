@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.convolution",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.convolution",
+  "viewId": "formula-card",
+  "caption": "Formula y[r,c]=sum(K[u,v]*extendedX[r-u+floor(kernelHeight/2),c-v+floor(kernelWidth/2)]); true convolution. Boundary zero skips outside samples; wrap uses positive modulo height/width. Row-major float32; FFT strategy computes the same orientation. b…",
+  "description": "Formula y[r,c]=sum(K[u,v]*extendedX[r-u+floor(kernelHeight/2),c-v+floor(kernelWidth/2)]); true convolution. Boundary zero skips outside samples; wrap uses positive modulo height/width. Row-major float32; FFT strategy computes the same orientation. b…",
+  "llms": "Formula y[r,c]=sum(K[u,v]*extendedX[r-u+floor(kernelHeight/2),c-v+floor(kernelWidth/2)]); true convolution. Boundary zero skips outside samples; wrap uses positive modulo height/width. Row-major float32; FFT strategy computes the same orientation.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.convolution</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_{r,c}}=\\sum_{u,v}\\term{kernel}{K_{u,v}}\\term{x}{\\widetilde{x}_{r-u+\\lfloor H_K/2\\rfloor,c-v+\\lfloor W_K/2\\rfloor}}</pre><p class=\"lens-ascii\">y[r,c]=sum(K[u,v]*extendedX[r-u+floor(kernelHeight/2),c-v+floor(kernelWidth/2)]); true convolution. Boundary zero skips outside samples; wrap uses positive modulo height/width. Row-major float32; FFT strategy computes the same orientation.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-convolution-compiled:terrain-curvature-direct-0\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-convolution-compiled:terrain-curvature-direct-0\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-convolution-compiled:terrain-curvature-direct-0\" data-value=\"kernel\">kernel · input · kernelValues</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-convolution-compiled:terrain-curvature-direct-0\">terrain-curvature-direct-0</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "kernel",
+        "input",
+        "kernelValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_{r,c}}=\\sum_{u,v}\\term{kernel}{K_{u,v}}\\term{x}{\\widetilde{x}_{r-u+\\lfloor H_K/2\\rfloor,c-v+\\lfloor W_K/2\\rfloor}}",
+    "ascii": "y[r,c]=sum(K[u,v]*extendedX[r-u+floor(kernelHeight/2),c-v+floor(kernelWidth/2)]); true convolution. Boundary zero skips outside samples; wrap uses positive modulo height/width. Row-major float32; FFT strategy computes the same orientation.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.037Z",
+    "runId": "run-3ac9a8d2",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3ac9a8d2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

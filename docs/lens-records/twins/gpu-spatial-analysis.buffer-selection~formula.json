@@ -1,0 +1,96 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.buffer-selection",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.buffer-selection",
+  "viewId": "formula-card",
+  "caption": "Formula For finite nonnegative radius r, select a point iff its nearest-library planar distance is >= 0 and <= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1. bound symbols: 4/4. structure metadata only.",
+  "description": "Formula For finite nonnegative radius r, select a point iff its nearest-library planar distance is >= 0 and <= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1. bound symbols: 4/4. structure metadata only.",
+  "llms": "Formula For finite nonnegative radius r, select a point iff its nearest-library planar distance is >= 0 and <= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.buffer-selection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{selected}{s_i}=\\mathbf{1}[0\\le\\min_{\\term{feature}{j}}\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2}\\le\\term{radius}{r}]</pre><p class=\"lens-ascii\">For finite nonnegative radius r, select a point iff its nearest-library planar distance is &gt;= 0 and &lt;= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"selected\">selection mask · output · maskOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\" data-value=\"feature\">feature · input · featureIds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-reduce-distance\" data-value=\"distance\">planar distance · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-join-probe\" data-value=\"radius\">buffer radius · parameter · radius</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-buffer-selection-compiled:buffer-selection-mask\">buffer-selection-mask</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "selection mask",
+        "output",
+        "maskOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "feature",
+        "input",
+        "featureIds",
+        "—",
+        "metadata"
+      ],
+      [
+        "planar distance",
+        "intermediate",
+        "distance",
+        "—",
+        "metadata"
+      ],
+      [
+        "buffer radius",
+        "parameter",
+        "radius",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{selected}{s_i}=\\mathbf{1}[0\\le\\min_{\\term{feature}{j}}\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2}\\le\\term{radius}{r}]",
+    "ascii": "For finite nonnegative radius r, select a point iff its nearest-library planar distance is >= 0 and <= r; r=300 metres here. Invalid radii select nothing; unmatched output distance is -1.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.752Z",
+    "runId": "run-b58999d4",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b58999d4",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

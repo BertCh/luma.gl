@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-contours",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.terrain-contours",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700.",
+  "description": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700. points: 15,876. values read back from the GPU run. input dem: 4096 cells.",
+  "llms": "Result of gpu-terrain.terrain-contours: dem → contourVertices1700\n\n- points: 15,876\n- input dem: 4096 cells\n- Planar coordinates (unit unknown); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 15876 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "points",
+    "value": "15,876"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7680,7680]]\" role=\"img\" aria-label=\"Result: contourVertices1700\"><defs><pattern id=\"lens-gpu-terrain-terrain-contours-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-contours-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-contours-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"38.03\" cy=\"89.64\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></circle></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.775Z",
+    "runId": "run-c8d14304",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c8d14304",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

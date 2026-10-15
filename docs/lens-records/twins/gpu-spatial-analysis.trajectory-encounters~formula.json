@@ -1,0 +1,112 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-encounters",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-encounters",
+  "viewId": "formula-card",
+  "caption": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or g…",
+  "description": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or g…",
+  "llms": "Formula For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.\n\n- bound symbols: 5/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-encounters</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{count}{C}=|\\term{hits}{H}|,\\quad \\term{minimum}{d_{\\min}}=\\min_{\\term{index}{k}\\in\\term{hits}{H}}\\term{distances}{d_k},\\quad \\term{first}{k_0}=\\min\\term{hits}{H}</pre><p class=\"lens-ascii\">For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"count\">count · output · bucketCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"minimum\">minimum · output · minimumDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-reduce-statistics\" data-value=\"first\">first · output · firstBuckets</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-sorted-hits\" data-value=\"hits\">Sorted bucket run for one pair · input · sortedBuckets</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-encounters-compiled:trajectory-encounters-sorted-hits\" data-value=\"distances\">distances · input · sortedDistances</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "count",
+        "output",
+        "bucketCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum",
+        "output",
+        "minimumDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "first",
+        "output",
+        "firstBuckets",
+        "—",
+        "metadata"
+      ],
+      [
+        "Sorted bucket run for one pair",
+        "input",
+        "sortedBuckets",
+        "—",
+        "metadata"
+      ],
+      [
+        "distances",
+        "input",
+        "sortedDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "index",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{count}{C}=|\\term{hits}{H}|,\\quad \\term{minimum}{d_{\\min}}=\\min_{\\term{index}{k}\\in\\term{hits}{H}}\\term{distances}{d_k},\\quad \\term{first}{k_0}=\\min\\term{hits}{H}",
+    "ascii": "For each emitted track pair, H is the nonempty set of shared clock buckets whose valid samples are within min(distance, maximumDistance). bucketCounts=|H|; minimumDistances=min over H of d[k]; firstBuckets=min H. Distances are Euclidean or great-circle. These are discrete hits only, and scratch overflow may make H incomplete.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.035Z",
+    "runId": "run-9592eaeb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9592eaeb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

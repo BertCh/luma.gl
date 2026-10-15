@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-closest-approach",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-closest-approach",
+  "viewId": "formula-card",
+  "caption": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distanc…",
+  "description": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distanc…",
+  "llms": "Formula On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-closest-approach</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{closest}{\\tau_*}=\\begin{cases}\\operatorname{clamp}(-\\term{separation}{D}\\cdot\\term{velocity}{V}/\\lVert\\term{velocity}{V}\\rVert^2,0,\\term{span}{T})&amp;\\lVert\\term{velocity}{V}\\rVert&gt;0\\\\0&amp;\\text{otherwise}\\end{cases},\\quad \\term{nearest}{d_*}=\\lVert\\term{separation}{D}+\\term{velocity}{V}\\term{closest}{\\tau_*}\\rVert</pre><p class=\"lens-ascii\">On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"closest\">Segment-pair closest time offset · output · closest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"nearest\">Segment-pair minimum distance, packed hit word 4 · output · hits</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"separation\">separation · input · separationStart</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"velocity\">velocity · input · velocity</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-closest-approach-compiled:trajectory-closest-approach-pairs\" data-value=\"span\">span · input · span</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Segment-pair closest time offset",
+        "output",
+        "closest",
+        "—",
+        "metadata"
+      ],
+      [
+        "Segment-pair minimum distance, packed hit word 4",
+        "output",
+        "hits",
+        "—",
+        "metadata"
+      ],
+      [
+        "separation",
+        "input",
+        "separationStart",
+        "—",
+        "metadata"
+      ],
+      [
+        "velocity",
+        "input",
+        "velocity",
+        "—",
+        "metadata"
+      ],
+      [
+        "span",
+        "input",
+        "span",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{closest}{\\tau_*}=\\begin{cases}\\operatorname{clamp}(-\\term{separation}{D}\\cdot\\term{velocity}{V}/\\lVert\\term{velocity}{V}\\rVert^2,0,\\term{span}{T})&\\lVert\\term{velocity}{V}\\rVert>0\\\\0&\\text{otherwise}\\end{cases},\\quad \\term{nearest}{d_*}=\\lVert\\term{separation}{D}+\\term{velocity}{V}\\term{closest}{\\tau_*}\\rVert",
+    "ascii": "On one segment pair common time interval of span T: closest=clamp(-dot(D,V)/dot(V,V),0,T) for nonzero relative velocity V, else 0; d*=length(D+V*closest). D is separation at the common start. Quadratic roots bound the interval within distance. Track-pair output takes the minimum over hit segment pairs, earliest time on ties, and sums their encounter durations; times are relative to the lower track start.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:44.798Z",
+    "runId": "run-35a35b79",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-35a35b79",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

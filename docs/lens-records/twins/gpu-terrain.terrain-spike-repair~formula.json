@@ -1,0 +1,122 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-spike-repair",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-spike-repair",
+  "viewId": "formula-card",
+  "caption": "Formula Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict…",
+  "description": "Formula Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict…",
+  "llms": "Formula Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict majority bits, recount agreeing seams. Shift a converged nonempty non-main component only if size*100<=validCount*maximumComponentPercent, seams>0, candidate exists and agreeCount*100>=seams*agreementPercent; replace h by h-step*k, otherwise keep h. Invalid cells stay NaN/validity 0. Nonconvergence gives valid cells +Infinity, validity and labels 0xffffffff, convergence 0.\n\n- bound symbols: 7/7\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-spike-repair.component-shift</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{multiple}{k}=\\operatorname{round}(\\term{difference}{\\Delta h}/\\term{step}{s}),\\quad V(k)=\\mathbf{1}[0&lt;|k|\\le127\\land|\\Delta h-sk|&lt;\\term{tolerance}{\\epsilon}],\\quad\\term{output}{h_i\\prime}=\\term{input}{h_i}-s\\,k_C\\,\\mathbf{1}[\\term{shift}{\\operatorname{shift}(C)}]</pre><p class=\"lens-ascii\">Join 4-neighbours with abs(dh)&lt;=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0&lt;abs(k)&lt;=127 and abs(dh-step*k)&lt;tolerance. Reconstruct candidate k by strict majority bits, recount agreeing seams. Shift a converged nonempty non-main component only if size*100&lt;=validCount*maximumComponentPercent, seams&gt;0, candidate exists and agreeCount*100&gt;=seams*agreementPercent; replace h by h-step*k, otherwise keep h. Invalid cells stay NaN/validity 0. Nonconvergence gives valid cells +Infinity, validity and labels 0xffffffff, convergence 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-votes\" data-value=\"multiple\">step multiple · intermediate · multiple</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-graph\" data-value=\"difference\">border height jump · input · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-graph\" data-value=\"step\">encoding step · parameter · STEP</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-graph\" data-value=\"tolerance\">seam tolerance · parameter · TOLERANCE</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-shift\" data-value=\"output\">repaired height · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-graph\" data-value=\"input\">height · input · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-spike-repair-compiled:terrain-spike-repair-decide\" data-value=\"shift\">component shift decision · intermediate · shift</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "step multiple",
+        "intermediate",
+        "multiple",
+        "—",
+        "metadata"
+      ],
+      [
+        "border height jump",
+        "input",
+        "difference",
+        "—",
+        "metadata"
+      ],
+      [
+        "encoding step",
+        "parameter",
+        "STEP",
+        "—",
+        "metadata"
+      ],
+      [
+        "seam tolerance",
+        "parameter",
+        "TOLERANCE",
+        "—",
+        "metadata"
+      ],
+      [
+        "repaired height",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "height",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "component shift decision",
+        "intermediate",
+        "shift",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{multiple}{k}=\\operatorname{round}(\\term{difference}{\\Delta h}/\\term{step}{s}),\\quad V(k)=\\mathbf{1}[0<|k|\\le127\\land|\\Delta h-sk|<\\term{tolerance}{\\epsilon}],\\quad\\term{output}{h_i\\prime}=\\term{input}{h_i}-s\\,k_C\\,\\mathbf{1}[\\term{shift}{\\operatorname{shift}(C)}]",
+    "ascii": "Join 4-neighbours with abs(dh)<=jump, label components and choose the largest (ties lowest label) as main. For each ordered seam, k=round(dh*f32(1/step)); vote iff 0<abs(k)<=127 and abs(dh-step*k)<tolerance. Reconstruct candidate k by strict majority bits, recount agreeing seams. Shift a converged nonempty non-main component only if size*100<=validCount*maximumComponentPercent, seams>0, candidate exists and agreeCount*100>=seams*agreementPercent; replace h by h-step*k, otherwise keep h. Invalid cells stay NaN/validity 0. Nonconvergence gives valid cells +Infinity, validity and labels 0xffffffff, convergence 0.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:21:12.535Z",
+    "runId": "run-70340f8d",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-70340f8d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

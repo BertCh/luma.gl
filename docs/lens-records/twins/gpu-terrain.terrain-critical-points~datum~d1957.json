@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-critical-points",
+  "rung": "datum",
+  "datum": 1957,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-critical-points",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1957. criticalSignChanges: 4. values read back from the GPU run. terrain-critical-points: 3 quantities.",
+  "description": "Receipt of grid cells 1957. criticalSignChanges: 4. values read back from the GPU run. terrain-critical-points: 3 quantities.",
+  "llms": "Receipt of grid cells 1957\n\n- criticalSignChanges: 4\n- terrain-critical-points: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "criticalSignChanges",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1957</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-critical-points\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-critical-points</th></tr><tr data-provenance=\"readback\"><td>terrain-critical-points</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-critical-points-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1086.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-critical-points</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-critical-points-snapshots-criticalClasses-0\" title=\"critical-point class (0 regular, 1 peak, 2 pit, 3 saddle, 4 boundary, 5 nodata)\">criticalClasses</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-critical-points</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-critical-points-snapshots-criticalSignChanges-0\" title=\"sign changes c around the ring\">criticalSignChanges</button></td><td>4</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-critical-points-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-critical-points-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-critical-points-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1892\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1892: 1090.0999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1892</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1893\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1893: 1089</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1893</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1894\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1894: 1088.199951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1894</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1956\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1956: 1086.5999755859375</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1956</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1957\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1957: 1086.9000244140625</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1957</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1958\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1958: 1086.0999755859375</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1958</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2020\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2020: 1091.9000244140625</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2020</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2021\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2021: 1092.199951171875</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2021</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2022\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>2022: 1091.300048828125</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2022</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-critical-points",
+        "dem",
+        "1086.9000244140625",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-critical-points",
+        "criticalClasses",
+        "3",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-critical-points",
+        "criticalSignChanges",
+        "4",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.580Z",
+    "runId": "run-d59550f5",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d59550f5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1957
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

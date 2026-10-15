@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.rose-statistic",
+  "rung": "datum",
+  "datum": 100,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.rose-statistic",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of street segment 100. weights: 219.52801513671875. values read back from the GPU run. rose-statistic: 3 quantities.",
+  "description": "Receipt of street segment 100. weights: 219.52801513671875. values read back from the GPU run. rose-statistic: 3 quantities.",
+  "llms": "Receipt of street segment 100\n\n- weights: 219.52801513671875\n- rose-statistic: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "weights",
+    "value": "219.52801513671875"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of street segment 100</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"rose-statistic\"><tr><th scope=\"rowgroup\" colspan=\"5\">rose-statistic</th></tr><tr data-provenance=\"readback\"><td>rose-statistic</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-rose-statistic-snapshots-starts-0\">starts</button></td><td>4098.47509765625, -3826.150146484375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>rose-statistic</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-rose-statistic-snapshots-ends-0\">ends</button></td><td>4188.76953125, -4026.248779296875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>rose-statistic</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-rose-statistic-snapshots-weights-0\" title=\"Segment length (m), the weight of each direction\">weights</button></td><td>219.52801513671875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "rose-statistic",
+        "starts",
+        "4098.47509765625, -3826.150146484375",
+        "0",
+        "readback"
+      ],
+      [
+        "rose-statistic",
+        "ends",
+        "4188.76953125, -4026.248779296875",
+        "0",
+        "readback"
+      ],
+      [
+        "rose-statistic",
+        "weights",
+        "219.52801513671875",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:08.277Z",
+    "runId": "run-a1bc246d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a1bc246d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 100
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

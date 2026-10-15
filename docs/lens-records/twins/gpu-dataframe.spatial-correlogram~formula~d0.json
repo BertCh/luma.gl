@@ -1,0 +1,124 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.spatial-correlogram",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.spatial-correlogram",
+  "viewId": "formula-card",
+  "caption": "Formula I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products. moransI: 0.9713. values read back from the GPU run.",
+  "description": "Formula I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products. moransI: 0.9713. values read back from the GPU run.",
+  "llms": "Formula I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.\n\n- moransI: 0.9713\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "moransI",
+    "value": "0.9713"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUSpatialCorrelogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{moransI}{I_h}=\\frac{\\term{count}{n}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\sum_i(x_i-\\bar x)^2}},\\quad \\term{expectedI}{E[I]}=-\\frac{1}{\\term{count}{n}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{moransI}{0.971307}=\\frac{\\term{count}{\\left(1200\\right)}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\left(3228040\\right)}},\\quad \\term{expectedI}{-0.000834028}=-\\frac{1}{\\term{count}{\\left(1200\\right)}-1}</pre><p class=\"lens-ascii\">I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"moransI\">moransI · output · moransI<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-unit-quantile-histogram-0\" data-value=\"count\">count · intermediate · count<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"productSum\">productSum · intermediate · productSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-statistics\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · sumOfSquares<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.spatial-correlogram-compiled:spatial-correlogram-finish\" data-value=\"expectedI\">expectedI · output · expected<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "moransI",
+        "output",
+        "moransI",
+        "0.9713066220283508",
+        "readback"
+      ],
+      [
+        "count",
+        "intermediate",
+        "count",
+        "1200",
+        "readback"
+      ],
+      [
+        "weightSum",
+        "intermediate",
+        "weightSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "productSum",
+        "intermediate",
+        "productSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "sumOfSquares",
+        "intermediate",
+        "sumOfSquares",
+        "3228039.5",
+        "readback"
+      ],
+      [
+        "expectedI",
+        "output",
+        "expected",
+        "-0.0008340283529832959",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "readback",
+      "readback"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{moransI}{I_h}=\\frac{\\term{count}{n}}{\\term{weightSum}{S_{0,h}}}\\frac{\\term{productSum}{\\sum_{i\\ne j}w_{ij,h}(x_i-\\bar x)(x_j-\\bar x)}}{\\term{sumOfSquares}{\\sum_i(x_i-\\bar x)^2}},\\quad \\term{expectedI}{E[I]}=-\\frac{1}{\\term{count}{n}-1}",
+    "ascii": "I[h]=(n/S0[h])*sum_ordered(w_ij*(x_i-mean)*(x_j-mean))/M2; E[I]=-1/(n-1); binary bands, population M2/n, fixed-point products.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.011Z",
+    "runId": "run-58052775",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-58052775",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

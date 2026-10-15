@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.lisa-markov",
+  "rung": "datum",
+  "datum": 6,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.lisa-markov",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of from state x to state 6. probabilities: 0.8488318920135498. values read back from the GPU run. lisa-markov: 2 quantities.",
+  "description": "Receipt of from state x to state 6. probabilities: 0.8488318920135498. values read back from the GPU run. lisa-markov: 2 quantities.",
+  "llms": "Receipt of from state x to state 6\n\n- probabilities: 0.8488318920135498\n- lisa-markov: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "probabilities",
+    "value": "0.8488318920135498"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of from state x to state 6</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"lisa-markov\"><tr><th scope=\"rowgroup\" colspan=\"5\">lisa-markov</th></tr><tr data-provenance=\"readback\"><td>lisa-markov</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-lisa-markov-snapshots-counts-0\">counts</button></td><td>1853</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lisa-markov</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-lisa-markov-snapshots-probabilities-0\">probabilities</button></td><td>0.8488318920135498</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "lisa-markov",
+        "counts",
+        "1853",
+        "0",
+        "readback"
+      ],
+      [
+        "lisa-markov",
+        "probabilities",
+        "0.8488318920135498",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    },
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.762Z",
+    "runId": "run-61558d73",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-61558d73",
+    "rung": "datum",
+    "bindings": {
+      "entity": 6
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

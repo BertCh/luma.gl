@@ -1,0 +1,140 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.column-profile",
+  "rung": "datum",
+  "datum": 3,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.column-profile",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Profiled column 3. distinctEstimate: 761.6158447265625. values read back from the GPU run. column-profile: 10 quantities.",
+  "description": "Receipt of Profiled column 3. distinctEstimate: 761.6158447265625. values read back from the GPU run. column-profile: 10 quantities.",
+  "llms": "Receipt of Profiled column 3\n\n- distinctEstimate: 761.6158447265625\n- column-profile: 10 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "distinctEstimate",
+    "value": "761.6158447265625"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Profiled column 3</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"column-profile\"><tr><th scope=\"rowgroup\" colspan=\"5\">column-profile</th></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-count\" title=\"column statistic count, field 0 of each 11-float block of statistics\">count</button></td><td>772</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-nullCount\" title=\"column statistic nullCount, field 1 of each 11-float block of statistics\">nullCount</button></td><td>19</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-minimum\" title=\"column statistic minimum, field 2 of each 11-float block of statistics\">minimum</button></td><td>13585</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-maximum\" title=\"column statistic maximum, field 3 of each 11-float block of statistics\">maximum</button></td><td>250001</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-sum\" title=\"column statistic sum, field 4 of each 11-float block of statistics\">sum</button></td><td>62120432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-mean\" title=\"column statistic mean, field 5 of each 11-float block of statistics\">mean</button></td><td>80466.8828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-variance\" title=\"column statistic variance, field 6 of each 11-float block of statistics\">variance</button></td><td>1716193920</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-sampleVariance\" title=\"column statistic sampleVariance, field 7 of each 11-float block of statistics\">sampleVariance</button></td><td>1718419840</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-standardDeviation\" title=\"column statistic standardDeviation, field 8 of each 11-float block of statistics\">standardDeviation</button></td><td>41426.97265625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-profile-snapshots-statistics-0-distinctEstimate\" title=\"column statistic distinctEstimate, field 9 of each 11-float block of statistics\">distinctEstimate</button></td><td>761.6158447265625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "column-profile",
+        "count",
+        "772",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "nullCount",
+        "19",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "minimum",
+        "13585",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "maximum",
+        "250001",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "sum",
+        "62120432",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "mean",
+        "80466.8828125",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "variance",
+        "1716193920",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "sampleVariance",
+        "1718419840",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "standardDeviation",
+        "41426.97265625",
+        "0",
+        "readback"
+      ],
+      [
+        "column-profile",
+        "distinctEstimate",
+        "761.6158447265625",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.759Z",
+    "runId": "run-1bdc61b5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1bdc61b5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -9,7 +9,23 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Reads fixed-width rows from a source through packed source indices.
+
+::lens{scenario=gpu-core.gather rung=result caption="Twelve West Virginia station indices pull previous-day rainfall; the wettest reads 84.8 mm."}
+
 `GPUGather` selects or reorders packed fixed-width GPU rows through packed `uint32` source indices.
+
+#### How it computes
+
+{/* lens:GPUGather */}
+
+::lens{scenario=gpu-core.gather rung=kernel caption="Inspect the shader that copies source[indices[i]] and zeroes out-of-range indices."}
+
+::lens{scenario=gpu-core.gather rung=graph caption="Trace the single gather node from 12 station indices to packed output."}
+
+::lens{scenario=gpu-core.gather rung=datum caption="Follow output slot 0 back through its station index to previous-day rainfall."}
+
+::lens{scenario=gpu-core.gather rung=formula caption="Read output[i] = source[indices[i]] for the 12 West Virginia stations."}
 
 ## Motivation
 

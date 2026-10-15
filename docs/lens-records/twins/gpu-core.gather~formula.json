@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.gather",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.gather",
+  "viewId": "formula-card",
+  "caption": "Formula Copy each word of source row indices[i] to output row i; out-of-range indices fill every word with 0 (an all-zero row). bound symbols: 3/3. structure metadata only.",
+  "description": "Formula Copy each word of source row indices[i] to output row i; out-of-range indices fill every word with 0 (an all-zero row). bound symbols: 3/3. structure metadata only.",
+  "llms": "Formula Copy each word of source row indices[i] to output row i; out-of-range indices fill every word with 0 (an all-zero row).\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.gather</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_{i,w}}=\\begin{cases}\\term{x}{x_{\\term{indices}{p_i},w}}&amp;p_i&lt;n\\\\0&amp;p_i\\ge n\\end{cases}</pre><p class=\"lens-ascii\">Copy each word of source row indices[i] to output row i; out-of-range indices fill every word with 0 (an all-zero row).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-gather-compiled:state-prev-day-rainfall\" data-value=\"x\">x · input · sourceWords</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-gather-compiled:state-prev-day-rainfall\" data-value=\"y\">y · output · outputWords</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-gather-compiled:state-prev-day-rainfall\" data-value=\"indices\">indices · input · indices</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-gather-compiled:state-prev-day-rainfall\">state-prev-day-rainfall</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "sourceWords",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputWords",
+        "—",
+        "metadata"
+      ],
+      [
+        "indices",
+        "input",
+        "indices",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_{i,w}}=\\begin{cases}\\term{x}{x_{\\term{indices}{p_i},w}}&p_i<n\\\\0&p_i\\ge n\\end{cases}",
+    "ascii": "Copy each word of source row indices[i] to output row i; out-of-range indices fill every word with 0 (an all-zero row).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:30.785Z",
+    "runId": "run-f2465bff",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f2465bff",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

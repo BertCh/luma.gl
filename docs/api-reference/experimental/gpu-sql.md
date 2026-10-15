@@ -48,6 +48,39 @@ The compiled result stays GPU-resident as `table`, `validity`, `dictionaries`, `
 `selectedCounts`. Rendering or another command graph can consume those resources directly. Arrow
 readback remains an explicit adapter operation rather than the query's required result type.
 
+## `LuSQLQuery`
+
+Plan a bounded SELECT statement into a dataframe query and compile it onto a caller-owned command graph.
+
+::lens{scenario=gpu-sql.lu-sql-query rung=result caption="774 of 791 tracts pass population > 1,000; the other 17 stay out of the compact ids."}
+
+`LuSQLContext.query()` parses and validates one statement on the CPU and returns an immutable
+`LuSQLQuery`. It keeps the parsed `statement` (clauses and expression trees, names as written) next
+to the plan; `describeStatement()` turns that AST into an `intent` graph with one node per clause
+and expression node and dataflow edges in SQL evaluation order. Neither touches the GPU.
+
+```ts
+const query = new LuSQLContext({tracts}).query(
+  'SELECT population, noVehicle / households AS noVehicleRate FROM tracts WHERE population > :minimumPopulation',
+  {parameters: {minimumPopulation: 1000}}
+);
+
+query.statement;
+query.describeStatement();
+const compiled = query.compile(graph);
+```
+
+#### How it computes
+
+{/* lens:LuSQLQuery */}
+
+The graph rung links the dataframe plan back to the statement nodes through `derivedFrom`.
+
+::lens{scenario=gpu-sql.lu-sql-query rung=datum bind=page datum=0 caption="Row 0 passes: 4,284 residents; 885 of 2,322 households have no vehicle (rate 0.381)."}
+::lens{scenario=gpu-sql.lu-sql-query rung=formula bind=page datum=0}
+::lens{scenario=gpu-sql.lu-sql-query rung=kernel caption="Look at the expression{N} lines: the SQL trees compile to the same statements as a dataframe query."}
+::lens{scenario=gpu-sql.lu-sql-query rung=graph caption="SQL statement, dataframe expression tree, WGSL statements and command nodes, linked by derivedFrom."}
+
 ## Execution boundary
 
 The execution boundary is explicit: Arrow input → GPU dataframe execution → GPU consumers.

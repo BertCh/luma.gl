@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.distance-field",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.distance-field",
+  "viewId": "formula-card",
+  "caption": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distanc…",
+  "description": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distanc…",
+  "llms": "Formula d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance > maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.distance-field.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{distance}{d(c)}=\\term{cellSize}{h}\\min_{\\term{seed}{s}\\in S}\\lVert\\term{cell}{c}-s\\rVert_2</pre><p class=\"lens-ascii\">d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance &gt; maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-finalize\" data-value=\"distance\">d · output · distanceBits</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-seed-clear\" data-value=\"cell\">c · input · index</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-finalize\" data-value=\"seed\">s · intermediate · nearestCell</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-distance-field-compiled:distance-field-row-bands\" data-value=\"cellSize\">h · parameter · settings</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "d",
+        "output",
+        "distanceBits",
+        "—",
+        "metadata"
+      ],
+      [
+        "c",
+        "input",
+        "index",
+        "—",
+        "metadata"
+      ],
+      [
+        "s",
+        "intermediate",
+        "nearestCell",
+        "—",
+        "metadata"
+      ],
+      [
+        "h",
+        "parameter",
+        "settings",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{distance}{d(c)}=\\term{cellSize}{h}\\min_{\\term{seed}{s}\\in S}\\lVert\\term{cell}{c}-s\\rVert_2",
+    "ascii": "d(c) = 120 * correctlyRoundedSqrt(min over water seed cells s of (column(c)-column(s))^2 + (row(c)-row(s))^2) in metres; exact separable Felzenszwalb-Huttenlocher EDT on this isotropic grid (integer squared-distance keys); no seed or distance > maximumDistance gives +Infinity; distances are cell-centre to cell-centre, ties prefer smallest seed ID. This run uses exact mode, not jump flooding.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.247Z",
+    "runId": "run-901e640b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-901e640b",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

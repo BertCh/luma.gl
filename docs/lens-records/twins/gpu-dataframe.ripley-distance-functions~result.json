@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-distance-functions",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const radiusCount = 10;\nconst parameters = new GPUParameterBuffer(device, {\n  id: 'distance-function-parameters',\n  format: 'float32',\n  length: GPU_RIPLEY_DISTANCE_FUNCTIONS_PARAMETER_LENGTH,\n  values: getGPURipleyDistanceFunctionsParameterValues({\n    bounds: studyWindow, // the study window from the data file\n    maximumDistance: 2000, // 10 radii of 200 m\n    edgeCorrection: 'border'\n  })\n});\nconst [g, f, j, radii] = ['g', 'f', 'j', 'radii'].map(id => view(id, radiusCount));\ngraph.add(\n  new GPURipleyDistanceFunctions({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    referenceGrid: [53, 47], // coprime with the window, F's reference locations\n    radiusCount,\n    output: {g, f, j, radii}\n  })\n);\n// g[b], f[b], j[b]: nearest-event and empty-space functions at radii[b]; j = (1 - g) / (1 - f)",
+    "language": "ts",
+    "lineCount": 23
+  },
+  "scenarioId": "gpu-dataframe.ripley-distance-functions",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.ripley-distance-functions: positions → j. rows: 10. values read back from the GPU run. input positions: 1500 points.",
+  "description": "Result of gpu-dataframe.ripley-distance-functions: positions → j. rows: 10. values read back from the GPU run. input positions: 1500 points.",
+  "llms": "Result of gpu-dataframe.ripley-distance-functions: positions → j\n\n- rows: 10\n- input positions: 1500 points\n- Planar coordinates (m); uniform scale.\n- 1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "10"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">radii</th><th class=\"cv-col--output\" scope=\"col\">g</th><th class=\"cv-col--output\" scope=\"col\">f</th><th class=\"cv-col--output\" scope=\"col\">j</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">200</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.818</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0502</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.192</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">400</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.928</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.108</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0803</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">600</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.964</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.168</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0431</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">800</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.981</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.224</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0245</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1000</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.988</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.274</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0169</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1200</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.992</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.318</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0121</td></tr><tr><td colspan=\"4\">… 4 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions · blue: output radii, g, f, j</p><p class=\"cv-note\">1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.866Z",
+    "runId": "run-3a1dcea5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3a1dcea5",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

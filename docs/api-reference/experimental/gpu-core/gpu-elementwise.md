@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Adds two rainfall columns row by row with no communication between stations.
+
+::lens{scenario=gpu-core.elementwise rung=result caption="Station 15 sums 83.1 mm today and 62.0 mm yesterday to 145.1 mm."}
+
 An elementwise operation applies the same arithmetic independently at every vector position:
 
 ```text
@@ -22,6 +26,20 @@ There is no communication between rows, which makes elementwise work naturally p
 `GPUElementwise` provides canonical graph-visible forms of `copy`, `add`, `subtract`, `multiply`, `min`, `max`, and `multiply-add`.
 
 <GPUOperationContract operation="gpu-elementwise" />
+
+#### How it computes
+
+{/* lens:GPUElementwise */}
+
+::lens{scenario=gpu-core.elementwise.id-probe rung=kernel caption="With 1,000 rows, workgroup 3 has 232 active lanes; 24 lanes stay idle."}
+
+::lens{scenario=gpu-core.elementwise rung=kernel caption="Inspect the one-thread-per-row shader that adds the two rainfall columns."}
+
+::lens{scenario=gpu-core.elementwise rung=graph caption="Trace the single add node between two inputs and the two-day output."}
+
+::lens{scenario=gpu-core.elementwise rung=datum caption="Follow station 15 from both inputs into its 145.1 mm sum."}
+
+::lens{scenario=gpu-core.elementwise rung=formula caption="Read the two-day rainfall sum computed independently at every station."}
 
 ## MADD: multiply-add
 

@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.pick-region-mask",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.pick-region-mask",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis.pick-region-mask. nodes: 3. structure metadata only. 3 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis.pick-region-mask. nodes: 3. structure metadata only. 3 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis.pick-region-mask\n\n- nodes: 3\n- 3 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 1\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"192\" style=\"grid-column:1;grid-row:1 / span 3\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-pick-region-mask-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-pick-region-mask-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-pick-region-mask-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:pick-region-mask-clear → node:pick-region-mask-scatter: raw ×1; mask</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:pick-region-mask-clear\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"pick-region-mask-clear\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">pick-region-mask-clear</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=791</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:pick-region-mask-overflow\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"pick-region-mask-overflow\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">pick-region-mask-overflow</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=1</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:pick-region-mask-scatter\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"pick-region-mask-scatter\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">pick-region-mask-scatter</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=28</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:pick-region-mask-scatter\" aria-label=\"Inspect pick-region-mask-scatter\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 192
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.860Z",
+    "runId": "run-258278de",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-258278de",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-peak-snap",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'peak-snap-parameters',\n  format: 'float32',\n  length: GPU_TERRAIN_PEAK_SNAP_PARAMETER_LENGTH,\n  values: getGPUTerrainPeakSnapParameterValues({radius: 600, maximumMove: 300}, grid) // m\n});\ngraph.add(\n  new GPUTerrainPeakSnap({\n    grid, // 64 × 64 cells of 120 m, UTM 10N\n    elevation: makeGPURasterBand(dem, grid),\n    candidates, // column, row in cell-centre index space\n    parameters: parameters.importToGraph(graph),\n    maximumRadiusPixels: 8,\n    output: {positions, heights, snapStatus, snapDistance}\n  })\n);",
+    "language": "ts",
+    "lineCount": 16
+  },
+  "scenarioId": "gpu-terrain.terrain-peak-snap",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-peak-snap: peakCandidates → peakSnapPositions. points: 3. values read back from the GPU run. input peakCandidates: 3 points.",
+  "description": "Result of gpu-terrain.terrain-peak-snap: peakCandidates → peakSnapPositions. points: 3. values read back from the GPU run. input peakCandidates: 3 points.",
+  "llms": "Result of gpu-terrain.terrain-peak-snap: peakCandidates → peakSnapPositions\n\n- points: 3\n- input peakCandidates: 3 points\n- Planar coordinates (cell); uniform scale.\n- 3 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 3 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "points",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div><svg class=\"cv-figure\" width=\"640\" height=\"360\" viewBox=\"0 0 640 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[30,21],[46.5,49]]\" role=\"img\" aria-label=\"Result: peakSnapPositions\"><defs><pattern id=\"lens-gpu-terrain-terrain-peak-snap-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-peak-snap-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-peak-snap-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"input\"><circle class=\"cv-mark cv-mark--input cv-point\" data-role=\"input\" stroke-width=\"0.75\" fill=\"#5f6672\" stroke=\"#ffffff\" r=\"2.5\" cx=\"411.93\" cy=\"35.14\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></circle><circle class=\"cv-mark cv-mark--input cv-point\" data-role=\"input\" stroke-width=\"0.75\" fill=\"#5f6672\" stroke=\"#ffffff\" r=\"2.5\" cx=\"352.87\" cy=\"320.4\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></circle><circle class=\"cv-mark cv-mark--input cv-point\" data-role=\"input\" stroke-width=\"0.75\" fill=\"#5f6672\" stroke=\"#ffffff\" r=\"2.5\" cx=\"228.07\" cy=\"235.71\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></circle></g><g data-role=\"output\"><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.75\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"3\" cx=\"395.21\" cy=\"24\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.75\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"3\" cx=\"339.5\" cy=\"336\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></circle><circle class=\"cv-mark cv-mark--output cv-point\" data-role=\"output\" stroke-width=\"0.75\" fill=\"#0072b2\" stroke=\"#ffffff\" r=\"3\" cx=\"228.07\" cy=\"235.71\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></circle></g><g data-role=\"highlight\"></g></svg></div><p class=\"cv-legend\">grey: input peakCandidates · blue: output peakSnapPositions</p><p class=\"cv-note\">Planar coordinates (cell); uniform scale. · 3 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 3 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "unknown",
+      "reason": "missing cellSizeMode choice"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:58.293Z",
+    "runId": "run-2dd17bdb",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-2dd17bdb",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.bivariate-classification",
+  "rung": "datum",
+  "datum": 16,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.bivariate-classification",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Census tract 16. colors: 4287908155. values read back from the GPU run. bivariate-classification: 4 quantities.",
+  "description": "Receipt of Census tract 16. colors: 4287908155. values read back from the GPU run. bivariate-classification: 4 quantities.",
+  "llms": "Receipt of Census tract 16\n\n- colors: 4287908155\n- bivariate-classification: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "colors",
+    "value": "4287908155"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Census tract 16</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"bivariate-classification\"><tr><th scope=\"rowgroup\" colspan=\"5\">bivariate-classification</th></tr><tr data-provenance=\"readback\"><td>bivariate-classification</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-bivariate-classification-snapshots-poverty150Pct-0\" title=\"X axis: share of residents below 150% of the poverty line.\">poverty150Pct</button></td><td>46.599998474121094</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bivariate-classification</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-bivariate-classification-snapshots-uninsuredPct-0\" title=\"Y axis: share of residents without health insurance.\">uninsuredPct</button></td><td>19.799999237060547</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bivariate-classification</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-bivariate-classification-snapshots-classIds-0\" title=\"Joint class uninsuredClass * 3 + povertyClass; 4294967295 marks no data.\">classIds</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>bivariate-classification</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-bivariate-classification-snapshots-colors-0\" title=\"Packed rgba8 colour per tract: r | g &lt;&lt; 8 | b &lt;&lt; 16 | a &lt;&lt; 24.\">colors</button></td><td>4287908155</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "bivariate-classification",
+        "poverty150Pct",
+        "46.599998474121094",
+        "0",
+        "readback"
+      ],
+      [
+        "bivariate-classification",
+        "uninsuredPct",
+        "19.799999237060547",
+        "0",
+        "readback"
+      ],
+      [
+        "bivariate-classification",
+        "classIds",
+        "8",
+        "0",
+        "readback"
+      ],
+      [
+        "bivariate-classification",
+        "colors",
+        "4287908155",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.691Z",
+    "runId": "run-12a42d43",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-12a42d43",
+    "rung": "datum",
+    "bindings": {
+      "entity": 16
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

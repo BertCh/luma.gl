@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-statistics",
+  "rung": "datum",
+  "datum": 2,
+  "size": "full",
+  "scenarioId": "gpu-network.network-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of out-degree bin 2. outDegreeHistogram: 527. values read back from the GPU run. summary: 1 quantities.",
+  "description": "Receipt of out-degree bin 2. outDegreeHistogram: 527. values read back from the GPU run. summary: 1 quantities.",
+  "llms": "Receipt of out-degree bin 2\n\n- outDegreeHistogram: 527\n- summary: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients summary retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "outDegreeHistogram",
+    "value": "527"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of out-degree bin 2</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"summary\"><tr><th scope=\"rowgroup\" colspan=\"5\">summary</th></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"outDegreeHistogram\" title=\"output: GPU summary words 16-23, live nodes per out-degree bin; bin b holds out-degree b (linear width 1) and the last bin holds 7 and above\">outDegreeHistogram</button></td><td>527</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.statistics.degree-histogram</h4><div><pre class=\"lens-tex\">\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]\\leftarrow\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]+1</pre><p class=\"lens-ascii\">localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0, else min(1 + floor(log2 d), BIN_COUNT - 1)). Each workgroup then adds its non-empty bins to the summary words, so integer addition makes the histogram independent of thread order. The in-degree and total-degree histograms use the same rule.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "summary",
+        "outDegreeHistogram",
+        "527",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.803Z",
+    "runId": "run-8be88404",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients summary retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-8be88404",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

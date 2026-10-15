@@ -68,6 +68,12 @@ const compiledGraph = graph.compile();
 
 See the [operations reference](./gpu-dataframe-operations) for detailed execution and ownership contracts.
 
+## Catalog
+
+One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.
+
+::lens-catalog{entry=gpu-dataframe}
+
 ## Limits and compatibility
 
 - GPU Dataframe is experimental and WebGPU-only.

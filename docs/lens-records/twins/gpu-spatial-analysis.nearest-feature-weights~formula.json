@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.nearest-feature-weights",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.nearest-feature-weights",
+  "viewId": "formula-card",
+  "caption": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation…",
+  "description": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation…",
+  "llms": "Formula Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.nearest-feature-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\begin{cases}\\term{raw}{q_{ij}}&amp;\\term{raw}{q_{ij}}&lt;3\\cdot10^{38}\\\\0&amp;\\text{otherwise}\\end{cases},\\quad\\term{raw}{q_{ij}}=\\max(\\term{distance}{d_{ij}},\\term{floor}{\\delta})^{-\\term{power}{p}}</pre><p class=\"lens-ascii\">Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q &lt; 3e38, otherwise zero. Binary mode stores 1. No row standardisation.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"weight\">stored weight · output · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"raw\">raw weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\" data-value=\"distance\">join distance · input · keptDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-counts\" data-value=\"floor\">distance floor · parameter · FLOOR</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-counts\" data-value=\"power\">power · parameter · POWER</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-weights-compiled:nearest-feature-weights-emit\">nearest-feature-weights-emit</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "stored weight",
+        "output",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "raw weight",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "join distance",
+        "input",
+        "keptDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance floor",
+        "parameter",
+        "FLOOR",
+        "—",
+        "metadata"
+      ],
+      [
+        "power",
+        "parameter",
+        "POWER",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{weight}{w_{ij}}=\\begin{cases}\\term{raw}{q_{ij}}&\\term{raw}{q_{ij}}<3\\cdot10^{38}\\\\0&\\text{otherwise}\\end{cases},\\quad\\term{raw}{q_{ij}}=\\max(\\term{distance}{d_{ij}},\\term{floor}{\\delta})^{-\\term{power}{p}}",
+    "ascii": "Retain first k valid neighbors, optionally exclude self, then sort IDs ascending in CSR. In inverse-distance mode q = 1 / max(distance, distanceFloor)^power; store q when q < 3e38, otherwise zero. Binary mode stores 1. No row standardisation.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.090Z",
+    "runId": "run-3136c377",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3136c377",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

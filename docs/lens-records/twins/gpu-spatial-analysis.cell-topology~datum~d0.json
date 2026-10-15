@@ -1,0 +1,65 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-topology",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-topology",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of disk cell 0. distances: 0. values read back from the GPU run. boundaries-geometry: 2 quantities.",
+  "description": "Receipt of disk cell 0. distances: 0. values read back from the GPU run. boundaries-geometry: 2 quantities.",
+  "llms": "Receipt of disk cell 0\n\n- distances: 0\n- boundaries-geometry: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "distances",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of disk cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"boundaries-geometry\"><tr><th scope=\"rowgroup\" colspan=\"5\">boundaries-geometry</th></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-topology-snapshots-diskCells-0\" title=\"H3 cell key within 4 grid steps, (low, high) uint32 words, ordered by (distance, key)\">diskCells</button></td><td>2887254015, 143812172</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-topology-snapshots-distances-0\" title=\"grid steps from the input cell\">distances</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "boundaries-geometry",
+        "diskCells",
+        "2887254015, 143812172",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-geometry",
+        "distances",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:35.954Z",
+    "runId": "run-ca469a8a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ca469a8a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

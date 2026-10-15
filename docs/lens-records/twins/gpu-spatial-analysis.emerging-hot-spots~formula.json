@@ -1,0 +1,126 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.emerging-hot-spots",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.emerging-hot-spots",
+  "viewId": "formula-card",
+  "caption": "Formula z_b = sum_j w_j (x_j - mean) / (S sqrt(Delta_b)) over the valid bins j of the cell neighbourhood in the current and temporalWindow previous slices, Delta_b = (n S1 - W^2)/(n - 1), with S the population standard deviation of all n valid bins,…",
+  "description": "Formula z_b = sum_j w_j (x_j - mean) / (S sqrt(Delta_b)) over the valid bins j of the cell neighbourhood in the current and temporalWindow previous slices, Delta_b = (n S1 - W^2)/(n - 1), with S the population standard deviation of all n valid bins,…",
+  "llms": "Formula z_b = sum_j w_j (x_j - mean) / (S sqrt(Delta_b)) over the valid bins j of the cell neighbourhood in the current and temporalWindow previous slices, Delta_b = (n S1 - W^2)/(n - 1), with S the population standard deviation of all n valid bins, W = sum w_j and S1 = sum w_j^2 (binary lattice weights: S1 = W = k, the bins counted). NaN when n < 2, S = 0 or Delta_b <= 0. Per cell, Mann-Kendall S = sum over slice pairs i < j of sign(z_j - z_i) with tie-corrected variance, Z = (S - sign(S)) / sqrt(Var). A bin is hot (cold) when its two-sided normal p-value, adjusted over all valid bins by pCorrection, is at most 1 - confidenceLevel and z > 0 (z < 0). The 17 categories then follow from the hot and cold slice counts and the trend.\n\n- bound symbols: 8/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>emerging-hot-spot-gi-star</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{giZScores}{z_b}&amp;=\\frac{\\term{weightedSum}{\\sum_j w_j\\,(x_j-\\bar{X})}}{\\term{deviation}{S}\\,\\sqrt{\\term{spread}{\\Delta_b}}},\\qquad \\Delta_b=\\frac{n\\,S_1-W^2}{n-1}\\\\\n\\term{trendS}{S_{\\mathrm{MK}}}&amp;=\\sum_{i&lt;j}\\operatorname{sign}(z_j-z_i),\\qquad \\term{trendZScore}{Z_{\\mathrm{MK}}}=\\frac{S_{\\mathrm{MK}}-\\operatorname{sign}(S_{\\mathrm{MK}})}{\\sqrt{\\mathrm{Var}(S_{\\mathrm{MK}})}}\\\\\n&amp;\\text{hot: } z_b&gt;0 \\text{ and } \\term{adjustedP}{\\tilde{p}_b}\\le\\term{level}{1-\\mathrm{confidence}}\n\\end{aligned}</pre><p class=\"lens-ascii\">z_b = sum_j w_j (x_j - mean) / (S sqrt(Delta_b)) over the valid bins j of the cell neighbourhood in the current and temporalWindow previous slices, Delta_b = (n S1 - W^2)/(n - 1), with S the population standard deviation of all n valid bins, W = sum w_j and S1 = sum w_j^2 (binary lattice weights: S1 = W = k, the bins counted). NaN when n &lt; 2, S = 0 or Delta_b &lt;= 0. Per cell, Mann-Kendall S = sum over slice pairs i &lt; j of sign(z_j - z_i) with tie-corrected variance, Z = (S - sign(S)) / sqrt(Var). A bin is hot (cold) when its two-sided normal p-value, adjusted over all valid bins by pCorrection, is at most 1 - confidenceLevel and z &gt; 0 (z &lt; 0). The 17 categories then follow from the hot and cold slice counts and the trend.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-gi-star\" data-value=\"giZScores\">giZScores · output · zScore</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-gi-star\" data-value=\"weightedSum\">weightedSum · intermediate · weightedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-gi-star\" data-value=\"deviation\">deviation · intermediate · deviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-gi-star\" data-value=\"spread\">spread · intermediate · spread</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-mann-kendall\" data-value=\"trendS\">trendS · output · statistic</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-mann-kendall\" data-value=\"trendZScore\">trendZScore · output · trendZScore</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-slice-counts\" data-value=\"adjustedP\">adjustedP · intermediate · adjustedPValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-compiled:emerging-hot-spots-slice-counts\" data-value=\"level\">level · parameter · significanceLevel</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "giZScores",
+        "output",
+        "zScore",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightedSum",
+        "intermediate",
+        "weightedSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "deviation",
+        "intermediate",
+        "deviation",
+        "—",
+        "metadata"
+      ],
+      [
+        "spread",
+        "intermediate",
+        "spread",
+        "—",
+        "metadata"
+      ],
+      [
+        "trendS",
+        "output",
+        "statistic",
+        "—",
+        "metadata"
+      ],
+      [
+        "trendZScore",
+        "output",
+        "trendZScore",
+        "—",
+        "metadata"
+      ],
+      [
+        "adjustedP",
+        "intermediate",
+        "adjustedPValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "level",
+        "parameter",
+        "significanceLevel",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{giZScores}{z_b}&=\\frac{\\term{weightedSum}{\\sum_j w_j\\,(x_j-\\bar{X})}}{\\term{deviation}{S}\\,\\sqrt{\\term{spread}{\\Delta_b}}},\\qquad \\Delta_b=\\frac{n\\,S_1-W^2}{n-1}\\\\\n\\term{trendS}{S_{\\mathrm{MK}}}&=\\sum_{i<j}\\operatorname{sign}(z_j-z_i),\\qquad \\term{trendZScore}{Z_{\\mathrm{MK}}}=\\frac{S_{\\mathrm{MK}}-\\operatorname{sign}(S_{\\mathrm{MK}})}{\\sqrt{\\mathrm{Var}(S_{\\mathrm{MK}})}}\\\\\n&\\text{hot: } z_b>0 \\text{ and } \\term{adjustedP}{\\tilde{p}_b}\\le\\term{level}{1-\\mathrm{confidence}}\n\\end{aligned}",
+    "ascii": "z_b = sum_j w_j (x_j - mean) / (S sqrt(Delta_b)) over the valid bins j of the cell neighbourhood in the current and temporalWindow previous slices, Delta_b = (n S1 - W^2)/(n - 1), with S the population standard deviation of all n valid bins, W = sum w_j and S1 = sum w_j^2 (binary lattice weights: S1 = W = k, the bins counted). NaN when n < 2, S = 0 or Delta_b <= 0. Per cell, Mann-Kendall S = sum over slice pairs i < j of sign(z_j - z_i) with tie-corrected variance, Z = (S - sign(S)) / sqrt(Var). A bin is hot (cold) when its two-sided normal p-value, adjusted over all valid bins by pCorrection, is at most 1 - confidenceLevel and z > 0 (z < 0). The 17 categories then follow from the hot and cold slice counts and the trend.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:23.077Z",
+    "runId": "run-a33d60b2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a33d60b2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

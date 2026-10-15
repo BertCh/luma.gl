@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.mat-mul",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.mat-mul",
+  "viewId": "formula-card",
+  "caption": "Formula C[r*N+c]=sum(j=0..K-1, A[r*K+j]*B[j*N+c]); row-major float32, tiled partial sums across chunks. bound symbols: 3/3. structure metadata only.",
+  "description": "Formula C[r*N+c]=sum(j=0..K-1, A[r*K+j]*B[j*N+c]); row-major float32, tiled partial sums across chunks. bound symbols: 3/3. structure metadata only.",
+  "llms": "Formula C[r*N+c]=sum(j=0..K-1, A[r*K+j]*B[j*N+c]); row-major float32, tiled partial sums across chunks.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.mat-mul</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{C_{rN+c}}=\\sum_{j=0}^{K-1}\\term{left}{A_{rK+j}}\\term{right}{B_{jN+c}}</pre><p class=\"lens-ascii\">C[r*N+c]=sum(j=0..K-1, A[r*K+j]*B[j*N+c]); row-major float32, tiled partial sums across chunks.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-mul-compiled:east-west-steps-0\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-mul-compiled:east-west-steps-0\" data-value=\"left\">left · input · leftValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-mul-compiled:east-west-steps-0\" data-value=\"right\">right · input · rightValues</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-mul-compiled:east-west-steps-0\">east-west-steps-0</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "left",
+        "input",
+        "leftValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "right",
+        "input",
+        "rightValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{C_{rN+c}}=\\sum_{j=0}^{K-1}\\term{left}{A_{rK+j}}\\term{right}{B_{jN+c}}",
+    "ascii": "C[r*N+c]=sum(j=0..K-1, A[r*K+j]*B[j*N+c]); row-major float32, tiled partial sums across chunks.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.179Z",
+    "runId": "run-21e7d791",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-21e7d791",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

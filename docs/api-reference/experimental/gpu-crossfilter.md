@@ -280,3 +280,16 @@ GPU execution.
 See [GPU Primitives and Command Graphs](/docs/api-reference/experimental/gpu-core) for the
 underlying compute infrastructure and [GPU Coordinate Projection](/docs/api-reference/experimental/gpu-project)
 for another browser-native GPU data workflow.
+
+## External mask dimensions
+
+Register `{id, kind: 'external', mask}` to consume caller-written `uint32` flags, for example from
+`GPUTransferMask`. The mask must match the other dimensions' row count and chunk topology. Zero rejects
+and any nonzero value selects a row, including count-valued transfer masks. No predicate pass or source
+upload is added. The caller retains ownership of the mask.
+
+External dimensions start inactive and pass every row. Call `setExternalActive(id, true)` to include
+one in the intersection and in other dimensions' self-excluding views; `setExternalActive(id, false)`,
+`clear(id)`, or `clearAll()` bypasses it again. `setRange` and `setBounds` reject external dimensions.
+After GPU work rewrites a mask, call `invalidate(id)` so `skipUnchangedDimensions` and histogram cubes
+refresh their dependent results. Schedule the writer before the controller's composition nodes.

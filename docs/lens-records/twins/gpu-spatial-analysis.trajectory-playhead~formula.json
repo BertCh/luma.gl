@@ -1,0 +1,136 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-playhead",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-playhead",
+  "viewId": "formula-card",
+  "caption": "Formula For a nonempty track, p=I(a,b,t); speed=d(a,b)/duration only when active with positive duration, otherwise 0. I is linear interpolation in planar mode or spherical interpolation with continuous longitude. Binary search picks the latest dupli…",
+  "description": "Formula For a nonempty track, p=I(a,b,t); speed=d(a,b)/duration only when active with positive duration, otherwise 0. I is linear interpolation in planar mode or spherical interpolation with continuous longitude. Binary search picks the latest dupli…",
+  "llms": "Formula For a nonempty track, p=I(a,b,t); speed=d(a,b)/duration only when active with positive duration, otherwise 0. I is linear interpolation in planar mode or spherical interpolation with continuous longitude. Binary search picks the latest duplicate row; t is the clamped elapsed-time fraction, held at 0 in a gap and at the endpoint outside the span. Empty tracks output zeros.\n\n- bound symbols: 9/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "9/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-playhead</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{position}{p}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t}),\\quad \\term{speed}{v}=\\begin{cases}\\term{length}{d}(\\term{start}{a},\\term{end}{b})/\\term{duration}{\\Delta t}&amp;\\term{status}{s}=\\text{active},\\term{duration}{\\Delta t}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">For a nonempty track, p=I(a,b,t); speed=d(a,b)/duration only when active with positive duration, otherwise 0. I is linear interpolation in planar mode or spherical interpolation with continuous longitude. Binary search picks the latest duplicate row; t is the clamped elapsed-time fraction, held at 0 in a gap and at the endpoint outside the span. Empty tracks output zeros.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"position\">position · output · currentPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"speed\">speed · output · speeds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"start\">start · input · startPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"end\">end · input · endPosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-bracket\" data-value=\"fraction\">fraction · input · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-bracket\" data-value=\"duration\">duration · input · duration</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-bracket\" data-value=\"status\">status · input · status</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"interpolate\">interpolate · intermediate · interpolatePosition</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-playhead-compiled:trajectory-playhead-geometry\" data-value=\"length\">length · intermediate · getSegmentLength</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "position",
+        "output",
+        "currentPositions",
+        "—",
+        "metadata"
+      ],
+      [
+        "speed",
+        "output",
+        "speeds",
+        "—",
+        "metadata"
+      ],
+      [
+        "start",
+        "input",
+        "startPosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "end",
+        "input",
+        "endPosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "fraction",
+        "input",
+        "fraction",
+        "—",
+        "metadata"
+      ],
+      [
+        "duration",
+        "input",
+        "duration",
+        "—",
+        "metadata"
+      ],
+      [
+        "status",
+        "input",
+        "status",
+        "—",
+        "metadata"
+      ],
+      [
+        "interpolate",
+        "intermediate",
+        "interpolatePosition",
+        "—",
+        "metadata"
+      ],
+      [
+        "length",
+        "intermediate",
+        "getSegmentLength",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{position}{p}=\\term{interpolate}{I}(\\term{start}{a},\\term{end}{b},\\term{fraction}{t}),\\quad \\term{speed}{v}=\\begin{cases}\\term{length}{d}(\\term{start}{a},\\term{end}{b})/\\term{duration}{\\Delta t}&\\term{status}{s}=\\text{active},\\term{duration}{\\Delta t}>0\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "For a nonempty track, p=I(a,b,t); speed=d(a,b)/duration only when active with positive duration, otherwise 0. I is linear interpolation in planar mode or spherical interpolation with continuous longitude. Binary search picks the latest duplicate row; t is the clamped elapsed-time fraction, held at 0 in a gap and at the endpoint outside the span. Empty tracks output zeros.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.185Z",
+    "runId": "run-dd06f4cc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-dd06f4cc",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

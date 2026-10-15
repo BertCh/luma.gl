@@ -1,0 +1,69 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-conditional",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-conditional",
+  "viewId": "formula-card",
+  "caption": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata. bound sy…",
+  "description": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata. bound sy…",
+  "llms": "Formula condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.\n\n- bound symbols: 2/2\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-conditional.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{f}=\\begin{cases}0.4&amp;\\term{condition}{L}=50\\\\1&amp;L\\ne50\\end{cases}\\quad(\\text{valid condition and chosen branch; otherwise NaN})</pre><p class=\"lens-ascii\">condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-conditional-compiled:raster-conditional-select\" data-value=\"result\">friction · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-conditional-compiled:raster-conditional-select\" data-value=\"condition\">land cover · input · conditionValue</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "friction",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "land cover",
+        "input",
+        "conditionValue",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{result}{f}=\\begin{cases}0.4&\\term{condition}{L}=50\\\\1&L\\ne50\\end{cases}\\quad(\\text{valid condition and chosen branch; otherwise NaN})",
+    "ascii": "condition = landCover == 50; chosen = condition ? 0.4 : 1; output = chosen if the condition value and chosen branch are neither NaN nor the optional noDataValue (0 here), otherwise NaN; the unchosen branch does not propagate nodata.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.284Z",
+    "runId": "run-cf982236",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-cf982236",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

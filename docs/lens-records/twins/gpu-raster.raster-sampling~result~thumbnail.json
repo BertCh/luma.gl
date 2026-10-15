@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-sampling",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.raster-sampling",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSam…",
+  "description": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSampledPoints. points: 25. values read back from the GPU run. input samplingDem: 4096 cells.",
+  "llms": "Result of gpu-raster.raster-sampling: samplingDem, samplingPoints → samplingSampledPoints\n\n- points: 25\n- input samplingDem: 4096 cells\n- input samplingPoints: 25 points\n- Planar coordinates (m (relative to localOrigin)); uniform scale.\n- cell size 120 m (relative to localOrigin)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 25 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "points",
+    "value": "25"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[7680,7680]]\" role=\"img\" aria-label=\"Result: samplingSampledPoints\"><defs><pattern id=\"lens-gpu-raster-raster-sampling-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-sampling-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-sampling-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#083d7f\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"47.84\" cy=\"80.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#4a98c9\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"79.34\" cy=\"80.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#1c6bb0\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"110.84\" cy=\"80.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"4\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#083d7f\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"63.59\" cy=\"64.41\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"6\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-4\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#1c6bb0\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"95.09\" cy=\"64.41\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"8\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#083d7f\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"47.84\" cy=\"48.66\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"10\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#8abfdd\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"79.34\" cy=\"48.66\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"12\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#c6dbef\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"110.84\" cy=\"48.66\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"14\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#4a98c9\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"63.59\" cy=\"32.91\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"16\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#c6dbef\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"95.09\" cy=\"32.91\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"18\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#083d7f\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"47.84\" cy=\"17.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"20\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#c6dbef\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"79.34\" cy=\"17.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"22\"></circle><circle class=\"cv-mark cv-mark--output cv-point cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"0.44999999999999996\" fill=\"#8abfdd\" stroke=\"#ffffff\" r=\"1.7999999999999998\" cx=\"110.84\" cy=\"17.16\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"24\"></circle></g><g data-role=\"highlight\"><circle class=\"cv-mark cv-mark--highlight cv-point\" data-role=\"highlight\" stroke-width=\"1.2\" fill=\"#d55e00\" stroke=\"#ffffff\" r=\"2.6999999999999997\" paint-order=\"stroke\" cx=\"85.25\" cy=\"62.44\" data-provenance=\"readback\"></circle></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.659Z",
+    "runId": "run-9152d5ec",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9152d5ec",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

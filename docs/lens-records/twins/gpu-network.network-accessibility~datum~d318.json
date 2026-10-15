@@ -1,0 +1,84 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-accessibility",
+  "rung": "datum",
+  "datum": 318,
+  "size": "full",
+  "scenarioId": "gpu-network.network-accessibility",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of network node 318. gravity-nodes: -87.62275695800781, 41.894168853759766. values read back from the GPU run. search: 1 quantities.",
+  "description": "Receipt of network node 318. gravity-nodes: -87.62275695800781, 41.894168853759766. values read back from the GPU run. search: 1 quantities.",
+  "llms": "Receipt of network node 318\n\n- gravity-nodes: -87.62275695800781, 41.894168853759766\n- search: 1 quantities\n- summary: 1 quantities\n- network-cost-matrix: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "gravity-nodes",
+    "value": "-87.62275695800781, 41.894168853759766"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of network node 318</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"search\"><tr><th scope=\"rowgroup\" colspan=\"5\">search</th></tr><tr data-provenance=\"readback\"><td>search</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"matrixCosts\" title=\"row 0 of the 4 x 1199 matrix: travel seconds from each node to Northwestern Memorial Hospital Arkes Pavilion\">matrixCosts</button></td><td>12.606952667236328</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"summary\"><tr><th scope=\"rowgroup\" colspan=\"5\">summary</th></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gravity\">gravity</button></td><td>2.1101725101470947</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-cost-matrix\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-cost-matrix</th></tr><tr data-provenance=\"readback\"><td>network-cost-matrix</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"road-context\" title=\"context: uploaded road graph (offsets, neighbors and node positions read back)\">road-context</button></td><td>-87.62275695800781, 41.894168853759766</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-cost-matrix</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gravity-nodes\" title=\"output: gravity accessibility per intersection, sum of exp(-0.005 cost) over facilities within 600 s\">gravity-nodes</button></td><td>-87.62275695800781, 41.894168853759766</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.reachability.relax</h4><div><pre class=\"lens-tex\">\\term{costs}{c_v}\\leftarrow\\min(\\term{costs}{c_v},\\operatorname{f32}(\\term{source}{c_u}+\\term{weight}{w_{uv}})),\\quad v&lt;\\term{count}{N},\\ w_{uv}\\ge0,\\ c_u+w_{uv}\\le L;\\qquad c_v^*=\\min_s(c_s^0+d(s,v))\\le L</pre><p class=\"lens-ascii\">Atomic minimum of non-negative f32 cost bits: c[v] &lt;- min(c[v], f32(c[u] + w[u,v])). Negative/NaN weights are impassable; out-of-range neighbors and non-finite candidates are ignored. With cutoff L, candidates above L stay unreached (+Infinity); without a cutoff L = +Infinity. At convergence c[v] = min_s(c0[s] + d(s,v)), restricted to &lt;= L, with path sums evaluated in f32. Chaotic: a visit may read costs improved earlier in the same round; rounds are not synchronous Bellman-Ford sweeps.</p></div></div><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "search",
+        "matrixCosts",
+        "12.606952667236328",
+        "0",
+        "readback"
+      ],
+      [
+        "summary",
+        "gravity",
+        "2.1101725101470947",
+        "0",
+        "readback"
+      ],
+      [
+        "network-cost-matrix",
+        "road-context",
+        "-87.62275695800781, 41.894168853759766",
+        "0",
+        "readback"
+      ],
+      [
+        "network-cost-matrix",
+        "gravity-nodes",
+        "-87.62275695800781, 41.894168853759766",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.678Z",
+    "runId": "run-e583d7a0",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-e583d7a0",
+    "rung": "datum",
+    "bindings": {
+      "entity": 318
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

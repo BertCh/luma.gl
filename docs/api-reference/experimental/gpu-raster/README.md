@@ -40,7 +40,7 @@ compiled.encode(device.commandEncoder, {parameters: undefined});
 device.submit();
 ```
 
-See [Running contributors](../gpu-spatial-analysis.md#running-contributors) for the compile, encode
+See [Running contributors](../gpu-spatial-analysis/concepts.md#running-contributors) for the compile, encode
 and submit pattern every analysis entry shares.
 
 ## Core concepts and data model
@@ -83,6 +83,12 @@ residency in detail.
 | Regions and contours | connected components, dense labels, region measurements, marching squares, indirect overlays |
 
 The [operations reference](/docs/api-reference/experimental/gpu-raster/operations) documents inputs, outputs, execution, capacity, and cost.
+
+## Catalog
+
+One figure per contributor, each drawn from a recorded GPU run on real data; click through to its card.
+
+::lens-catalog{entry=gpu-raster}
 
 ## Limits and compatibility
 

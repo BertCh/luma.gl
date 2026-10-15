@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-segmentize",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "// Parameters: 25 m maximum segment length; roads are UTM 16N metres.\ngraph.add(\n  new GPULineSegmentize({...roads, parameters, maximumPieceCount: 64, closedLines: false, output})\n);\nconst {positions: densified, lineOffsets} = output;",
+    "language": "ts",
+    "lineCount": 5
+  },
+  "scenarioId": "gpu-spatial-analysis.line-segmentize",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.line-segmentize: roads → densified. lines: 223. values read back from the GPU run. input roads: 223 lines.",
+  "description": "Result of gpu-spatial-analysis.line-segmentize: roads → densified. lines: 223. values read back from the GPU run. input roads: 223 lines.",
+  "llms": "Result of gpu-spatial-analysis.line-segmentize: roads → densified\n\n- lines: 223\n- input roads: 223 lines\n- Planar coordinates (m); uniform scale.\n- 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 32832 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "223"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div><svg class=\"cv-figure\" width=\"640\" height=\"360\" viewBox=\"0 0 640 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[5084.509765625,10443.5302734375]]\" role=\"img\" aria-label=\"Result: densified\"><defs><pattern id=\"lens-gpu-spatial-analysis-line-segmentize-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-line-segmentize-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-line-segmentize-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"input\"><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M395.73,44.15 L391.11,37.06\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M395.73,44.15 L390.3,36.86\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M391.74,27.17 L393.61,35.05\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M385.05,33.61 L382.31,29.14\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"50\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M381.13,47.11 L376.33,47.3\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"102\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M389.42,33.1 L387.17,29.29\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"152\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M389.27,38.42 L391.95,41.04\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"183\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M391.32,41.62 L391.33,41.24 L390.76,41.3 L391.06,41.76\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"185\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M389.52,37.41 L391.41,40.36\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"205\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M384.85,27.94 L387.23,35.09\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"206\"></path></g><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></div><p class=\"cv-legend\">grey: input roads · blue: output densified</p><p class=\"cv-note\">Planar coordinates (m); uniform scale. · 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 32832 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.560Z",
+    "runId": "run-f4c6a792",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f4c6a792",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

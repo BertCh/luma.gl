@@ -1,0 +1,111 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-height-above-drainage",
+  "rung": "datum",
+  "datum": 3443,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-height-above-drainage",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 3443. drainageCells: 3903. values read back from the GPU run. terrain-height-above-drainage: 6 quantities.",
+  "description": "Receipt of grid cells 3443. drainageCells: 3903. values read back from the GPU run. terrain-height-above-drainage: 6 quantities.",
+  "llms": "Receipt of grid cells 3443\n\n- drainageCells: 3903\n- terrain-height-above-drainage: 6 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "drainageCells",
+    "value": "3903"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3443</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-height-above-drainage\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-height-above-drainage</th></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1595.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowFilledElevation-0\" title=\"filled elevation (m)\">flowFilledElevation</button></td><td>1595.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowDirections-0\" title=\"D8 flow direction (ESRI code)\">flowDirections</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-flowStreams-0\" title=\"stream mask (1 where upstream cells ≥ 40)\">flowStreams</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-heightAboveDrainage-0\" title=\"height above drainage (m)\">heightAboveDrainage</button></td><td>458.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-height-above-drainage</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-height-above-drainage-snapshots-drainageCells-0\" title=\"drainage cell index (first stream cell on the D8 path)\">drainageCells</button></td><td>3903</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-height-above-drainage-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3378\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3378: 1626</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3378</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3379\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3379: 1613.699951171875</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3379</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3380\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3380: 1575.199951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3380</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3442\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3442: 1621.9000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3442</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3443\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3443: 1595.0999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3443</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3444\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3444: 1559.300048828125</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3444</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3506\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3506: 1589.5</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3506</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3507\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3507: 1570.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3507</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3508\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3508: 1537.199951171875</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3508</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-height-above-drainage",
+        "dem",
+        "1595.0999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-height-above-drainage",
+        "flowFilledElevation",
+        "1595.0999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-height-above-drainage",
+        "flowDirections",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-height-above-drainage",
+        "flowStreams",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-height-above-drainage",
+        "heightAboveDrainage",
+        "458.9000244140625",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-height-above-drainage",
+        "drainageCells",
+        "3903",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.807Z",
+    "runId": "run-773aa4ef",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-773aa4ef",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3443
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

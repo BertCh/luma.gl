@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.particle-advection",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-raster.particle-advection",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.particle-advection: particleWindSpeed, particleSeeds → par…",
+  "description": "Result of gpu-raster.particle-advection: particleWindSpeed, particleSeeds → particleTrails. lines: 200. values read back from the GPU run. input particleWindSpeed: 3072 cells.",
+  "llms": "Result of gpu-raster.particle-advection: particleWindSpeed, particleSeeds → particleTrails\n\n- lines: 200\n- input particleWindSpeed: 3072 cells\n- input particleSeeds: 200 points\n- Simple equirectangular projection (x scaled by cos 36.13°); not equal-area.\n- cell size 0.25 deg\n- 200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2400 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "200"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-100.125,30.125],[-84.125,42.125]]\" role=\"img\" aria-label=\"Result: particleTrails\"><defs><pattern id=\"lens-gpu-raster-particle-advection-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-particle-advection-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-particle-advection-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.505Z",
+    "runId": "run-79dc3d3a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-79dc3d3a",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

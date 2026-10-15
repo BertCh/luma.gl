@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.dot-density",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.dot-density",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of census tract 0. slotCounts: 8. values read back from the GPU run. dot-density: 2 quantities.",
+  "description": "Receipt of census tract 0. slotCounts: 8. values read back from the GPU run. dot-density: 2 quantities.",
+  "llms": "Receipt of census tract 0\n\n- slotCounts: 8\n- dot-density: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "slotCounts",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of census tract 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"dot-density\"><tr><th scope=\"rowgroup\" colspan=\"5\">dot-density</th></tr><tr data-provenance=\"readback\"><td>dot-density</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-dot-density-snapshots-population-0\">population</button></td><td>4284</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>dot-density</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-dot-density-snapshots-slotCounts-0\">slotCounts</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "dot-density",
+        "population",
+        "4284",
+        "0",
+        "readback"
+      ],
+      [
+        "dot-density",
+        "slotCounts",
+        "8",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.562Z",
+    "runId": "run-56813e87",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-56813e87",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

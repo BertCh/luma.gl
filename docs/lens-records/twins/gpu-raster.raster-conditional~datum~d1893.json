@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-conditional",
+  "rung": "datum",
+  "datum": 1893,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-conditional",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1893. conditionalFriction: 0.4000000059604645. values read back from the GPU run. raster-conditional: 3 quantities.",
+  "description": "Receipt of grid cells 1893. conditionalFriction: 0.4000000059604645. values read back from the GPU run. raster-conditional: 3 quantities.",
+  "llms": "Receipt of grid cells 1893\n\n- conditionalFriction: 0.4000000059604645\n- raster-conditional: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "conditionalFriction",
+    "value": "0.4000000059604645"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1893</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-conditional\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-conditional</th></tr><tr data-provenance=\"readback\"><td>raster-conditional</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-conditional-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1089</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-conditional</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-conditional-snapshots-conditionalLandCover-0\" title=\"WorldCover class code (50 is built-up)\">conditionalLandCover</button></td><td>50</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-conditional</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-conditional-snapshots-conditionalFriction-0\" title=\"built-up 0.4, otherwise 1 (cost/m)\">conditionalFriction</button></td><td>0.4000000059604645</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-raster-conditional-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-conditional-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-conditional-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1828\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1828: 1093.4000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1828</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1829\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1829: 1092.5999755859375</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1829</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1830\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1830: 1091.5</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1830</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1892\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1892: 1090.0999755859375</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1892</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1893\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1893: 1089</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1893</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1894\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1894: 1088.199951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1894</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1956\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1956: 1086.5999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1956</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1957\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1957: 1086.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1957</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1958\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1958: 1086.0999755859375</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1958</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-conditional",
+        "landscapeElevation",
+        "1089",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-conditional",
+        "conditionalLandCover",
+        "50",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-conditional",
+        "conditionalFriction",
+        "0.4000000059604645",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.284Z",
+    "runId": "run-cf982236",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-cf982236",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1893
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

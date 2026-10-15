@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.grid-generator",
+  "rung": "datum",
+  "datum": 84,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.grid-generator",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of hexagon, rows from south 84. intersects: 1. values read back from the GPU run. grid-generator: 2 quantities.",
+  "description": "Receipt of hexagon, rows from south 84. intersects: 1. values read back from the GPU run. grid-generator: 2 quantities.",
+  "llms": "Receipt of hexagon, rows from south 84\n\n- intersects: 1\n- grid-generator: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "intersects",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of hexagon, rows from south 84</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"grid-generator\"><tr><th scope=\"rowgroup\" colspan=\"5\">grid-generator</th></tr><tr data-provenance=\"readback\"><td>grid-generator</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-grid-generator-snapshots-centers-0\" title=\"hexagon centre [x, y] in m (mean of its six corners)\">centers</button></td><td>4340, 9892.8203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>grid-generator</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-grid-generator-snapshots-intersects-0\" title=\"1 when the hexagon touches the area, else 0\">intersects</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "grid-generator",
+        "centers",
+        "4340, 9892.8203125",
+        "0",
+        "readback"
+      ],
+      [
+        "grid-generator",
+        "intersects",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:51.305Z",
+    "runId": "run-ce19a8dc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ce19a8dc",
+    "rung": "datum",
+    "bindings": {
+      "entity": 84
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

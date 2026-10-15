@@ -7,11 +7,27 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Sums station rainfall into an 18 by 16 grid of 1° cells, producing one rainfall total per cell.
+
+::lens{scenario=gpu-core.grid-aggregation rung=result caption="The wettest 1° cell totals 3,737.6 mm over its 23 stations; empty cells total zero."}
+
 `GPUGridAggregation` computes sum, minimum, maximum, or mean statistics for paired `float32`
 weights in a row-major two-dimensional grid. It is the weighted counterpart to `GPUGridBinning`:
 binning answers “how many points are in each cell?”, while aggregation describes their values.
 
 <GPUOperationContract operation="gpu-grid-aggregation" />
+
+#### How it computes
+
+{/* lens:GPUGridAggregation */}
+
+::lens{scenario=gpu-core.grid-aggregation rung=kernel caption="Inspect lanes adding each station's rainfall to its cell with compare-exchange float addition."}
+
+::lens{scenario=gpu-core.grid-aggregation rung=graph caption="Trace the clear node followed by the sum accumulation node."}
+
+::lens{scenario=gpu-core.grid-aggregation rung=datum caption="Follow one station's rainfall into the cell total it increases."}
+
+::lens{scenario=gpu-core.grid-aggregation rung=formula caption="Read the per-cell sum over stations whose position falls in that cell."}
 
 ## Concepts
 

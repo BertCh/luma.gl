@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-grouped-aggregation-query",
+  "rung": "datum",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-grouped-aggregation-query",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Category group 1. mean: 0.9635416865348816. values read back from the GPU run. result: 4 quantities.",
+  "description": "Receipt of Category group 1. mean: 0.9635416865348816. values read back from the GPU run. result: 4 quantities.",
+  "llms": "Receipt of Category group 1\n\n- mean: 0.9635416865348816\n- result: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "mean",
+    "value": "0.9635416865348816"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Category group 1</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"groupKey\">groupKey</button></td><td>1</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"count\">count</button></td><td>384</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"sum\">sum</button></td><td>370</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"mean\">mean</button></td><td>0.9635416865348816</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "groupKey",
+        "1",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "count",
+        "384",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "sum",
+        "370",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "mean",
+        "0.9635416865348816",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.283Z",
+    "runId": "run-430590d2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-430590d2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

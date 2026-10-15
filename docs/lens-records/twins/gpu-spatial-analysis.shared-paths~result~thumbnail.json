@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.shared-paths",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.shared-paths",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries →…",
+  "description": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries → sharedPaths. lines: 4,096. values read back from the GPU run. input leftBoundaries: 1 lines.",
+  "llms": "Result of gpu-spatial-analysis.shared-paths: leftBoundaries, rightBoundaries → sharedPaths\n\n- lines: 4,096\n- input leftBoundaries: 1 lines\n- input rightBoundaries: 16 lines\n- Planar coordinates (m); uniform scale.\n- 224 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2977 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 8192 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "4,096"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1975.719970703125,0],[10017.650390625,17517.720703125]]\" role=\"img\" aria-label=\"Result: sharedPaths\"><defs><pattern id=\"lens-gpu-spatial-analysis-shared-paths-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-shared-paths-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.334Z",
+    "runId": "run-74a98bd4",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-74a98bd4",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

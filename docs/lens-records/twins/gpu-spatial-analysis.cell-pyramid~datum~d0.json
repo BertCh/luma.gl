@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-pyramid",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-pyramid",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of zoom-16 cell 0. level2Counts: 220. values read back from the GPU run. boundaries-geometry: 2 quantities.",
+  "description": "Receipt of zoom-16 cell 0. level2Counts: 220. values read back from the GPU run. boundaries-geometry: 2 quantities.",
+  "llms": "Receipt of zoom-16 cell 0\n\n- level2Counts: 220\n- boundaries-geometry: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "level2Counts",
+    "value": "220"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of zoom-16 cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"boundaries-geometry\"><tr><th scope=\"rowgroup\" colspan=\"5\">boundaries-geometry</th></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-pyramid-snapshots-level2Cells-0\" title=\"zoom-16 Quadbin cell key as (low, high) uint32 words\">level2Cells</button></td><td>1802502143, 1224944308</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-pyramid-snapshots-level2Counts-0\" title=\"places per zoom-16 cell (count)\">level2Counts</button></td><td>220</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "boundaries-geometry",
+        "level2Cells",
+        "1802502143, 1224944308",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-geometry",
+        "level2Counts",
+        "220",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:44.866Z",
+    "runId": "run-65ffdd54",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-65ffdd54",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

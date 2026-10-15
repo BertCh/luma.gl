@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segment-ring-assembly",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.segment-ring-assembly",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions.",
+  "description": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions. polygons: 64. values read back from the GPU run. input positions: 17 polygons.",
+  "llms": "Result of gpu-spatial-analysis.segment-ring-assembly: positions → ringPositions\n\n- polygons: 64\n- input positions: 17 polygons\n- Planar coordinates (m); uniform scale.\n- 3201 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 3248 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "64"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-1975.719970703125,0],[10017.650390625,17517.720703125]]\" role=\"img\" aria-label=\"Result: ringPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-segment-ring-assembly-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"#0072b2\" stroke=\"#0072b2\" fill-opacity=\"0.22\" d=\"M80.6,13.68 L63.27,8.4 L53.13,25.47 L64.85,72.94 L103.19,76.76 L105.48,65.72 L107.42,65.44 L107.83,53.82 L94.97,54.56 L100.38,41.06 L98.33,35.94 L96.47,25.79 L96.07,24.5 L95.18,15.26 L97.38,11.98 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:06.783Z",
+    "runId": "run-899a5cb5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-899a5cb5",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.kernel-density",
+  "rung": "formula",
+  "datum": 4887,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.kernel-density",
+  "viewId": "formula-card",
+  "caption": "Formula density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| < 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window. λ̂(u): 0.0003445. values read back from the GPU ru…",
+  "description": "Formula density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| < 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window. λ̂(u): 0.0003445. values read back from the GPU ru…",
+  "llms": "Formula density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| < 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window\n\n- λ̂(u): 0.0003445\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "λ̂(u)",
+    "value": "0.0003445"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.kernel-density</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{density}{\\hat\\lambda(u)} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div><div class=\"lens-worked-example\"><h4>Entity 4887</h4><div><pre class=\"lens-tex\">\\term{density}{0.000344537} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert &lt; 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}</pre><p class=\"lens-ascii\">density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| &lt; 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"density\">λ̂(u) · output · valuesOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"position\">x_i · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"weight\">w_i · input · pointWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"kernel\">K_h · intermediate · getKernelValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-gather\" data-value=\"mass\">e_h(u) · intermediate · getWindowMass</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kernel-density-compiled:kernel-density-point-weights\" data-value=\"bandwidth\">h · parameter · bandwidth</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "λ̂(u)",
+        "output",
+        "valuesOut",
+        "0.00034453708212822676",
+        "readback"
+      ],
+      [
+        "x_i",
+        "input",
+        "positions",
+        "—",
+        "metadata"
+      ],
+      [
+        "w_i",
+        "input",
+        "pointWeights",
+        "—",
+        "metadata"
+      ],
+      [
+        "K_h",
+        "intermediate",
+        "getKernelValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "e_h(u)",
+        "intermediate",
+        "getWindowMass",
+        "—",
+        "metadata"
+      ],
+      [
+        "h",
+        "parameter",
+        "bandwidth",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{density}{\\hat\\lambda(u)} = \\frac{1}{\\term{mass}{e_h(u)}} \\sum_{i\\,:\\,\\lVert u - x_i \\rVert < 5h} \\term{weight}{w_i}\\, \\term{kernel}{K_h}\\big(\\lVert u - \\term{position}{x_i} \\rVert\\big), \\qquad K_h(d) = \\frac{e^{-d^2 / (2\\term{bandwidth}{h}^2)}}{2\\pi h^2}",
+    "ascii": "density(u) = (1 / e_h(u)) * sum over points i with |u - x_i| < 5h of w_i * K_h(|u - x_i|), K_h(d) = exp(-d^2 / (2 h^2)) / (2 pi h^2), e_h(u) = kernel mass of cell centre u inside the window",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.945Z",
+    "runId": "run-3d72a3a1",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3d72a3a1",
+    "rung": "formula",
+    "bindings": {
+      "entity": 4887
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-service-areas",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-service-areas",
+  "viewId": "formula-card",
+  "caption": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fi…",
+  "description": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fi…",
+  "llms": "Formula Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: transients assignments, costs, converged retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.service-areas.label</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{labels}{L}[\\term{targetNode}{v}]\\leftarrow\\min\\bigl(\\term{labels}{L}[\\term{targetNode}{v}],\\ \\term{sourceLabel}{\\ell_u}\\bigr)\\quad\\text{over tight edges }u\\to v:\\ \\term{tight}{c_u+w_{uv}=c_v}</pre><p class=\"lens-ascii\">Label phase, after the cost search: on every tight edge u-&gt;v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-initialize\" data-value=\"labels\">facility row per node · output · labels</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-reachability-seed\" data-value=\"targetNode\">edge target v · intermediate · targetNode</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-0\" data-value=\"sourceLabel\">label of the edge source u · intermediate · sourceLabel</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-initialize\" data-value=\"tight\">tight-edge bit · input · tightBits</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-0\">network-service-areas-label-round-0</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-1\">network-service-areas-label-round-1</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-2\">network-service-areas-label-round-2</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-3\">network-service-areas-label-round-3</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-4\">network-service-areas-label-round-4</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-5\">network-service-areas-label-round-5</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-6\">network-service-areas-label-round-6</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-7\">network-service-areas-label-round-7</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-8\">network-service-areas-label-round-8</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-9\">network-service-areas-label-round-9</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-10\">network-service-areas-label-round-10</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-11\">network-service-areas-label-round-11</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-12\">network-service-areas-label-round-12</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-13\">network-service-areas-label-round-13</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-14\">network-service-areas-label-round-14</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-15\">network-service-areas-label-round-15</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-16\">network-service-areas-label-round-16</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-17\">network-service-areas-label-round-17</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-18\">network-service-areas-label-round-18</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-19\">network-service-areas-label-round-19</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-20\">network-service-areas-label-round-20</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-21\">network-service-areas-label-round-21</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-22\">network-service-areas-label-round-22</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-service-areas-compiled:network-service-areas-label-round-23\">network-service-areas-label-round-23</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "facility row per node",
+        "output",
+        "labels",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge target v",
+        "intermediate",
+        "targetNode",
+        "—",
+        "metadata"
+      ],
+      [
+        "label of the edge source u",
+        "intermediate",
+        "sourceLabel",
+        "—",
+        "metadata"
+      ],
+      [
+        "tight-edge bit",
+        "input",
+        "tightBits",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{labels}{L}[\\term{targetNode}{v}]\\leftarrow\\min\\bigl(\\term{labels}{L}[\\term{targetNode}{v}],\\ \\term{sourceLabel}{\\ell_u}\\bigr)\\quad\\text{over tight edges }u\\to v:\\ \\term{tight}{c_u+w_{uv}=c_v}",
+    "ascii": "Label phase, after the cost search: on every tight edge u->v (f32 equality costs[u] + w == costs[v], no tolerance, zero-weight edges included) labels[v] = min(labels[v], labels[u]) with an atomic minimum, seeded at the facility nodes. The fixpoint is the smallest facility row among all facilities that reach v at its minimum cost, independent of thread order. Unreached nodes keep NONE (0xffffffff).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:13.012Z",
+    "runId": "run-66f4fefa",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients assignments, costs, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-66f4fefa",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

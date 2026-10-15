@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geometry-cleanup",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.geometry-cleanup",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.geometry-cleanup: positions → cleanedParks.",
+  "description": "Result of gpu-spatial-analysis.geometry-cleanup: positions → cleanedParks. polygons: 51. values read back from the GPU run. input positions: 51 polygons.",
+  "llms": "Result of gpu-spatial-analysis.geometry-cleanup: positions → cleanedParks\n\n- polygons: 51\n- input positions: 51 polygons\n- Planar coordinates (m); uniform scale.\n- 550 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 550 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "51"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[8800,18080]]\" role=\"img\" aria-label=\"Result: cleanedParks\"><defs><pattern id=\"lens-gpu-spatial-analysis-geometry-cleanup-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-geometry-cleanup-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-geometry-cleanup-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.664Z",
+    "runId": "run-45d165f8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-45d165f8",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

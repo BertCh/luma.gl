@@ -1,0 +1,118 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-two-stage-least-squares",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-two-stage-least-squares",
+  "viewId": "formula-card",
+  "caption": "Formula Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant i…",
+  "description": "Formula Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant i…",
+  "llms": "Formula Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = n I_u^2/phi2 with I_u = (n/S0) u'Wu/u'u tests the residuals for spatial autocorrelation. Classical (non-robust) standard errors.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-two-stage-least-squares</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{delta}{\\hat\\delta}&amp;=(Z^\\top PZ)^{-1}Z^\\top P\\,y,\n&amp;Z&amp;=[1,X,Wy],\\ P=H(H^\\top H)^{-1}H^\\top,\\ H=[1,X,WX]\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&amp;=\\frac{u^\\top u}{n},\\ u=y-Z\\hat\\delta,\n&amp;\\term{zStatistic}{z_j}&amp;=\\frac{\\hat\\delta_j}{\\term{standardError}{\\mathrm{se}_j}},\\ \\mathrm{se}_j^2=\\hat\\sigma^2[(Z^\\top PZ)^{-1}]_{jj}\\\\\n\\term{moranI}{I_u}&amp;=\\frac{n}{S_0}\\,\\frac{u^\\top Wu}{u^\\top u},\n&amp;\\term{anselinKelejian}{\\mathrm{AK}}&amp;=\\frac{n\\,I_u^2}{\\term{phiSquared}{\\varphi^2}}\n\\end{aligned}</pre><p class=\"lens-ascii\">Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H&#39;H)^-1 H&#39;. delta = (Z&#39;PZ)^-1 Z&#39;P y; u = y - Z delta; sigma2 = u&#39;u/n; se_j = sqrt(sigma2 [(Z&#39;PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = n I_u^2/phi2 with I_u = (n/S0) u&#39;Wu/u&#39;u tests the residuals for spatial autocorrelation. Classical (non-robust) standard errors.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-solve\" data-value=\"delta\">coefficients with rho last · output · delta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-finish\" data-value=\"sigmaSquared\">sigmaSquared · intermediate · sigmaSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:contiguity-weights-vertex-topology\" data-value=\"zStatistic\">zStatistic · output · z</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-finish\" data-value=\"standardError\">standardError · output · standardError</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-finish\" data-value=\"moranI\">moranI · intermediate · moranI</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-finish\" data-value=\"anselinKelejian\">anselinKelejian · output · anselinKelejian</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-two-stage-least-squares-compiled:spatial-two-stage-least-squares-finish\" data-value=\"phiSquared\">phiSquared · intermediate · phiSquared</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "coefficients with rho last",
+        "output",
+        "delta",
+        "—",
+        "metadata"
+      ],
+      [
+        "sigmaSquared",
+        "intermediate",
+        "sigmaSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "zStatistic",
+        "output",
+        "z",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardError",
+        "output",
+        "standardError",
+        "—",
+        "metadata"
+      ],
+      [
+        "moranI",
+        "intermediate",
+        "moranI",
+        "—",
+        "metadata"
+      ],
+      [
+        "anselinKelejian",
+        "output",
+        "anselinKelejian",
+        "—",
+        "metadata"
+      ],
+      [
+        "phiSquared",
+        "intermediate",
+        "phiSquared",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{delta}{\\hat\\delta}&=(Z^\\top PZ)^{-1}Z^\\top P\\,y,\n&Z&=[1,X,Wy],\\ P=H(H^\\top H)^{-1}H^\\top,\\ H=[1,X,WX]\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&=\\frac{u^\\top u}{n},\\ u=y-Z\\hat\\delta,\n&\\term{zStatistic}{z_j}&=\\frac{\\hat\\delta_j}{\\term{standardError}{\\mathrm{se}_j}},\\ \\mathrm{se}_j^2=\\hat\\sigma^2[(Z^\\top PZ)^{-1}]_{jj}\\\\\n\\term{moranI}{I_u}&=\\frac{n}{S_0}\\,\\frac{u^\\top Wu}{u^\\top u},\n&\\term{anselinKelejian}{\\mathrm{AK}}&=\\frac{n\\,I_u^2}{\\term{phiSquared}{\\varphi^2}}\n\\end{aligned}",
+    "ascii": "Z = [1, X, Wy]; H = [1, X, WX] (instrumentOrder 2 adds W^2 X); P = H (H'H)^-1 H'. delta = (Z'PZ)^-1 Z'P y; u = y - Z delta; sigma2 = u'u/n; se_j = sqrt(sigma2 [(Z'PZ)^-1]_jj); z_j = delta_j/se_j with a standard-normal p-value. The constant is centred out; the intercept is ybar - mean(Z) delta. Anselin-Kelejian AK = n I_u^2/phi2 with I_u = (n/S0) u'Wu/u'u tests the residuals for spatial autocorrelation. Classical (non-robust) standard errors.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.706Z",
+    "runId": "run-20f70c91",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-20f70c91",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

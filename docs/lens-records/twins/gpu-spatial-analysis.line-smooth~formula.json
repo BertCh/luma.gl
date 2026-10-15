@@ -1,0 +1,91 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-smooth",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-smooth",
+  "viewId": "formula-card",
+  "caption": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 5/5. str…",
+  "description": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied. bound symbols: 5/5. str…",
+  "llms": "Formula Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-smooth</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}</pre><p class=\"lens-ascii\">Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"first\">first · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"second\">second · output · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"start\">start · input · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-prepare\" data-value=\"end\">end · input · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-smooth-compiled:line-smooth-level-0\" data-value=\"ratio\">ratio · parameter · ratio</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "first",
+        "output",
+        "destination",
+        "—",
+        "metadata"
+      ],
+      [
+        "second",
+        "output",
+        "destination",
+        "—",
+        "metadata"
+      ],
+      [
+        "start",
+        "input",
+        "start",
+        "—",
+        "metadata"
+      ],
+      [
+        "end",
+        "input",
+        "end",
+        "—",
+        "metadata"
+      ],
+      [
+        "ratio",
+        "parameter",
+        "ratio",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{first}{q}=(1-\\term{ratio}{r})\\term{start}{a}+\\term{ratio}{r}\\term{end}{b},\\qquad \\term{second}{s}=\\term{ratio}{r}\\term{start}{a}+(1-\\term{ratio}{r})\\term{end}{b}",
+    "ascii": "Each Chaikin pass replaces edge (a,b) by q=(1-r)*a+r*b and s=r*a+(1-r)*b. Open endpoints are copied; closed rings ignore a repeated input endpoint and repeat the first output vertex. Degenerate short lines are copied.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.650Z",
+    "runId": "run-5722e62f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5722e62f",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

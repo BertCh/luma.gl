@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Indexes station longitude and latitude on an 18 by 16 grid of 1° cells, producing per-cell offsets and station ids.
+
+::lens{scenario=gpu-core.grid-index rung=result caption="The densest of 167 occupied 1° cells holds 23 stations, read as consecutive offset differences."}
+
 `GPUGridIndex` builds a flat uniform-grid index over packed two- or three-dimensional points. It
 publishes exclusive cell offsets, capacity-bounded stable object IDs, the full accepted count, and
 an overflow flag. The structure stays in storage buffers so later visibility, picking, simulation,
@@ -18,6 +22,16 @@ several queries. Examples include screen-space label neighborhoods, map points, 
 candidates, nearby simulation agents, and coarse 3D visibility cells.
 
 <GPUOperationContract operation="gpu-grid-index" />
+
+#### How it computes
+
+{/* lens:GPUGridIndex */}
+
+::lens{scenario=gpu-core.grid-index rung=kernel caption="Inspect the count kernel: 256 lanes map stations to 1° cells and increment them atomically."}
+
+::lens{scenario=gpu-core.grid-index rung=graph caption="Trace initialize, count, scan, rank, and scatter nodes that turn counts into cell offsets."}
+
+::lens{scenario=gpu-core.grid-index rung=datum caption="Follow one station into its cell, its rank, and its slot in the cell-ordered list."}
 
 ## Concepts
 

@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.pair-gather",
+  "rung": "datum",
+  "datum": 46,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.pair-gather",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of tract 46. tractMatches: 5. values read back from the GPU run. pair-gather: 3 quantities.",
+  "description": "Receipt of tract 46. tractMatches: 5. values read back from the GPU run. pair-gather: 3 quantities.",
+  "llms": "Receipt of tract 46\n\n- tractMatches: 5\n- pair-gather: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "tractMatches",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tract 46</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"pair-gather\"><tr><th scope=\"rowgroup\" colspan=\"5\">pair-gather</th></tr><tr data-provenance=\"readback\"><td>pair-gather</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-pair-gather-snapshots-tracts-0\">tracts</button></td><td>1626.655517578125, 6227.111328125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>pair-gather</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-pair-gather-snapshots-joinedTracts-0\">joinedTracts</button></td><td>1626.655517578125, 6227.111328125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>pair-gather</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-pair-gather-snapshots-tractMatches-0\">tractMatches</button></td><td>5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pair-gather",
+        "tracts",
+        "1626.655517578125, 6227.111328125",
+        "0",
+        "readback"
+      ],
+      [
+        "pair-gather",
+        "joinedTracts",
+        "1626.655517578125, 6227.111328125",
+        "0",
+        "readback"
+      ],
+      [
+        "pair-gather",
+        "tractMatches",
+        "5",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.230Z",
+    "runId": "run-9c9a890f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9c9a890f",
+    "rung": "datum",
+    "bindings": {
+      "entity": 46
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

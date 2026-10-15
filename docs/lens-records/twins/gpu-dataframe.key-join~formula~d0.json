@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.key-join",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.key-join",
+  "viewId": "formula-card",
+  "caption": "Formula rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported. rightRows: 46. values read back from the GPU run.",
+  "description": "Formula rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported. rightRows: 46. values read back from the GPU run.",
+  "llms": "Formula rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported.\n\n- rightRows: 46\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rightRows",
+    "value": "46"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUKeyJoin</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{rightRows}{m_i}=\\min\\{\\term{rightRow}{j}:\\term{rightKeys}{k^R_j}=\\term{leftKeys}{k^L_i},\\ \\text{both rows valid}\\},\\quad \\min\\varnothing=\\mathtt{0xffffffff}</pre><p class=\"lens-ascii\">rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{rightRows}{46}=\\min\\{\\term{rightRow}{j}:\\term{rightKeys}{\\left(46\\right)}=\\term{leftKeys}{\\left(46\\right)},\\ \\text{both rows valid}\\},\\quad \\min\\varnothing=\\mathtt{0xffffffff}</pre><p class=\"lens-ascii\">rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.key-join-compiled:key-join-left-rows\" data-value=\"rightRows\">rightRows · output · firstOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.key-join-compiled:key-join-left-rows\" data-value=\"rightRow\">rightRow · index · sortedRows</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.key-join-compiled:key-join-right-keys\" data-value=\"rightKeys\">rightKeys · input · rightKeys<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.key-join-compiled:key-join-probe\" data-value=\"leftKeys\">leftKeys · input · leftKeys<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "rightRows",
+        "output",
+        "firstOut",
+        "46",
+        "readback"
+      ],
+      [
+        "rightRow",
+        "index",
+        "sortedRows",
+        "—",
+        "metadata"
+      ],
+      [
+        "rightKeys",
+        "input",
+        "rightKeys",
+        "46",
+        "readback"
+      ],
+      [
+        "leftKeys",
+        "input",
+        "leftKeys",
+        "46",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "readback",
+      "readback"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{rightRows}{m_i}=\\min\\{\\term{rightRow}{j}:\\term{rightKeys}{k^R_j}=\\term{leftKeys}{k^L_i},\\ \\text{both rows valid}\\},\\quad \\min\\varnothing=\\mathtt{0xffffffff}",
+    "ascii": "rightRows[i]=smallest valid right row j with rightKeys[j]==leftKeys[i], else 0xffffffff; null keys never match; duplicate right keys are supported.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:16:19.528Z",
+    "runId": "run-15982a6f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-15982a6f",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

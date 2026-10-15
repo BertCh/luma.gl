@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.skater-regions",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.skater-regions",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis.skater-regions. nodes: 235. structure metadata only. 3 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis.skater-regions. nodes: 235. structure metadata only. 3 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis.skater-regions\n\n- nodes: 235\n- 3 visible units vs budget 24\n- 235 hidden nodes\n- Edges by kind: raw 726, waw 24, war 270, indirect 35\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "235"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"192\" style=\"grid-column:1;grid-row:1 / span 3\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-skater-regions-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-skater-regions-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-skater-regions-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"3\" data-kind=\"raw\" data-count=\"50\"><title>group:contiguity-weights → group:minimum-spanning-tree: raw ×50; weightsRowOffsets, weightsNeighbors</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"3\" data-kind=\"raw\" data-count=\"32\"><title>group:contiguity-weights → group:skater-regions: raw ×32; weightsRowOffsets, weightsNeighbors</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"3\" data-kind=\"raw\" data-count=\"5\"><title>group:minimum-spanning-tree → group:skater-regions: raw ×5; treeEdgeFlags, componentLabels, standardizedValues</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:contiguity-weights\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:contiguity-weights\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">contiguity-weights</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:contiguity-weights\" aria-label=\"Expand contiguity-weights\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">contiguity-weights-vertex-topology: commandCount=1 · contiguity-weights-vertex-topology: maximumWorkgroupCount=7 · contiguity-weights-vertex-topology: maximumInvocationCount=1730</span></div><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:minimum-spanning-tree\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:minimum-spanning-tree\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">minimum-spanning-tree</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:minimum-spanning-tree\" aria-label=\"Expand minimum-spanning-tree\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">minimum-spanning-tree-standardize: commandCount=1 · minimum-spanning-tree-standardize: maximumWorkgroupCount=1 · minimum-spanning-tree-standardize: maximumInvocationCount=256</span></div><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:skater-regions\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:skater-regions\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">skater-regions</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:skater-regions\" aria-label=\"Expand skater-regions\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">skater-regions-clear-arcs: commandCount=1 · skater-regions-clear-arcs: maximumWorkgroupCount=8 · skater-regions-clear-arcs: maximumInvocationCount=2048</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:skater-regions\" aria-label=\"Inspect skater-regions\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 192
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:08.582Z",
+    "runId": "run-74562132",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-74562132",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

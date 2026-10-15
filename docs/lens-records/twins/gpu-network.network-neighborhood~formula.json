@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-neighborhood",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-neighborhood",
+  "viewId": "formula-card",
+  "caption": "Formula hopDistances[v] = cost[v] <= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network. bound symbols…",
+  "description": "Formula hopDistances[v] = cost[v] <= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network. bound symbols…",
+  "llms": "Formula hopDistances[v] = cost[v] <= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network.\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: transients hopDistances retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.neighborhood.hops</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hopDistances}{h_v}=\\begin{cases}\\operatorname{u32}(\\term{cost}{c_v})&amp;\\term{cost}{c_v}\\le\\term{limit}{k}\\\\\\term{none}{\\mathrm{NONE}}&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">hopDistances[v] = cost[v] &lt;= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-neighborhood-compiled:network-neighborhood-hops\" data-value=\"hopDistances\">hop distance · output · hopDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-neighborhood-compiled:network-neighborhood-reachability-seed\" data-value=\"cost\">unit-weight cost · input · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-neighborhood-compiled:network-neighborhood-hops\" data-value=\"limit\">hop radius · parameter · limit</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-neighborhood-compiled:network-neighborhood-reachability-initialize\" data-value=\"none\">outside the ego network · constant · NONE</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-neighborhood-compiled:network-neighborhood-hops\">network-neighborhood-hops</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "hop distance",
+        "output",
+        "hopDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "unit-weight cost",
+        "input",
+        "cost",
+        "—",
+        "metadata"
+      ],
+      [
+        "hop radius",
+        "parameter",
+        "limit",
+        "—",
+        "metadata"
+      ],
+      [
+        "outside the ego network",
+        "constant",
+        "NONE",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{hopDistances}{h_v}=\\begin{cases}\\operatorname{u32}(\\term{cost}{c_v})&\\term{cost}{c_v}\\le\\term{limit}{k}\\\\\\term{none}{\\mathrm{NONE}}&\\text{otherwise}\\end{cases}",
+    "ascii": "hopDistances[v] = cost[v] <= limit ? uint(cost[v]) : NONE, where cost is the unit-weight search cost, limit = min(hops, maximumHops) and NONE = 0xffffffff. NaN and +Infinity costs compare false and stay outside the ego network.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.892Z",
+    "runId": "run-a5e2a440",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients hopDistances retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-a5e2a440",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

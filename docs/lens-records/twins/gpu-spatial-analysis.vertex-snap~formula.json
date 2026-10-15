@@ -1,0 +1,120 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.vertex-snap",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.vertex-snap",
+  "viewId": "formula-card",
+  "caption": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the who…",
+  "description": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the who…",
+  "llms": "Formula Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).\n\n- bound symbols: 6/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.vertex-snap</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{reference-row}{j_*}&amp;=\\underset{\\term{index}{j}\\in\\term{range}{J},\\ \\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2&lt;\\term{tolerance}{t}^2}{\\operatorname{argmin}}\\left(\\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2,\\term{index}{j}\\right)\\\\\\term{output}{p&#39;}&amp;=\\begin{cases}\\term{reference}{r_{j_*}}&amp;\\text{a candidate exists}\\\\\\term{vertex}{p}&amp;\\text{otherwise}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"reference-row\">Selected row, or NO_REFERENCE · output · outputReferenceRows</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Reference row · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"range\">Rows in [referenceStart, referenceEnd) · intermediate · referenceStart</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"reference\">Reference positions · input · referencePositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"vertex\">Input vertex · input · vertex</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"tolerance\">Snap tolerance · parameter · tolerance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-vertex-snap-compiled:vertex-snap-snap\" data-value=\"output\">Snapped position · output · outputPositions</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Selected row, or NO_REFERENCE",
+        "output",
+        "outputReferenceRows",
+        "—",
+        "metadata"
+      ],
+      [
+        "Reference row",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Rows in [referenceStart, referenceEnd)",
+        "intermediate",
+        "referenceStart",
+        "—",
+        "metadata"
+      ],
+      [
+        "Reference positions",
+        "input",
+        "referencePositions",
+        "—",
+        "metadata"
+      ],
+      [
+        "Input vertex",
+        "input",
+        "vertex",
+        "—",
+        "metadata"
+      ],
+      [
+        "Snap tolerance",
+        "parameter",
+        "tolerance",
+        "—",
+        "metadata"
+      ],
+      [
+        "Snapped position",
+        "output",
+        "outputPositions",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{reference-row}{j_*}&=\\underset{\\term{index}{j}\\in\\term{range}{J},\\ \\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2<\\term{tolerance}{t}^2}{\\operatorname{argmin}}\\left(\\lVert\\term{reference}{r_j}-\\term{vertex}{p}\\rVert^2,\\term{index}{j}\\right)\\\\\\term{output}{p'}&=\\begin{cases}\\term{reference}{r_{j_*}}&\\text{a candidate exists}\\\\\\term{vertex}{p}&\\text{otherwise}\\end{cases}\\end{aligned}",
+    "ascii": "Among reference rows J strictly within squared tolerance t^2 of p, choose the lexicographic minimum (squared distance, reference row). Output that reference position, or retain p and report NO_REFERENCE when no candidate exists. J is the whole reference set or the matching feature range; t=max(parameters[0],0).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.881Z",
+    "runId": "run-a273d8d2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a273d8d2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

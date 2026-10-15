@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-modularity",
+  "rung": "datum",
+  "datum": 26,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-modularity",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 26. modularity-partition-stations: 4.900889873504639, 52.37892150878906. values read back from the GPU run. topology: 3 quantities.",
+  "description": "Receipt of station 26. modularity-partition-stations: 4.900889873504639, 52.37892150878906. values read back from the GPU run. topology: 3 quantities.",
+  "llms": "Receipt of station 26\n\n- modularity-partition-stations: 4.900889873504639, 52.37892150878906\n- topology: 3 quantities\n- 7 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "modularity-partition-stations",
+    "value": "4.900889873504639, 52.37892150878906"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 26</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>4.900889873504639, 52.37892150878906</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-partition\">modularity-partition</button></td><td>26</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-partition-stations\">modularity-partition-stations</button></td><td>4.900889873504639, 52.37892150878906</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "4.900889873504639, 52.37892150878906",
+        "—",
+        "readback"
+      ],
+      [
+        "topology",
+        "modularity-partition",
+        "26",
+        "—",
+        "readback"
+      ],
+      [
+        "topology",
+        "modularity-partition-stations",
+        "4.900889873504639, 52.37892150878906",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.346Z",
+    "runId": "run-38ce89b1",
+    "observerEffects": [
+      "7 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-38ce89b1",
+    "rung": "datum",
+    "bindings": {
+      "entity": 26
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-critical-points",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-critical-points",
+  "viewId": "formula-card",
+  "caption": "Formula walk the 8-neighbour ring (or the 6-ring) of p; s_k = 1 when neighbour k is higher (equal heights: higher iff its row-major index is larger); c = number of sign changes around the ring; c = 0 and no neighbour higher: peak; c = 0 and all high…",
+  "description": "Formula walk the 8-neighbour ring (or the 6-ring) of p; s_k = 1 when neighbour k is higher (equal heights: higher iff its row-major index is larger); c = number of sign changes around the ring; c = 0 and no neighbour higher: peak; c = 0 and all high…",
+  "llms": "Formula walk the 8-neighbour ring (or the 6-ring) of p; s_k = 1 when neighbour k is higher (equal heights: higher iff its row-major index is larger); c = number of sign changes around the ring; c = 0 and no neighbour higher: peak; c = 0 and all higher: pit; c = 2: regular; c >= 4: saddle (multiplicity c/2 - 1); grid-edge pixels and rings touching nodata are boundary, invalid pixels are noData\n\n- bound symbols: 2/2\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-critical-points.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{changes}{c} = \\#\\{k : s_k \\ne s_{k+1}\\},\\quad s_k = [\\,h_k &gt; h_p \\ \\lor\\ (h_k = h_p \\land k &gt; p)\\,],\\quad \\text{class} = \\begin{cases}\\text{peak} &amp; c = 0,\\ \\term{higher}{H} = 0\\\\ \\text{pit} &amp; c = 0,\\ H = \\text{ring}\\\\ \\text{regular} &amp; c = 2\\\\ \\text{saddle} &amp; c \\ge 4\\end{cases}</pre><p class=\"lens-ascii\">walk the 8-neighbour ring (or the 6-ring) of p; s_k = 1 when neighbour k is higher (equal heights: higher iff its row-major index is larger); c = number of sign changes around the ring; c = 0 and no neighbour higher: peak; c = 0 and all higher: pit; c = 2: regular; c &gt;= 4: saddle (multiplicity c/2 - 1); grid-edge pixels and rings touching nodata are boundary, invalid pixels are noData</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-critical-points-compiled:terrain-critical-points-classify\" data-value=\"changes\">c · intermediate · changeCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-critical-points-compiled:terrain-critical-points-classify\" data-value=\"higher\">H · intermediate · higherCount</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "c",
+        "intermediate",
+        "changeCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "H",
+        "intermediate",
+        "higherCount",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{changes}{c} = \\#\\{k : s_k \\ne s_{k+1}\\},\\quad s_k = [\\,h_k > h_p \\ \\lor\\ (h_k = h_p \\land k > p)\\,],\\quad \\text{class} = \\begin{cases}\\text{peak} & c = 0,\\ \\term{higher}{H} = 0\\\\ \\text{pit} & c = 0,\\ H = \\text{ring}\\\\ \\text{regular} & c = 2\\\\ \\text{saddle} & c \\ge 4\\end{cases}",
+    "ascii": "walk the 8-neighbour ring (or the 6-ring) of p; s_k = 1 when neighbour k is higher (equal heights: higher iff its row-major index is larger); c = number of sign changes around the ring; c = 0 and no neighbour higher: peak; c = 0 and all higher: pit; c = 2: regular; c >= 4: saddle (multiplicity c/2 - 1); grid-edge pixels and rings touching nodata are boundary, invalid pixels are noData",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.580Z",
+    "runId": "run-d59550f5",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d59550f5",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

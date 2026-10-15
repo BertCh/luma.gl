@@ -1,0 +1,109 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.texture-shading",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.texture-shading",
+  "viewId": "formula-card",
+  "caption": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail)…",
+  "description": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail)…",
+  "llms": "Formula T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre\n\n- bound symbols: 3/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.texture-shading.band-pyramid</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{textureShade}{T} = \\term{gain}{g}\\sum_{k=0}^{K-1}\\term{levelWeights}{w_k}\\,\\big(\\term{previousValue}{G_{k-1}} - \\term{currentValue}{G_k}\\big),\\quad w_k = 2^{-k\\,\\term{detail}{\\alpha}},\\ \\ G_{-1} = z,\\ \\ G_k = z * \\mathcal{N}\\!\\left(0,\\,\\sigma_k^2\\right),\\ \\ \\sigma_k = \\term{baseSigma}{\\sigma_0}\\,2^k</pre><p class=\"lens-ascii\">T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-finalize\" data-value=\"textureShade\">T · output · textureShade</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"gain\">g · parameter · unknown — wgsl gain not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"levelWeights\">w_k · parameter · unknown — wgsl levelWeights not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-level-0-accumulate\" data-value=\"previousValue\">G_(k-1) · intermediate · previousValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-texture-shading-compiled:texture-shading-level-0-accumulate\" data-value=\"currentValue\">G_k · intermediate · currentValue</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"detail\">α · parameter · unknown — wgsl detail not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"baseSigma\">σ_0 · parameter · unknown — wgsl baseSigma not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "T",
+        "output",
+        "textureShade",
+        "—",
+        "metadata"
+      ],
+      [
+        "g",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "w_k",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "G_(k-1)",
+        "intermediate",
+        "previousValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "G_k",
+        "intermediate",
+        "currentValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "α",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "σ_0",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{textureShade}{T} = \\term{gain}{g}\\sum_{k=0}^{K-1}\\term{levelWeights}{w_k}\\,\\big(\\term{previousValue}{G_{k-1}} - \\term{currentValue}{G_k}\\big),\\quad w_k = 2^{-k\\,\\term{detail}{\\alpha}},\\ \\ G_{-1} = z,\\ \\ G_k = z * \\mathcal{N}\\!\\left(0,\\,\\sigma_k^2\\right),\\ \\ \\sigma_k = \\term{baseSigma}{\\sigma_0}\\,2^k",
+    "ascii": "T = gain * sum over levels k of w_k * (G_(k-1) - G_k); G_-1 = elevation, G_k = Gaussian blur of the elevation with sigma_k = baseSigma * 2^k (separable cascade, edge pixels replicated, nodata by normalized convolution), w_k = 2^(-k * detail); output in metres times gain, NaN at an invalid centre",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:33.002Z",
+    "runId": "run-7c7011dc",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-7c7011dc",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

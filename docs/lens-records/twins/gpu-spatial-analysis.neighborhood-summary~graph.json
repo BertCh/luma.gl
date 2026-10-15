@@ -1,0 +1,44 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.neighborhood-summary",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.neighborhood-summary",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis.neighborhood-summary. nodes: 102. structure metadata only. 4 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis.neighborhood-summary. nodes: 102. structure metadata only. 4 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis.neighborhood-summary\n\n- nodes: 102\n- 4 visible units vs budget 24\n- 99 hidden nodes\n- Edges by kind: raw 183, waw 28, war 42\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "102"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"256\" style=\"grid-column:1;grid-row:1 / span 4\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-neighborhood-summary-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-neighborhood-summary-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-neighborhood-summary-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"2\" data-kind=\"raw\" data-count=\"2\"><title>group:contiguity-weights → node:spatial-weights-transform-row: raw ×2; weightsRowOffsets, weightsValues</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"3\" data-kind=\"raw\" data-count=\"3\"><title>group:contiguity-weights → node:neighborhood-summary-numeric: raw ×3; weightsRowOffsets, weightsNeighbors, weightsOverflow</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:spatial-weights-transform-row → node:neighborhood-summary-numeric: raw ×1; weightsValues</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 60 24, 60 216, 110 216\" opacity=\"1\" stroke-width=\"3\" data-kind=\"raw\" data-count=\"3\"><title>group:contiguity-weights → node:neighborhood-summary-categorical: raw ×3; weightsRowOffsets, weightsNeighbors, weightsOverflow</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 70.66666666666667 88, 70.66666666666667 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:spatial-weights-transform-row → node:neighborhood-summary-categorical: raw ×1; weightsValues</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:contiguity-weights\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:contiguity-weights\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">contiguity-weights</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:contiguity-weights\" aria-label=\"Expand contiguity-weights\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">contiguity-weights-vertex-topology: commandCount=1 · contiguity-weights-vertex-topology: maximumWorkgroupCount=42 · contiguity-weights-vertex-topology: maximumInvocationCount=10580</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:spatial-weights-transform-row\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"spatial-weights-transform-row\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">spatial-weights-transform-row</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=791</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:neighborhood-summary-numeric\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"neighborhood-summary-numeric\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">neighborhood-summary-numeric</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=791</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:neighborhood-summary-categorical\" data-tier=\"subject\" style=\"grid-column:2;grid-row:4;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"neighborhood-summary-categorical\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">neighborhood-summary-categorical</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=791</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:neighborhood-summary-categorical\" aria-label=\"Inspect neighborhood-summary-categorical\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 256
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.415Z",
+    "runId": "run-10a38e04",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-10a38e04",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

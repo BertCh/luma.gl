@@ -1,0 +1,167 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.global-permutation-test",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.global-permutation-test",
+  "viewId": "formula-card",
+  "caption": "Formula p = min(m (M + 1), P + 1) / (P + 1); g = #{p in 1..P : q_p >= q_0}, l = #{q_p <= q_0}, where q_0 is the pair sum of the identity permutation and q_p that of permutation p; the default two-sided tail has m = 2 and M = min(g, l) (greater: m =…",
+  "description": "Formula p = min(m (M + 1), P + 1) / (P + 1); g = #{p in 1..P : q_p >= q_0}, l = #{q_p <= q_0}, where q_0 is the pair sum of the identity permutation and q_p that of permutation p; the default two-sided tail has m = 2 and M = min(g, l) (greater: m =…",
+  "llms": "Formula p = min(m (M + 1), P + 1) / (P + 1); g = #{p in 1..P : q_p >= q_0}, l = #{q_p <= q_0}, where q_0 is the pair sum of the identity permutation and q_p that of permutation p; the default two-sided tail has m = 2 and M = min(g, l) (greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_p - mean| >= |s_0 - mean|}; directed: m = 1, M = min(g, l)). The statistic is s = kappa q with a positive constant kappa, so the counts compare identical f32 pair sums. z = (s_0 - mean) / sd of the P simulated statistics (esda z_sim). The p-value lies on the grid k/(P+1).\n\n- bound symbols: 12/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "12/12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>global-permutation-pseudo-p</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{pValue}{p}&amp;=\\frac{\\min\\left(m\\,(\\term{larger}{M}+1),\\;\\term{permutations}{P}+1\\right)}{\\term{permutations}{P}+1},\n&amp;\\term{larger}{M}&amp;=\\min(\\term{greater}{g},\\term{lesser}{l})\\\\\n\\term{greater}{g}&amp;=\\#\\{\\term{pairSum}{q_p}\\ge\\term{observedSum}{q_0}\\},\n&amp;\\term{lesser}{l}&amp;=\\#\\{\\term{pairSum}{q_p}\\le\\term{observedSum}{q_0}\\}\\\\\n\\term{observed}{s_0}&amp;=\\term{scale}{\\kappa}\\,\\term{observedSum}{q_0},\n&amp;\\term{zSimulated}{z}&amp;=\\frac{\\term{observed}{s_0}-\\term{mean}{\\bar{s}}}{\\term{standardDeviation}{\\sigma_s}}\n\\end{aligned}</pre><p class=\"lens-ascii\">p = min(m (M + 1), P + 1) / (P + 1); g = #{p in 1..P : q_p &gt;= q_0}, l = #{q_p &lt;= q_0}, where q_0 is the pair sum of the identity permutation and q_p that of permutation p; the default two-sided tail has m = 2 and M = min(g, l) (greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_p - mean| &gt;= |s_0 - mean|}; directed: m = 1, M = min(g, l)). The statistic is s = kappa q with a positive constant kappa, so the counts compare identical f32 pair sums. z = (s_0 - mean) / sd of the P simulated statistics (esda z_sim). The p-value lies on the grid k/(P+1).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"pValue\">pValue · output · results</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"larger\">exceedance count · intermediate · larger</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"permutations\">permutations · parameter · permutations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"greater\">greater · intermediate · greater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"lesser\">lesser · intermediate · lesser</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"pairSum\">pairSum · intermediate · pairSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"observedSum\">observedSum · intermediate · observedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"observed\">observed · output · observed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:spatial-weights-transform-row\" data-value=\"scale\">scale · intermediate · scale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"zSimulated\">zSimulated · output · zSimulated</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-inputs-compact\" data-value=\"mean\">mean · intermediate · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-permutation-test-compiled:global-permutation-test-finalize\" data-value=\"standardDeviation\">standardDeviation · intermediate · standardDeviation</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pValue",
+        "output",
+        "results",
+        "—",
+        "metadata"
+      ],
+      [
+        "exceedance count",
+        "intermediate",
+        "larger",
+        "—",
+        "metadata"
+      ],
+      [
+        "permutations",
+        "parameter",
+        "permutations",
+        "—",
+        "metadata"
+      ],
+      [
+        "greater",
+        "intermediate",
+        "greater",
+        "—",
+        "metadata"
+      ],
+      [
+        "lesser",
+        "intermediate",
+        "lesser",
+        "—",
+        "metadata"
+      ],
+      [
+        "pairSum",
+        "intermediate",
+        "pairSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "observedSum",
+        "intermediate",
+        "observedSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "observed",
+        "output",
+        "observed",
+        "—",
+        "metadata"
+      ],
+      [
+        "scale",
+        "intermediate",
+        "scale",
+        "—",
+        "metadata"
+      ],
+      [
+        "zSimulated",
+        "output",
+        "zSimulated",
+        "—",
+        "metadata"
+      ],
+      [
+        "mean",
+        "intermediate",
+        "mean",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardDeviation",
+        "intermediate",
+        "standardDeviation",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{pValue}{p}&=\\frac{\\min\\left(m\\,(\\term{larger}{M}+1),\\;\\term{permutations}{P}+1\\right)}{\\term{permutations}{P}+1},\n&\\term{larger}{M}&=\\min(\\term{greater}{g},\\term{lesser}{l})\\\\\n\\term{greater}{g}&=\\#\\{\\term{pairSum}{q_p}\\ge\\term{observedSum}{q_0}\\},\n&\\term{lesser}{l}&=\\#\\{\\term{pairSum}{q_p}\\le\\term{observedSum}{q_0}\\}\\\\\n\\term{observed}{s_0}&=\\term{scale}{\\kappa}\\,\\term{observedSum}{q_0},\n&\\term{zSimulated}{z}&=\\frac{\\term{observed}{s_0}-\\term{mean}{\\bar{s}}}{\\term{standardDeviation}{\\sigma_s}}\n\\end{aligned}",
+    "ascii": "p = min(m (M + 1), P + 1) / (P + 1); g = #{p in 1..P : q_p >= q_0}, l = #{q_p <= q_0}, where q_0 is the pair sum of the identity permutation and q_p that of permutation p; the default two-sided tail has m = 2 and M = min(g, l) (greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_p - mean| >= |s_0 - mean|}; directed: m = 1, M = min(g, l)). The statistic is s = kappa q with a positive constant kappa, so the counts compare identical f32 pair sums. z = (s_0 - mean) / sd of the P simulated statistics (esda z_sim). The p-value lies on the grid k/(P+1).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    },
+    {
+      "guardId": "pseudo-p-grid",
+      "label": "Pseudo-p grid",
+      "blocks": [
+        "exact-p"
+      ],
+      "status": "pass",
+      "reason": "achievable grid k/(99+1) = k/100; floor 1/100 = 0.01"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:22:46.736Z",
+    "runId": "run-743b3970",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-743b3970",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

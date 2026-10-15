@@ -1,0 +1,135 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-aggregation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-aggregation",
+  "viewId": "formula-card",
+  "caption": "Formula For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^…",
+  "description": "Formula For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^…",
+  "llms": "Formula For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^62. Masked, invalid-key and non-finite-value rows are excluded; only NaN coordinates are excluded by the Quadbin aggregation keyer (infinite coordinates are clipped). Capacity retains the smallest keys. Optional minimums/maximums select the original accepted values, not quantized sums.\n\n- bound symbols: 3/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-aggregation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{counts}{n_c}&amp;=|\\term{members}{I_c}|,\\quad \\term{sums}{S_c}=\\sum_{\\term{row}{i}\\in\\term{members}{I_c}}\\operatorname{clamp}(\\operatorname{roundEven}(\\operatorname{f32}(\\term{values}{x_i}\\term{scale}{s})),-\\term{limit}{M},\\term{limit}{M})\\pmod{2^{64}}\\\\\\term{decoded}{V_c}&amp;=\\operatorname{f32}(\\term{sums}{S_c})/\\term{scale}{s}\\end{aligned}</pre><p class=\"lens-ascii\">For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^62. Masked, invalid-key and non-finite-value rows are excluded; only NaN coordinates are excluded by the Quadbin aggregation keyer (infinite coordinates are clipped). Capacity retains the smallest keys. Optional minimums/maximums select the original accepted values, not quantized sums.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-aggregation-compiled:cell-aggregation-cells\" data-value=\"counts\">counts · output · countsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-aggregation-compiled:cell-aggregation-offsets\" data-value=\"members\">Accepted rows assigned to retained cell c · intermediate · rowCells</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sums\">Signed 64-bit fixed-point sum · output · unknown — wgsl sums not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-aggregation-compiled:cell-aggregation-keys\" data-value=\"values\">values · input · values</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"scale\">sumScale · parameter · unknown — wgsl SUM_SCALE not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"limit\">limit · constant · unknown — wgsl MAXIMUM_SCALED_VALUE not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"decoded\">decoded · output · unknown — wgsl sumValuesOut not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"row\">row · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "counts",
+        "output",
+        "countsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "Accepted rows assigned to retained cell c",
+        "intermediate",
+        "rowCells",
+        "—",
+        "metadata"
+      ],
+      [
+        "Signed 64-bit fixed-point sum",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "values",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "sumScale",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "limit",
+        "constant",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "decoded",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "row",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{counts}{n_c}&=|\\term{members}{I_c}|,\\quad \\term{sums}{S_c}=\\sum_{\\term{row}{i}\\in\\term{members}{I_c}}\\operatorname{clamp}(\\operatorname{roundEven}(\\operatorname{f32}(\\term{values}{x_i}\\term{scale}{s})),-\\term{limit}{M},\\term{limit}{M})\\pmod{2^{64}}\\\\\\term{decoded}{V_c}&=\\operatorname{f32}(\\term{sums}{S_c})/\\term{scale}{s}\\end{aligned}",
+    "ascii": "For each retained cell c, I[c] contains its accepted input rows: counts[c] = |I[c]|; sums[c] = sum(i in I[c]) clamp(roundHalfEven(f32(values[i] * s)), -M, M), modulo 2^64; sumValues[c] = f32(signed sums[c]) / s. M is the largest f32 below 2^62. Masked, invalid-key and non-finite-value rows are excluded; only NaN coordinates are excluded by the Quadbin aggregation keyer (infinite coordinates are clipped). Capacity retains the smallest keys. Optional minimums/maximums select the original accepted values, not quantized sums.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:44.655Z",
+    "runId": "run-95f262f3",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-95f262f3",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

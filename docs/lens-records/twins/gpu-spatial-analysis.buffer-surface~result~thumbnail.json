@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.buffer-surface",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.buffer-surface",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.buffer-surface: positions → bufferPositions.",
+  "description": "Result of gpu-spatial-analysis.buffer-surface: positions → bufferPositions. polygons: 256. values read back from the GPU run. input positions: 51 polygons.",
+  "llms": "Result of gpu-spatial-analysis.buffer-surface: positions → bufferPositions\n\n- polygons: 256\n- input positions: 51 polygons\n- Planar coordinates (m); uniform scale.\n- 550 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 16640 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "256"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[6.165713243029195e-44,6.165713243029195e-44],[8849.625,18125.5]]\" role=\"img\" aria-label=\"Result: bufferPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-buffer-surface-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-buffer-surface-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.999Z",
+    "runId": "run-5c1d4003",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5c1d4003",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

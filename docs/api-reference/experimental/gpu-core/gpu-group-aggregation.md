@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Groups stations by state key, producing each state's station count, rainfall total, and mean rainfall.
+
+::lens{scenario=gpu-core.group-aggregation rung=result caption="Row 1 is Alabama: 61 stations, 937 mm total, 15.4 mm mean; 23 state rows in all."}
+
 `GPUGroupAggregation` computes counts or floating-point statistics by dense `uint32` group key,
 optionally restricted by a GPU-resident selection mask. It answers categorical questions such as
 “how many selected requests belong to each service?”, “what is the mean latency of each visible
@@ -19,6 +23,18 @@ the number of groups. Group key `i` contributes to output row `i`; keys outside 
 ignored.
 
 <GPUOperationContract operation="gpu-group-aggregation" />
+
+#### How it computes
+
+{/* lens:GPUGroupAggregation */}
+
+::lens{scenario=gpu-core.group-aggregation rung=kernel caption="Inspect lanes adding each station's rainfall to its state's total with float atomics."}
+
+::lens{scenario=gpu-core.group-aggregation rung=graph caption="Trace three aggregations: counts, totals, and means with a finalizing division."}
+
+::lens{scenario=gpu-core.group-aggregation rung=datum caption="Follow one station into the state row it increments."}
+
+::lens{scenario=gpu-core.group-aggregation rung=formula caption="Read each state's total and mean over the stations carrying its key."}
 
 ## Concepts
 

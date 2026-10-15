@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.variogram",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const positions = importColumn('positions', stations.positions, 'float32x2');\nconst rainfall = importColumn('rainfall', stations.precipitation, 'float32');\nconst lagCount = 12;\nconst parameters = new GPUParameterBuffer(device, {\n  id: 'variogram-parameters',\n  format: 'float32',\n  length: GPU_VARIOGRAM_PARAMETER_LENGTH,\n  values: getGPUVariogramParameterValues({bounds, maximumDistance: 300_000}) // 12 lags of 25 km\n});\nconst semivariances = view('semivariances', 'float32', lagCount);\nconst pairCounts = view('pairCounts', 'uint32', lagCount);\nconst meanDistances = view('meanDistances', 'float32', lagCount);\ngraph.add(\n  new GPUVariogram({\n    positions,\n    values: rainfall,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [64, 64],\n    lagCount,\n    output: {semivariances, pairCounts, meanDistances}\n  })\n);\n// semivariances[h]: half the mean squared rainfall difference of the pairs in lag h",
+    "language": "ts",
+    "lineCount": 23
+  },
+  "scenarioId": "gpu-dataframe.variogram",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.variogram: positions, prcp → meanDistances. rows: 12. values read back from the GPU run. input positions: 1200 points.",
+  "description": "Result of gpu-dataframe.variogram: positions, prcp → meanDistances. rows: 12. values read back from the GPU run. input positions: 1200 points.",
+  "llms": "Result of gpu-dataframe.variogram: positions, prcp → meanDistances\n\n- rows: 12\n- input positions: 1200 points\n- input prcp: 1200 rows\n- Planar coordinates (m); uniform scale.\n- 1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">prcp</th><th class=\"cv-col--output\" scope=\"col\">semivariances</th><th class=\"cv-col--output\" scope=\"col\">pairCounts</th><th class=\"cv-col--output\" scope=\"col\">meanDistances</th></tr></thead><tbody><tr><td data-provenance=\"readback\">2.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">546</td><td class=\"cv-col--output\" data-provenance=\"readback\">1752</td><td class=\"cv-col--output\" data-provenance=\"readback\">15500</td></tr><tr><td data-provenance=\"readback\">9.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">573</td><td class=\"cv-col--output\" data-provenance=\"readback\">3821</td><td class=\"cv-col--output\" data-provenance=\"readback\">38500</td></tr><tr><td data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">864</td><td class=\"cv-col--output\" data-provenance=\"readback\">4772</td><td class=\"cv-col--output\" data-provenance=\"readback\">63000</td></tr><tr><td data-provenance=\"readback\">19.6</td><td class=\"cv-col--output\" data-provenance=\"readback\">963</td><td class=\"cv-col--output\" data-provenance=\"readback\">6216</td><td class=\"cv-col--output\" data-provenance=\"readback\">87900</td></tr><tr><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1180</td><td class=\"cv-col--output\" data-provenance=\"readback\">7178</td><td class=\"cv-col--output\" data-provenance=\"readback\">113000</td></tr><tr><td data-provenance=\"readback\">14.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">1290</td><td class=\"cv-col--output\" data-provenance=\"readback\">8533</td><td class=\"cv-col--output\" data-provenance=\"readback\">138000</td></tr><tr><td colspan=\"4\">… 1194 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions, prcp · blue: output semivariances, pairCounts, meanDistances</p><p class=\"cv-note\">1200 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.060Z",
+    "runId": "run-ebe24810",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ebe24810",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

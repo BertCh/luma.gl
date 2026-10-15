@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-scan-statistic",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const scanParameters = new GPUParameterBuffer(graph.device, {\n  id: 'scan-parameters',\n  format: 'uint32',\n  length: GPU_SPATIAL_SCAN_STATISTIC_PARAMETER_LENGTH,\n  values: getGPUSpatialScanStatisticParameterValues({\n    seed: 1,\n    permutationCount: 199,\n    maximumPopulationFraction: 0.5,\n    rateDirection: 'high'\n  })\n});\ngraph.add(\n  new GPUSpatialScanStatistic({\n    positions: centroids,\n    spatialContext,\n    model: 'poisson',\n    cases: deaths,\n    baseline: personYears,\n    maximumPermutations: 199,\n    maximumClusters: 5,\n    parameters: scanParameters.importToGraph(graph),\n    output: {clusterIndices, clusterStatistics, statistics, summary, zoneStatistics}\n  })\n);\n// zoneStatistics: best log-likelihood ratio of any window centred on each county",
+    "language": "ts",
+    "lineCount": 25
+  },
+  "scenarioId": "gpu-spatial-analysis.spatial-scan-statistic",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.spatial-scan-statistic: countyVertices, countyOffsets, centroids, deaths, personYears → summary. rows: 4. values read back from the GPU run. input countyVertices: 11552 rows.",
+  "description": "Result of gpu-spatial-analysis.spatial-scan-statistic: countyVertices, countyOffsets, centroids, deaths, personYears → summary. rows: 4. values read back from the GPU run. input countyVertices: 11552 rows.",
+  "llms": "Result of gpu-spatial-analysis.spatial-scan-statistic: countyVertices, countyOffsets, centroids, deaths, personYears → summary\n\n- rows: 4\n- input countyVertices: 11552 rows\n- input countyOffsets: 438 rows\n- input centroids: 874 rows\n- input deaths: 437 rows\n- input personYears: 437 rows\n- Simple equirectangular projection (x scaled by cos 42.23°); not equal-area.\n- 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">countyVertices</th><th scope=\"col\">countyOffsets</th><th scope=\"col\">centroids</th><th scope=\"col\">deaths</th><th scope=\"col\">personYears</th><th class=\"cv-col--output\" scope=\"col\">zoneStatistics</th><th class=\"cv-col--output\" scope=\"col\">clusterIndices</th><th class=\"cv-col--output\" scope=\"col\">clusterStatistics</th><th class=\"cv-col--output\" scope=\"col\">statistics</th><th class=\"cv-col--output\" scope=\"col\">summary</th></tr></thead><tbody><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">-399000</td><td data-provenance=\"readback\">50</td><td data-provenance=\"readback\">460159</td><td class=\"cv-col--output\" data-provenance=\"readback\">156</td><td class=\"cv-col--output\" data-provenance=\"readback\">140</td><td class=\"cv-col--output\" data-provenance=\"readback\">501</td><td class=\"cv-col--output\" data-provenance=\"readback\">501</td><td class=\"cv-col--output\" data-provenance=\"readback\">5</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">16</td><td data-provenance=\"readback\">-251000</td><td data-provenance=\"readback\">20</td><td data-provenance=\"readback\">36680</td><td class=\"cv-col--output\" data-provenance=\"readback\">345</td><td class=\"cv-col--output\" data-provenance=\"readback\">233</td><td class=\"cv-col--output\" data-provenance=\"readback\">16820</td><td class=\"cv-col--output\" data-provenance=\"readback\">6.5</td><td class=\"cv-col--output\" data-provenance=\"readback\">34593</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">-254000</td><td data-provenance=\"readback\">29</td><td data-provenance=\"readback\">117075</td><td class=\"cv-col--output\" data-provenance=\"readback\">295</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">13900</td><td class=\"cv-col--output\" data-provenance=\"readback\">9.2</td><td class=\"cv-col--output\" data-provenance=\"readback\">199</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">42</td><td data-provenance=\"readback\">-191000</td><td data-provenance=\"readback\">52</td><td data-provenance=\"readback\">374136</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.95</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.005</td><td class=\"cv-col--output\" data-provenance=\"readback\">4.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">-91.4</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">-362000</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">43708</td><td class=\"cv-col--output\" data-provenance=\"readback\">158</td><td class=\"cv-col--output\" data-provenance=\"readback\">264</td><td class=\"cv-col--output\" data-provenance=\"readback\">394000</td><td class=\"cv-col--output\" data-provenance=\"readback\">5.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">-91.4</td><td data-provenance=\"readback\">61</td><td data-provenance=\"readback\">-253000</td><td data-provenance=\"readback\">61</td><td data-provenance=\"readback\">232708</td><td class=\"cv-col--output\" data-provenance=\"readback\">29.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">53</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.21</td><td class=\"cv-col--output\" data-provenance=\"readback\">4.19</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"10\">… 11546 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input countyVertices, countyOffsets, centroids, deaths, personYears · blue: output zoneStatistics, zoneMap, clusterIndices, clusterStatistics, statistics, summary</p><p class=\"cv-note\">5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.594Z",
+    "runId": "run-c975d964",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c975d964",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

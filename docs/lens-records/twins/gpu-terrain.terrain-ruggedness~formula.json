@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-ruggedness",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-ruggedness",
+  "viewId": "formula-card",
+  "caption": "Formula Riley: TRI = sqrt(sum over the 3x3 window of (z_k - z_centre)^2), in elevation units (the centre term is 0). terrainRuggednessAlgorithm wilson uses sum(|z_k - z_centre|)/8 instead. With edgeMode nodata the outer ring and any window with an i…",
+  "description": "Formula Riley: TRI = sqrt(sum over the 3x3 window of (z_k - z_centre)^2), in elevation units (the centre term is 0). terrainRuggednessAlgorithm wilson uses sum(|z_k - z_centre|)/8 instead. With edgeMode nodata the outer ring and any window with an i…",
+  "llms": "Formula Riley: TRI = sqrt(sum over the 3x3 window of (z_k - z_centre)^2), in elevation units (the centre term is 0). terrainRuggednessAlgorithm wilson uses sum(|z_k - z_centre|)/8 instead. With edgeMode nodata the outer ring and any window with an invalid sample are NaN; extrapolate (gdaldem -compute_edges) extends outside samples linearly (2a - b) and replaces invalid neighbours by the centre.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-ruggedness.riley</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{ruggedness}{\\mathrm{TRI}} = \\sqrt{\\sum_{k=1}^{9}\\left(\\term{windowValue}{z_k} - \\term{centerValue}{z_c}\\right)^2}</pre><p class=\"lens-ascii\">Riley: TRI = sqrt(sum over the 3x3 window of (z_k - z_centre)^2), in elevation units (the centre term is 0). terrainRuggednessAlgorithm wilson uses sum(|z_k - z_centre|)/8 instead. With edgeMode nodata the outer ring and any window with an invalid sample are NaN; extrapolate (gdaldem -compute_edges) extends outside samples linearly (2a - b) and replaces invalid neighbours by the centre.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-ruggedness-compiled:terrain-ruggedness-window\" data-value=\"ruggedness\">TRI · output · ruggedness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-ruggedness-compiled:terrain-ruggedness-window\" data-value=\"windowValue\">window height · input · windowValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-ruggedness-compiled:terrain-ruggedness-window\" data-value=\"centerValue\">centre height · input · centerValue</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "TRI",
+        "output",
+        "ruggedness",
+        "—",
+        "metadata"
+      ],
+      [
+        "window height",
+        "input",
+        "windowValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "centre height",
+        "input",
+        "centerValue",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{ruggedness}{\\mathrm{TRI}} = \\sqrt{\\sum_{k=1}^{9}\\left(\\term{windowValue}{z_k} - \\term{centerValue}{z_c}\\right)^2}",
+    "ascii": "Riley: TRI = sqrt(sum over the 3x3 window of (z_k - z_centre)^2), in elevation units (the centre term is 0). terrainRuggednessAlgorithm wilson uses sum(|z_k - z_centre|)/8 instead. With edgeMode nodata the outer ring and any window with an invalid sample are NaN; extrapolate (gdaldem -compute_edges) extends outside samples linearly (2a - b) and replaces invalid neighbours by the centre.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.156Z",
+    "runId": "run-f0f64ebf",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f0f64ebf",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

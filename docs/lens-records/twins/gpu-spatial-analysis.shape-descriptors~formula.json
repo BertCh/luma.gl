@@ -1,0 +1,152 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.shape-descriptors",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.shape-descriptors",
+  "viewId": "formula-card",
+  "caption": "Formula Polsby-Popper C=4*pi*A/P^2; Schwartzberg S=sqrt(C); convexity V=min(A/H,1) for hull area H; elongation E=1-sqrt(lambda2/lambda1) with lambda2=max(mean-radius,0), lambda1=mean+radius from central moments. Sliver is P>0 and (A<=0 or C<threshol…",
+  "description": "Formula Polsby-Popper C=4*pi*A/P^2; Schwartzberg S=sqrt(C); convexity V=min(A/H,1) for hull area H; elongation E=1-sqrt(lambda2/lambda1) with lambda2=max(mean-radius,0), lambda1=mean+radius from central moments. Sliver is P>0 and (A<=0 or C<threshol…",
+  "llms": "Formula Polsby-Popper C=4*pi*A/P^2; Schwartzberg S=sqrt(C); convexity V=min(A/H,1) for hull area H; elongation E=1-sqrt(lambda2/lambda1) with lambda2=max(mean-radius,0), lambda1=mean+radius from central moments. Sliver is P>0 and (A<=0 or C<threshold). C and S are NaN unless A>0 and P>0, V is NaN without positive hull area, E is NaN without a positive major eigenvalue. Shells contribute positive area and holes negative, regardless of winding.\n\n- bound symbols: 10/11\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "10/11"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.shape-descriptors</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{compactness}{C}&amp;=\\dfrac{4\\pi\\term{area}{A}}{\\term{perimeter}{P}^2},\\quad\\term{schwartzberg}{S}=\\sqrt{\\term{compactness}{C}},\\quad\\term{convexity}{V}=\\min\\left(\\dfrac{\\term{area}{A}}{\\term{hull-area}{H}},1\\right)\\\\\\term{elongation}{E}&amp;=1-\\sqrt{\\dfrac{\\term{minor}{\\lambda_2}}{\\term{major}{\\lambda_1}}},\\quad\\term{sliver}{F}=\\mathbb{1}\\left[\\term{perimeter}{P}&gt;0\\land(\\term{area}{A}\\le0\\lor\\term{compactness}{C}&lt;\\term{threshold}{\\tau})\\right]\\end{aligned}</pre><p class=\"lens-ascii\">Polsby-Popper C=4*pi*A/P^2; Schwartzberg S=sqrt(C); convexity V=min(A/H,1) for hull area H; elongation E=1-sqrt(lambda2/lambda1) with lambda2=max(mean-radius,0), lambda1=mean+radius from central moments. Sliver is P&gt;0 and (A&lt;=0 or C&lt;threshold). C and S are NaN unless A&gt;0 and P&gt;0, V is NaN without positive hull area, E is NaN without a positive major eigenvalue. Shells contribute positive area and holes negative, regardless of winding.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-compactness\" data-value=\"compactness\">Polsby-Popper · output · polsbyPopper</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-measures-feature-output\" data-value=\"area\">Measured polygon area · input · areas</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-compactness\" data-value=\"perimeter\">Measured perimeter including holes · input · perimeters</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"schwartzberg\">Schwartzberg · output · unknown — wgsl schwartzberg not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-convexity\" data-value=\"convexity\">Convexity · output · convexities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-convexity\" data-value=\"hull-area\">Convex hull area · intermediate · hullArea</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-orientation\" data-value=\"elongation\">Elongation · output · elongation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-orientation\" data-value=\"minor\">Nonnegative minor eigenvalue · intermediate · minor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-orientation\" data-value=\"major\">Major eigenvalue · intermediate · major</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-compactness\" data-value=\"sliver\">Sliver flag · output · sliver</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-descriptors-compiled:shape-descriptors-compactness\" data-value=\"threshold\">Sliver threshold (parameters[0]) · parameter · parameters</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Polsby-Popper",
+        "output",
+        "polsbyPopper",
+        "—",
+        "metadata"
+      ],
+      [
+        "Measured polygon area",
+        "input",
+        "areas",
+        "—",
+        "metadata"
+      ],
+      [
+        "Measured perimeter including holes",
+        "input",
+        "perimeters",
+        "—",
+        "metadata"
+      ],
+      [
+        "Schwartzberg",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Convexity",
+        "output",
+        "convexities",
+        "—",
+        "metadata"
+      ],
+      [
+        "Convex hull area",
+        "intermediate",
+        "hullArea",
+        "—",
+        "metadata"
+      ],
+      [
+        "Elongation",
+        "output",
+        "elongation",
+        "—",
+        "metadata"
+      ],
+      [
+        "Nonnegative minor eigenvalue",
+        "intermediate",
+        "minor",
+        "—",
+        "metadata"
+      ],
+      [
+        "Major eigenvalue",
+        "intermediate",
+        "major",
+        "—",
+        "metadata"
+      ],
+      [
+        "Sliver flag",
+        "output",
+        "sliver",
+        "—",
+        "metadata"
+      ],
+      [
+        "Sliver threshold (parameters[0])",
+        "parameter",
+        "parameters",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{compactness}{C}&=\\dfrac{4\\pi\\term{area}{A}}{\\term{perimeter}{P}^2},\\quad\\term{schwartzberg}{S}=\\sqrt{\\term{compactness}{C}},\\quad\\term{convexity}{V}=\\min\\left(\\dfrac{\\term{area}{A}}{\\term{hull-area}{H}},1\\right)\\\\\\term{elongation}{E}&=1-\\sqrt{\\dfrac{\\term{minor}{\\lambda_2}}{\\term{major}{\\lambda_1}}},\\quad\\term{sliver}{F}=\\mathbb{1}\\left[\\term{perimeter}{P}>0\\land(\\term{area}{A}\\le0\\lor\\term{compactness}{C}<\\term{threshold}{\\tau})\\right]\\end{aligned}",
+    "ascii": "Polsby-Popper C=4*pi*A/P^2; Schwartzberg S=sqrt(C); convexity V=min(A/H,1) for hull area H; elongation E=1-sqrt(lambda2/lambda1) with lambda2=max(mean-radius,0), lambda1=mean+radius from central moments. Sliver is P>0 and (A<=0 or C<threshold). C and S are NaN unless A>0 and P>0, V is NaN without positive hull area, E is NaN without a positive major eigenvalue. Shells contribute positive area and holes negative, regardless of winding.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.258Z",
+    "runId": "run-b3a53ce8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b3a53ce8",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

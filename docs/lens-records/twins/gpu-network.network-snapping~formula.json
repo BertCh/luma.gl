@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-snapping",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-snapping",
+  "viewId": "formula-card",
+  "caption": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row;…",
+  "description": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row;…",
+  "llms": "Formula For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.snapping.nearest</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{bestEdge}{e^*}=\\operatorname*{argmin}_{e}\\ \\term{distance}{d(p,e)}</pre><p class=\"lens-ascii\">For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d &lt; bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"bestEdge\">snapped edge row · output · bestEdge</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"distance\">distance to edge · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\" data-value=\"bestDistance\">smallest distance so far · intermediate · bestDistance</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-snapping-compiled:network-snapping-scan\">network-snapping-scan</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "snapped edge row",
+        "output",
+        "bestEdge",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance to edge",
+        "intermediate",
+        "distance",
+        "—",
+        "metadata"
+      ],
+      [
+        "smallest distance so far",
+        "intermediate",
+        "bestDistance",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{bestEdge}{e^*}=\\operatorname*{argmin}_{e}\\ \\term{distance}{d(p,e)}",
+    "ascii": "For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d < bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:13.048Z",
+    "runId": "run-538f15db",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-538f15db",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

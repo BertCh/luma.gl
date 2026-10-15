@@ -24,8 +24,8 @@ resources. The application still submits the resulting command buffer.
 
 ## Interactive compiler anatomy
 
-The inspector below uses one deterministic selection-and-render workflow to expose each compiler
-view. It is a teaching model of the real compiler contract: contributors expand before
+The inspector below is rebuilt from a recorded run of a real `GPUScan` inside a mask →
+compaction → masked reduction graph, scenario `gpu-core.scan.anatomy`. Contributors expand before
 `compile()`, resource uses derive hazards, scheduling defines lifetimes, and compatible
 non-overlapping transients may share physical storage.
 
@@ -142,6 +142,19 @@ whose retained outputs remain valid.
 
 Measure the complete pipeline: candidates, compute invocations, bytes touched, passes, dispatches,
 indirect draws, readback cadence, and GPU duration. Row count alone is not a sufficient cost model.
+
+## GPU execution model
+
+How GPU Core primitives run on the device: the command graph they declare, the kernels it
+compiles to, and the resources each pass reads and writes, drawn from a recorded real run.
+
+{/* lens:execution-model */}
+
+::lens{scenario=gpu-core.scan.anatomy rung=graph caption="Eight scheduled nodes joined by nine hazard edges: mask first, then scan, reduction, scatter."}
+
+::lens{scenario=gpu-core.scan.anatomy rung=kernel caption="The level-0 scan kernel runs four 256-lane workgroups over 1,024 stations."}
+
+::lens{scenario=gpu-core.elementwise.id-probe rung=kernel caption="Replay dispatch with the same geometry: each cell shows the lane that handled that element."}
 
 ## Related APIs
 

@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segregation",
+  "rung": "datum",
+  "datum": 22,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.segregation",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. segregation: 4 quantities.",
+  "description": "Receipt of tracts 22. localEntropy: 1.4740455150604248. values read back from the GPU run. segregation: 4 quantities.",
+  "llms": "Receipt of tracts 22\n\n- localEntropy: 1.4740455150604248\n- segregation: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "localEntropy",
+    "value": "1.4740455150604248"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"segregation\"><tr><th scope=\"rowgroup\" colspan=\"5\">segregation</th></tr><tr data-provenance=\"readback\"><td>segregation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-tracts-0\" title=\"context\">tracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segregation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-resultTracts-0\">resultTracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segregation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localTheil-0\" title=\"tract contribution to the entropy index H; NaN where undefined\">localTheil</button></td><td>-0.0022655786015093327</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segregation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segregation-snapshots-localEntropy-0\">localEntropy</button></td><td>1.4740455150604248</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.segregation</h4><div><pre class=\"lens-tex\">\\term{theil}{h_i}=\\frac{\\term{population}{t_i}\\,(\\term{diversity}{E}-\\term{entropy}{E_i})}{E\\,\\term{total}{T}},\\qquad H=\\sum_i h_i</pre><p class=\"lens-ascii\">h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "segregation",
+        "tracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "segregation",
+        "resultTracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "segregation",
+        "localTheil",
+        "-0.0022655786015093327",
+        "0",
+        "readback"
+      ],
+      [
+        "segregation",
+        "localEntropy",
+        "1.4740455150604248",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.234Z",
+    "runId": "run-1f078a31",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1f078a31",
+    "rung": "datum",
+    "bindings": {
+      "entity": 22
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.temporal-reduction",
+  "rung": "formula",
+  "datum": 133,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.temporal-reduction",
+  "viewId": "formula-card",
+  "caption": "Formula R(b*w)<=R(t-origin)<R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width). counts: 32. values read back from the GPU run.",
+  "description": "Formula R(b*w)<=R(t-origin)<R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width). counts: 32. values read back from the GPU run.",
+  "llms": "Formula R(b*w)<=R(t-origin)<R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width).\n\n- counts: 32\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "counts",
+    "value": "32"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUTemporalReduction</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\operatorname{R}(\\term{bucket}{b}\\term{width}{w})\\leq\\operatorname{R}(\\term{timestamps}{t}-\\term{origin}{o})&lt;\\operatorname{R}((\\term{bucket}{b}+1)\\term{width}{w}),\\quad \\term{rowSlots}{s}=\\term{cellIds}{c}\\term{bucketCount}{B}+\\term{bucket}{b},\\quad \\term{counts}{N_s}=\\sum_{\\text{included rows}}\\mathbf{1}[\\term{rowSlots}{s_{\\rm row}}=\\term{slot}{s}]</pre><p class=\"lens-ascii\">R(b*w)&lt;=R(t-origin)&lt;R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width).</p></div><div class=\"lens-worked-example\"><h4>Entity 133</h4><div><pre class=\"lens-tex\">\\operatorname{R}(\\term{bucket}{b}\\term{width}{w})\\leq\\operatorname{R}(\\term{timestamps}{t}-\\term{origin}{o})&lt;\\operatorname{R}((\\term{bucket}{b}+1)\\term{width}{w}),\\quad \\term{rowSlots}{s}=\\term{cellIds}{c}\\term{bucketCount}{B}+\\term{bucket}{b},\\quad \\term{counts}{32}=\\sum_{\\text{included rows}}\\mathbf{1}[\\term{rowSlots}{s_{\\rm row}}=\\term{slot}{s}]</pre><p class=\"lens-ascii\">R(b*w)&lt;=R(t-origin)&lt;R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"bucket\">bucket · intermediate · bucket</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"width\">width · parameter · width</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"timestamps\">timestamps · input · timestamps</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"origin\">origin · parameter · origin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"rowSlots\">rowSlots · intermediate · rowSlots</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"cellIds\">cellIds · input · cellIds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-classify\" data-value=\"bucketCount\">bucketCount · constant · BUCKET_COUNT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-init\" data-value=\"counts\">counts · output · counts<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.temporal-reduction-compiled:temporal-reduction-extremes\" data-value=\"slot\">slot · index · slot</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "bucket",
+        "intermediate",
+        "bucket",
+        "—",
+        "metadata"
+      ],
+      [
+        "width",
+        "parameter",
+        "width",
+        "—",
+        "metadata"
+      ],
+      [
+        "timestamps",
+        "input",
+        "timestamps",
+        "—",
+        "metadata"
+      ],
+      [
+        "origin",
+        "parameter",
+        "origin",
+        "—",
+        "metadata"
+      ],
+      [
+        "rowSlots",
+        "intermediate",
+        "rowSlots",
+        "—",
+        "metadata"
+      ],
+      [
+        "cellIds",
+        "input",
+        "cellIds",
+        "—",
+        "metadata"
+      ],
+      [
+        "bucketCount",
+        "constant",
+        "BUCKET_COUNT",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "counts",
+        "32",
+        "readback"
+      ],
+      [
+        "slot",
+        "index",
+        "slot",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\operatorname{R}(\\term{bucket}{b}\\term{width}{w})\\leq\\operatorname{R}(\\term{timestamps}{t}-\\term{origin}{o})<\\operatorname{R}((\\term{bucket}{b}+1)\\term{width}{w}),\\quad \\term{rowSlots}{s}=\\term{cellIds}{c}\\term{bucketCount}{B}+\\term{bucket}{b},\\quad \\term{counts}{N_s}=\\sum_{\\text{included rows}}\\mathbf{1}[\\term{rowSlots}{s_{\\rm row}}=\\term{slot}{s}]",
+    "ascii": "R(b*w)<=R(t-origin)<R((b+1)*w); slot=cell*bucketCount+b; counts[slot]=number of accepted rows (Int64: b=(t-origin) div width).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.086Z",
+    "runId": "run-57413f26",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-57413f26",
+    "rung": "formula",
+    "bindings": {
+      "entity": 133
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

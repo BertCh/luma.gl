@@ -1,0 +1,118 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-weights-summary",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-weights-summary",
+  "viewId": "formula-card",
+  "caption": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-rang…",
+  "description": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-rang…",
+  "llms": "Formula S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sum}{S_0}=\\sum_{ij}\\term{weight}{w_{ij}},\\quad\\term{pairs}{S_1}=\\frac12\\sum_{ij}(\\term{weight}{w_{ij}}+\\term{reverse}{w_{ji}})^2,\\quad\\term{rows}{S_2}=\\sum_i(\\term{row}{r_i}+\\term{column}{c_i})^2</pre><p class=\"lens-ascii\">S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-blocks\" data-value=\"sum\">sum · output · s0</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"pairs\">pairs · output · s1</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-blocks\" data-value=\"rows\">rows · output · s2</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"reverse\">reverse · intermediate · reverse</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-rows\" data-value=\"row\">row · intermediate · rowSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-summary-compiled:spatial-weights-summary-column-sums\" data-value=\"column\">column · intermediate · columnSums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sum",
+        "output",
+        "s0",
+        "—",
+        "metadata"
+      ],
+      [
+        "pairs",
+        "output",
+        "s1",
+        "—",
+        "metadata"
+      ],
+      [
+        "rows",
+        "output",
+        "s2",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "reverse",
+        "intermediate",
+        "reverse",
+        "—",
+        "metadata"
+      ],
+      [
+        "row",
+        "intermediate",
+        "rowSums",
+        "—",
+        "metadata"
+      ],
+      [
+        "column",
+        "intermediate",
+        "columnSums",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{sum}{S_0}=\\sum_{ij}\\term{weight}{w_{ij}},\\quad\\term{pairs}{S_1}=\\frac12\\sum_{ij}(\\term{weight}{w_{ij}}+\\term{reverse}{w_{ji}})^2,\\quad\\term{rows}{S_2}=\\sum_i(\\term{row}{r_i}+\\term{column}{c_i})^2",
+    "ascii": "S0 = sum_ij w_ij; S1 = (1/2) sum_ij (w_ij+w_ji)^2 over the union of both patterns, with absent reverse weights zero; S2 = sum_i (rowSum_i+columnSum_i)^2. Self slots enter moments. Cardinality and isolates instead count only positive, in-range, nonself slots. Fixed-order reductions.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "1 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:03:36.721Z",
+    "runId": "run-9b9fbef6",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9b9fbef6",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

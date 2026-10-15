@@ -7,9 +7,25 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Sums rainfall independently within each state using offset-delimited segments.
+
+::lens{scenario=gpu-core.segmented-reduction rung=result caption="Each output cell totals one state; the bracketed AR cell sums to 42.6 mm."}
+
 `GPUSegmentedReduction` computes one scalar aggregate for every contiguous segment in a packed GPU vector. Segments are described by **offset-delimited segments**, a general representation shared by grouped data, adjacency lists, Arrow-style lists and CSR sparse matrices.
 
 <GPUOperationContract operation="gpu-segmented-reduction" />
+
+#### How it computes
+
+{/* lens:GPUSegmentedReduction */}
+
+::lens{scenario=gpu-core.segmented-reduction rung=kernel caption="Inspect the 256-lane shader summing each state between consecutive offsets."}
+
+::lens{scenario=gpu-core.segmented-reduction rung=graph caption="Trace the single compute node from station rainfall to state totals."}
+
+::lens{scenario=gpu-core.segmented-reduction rung=datum caption="Follow state AR from its offset range into its 42.6 mm total."}
+
+::lens{scenario=gpu-core.segmented-reduction rung=formula caption="Read the segment sum over stations from one state offset to the next."}
 
 ## What is an offset-delimited segment?
 

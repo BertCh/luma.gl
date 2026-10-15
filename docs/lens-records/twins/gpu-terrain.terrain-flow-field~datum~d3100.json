@@ -1,0 +1,79 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-flow-field",
+  "rung": "datum",
+  "datum": 3100,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-flow-field",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 3100. windVelocities: 4.451247692108154, -4.053683280944824. values read back from the GPU run. terrain-flow-field: 2 quantities.",
+  "description": "Receipt of grid cells 3100. windVelocities: 4.451247692108154, -4.053683280944824. values read back from the GPU run. terrain-flow-field: 2 quantities.",
+  "llms": "Receipt of grid cells 3100\n\n- windVelocities: 4.451247692108154, -4.053683280944824\n- terrain-flow-field: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "windVelocities",
+    "value": "4.451247692108154, -4.053683280944824"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3100</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-flow-field\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-flow-field</th></tr><tr data-provenance=\"readback\"><td>terrain-flow-field</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-field-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1336.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-flow-field</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-flow-field-snapshots-windVelocities-0\" title=\"wind (u east, v south) m/s in the raster frame; rows run south\">windVelocities</button></td><td>4.451247692108154, -4.053683280944824</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-flow-field-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-flow-field-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-flow-field-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3035\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3035: 1329.300048828125</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3035</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3036\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3036: 1275.199951171875</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3036</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3037\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3037: 1239.300048828125</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3037</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3099\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3099: 1376.9000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3099</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3100\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3100: 1336.9000244140625</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3100</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3101\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3101: 1292.9000244140625</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3101</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3163\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3163: 1416.5999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3163</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3164\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>3164: 1386.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3164</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3165\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>3165: 1336.199951171875</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3165</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-flow-field",
+        "dem",
+        "1336.9000244140625",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-flow-field",
+        "windVelocities",
+        "4.451247692108154, -4.053683280944824",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:32:35.727Z",
+    "runId": "run-d85b714a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d85b714a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3100
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

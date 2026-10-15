@@ -1,0 +1,70 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.study-window-preparation",
+  "rung": "datum",
+  "datum": 4,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.study-window-preparation",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of bounds, area, perimeter, edge count, flags 4. summary: 86952192. values read back from the GPU run. study-window: 1 quantities.",
+  "description": "Receipt of bounds, area, perimeter, edge count, flags 4. summary: 86952192. values read back from the GPU run. study-window: 1 quantities.",
+  "llms": "Receipt of bounds, area, perimeter, edge count, flags 4\n\n- summary: 86952192\n- study-window: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "summary",
+    "value": "86952192"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of bounds, area, perimeter, edge count, flags 4</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"study-window\"><tr><th scope=\"rowgroup\" colspan=\"5\">study-window</th></tr><tr data-provenance=\"readback\"><td>study-window</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-study-window-preparation-snapshots-summary-0\" title=\"minX, minY, maxX, maxY, area m², perimeter m, edges, flags\">summary</button></td><td>86952192</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "study-window",
+        "summary",
+        "86952192",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.799Z",
+    "runId": "run-f2deea30",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f2deea30",
+    "rung": "datum",
+    "bindings": {
+      "entity": 4
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

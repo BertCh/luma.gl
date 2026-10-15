@@ -1,0 +1,131 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.ordinary-least-squares",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.ordinary-least-squares",
+  "viewId": "formula-card",
+  "caption": "Formula b = Sxx^-1 sxy; b0 = ybar - sum_j b_j xbar_j; sigma2 = RSS/(n-p); se_j = sqrt(sigma2 [Sxx^-1]_jj); t_j = b_j/se_j; R2 = 1 - RSS/TSS. S are centred cross-products of the finite rows; the unit-scaled normal equations are solved by Cholesky, op…",
+  "description": "Formula b = Sxx^-1 sxy; b0 = ybar - sum_j b_j xbar_j; sigma2 = RSS/(n-p); se_j = sqrt(sigma2 [Sxx^-1]_jj); t_j = b_j/se_j; R2 = 1 - RSS/TSS. S are centred cross-products of the finite rows; the unit-scaled normal equations are solved by Cholesky, op…",
+  "llms": "Formula b = Sxx^-1 sxy; b0 = ybar - sum_j b_j xbar_j; sigma2 = RSS/(n-p); se_j = sqrt(sigma2 [Sxx^-1]_jj); t_j = b_j/se_j; R2 = 1 - RSS/TSS. S are centred cross-products of the finite rows; the unit-scaled normal equations are solved by Cholesky, optionally with ridge lambda added to the predictor diagonal. p counts the intercept; the intercept variance is sigma2 (1/n + xbar Sxx^-1 xbar).\n\n- bound symbols: 10/10\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "10/10"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>ordinary-least-squares</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{coefficients}{b}&amp;=\\term{moments}{S_{xx}}^{-1}s_{xy},\n&amp;\\term{intercept}{b_0}&amp;=\\bar y-\\sum_j b_j\\bar x_j\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&amp;=\\frac{\\term{residualSumSquares}{\\mathrm{RSS}}}{\\term{freedom}{n-p}},\n&amp;\\term{standardErrors}{\\mathrm{se}_j}&amp;=\\sqrt{\\hat\\sigma^2\\,[S_{xx}^{-1}]_{jj}}\\\\\n\\term{tStatistics}{t_j}&amp;=\\frac{b_j}{\\mathrm{se}_j},\n&amp;\\term{rSquared}{R^2}&amp;=1-\\frac{\\mathrm{RSS}}{\\term{totalSumSquares}{\\mathrm{TSS}}}\n\\end{aligned}</pre><p class=\"lens-ascii\">b = Sxx^-1 sxy; b0 = ybar - sum_j b_j xbar_j; sigma2 = RSS/(n-p); se_j = sqrt(sigma2 [Sxx^-1]_jj); t_j = b_j/se_j; R2 = 1 - RSS/TSS. S are centred cross-products of the finite rows; the unit-scaled normal equations are solved by Cholesky, optionally with ridge lambda added to the predictor diagonal. p counts the intercept; the intercept variance is sigma2 (1/n + xbar Sxx^-1 xbar).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"coefficients\">coefficients (intercept first) · output · coefficientsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-means-merge\" data-value=\"moments\">centred moments · intermediate · momentAt</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"intercept\">intercept · intermediate · intercept</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"sigmaSquared\">sigmaSquared · intermediate · sigmaSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"residualSumSquares\">residualSumSquares · intermediate · residualSumSquares</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"freedom\">residual degrees of freedom · intermediate · freedom</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"standardErrors\">standardErrors · output · standardErrorsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"tStatistics\">tStatistics · output · tStatisticsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"rSquared\">rSquared · output · rSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.ordinary-least-squares-compiled:ordinary-least-squares-finish\" data-value=\"totalSumSquares\">totalSumSquares · intermediate · totalSumSquares</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "coefficients (intercept first)",
+        "output",
+        "coefficientsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "centred moments",
+        "intermediate",
+        "momentAt",
+        "—",
+        "metadata"
+      ],
+      [
+        "intercept",
+        "intermediate",
+        "intercept",
+        "—",
+        "metadata"
+      ],
+      [
+        "sigmaSquared",
+        "intermediate",
+        "sigmaSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "residualSumSquares",
+        "intermediate",
+        "residualSumSquares",
+        "—",
+        "metadata"
+      ],
+      [
+        "residual degrees of freedom",
+        "intermediate",
+        "freedom",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardErrors",
+        "output",
+        "standardErrorsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "tStatistics",
+        "output",
+        "tStatisticsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "rSquared",
+        "output",
+        "rSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "totalSumSquares",
+        "intermediate",
+        "totalSumSquares",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{coefficients}{b}&=\\term{moments}{S_{xx}}^{-1}s_{xy},\n&\\term{intercept}{b_0}&=\\bar y-\\sum_j b_j\\bar x_j\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&=\\frac{\\term{residualSumSquares}{\\mathrm{RSS}}}{\\term{freedom}{n-p}},\n&\\term{standardErrors}{\\mathrm{se}_j}&=\\sqrt{\\hat\\sigma^2\\,[S_{xx}^{-1}]_{jj}}\\\\\n\\term{tStatistics}{t_j}&=\\frac{b_j}{\\mathrm{se}_j},\n&\\term{rSquared}{R^2}&=1-\\frac{\\mathrm{RSS}}{\\term{totalSumSquares}{\\mathrm{TSS}}}\n\\end{aligned}",
+    "ascii": "b = Sxx^-1 sxy; b0 = ybar - sum_j b_j xbar_j; sigma2 = RSS/(n-p); se_j = sqrt(sigma2 [Sxx^-1]_jj); t_j = b_j/se_j; R2 = 1 - RSS/TSS. S are centred cross-products of the finite rows; the unit-scaled normal equations are solved by Cholesky, optionally with ridge lambda added to the predictor diagonal. p counts the intercept; the intercept variance is sigma2 (1/n + xbar Sxx^-1 xbar).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.825Z",
+    "runId": "run-9ee100c9",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9ee100c9",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

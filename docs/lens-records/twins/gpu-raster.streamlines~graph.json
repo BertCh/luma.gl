@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.streamlines",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-raster.streamlines",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of GPUStreamlines on the GFS wind. nodes: 139. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of GPUStreamlines on the GFS wind. nodes: 139. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of GPUStreamlines on the GFS wind\n\n- nodes: 139\n- 1 visible units vs budget 24\n- 139 hidden nodes\n- Edges by kind: indirect 96, raw 562, war 190\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "139"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-raster-streamlines-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-streamlines-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-streamlines-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:streamlines\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:streamlines\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">streamlines</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:streamlines\" aria-label=\"Expand streamlines\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">streamlines-trace: commandCount=1 · streamlines-trace: maximumWorkgroupCount=1 · streamlines-trace: maximumInvocationCount=30</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:streamlines\" aria-label=\"Inspect streamlines\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.763Z",
+    "runId": "run-2897b63d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-2897b63d",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

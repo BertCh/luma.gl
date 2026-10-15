@@ -1,0 +1,57 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.pick-region-mask",
+  "rung": "datum",
+  "datum": 420,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.pick-region-mask",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 420. mask: 0. values read back from the GPU run. pick-region-mask: 1 quantities.",
+  "description": "Receipt of Chicago tract 420. mask: 0. values read back from the GPU run. pick-region-mask: 1 quantities.",
+  "llms": "Receipt of Chicago tract 420\n\n- mask: 0\n- pick-region-mask: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "mask",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 420</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"pick-region-mask\"><tr><th scope=\"rowgroup\" colspan=\"5\">pick-region-mask</th></tr><tr data-provenance=\"readback\"><td>pick-region-mask</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.pick-region-mask-snapshots-mask-0\" title=\"Picked tracts of batch 0 as a 0/1 mask\">mask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pick-region-mask",
+        "mask",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.860Z",
+    "runId": "run-258278de",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-258278de",
+    "rung": "datum",
+    "bindings": {
+      "entity": 420
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.emerging-hot-spots",
+  "rung": "datum",
+  "datum": 100,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.emerging-hot-spots",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of lattice cell 100. category: 0. values read back from the GPU run. emerging-hot-spots: 6 quantities.",
+  "description": "Receipt of lattice cell 100. category: 0. values read back from the GPU run. emerging-hot-spots: 6 quantities.",
+  "llms": "Receipt of lattice cell 100\n\n- category: 0\n- emerging-hot-spots: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "category",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of lattice cell 100</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"emerging-hot-spots\"><tr><th scope=\"rowgroup\" colspan=\"5\">emerging-hot-spots</th></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-trendZ-0\">trendZ</button></td><td>1.512155532836914</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-trendP-0\">trendP</button></td><td>0.13049432635307312</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-trendS-0\">trendS</button></td><td>23</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-hotSliceCount-0\" title=\"Months in which the cell is a significant hot spot\">hotSliceCount</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-coldSliceCount-0\" title=\"Months in which the cell is a significant cold spot\">coldSliceCount</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>emerging-hot-spots</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-emerging-hot-spots-snapshots-category-0\" title=\"Emerging hot spot category (nominal): 0 none, 6 sporadic hot\">category</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "emerging-hot-spots",
+        "trendZ",
+        "1.512155532836914",
+        "0",
+        "readback"
+      ],
+      [
+        "emerging-hot-spots",
+        "trendP",
+        "0.13049432635307312",
+        "0",
+        "readback"
+      ],
+      [
+        "emerging-hot-spots",
+        "trendS",
+        "23",
+        "0",
+        "readback"
+      ],
+      [
+        "emerging-hot-spots",
+        "hotSliceCount",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "emerging-hot-spots",
+        "coldSliceCount",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "emerging-hot-spots",
+        "category",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:23.077Z",
+    "runId": "run-a33d60b2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a33d60b2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 100
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

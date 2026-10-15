@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.class-breaks",
+  "rung": "datum",
+  "datum": 2,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.class-breaks",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Class edge 2. breaks: 32.119998931884766. values read back from the GPU run. class-breaks: 1 quantities.",
+  "description": "Receipt of Class edge 2. breaks: 32.119998931884766. values read back from the GPU run. class-breaks: 1 quantities.",
+  "llms": "Receipt of Class edge 2\n\n- breaks: 32.119998931884766\n- class-breaks: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "breaks",
+    "value": "32.119998931884766"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Class edge 2</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"class-breaks\"><tr><th scope=\"rowgroup\" colspan=\"5\">class-breaks</th></tr><tr data-provenance=\"readback\"><td>class-breaks</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-class-breaks-snapshots-breaks-0\" title=\"Class edges e[0..k]: smallest value, inner edges, largest value.\">breaks</button></td><td>32.119998931884766</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "class-breaks",
+        "breaks",
+        "32.119998931884766",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.729Z",
+    "runId": "run-b122d2c1",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b122d2c1",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

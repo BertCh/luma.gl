@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.adjacency-matrix-order",
+  "rung": "datum",
+  "datum": 648,
+  "size": "full",
+  "scenarioId": "gpu-network.adjacency-matrix-order",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of network node 648. groups: 4. values read back from the GPU run. representation: 1 quantities.",
+  "description": "Receipt of network node 648. groups: 4. values read back from the GPU run. representation: 1 quantities.",
+  "llms": "Receipt of network node 648\n\n- groups: 4\n- representation: 1 quantities\n- assignment: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients order retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "groups",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of network node 648</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"representation\"><tr><th scope=\"rowgroup\" colspan=\"5\">representation</th></tr><tr data-provenance=\"readback\"><td>representation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"order\" title=\"GPU matrix position of every intersection (order[node] = position)\">order</button></td><td>590</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"assignment\"><tr><th scope=\"rowgroup\" colspan=\"5\">assignment</th></tr><tr data-provenance=\"readback\"><td>assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"groups\" title=\"input: group label of every intersection\">groups</button></td><td>4</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "representation",
+        "order",
+        "590",
+        "0",
+        "readback"
+      ],
+      [
+        "assignment",
+        "groups",
+        "4",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.375Z",
+    "runId": "run-db6eb264",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients order retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-db6eb264",
+    "rung": "datum",
+    "bindings": {
+      "entity": 648
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

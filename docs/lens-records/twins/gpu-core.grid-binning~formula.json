@@ -1,0 +1,69 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.grid-binning",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.grid-binning",
+  "viewId": "formula-card",
+  "caption": "Formula H[c]=count of accepted points in cell c; counts clear each run. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) befo…",
+  "description": "Formula H[c]=count of accepted points in cell c; counts clear each run. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) befo…",
+  "llms": "Formula H[c]=count of accepted points in cell c; counts clear each run. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.\n\n- bound symbols: 2/2\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.grid-binning</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{counts}{H_c}=\\sum_i\\mathbf1[\\operatorname{cell}(\\term{positions}{p_i})=c],\\quad c=rW+q</pre><p class=\"lens-ascii\">H[c]=count of accepted points in cell c; counts clear each run. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-binning-compiled:station-grid-counts-output-0-input-0-global\" data-value=\"positions\">positions · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-binning-compiled:station-grid-counts-output-0-clear\" data-value=\"counts\">counts · output · outputCounts</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-binning-compiled:station-grid-counts-output-0-input-0-global\">station-grid-counts-output-0-input-0-global</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "positions",
+        "input",
+        "positions",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "outputCounts",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{counts}{H_c}=\\sum_i\\mathbf1[\\operatorname{cell}(\\term{positions}{p_i})=c],\\quad c=rW+q",
+    "ascii": "H[c]=count of accepted points in cell c; counts clear each run. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:30.846Z",
+    "runId": "run-7e32607e",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-7e32607e",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

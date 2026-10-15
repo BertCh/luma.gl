@@ -9,7 +9,11 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 `GPUSegmentedScan` computes independent prefix sums over variable-length contiguous ranges described by **offset-delimited segments**.
 
+::lens{scenario=gpu-core.scan.segmented rung=result caption="State boundaries restart rainfall totals; inspect 16 stations spanning multiple segment starts."}
+
 <GPUOperationContract operation="gpu-segmented-scan" />
+
+::lens{scenario=gpu-core.scan.segmented rung=kernel caption="Inspect how 256 lanes combine rainfall with segment flags before propagating block offsets."}
 
 ## Prefix scans and segmented scans
 

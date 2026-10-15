@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.catchment-accessibility",
+  "rung": "datum",
+  "datum": 22,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.catchment-accessibility",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of tracts 22. reachableFacilities: 2. values read back from the GPU run. catchment-accessibility: 6 quantities.",
+  "description": "Receipt of tracts 22. reachableFacilities: 2. values read back from the GPU run. catchment-accessibility: 6 quantities.",
+  "llms": "Receipt of tracts 22\n\n- reachableFacilities: 2\n- catchment-accessibility: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "reachableFacilities",
+    "value": "2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of tracts 22</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"catchment-accessibility\"><tr><th scope=\"rowgroup\" colspan=\"5\">catchment-accessibility</th></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-tracts-0\" title=\"context\">tracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-tractCentroids-0\">tractCentroids</button></td><td>-383.0148010253906, 3787.28759765625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-population-0\">population</button></td><td>8715</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-resultTracts-0\">resultTracts</button></td><td>441.9568176269531, 6615.00927734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-accessibility-0\">accessibility</button></td><td>0.000019111779693048447</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>catchment-accessibility</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-catchment-accessibility-snapshots-reachableFacilities-0\">reachableFacilities</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.catchment-accessibility</h4><div><pre class=\"lens-tex\">\\term{accessibility}{0.0000191118}=\\sum_{j}\\term{weight}{w_{ij}}\\,\\term{ratio}{R_j},\\qquad \\term{ratio}{R_j}=\\frac{\\term{supply}{S_j}}{\\sum_{i}\\term{demand}{P_i}\\,\\term{weight}{w_{ji}}}</pre><p class=\"lens-ascii\">R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "catchment-accessibility",
+        "tracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "catchment-accessibility",
+        "tractCentroids",
+        "-383.0148010253906, 3787.28759765625",
+        "0",
+        "readback"
+      ],
+      [
+        "catchment-accessibility",
+        "population",
+        "8715",
+        "0",
+        "readback"
+      ],
+      [
+        "catchment-accessibility",
+        "resultTracts",
+        "441.9568176269531, 6615.00927734375",
+        "0",
+        "readback"
+      ],
+      [
+        "catchment-accessibility",
+        "accessibility",
+        "0.000019111779693048447",
+        "0",
+        "readback"
+      ],
+      [
+        "catchment-accessibility",
+        "reachableFacilities",
+        "2",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.072Z",
+    "runId": "run-3d666c7c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3d666c7c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 22
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

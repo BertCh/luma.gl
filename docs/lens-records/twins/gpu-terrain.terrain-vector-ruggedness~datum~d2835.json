@@ -1,0 +1,79 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-vector-ruggedness",
+  "rung": "datum",
+  "datum": 2835,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-vector-ruggedness",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2835. vectorRuggednessMeasure: 0.052483540028333664. values read back from the GPU run. terrain-vector-ruggedness: 2 quantities.",
+  "description": "Receipt of grid cells 2835. vectorRuggednessMeasure: 0.052483540028333664. values read back from the GPU run. terrain-vector-ruggedness: 2 quantities.",
+  "llms": "Receipt of grid cells 2835\n\n- vectorRuggednessMeasure: 0.052483540028333664\n- terrain-vector-ruggedness: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "vectorRuggednessMeasure",
+    "value": "0.052483540028333664"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2835</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-vector-ruggedness\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-vector-ruggedness</th></tr><tr data-provenance=\"readback\"><td>terrain-vector-ruggedness</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-vector-ruggedness-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1572.0999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-vector-ruggedness</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-vector-ruggedness-snapshots-vectorRuggednessMeasure-0\" title=\"vector ruggedness measure (0 smooth to 1 rugged)\">vectorRuggednessMeasure</button></td><td>0.052483540028333664</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-vector-ruggedness-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-vector-ruggedness-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-vector-ruggedness-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2770\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2770: 1569.9000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2770</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2771\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2771: 1574.699951171875</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2771</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2772\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2772: 1529.5</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2772</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2834\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2834: 1552.699951171875</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2834</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2835\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2835: 1572.0999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2835</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2836\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2836: 1569</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2836</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2898\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2898: 1510.699951171875</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2898</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2899\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2899: 1533.5999755859375</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2899</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2900\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2900: 1541</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2900</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-vector-ruggedness",
+        "dem",
+        "1572.0999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-vector-ruggedness",
+        "vectorRuggednessMeasure",
+        "0.052483540028333664",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.214Z",
+    "runId": "run-3b89bedb",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3b89bedb",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2835
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

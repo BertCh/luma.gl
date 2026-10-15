@@ -1,0 +1,92 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.class-assignment",
+  "rung": "datum",
+  "datum": 15,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.class-assignment",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Midwest county 15. classMap: -91.50599670410156, 40.20000076293945. values read back from the GPU run. class-assignment: 4 quantities.",
+  "description": "Receipt of Midwest county 15. classMap: -91.50599670410156, 40.20000076293945. values read back from the GPU run. class-assignment: 4 quantities.",
+  "llms": "Receipt of Midwest county 15\n\n- classMap: -91.50599670410156, 40.20000076293945\n- class-assignment: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "classMap",
+    "value": "-91.50599670410156, 40.20000076293945"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Midwest county 15</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"class-assignment\"><tr><th scope=\"rowgroup\" colspan=\"5\">class-assignment</th></tr><tr data-provenance=\"readback\"><td>class-assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-counties-0\">counties</button></td><td>-91.50599670410156, 40.20000076293945</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>class-assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-unemployment-0\" title=\"Unemployment rate 2023 (%)\">unemployment</button></td><td>4.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>class-assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-classes-0\">classes</button></td><td>3</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>class-assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-class-assignment-snapshots-classMap-0\">classMap</button></td><td>-91.50599670410156, 40.20000076293945</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "class-assignment",
+        "counties",
+        "-91.50599670410156, 40.20000076293945",
+        "0",
+        "readback"
+      ],
+      [
+        "class-assignment",
+        "unemployment",
+        "4.400000095367432",
+        "0",
+        "readback"
+      ],
+      [
+        "class-assignment",
+        "classes",
+        "3",
+        "0",
+        "readback"
+      ],
+      [
+        "class-assignment",
+        "classMap",
+        "-91.50599670410156, 40.20000076293945",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.151Z",
+    "runId": "run-125fbf11",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-125fbf11",
+    "rung": "datum",
+    "bindings": {
+      "entity": 15
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

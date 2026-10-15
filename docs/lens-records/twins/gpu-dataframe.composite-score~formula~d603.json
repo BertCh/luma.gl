@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.composite-score",
+  "rung": "formula",
+  "datum": 603,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.composite-score",
+  "viewId": "formula-card",
+  "caption": "Formula min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)). score: 0.7901. values read back from the GPU run.",
+  "description": "Formula min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)). score: 0.7901. values read back from the GPU run.",
+  "llms": "Formula min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)).\n\n- score: 0.7901\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "score",
+    "value": "0.7901"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUCompositeScore</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{scaled}{s_j}=\\begin{cases}(\\term{indicators}{x_j}-\\term{minimum}{a_j})/\\term{range}{(b_j-a_j)}&amp;\\term{range}{b_j-a_j}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases},\\quad \\term{scaled}{s_j}\\leftarrow1-\\term{scaled}{s_j}\\ \\text{if }\\term{isReversed}{\\mathrm{reversed}_j},\\quad \\term{score}{C}=\\frac{\\sum_{\\term{column}{j}}\\term{weights}{w_j}\\term{scaled}{s_j}}{\\sum_{\\term{column}{j}}|\\term{weights}{w_j}|}</pre><p class=\"lens-ascii\">min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)).</p></div><div class=\"lens-worked-example\"><h4>Entity 603</h4><div><pre class=\"lens-tex\">\\term{scaled}{s_j}=\\begin{cases}(\\term{indicators}{x_j}-\\term{minimum}{a_j})/\\term{range}{(b_j-a_j)}&amp;\\term{range}{b_j-a_j}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases},\\quad \\term{scaled}{s_j}\\leftarrow1-\\term{scaled}{s_j}\\ \\text{if }\\term{isReversed}{\\mathrm{reversed}_j},\\quad \\term{score}{0.790069}=\\frac{\\sum_{\\term{column}{j}}\\term{weights}{w_j}\\term{scaled}{s_j}}{\\sum_{\\term{column}{j}}|\\term{weights}{w_j}|}</pre><p class=\"lens-ascii\">min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"scaled\">scaled · intermediate · scaled</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-validate\" data-value=\"indicators\">indicators · input · indicators</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"minimum\">minimum · intermediate · minimum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"range\">range · intermediate · range</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"isReversed\">isReversed · parameter · isReversed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"score\">score · output · score<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-validate\" data-value=\"column\">column · index · column</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.composite-score-compiled:composite-score-score\" data-value=\"weights\">weights · parameter · weight</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "scaled",
+        "intermediate",
+        "scaled",
+        "—",
+        "metadata"
+      ],
+      [
+        "indicators",
+        "input",
+        "indicators",
+        "—",
+        "metadata"
+      ],
+      [
+        "minimum",
+        "intermediate",
+        "minimum",
+        "—",
+        "metadata"
+      ],
+      [
+        "range",
+        "intermediate",
+        "range",
+        "—",
+        "metadata"
+      ],
+      [
+        "isReversed",
+        "parameter",
+        "isReversed",
+        "—",
+        "metadata"
+      ],
+      [
+        "score",
+        "output",
+        "score",
+        "0.7900686264038086",
+        "readback"
+      ],
+      [
+        "column",
+        "index",
+        "column",
+        "—",
+        "metadata"
+      ],
+      [
+        "weights",
+        "parameter",
+        "weight",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{scaled}{s_j}=\\begin{cases}(\\term{indicators}{x_j}-\\term{minimum}{a_j})/\\term{range}{(b_j-a_j)}&\\term{range}{b_j-a_j}>0\\\\0&\\text{otherwise}\\end{cases},\\quad \\term{scaled}{s_j}\\leftarrow1-\\term{scaled}{s_j}\\ \\text{if }\\term{isReversed}{\\mathrm{reversed}_j},\\quad \\term{score}{C}=\\frac{\\sum_{\\term{column}{j}}\\term{weights}{w_j}\\term{scaled}{s_j}}{\\sum_{\\term{column}{j}}|\\term{weights}{w_j}|}",
+    "ascii": "min-max s_j=(x_j-min_j)/(max_j-min_j), constant=0; reverse s_j to 1-s_j for negative direction; score=sum(w_j*s_j)/sum(abs(w_j)).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:16:19.018Z",
+    "runId": "run-a9400907",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a9400907",
+    "rung": "formula",
+    "bindings": {
+      "entity": 603
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

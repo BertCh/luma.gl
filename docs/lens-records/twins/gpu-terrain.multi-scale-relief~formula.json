@@ -1,0 +1,105 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.multi-scale-relief",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.multi-scale-relief",
+  "viewId": "formula-card",
+  "caption": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so…",
+  "description": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so…",
+  "llms": "Formula Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.multi-scale-relief.telescoped</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{relief}{\\mathrm{MSRM}} = \\term{exaggeration}{v}\\,\\frac{\\term{coarse}{d_n} - \\term{fine}{d_i}}{\\term{scaleCount}{n - i}},\\quad d_k = z_c - \\overline{z}_{k^s}</pre><p class=\"lens-ascii\">Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-anchor-select\" data-value=\"relief\">MSRM · output · value</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"exaggeration\">v · parameter · settings</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"coarse\">coarsest deviation · intermediate · coarseValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"fine\">finest deviation · intermediate · fineValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-multi-scale-relief-compiled:multi-scale-relief-combine\" data-value=\"scaleCount\">n - i · constant · SCALE_COUNT</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "MSRM",
+        "output",
+        "value",
+        "—",
+        "metadata"
+      ],
+      [
+        "v",
+        "parameter",
+        "settings",
+        "—",
+        "metadata"
+      ],
+      [
+        "coarsest deviation",
+        "intermediate",
+        "coarseValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "finest deviation",
+        "intermediate",
+        "fineValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "n - i",
+        "constant",
+        "SCALE_COUNT",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{relief}{\\mathrm{MSRM}} = \\term{exaggeration}{v}\\,\\frac{\\term{coarse}{d_n} - \\term{fine}{d_i}}{\\term{scaleCount}{n - i}},\\quad d_k = z_c - \\overline{z}_{k^s}",
+    "ascii": "Indices i = floor(((featureMinimum - res)/(2 res))^(1/s)) and n = ceil(((featureMaximum - res)/(2 res))^(1/s)), mean-filter radii k^s pixels. d_k = z - mean of the (2 k^s + 1)^2 edge-replicated, nodata-skipping window (d = 0 for radius 0, so a first radius of 0 contributes nothing). MSRM = verticalExaggeration * (d_n - d_i) / (n - i), which equals the mean of consecutive filter differences (mean_i - mean_n)/(n - i). Invalid centres give NaN. In geographic or web-mercator mode each radius k^s becomes k^s * resolution ground metres, converted to a rectangle of at least one pixel per axis.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.722Z",
+    "runId": "run-a0243edd",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a0243edd",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

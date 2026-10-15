@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-isochrones",
+  "rung": "datum",
+  "datum": 1088,
+  "size": "full",
+  "scenarioId": "gpu-network.network-isochrones",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of network node 1088. road-context: 24.007795333862305, -28.910680770874023. values read back from the GPU run. search: 1 quantities.",
+  "description": "Receipt of network node 1088. road-context: 24.007795333862305, -28.910680770874023. values read back from the GPU run. search: 1 quantities.",
+  "llms": "Receipt of network node 1088\n\n- road-context: 24.007795333862305, -28.910680770874023\n- search: 1 quantities\n- network-isochrones: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "road-context",
+    "value": "24.007795333862305, -28.910680770874023"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of network node 1088</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"search\"><tr><th scope=\"rowgroup\" colspan=\"5\">search</th></tr><tr data-provenance=\"readback\"><td>search</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"costs\">costs</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-isochrones\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-isochrones</th></tr><tr data-provenance=\"readback\"><td>network-isochrones</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"road-context\" title=\"context: uploaded road graph (offsets, neighbors and node positions read back)\">road-context</button></td><td>24.007795333862305, -28.910680770874023</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.reachability.relax</h4><div><pre class=\"lens-tex\">\\term{costs}{0}\\leftarrow\\min(\\term{costs}{0},\\operatorname{f32}(\\term{source}{c_u}+\\term{weight}{w_{uv}})),\\quad v&lt;\\term{count}{N},\\ w_{uv}\\ge0,\\ c_u+w_{uv}\\le L;\\qquad c_v^*=\\min_s(c_s^0+d(s,v))\\le L</pre><p class=\"lens-ascii\">Atomic minimum of non-negative f32 cost bits: c[v] &lt;- min(c[v], f32(c[u] + w[u,v])). Negative/NaN weights are impassable; out-of-range neighbors and non-finite candidates are ignored. With cutoff L, candidates above L stay unreached (+Infinity); without a cutoff L = +Infinity. At convergence c[v] = min_s(c0[s] + d(s,v)), restricted to &lt;= L, with path sums evaluated in f32. Chaotic: a visit may read costs improved earlier in the same round; rounds are not synchronous Bellman-Ford sweeps.</p></div></div><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "search",
+        "costs",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "network-isochrones",
+        "road-context",
+        "24.007795333862305, -28.910680770874023",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.855Z",
+    "runId": "run-cad0081d",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients costs, converged, triangles, triangleBands, count, overflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-cad0081d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1088
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

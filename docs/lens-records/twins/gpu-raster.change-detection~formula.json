@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.change-detection",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.change-detection",
+  "viewId": "formula-card",
+  "caption": "Formula For each band separately, difference = after - before; output NaN when cell mask is zero, either selected slice index is outside [0,sliceCount), or either selected value is NaN. Here slices 0 and 1 are before/after NIR or SWIR reflectance (D…",
+  "description": "Formula For each band separately, difference = after - before; output NaN when cell mask is zero, either selected slice index is outside [0,sliceCount), or either selected value is NaN. Here slices 0 and 1 are before/after NIR or SWIR reflectance (D…",
+  "llms": "Formula For each band separately, difference = after - before; output NaN when cell mask is zero, either selected slice index is outside [0,sliceCount), or either selected value is NaN. Here slices 0 and 1 are before/after NIR or SWIR reflectance (DN*0.0001, DN 0 uploaded as NaN); midpoint 0 denotes unchanged reflectance. This is a band difference, not dNBR.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.change-detection.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{difference}{\\Delta_b}=\\term{after}{x_{1,b}}-\\term{before}{x_{0,b}}\\quad(\\text{unmasked, in-range, non-NaN slices; otherwise NaN})</pre><p class=\"lens-ascii\">For each band separately, difference = after - before; output NaN when cell mask is zero, either selected slice index is outside [0,sliceCount), or either selected value is NaN. Here slices 0 and 1 are before/after NIR or SWIR reflectance (DN*0.0001, DN 0 uploaded as NaN); midpoint 0 denotes unchanged reflectance. This is a band difference, not dNBR.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-change-detection-compiled:change-nir-two-slice\" data-value=\"difference\">difference · output · differenceOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-change-detection-compiled:change-nir-two-slice\" data-value=\"after\">after · input · after</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-change-detection-compiled:change-nir-two-slice\" data-value=\"before\">before · input · before</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "difference",
+        "output",
+        "differenceOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "after",
+        "input",
+        "after",
+        "—",
+        "metadata"
+      ],
+      [
+        "before",
+        "input",
+        "before",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{difference}{\\Delta_b}=\\term{after}{x_{1,b}}-\\term{before}{x_{0,b}}\\quad(\\text{unmasked, in-range, non-NaN slices; otherwise NaN})",
+    "ascii": "For each band separately, difference = after - before; output NaN when cell mask is zero, either selected slice index is outside [0,sliceCount), or either selected value is NaN. Here slices 0 and 1 are before/after NIR or SWIR reflectance (DN*0.0001, DN 0 uploaded as NaN); midpoint 0 denotes unchanged reflectance. This is a band difference, not dNBR.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.133Z",
+    "runId": "run-81be5783",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-81be5783",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

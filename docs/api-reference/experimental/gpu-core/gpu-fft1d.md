@@ -9,6 +9,12 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Transforms one 64-sample Alps elevation profile into a complex spectrum; bars show magnitudes for k = 0 to 31.
+
+::lens{scenario=gpu-core.fft1d rung=result caption="The strongest wave is k = 1, |Y| = 12,729 m: one cycle across the 13.6 km row."}
+
+The signal is tile row 32 of the 64 × 64 elevation tile. Before upload the CPU subtracts the row mean (2,831.7 m) and sets every imaginary part to 0, so `k = 0` is near zero; the spectrum itself is a GPU readback. Bars show the magnitude `sqrt(re² + im²)` of the non-redundant half, `k = 0` to `31`, in metres.
+
 `GPUFFT1D` adds forward or inverse complex-to-complex radix-2 transforms to a
 `GPUCommandGraph`. Batched transforms are first-class: each batch occupies one tightly packed,
 independent run of complex values. Every stage remains GPU-resident, and the primitive does not
@@ -17,6 +23,18 @@ compile the graph, submit commands, or read values back.
 The implementation shares bounded radix-2 planning, bit reversal, and complex arithmetic with
 `GPUFFT2D`. Atomic views retain one bit-reversal node and one butterfly node per stage with one
 graph-owned scratch view. Chunked views run complete transforms in reusable scratch blocks.
+
+#### How it computes
+
+{/* lens:GPUFFT1D */}
+
+::lens{scenario=gpu-core.fft1d rung=kernel caption="Inspect one radix-2 butterfly pass: each lane combines two samples with a twiddle factor."}
+
+::lens{scenario=gpu-core.fft1d rung=graph caption="Trace one bit-reversal pass followed by six butterfly passes."}
+
+::lens{scenario=gpu-core.fft1d rung=datum caption="Follow one sample into the frequency bins it contributes to."}
+
+::lens{scenario=gpu-core.fft1d rung=formula caption="Read each bin as a sum of samples times complex exponentials."}
 
 ## When to use
 

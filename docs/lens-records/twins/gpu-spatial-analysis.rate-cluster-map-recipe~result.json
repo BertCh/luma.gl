@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.rate-cluster-map-recipe",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const clusters = addRateClusterMapRecipe(graph, {\n  events: birdObservations,\n  populations: natureObservations,\n  polygons: tracts,\n  criterion: 'queen',\n  neighborCapacity: 4096,\n  parameters,\n  settings: {significanceLevel: 0.05, seed: 7, permutationCount: 199},\n  permutation: {parameters: permutationParameters, maximumPermutations: 199},\n  palette: palette.importToGraph(graph),\n  outputs: {standardizedRates, zScores, quadrants, colors, permutation}\n});\n// quadrants colours each tract: 0 not significant, then high-high, low-high, low-low, high-low",
+    "language": "ts",
+    "lineCount": 13
+  },
+  "scenarioId": "gpu-spatial-analysis.rate-cluster-map-recipe",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.rate-cluster-map-recipe: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, birdObservations, natureObservations → significant. rows: 199. values read back from…",
+  "description": "Result of gpu-spatial-analysis.rate-cluster-map-recipe: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, birdObservations, natureObservations → significant. rows: 199. values read back from…",
+  "llms": "Result of gpu-spatial-analysis.rate-cluster-map-recipe: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, birdObservations, natureObservations → significant\n\n- rows: 199\n- input tractsVertices: 4646 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input birdObservations: 199 rows\n- input natureObservations: 199 rows\n- Planar coordinates (m); uniform scale.\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "199"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">tractsVertices</th><th scope=\"col\">tractsFeatureOffsets</th><th scope=\"col\">tractsPolygonOffsets</th><th scope=\"col\">tractsRingOffsets</th><th scope=\"col\">tractsDisplayOffsets</th><th scope=\"col\">birdObservations</th><th scope=\"col\">natureObservations</th><th class=\"cv-col--output\" scope=\"col\">quadrants</th><th class=\"cv-col--output\" scope=\"col\">standardizedRates</th><th class=\"cv-col--output\" scope=\"col\">zScores</th><th class=\"cv-col--output\" scope=\"col\">adjustedPValues</th><th class=\"cv-col--output\" scope=\"col\">significant</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1500</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">7</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.763</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.166</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.909</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1560</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">11</td><td data-provenance=\"readback\">12</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">57</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.625</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.48</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.394</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1970</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">22</td><td data-provenance=\"readback\">24</td><td data-provenance=\"readback\">7</td><td data-provenance=\"readback\">92</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.606</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.08</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.667</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1990</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">36</td><td data-provenance=\"readback\">6</td><td data-provenance=\"readback\">32</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.0736</td><td class=\"cv-col--output\" data-provenance=\"readback\">-1.1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.75</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">2120</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">47</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">28</td><td data-provenance=\"readback\">150</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.0818</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.308</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.932</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">1800</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">68</td><td data-provenance=\"readback\">73</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">25</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.909</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.267</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.909</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td colspan=\"12\">… 4640 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, birdObservations, natureObservations · blue: output resultTracts, quadrants, standardizedRates, zScores, adjustedPValues, significant</p><p class=\"cv-note\">2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    },
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.132Z",
+    "runId": "run-5099f82c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5099f82c",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

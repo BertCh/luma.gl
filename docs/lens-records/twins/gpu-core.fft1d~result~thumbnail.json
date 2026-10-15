@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.fft1d",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-core.fft1d",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs.",
+  "description": "Read captured inputs into recorded array outputs. spectrum[1]: 12,730. derived values. 1 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- spectrum[1]: 12,730\n- 1 output panels from the recorded run\n- elevationProfile: 64 captured values (8 shown)\n- spectrum: magnitude = sqrt(re² + im²), derived from captured components\n- spectrum: 32 captured values (8 shown)\n- spectrum: captured window starts at 0, 32 of 64 values\n- lens twin: docs-sized data\n\nProvenance: derived values.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "spectrum[1]",
+    "value": "12,730"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-core-fft1d-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g class=\"cv-array-connections\"></g><g data-panel=\"elevationProfile\"><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" data-provenance=\"readback\" data-capture=\"gpu-core-fft1d-snapshots-elevationProfile-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"samples\" d=\"M12.166666666666666,8 L24.5,8.568568568568569 L36.83333333333333,9.16916916916917 L49.166666666666664,9.58958958958959 M110.83333333333333,11.67967967967968 L123.16666666666667,10.834834834834835 L135.5,10.394394394394395 L147.83333333333331,10.258258258258259 \" data-token=\"signal\"></path></g><g data-panel=\"spectrum\"><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"frequencies\" x=\"7\" y=\"68\" width=\"4.166666666666666\" height=\"1\" data-token=\"bars\"><title>spectrum[0] = 0</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\" data-key-space=\"frequencies\" x=\"13.166666666666666\" y=\"48\" width=\"4.166666666666666\" height=\"20\" data-token=\"bars\"><title>spectrum[1] = 12,730</title></rect><rect class=\"cv-mark cv-mark--highlight cv-line\" data-role=\"highlight\" stroke-width=\"2.5\" fill=\"none\" stroke=\"#d55e00\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" x=\"13.166666666666666\" y=\"48\" width=\"4.166666666666666\" height=\"20\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\" data-key-space=\"frequencies\" x=\"19.333333333333332\" y=\"62.664468875081\" width=\"4.166666666666666\" height=\"5.335531124919001\" data-token=\"bars\"><title>spectrum[2] = 3,396</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"3\" data-key-space=\"frequencies\" x=\"25.5\" y=\"62.725103793499414\" width=\"4.166666666666666\" height=\"5.2748962065005855\" data-token=\"bars\"><title>spectrum[3] = 3,357</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"28\" data-key-space=\"frequencies\" x=\"81\" y=\"67.82271150320122\" width=\"4.166666666666666\" height=\"1\" data-token=\"bars\"><title>spectrum[28] = 112.8</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"29\" data-key-space=\"frequencies\" x=\"87.16666666666666\" y=\"67.83746401062828\" width=\"4.166666666666666\" height=\"1\" data-token=\"bars\"><title>spectrum[29] = 103.4</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"30\" data-key-space=\"frequencies\" x=\"93.33333333333334\" y=\"67.88484910807628\" width=\"4.166666666666666\" height=\"1\" data-token=\"bars\"><title>spectrum[30] = 73.29</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-core-fft1d-result-hatched)\" stroke=\"#0072b2\" data-provenance=\"derived\" data-capture=\"gpu-core-fft1d-snapshots-spectrum-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"31\" data-key-space=\"frequencies\" x=\"99.5\" y=\"67.85631449239756\" width=\"4.166666666666666\" height=\"1\" data-token=\"bars\"><title>spectrum[31] = 91.45</title></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.134Z",
+    "runId": "run-47116137",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-47116137",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

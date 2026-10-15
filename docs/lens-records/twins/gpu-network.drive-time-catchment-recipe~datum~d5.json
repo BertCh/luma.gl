@@ -1,0 +1,84 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.drive-time-catchment-recipe",
+  "rung": "datum",
+  "datum": 5,
+  "size": "full",
+  "scenarioId": "gpu-network.drive-time-catchment-recipe",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of point to snap 5. catchment-demand: -87.62444305419922, 41.87955093383789. values read back from the GPU run. search: 1 quantities.",
+  "description": "Receipt of point to snap 5. catchment-demand: -87.62444305419922, 41.87955093383789. values read back from the GPU run. search: 1 quantities.",
+  "llms": "Receipt of point to snap 5\n\n- catchment-demand: -87.62444305419922, 41.87955093383789\n- search: 1 quantities\n- assignment: 1 quantities\n- drive-time-catchment-service-areas: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "catchment-demand",
+    "value": "-87.62444305419922, 41.87955093383789"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of point to snap 5</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"search\"><tr><th scope=\"rowgroup\" colspan=\"5\">search</th></tr><tr data-provenance=\"readback\"><td>search</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"demandTimes\">demandTimes</button></td><td>44.779571533203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"assignment\"><tr><th scope=\"rowgroup\" colspan=\"5\">assignment</th></tr><tr data-provenance=\"readback\"><td>assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"demandBands\" title=\"GPU demandBands readback; the no-band sentinel (0xffffffff) is shown as no data\">demandBands</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"drive-time-catchment-service-areas\"><tr><th scope=\"rowgroup\" colspan=\"5\">drive-time-catchment-service-areas</th></tr><tr data-provenance=\"readback\"><td>drive-time-catchment-service-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"demandPositions\" title=\"demand points: every 12th road intersection\">demandPositions</button></td><td>-87.62444305419922, 41.87955093383789</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>drive-time-catchment-service-areas</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"catchment-demand\" title=\"output: demand points coloured by drive time to the nearest facility\">catchment-demand</button></td><td>-87.62444305419922, 41.87955093383789</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.catchment.band</h4><div><pre class=\"lens-tex\">\\term{band}{b}=\\min\\{k:\\ \\term{time}{t}&lt;\\term{bandBreaks}{B}[\\term{k}{k}]\\}</pre><p class=\"lens-ascii\">band = first k with time &lt; bandBreaks[k], else 0xffffffff (no band). Upper bounds are strict; unreached, unsnapped or non-finite demand times (&gt;= 3.0e38) get no band. time = min(cost[source] + sourceCost, cost[target] + targetCost) on the snapped edge, from the demand-time kernel.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "search",
+        "demandTimes",
+        "44.779571533203125",
+        "0",
+        "readback"
+      ],
+      [
+        "assignment",
+        "demandBands",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "drive-time-catchment-service-areas",
+        "demandPositions",
+        "-87.62444305419922, 41.87955093383789",
+        "0",
+        "readback"
+      ],
+      [
+        "drive-time-catchment-service-areas",
+        "catchment-demand",
+        "-87.62444305419922, 41.87955093383789",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.601Z",
+    "runId": "run-90295232",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients drive-time-catchment-demand-times, drive-time-catchment-demand-bands, drive-time-catchment-band-keys, drive-time-catchment-band-counts, drive-time-catchment-service-area-converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-90295232",
+    "rung": "datum",
+    "bindings": {
+      "entity": 5
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

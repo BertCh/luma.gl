@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-simplification",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "// Keep endpoints and vertices whose Douglas-Peucker importance exceeds 5 m.\ngraph.add(\n  new GPULineSimplification({\n    ...roads,\n    parameters,\n    importance,\n    method: 'douglas-peucker',\n    metric: 'segment',\n    maximumIterations: 64,\n    computeImportance: true,\n    output\n  })\n);\ngraph.add(new GPUGather({source: roads.positions, indices: output.ids, output: simplifiedRoads}));\ngraph.add(new GPUScan({input: countStorage, output: simplifiedOffsets, mode: 'exclusive'}));\nconst simplified = {positions: simplifiedRoads, lineOffsets: simplifiedOffsets};",
+    "language": "ts",
+    "lineCount": 16
+  },
+  "scenarioId": "gpu-spatial-analysis.line-simplification",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.line-simplification: roads → simplifiedRoads. lines: 223. values read back from the GPU run. input roads: 223 lines.",
+  "description": "Result of gpu-spatial-analysis.line-simplification: roads → simplifiedRoads. lines: 223. values read back from the GPU run. input roads: 223 lines.",
+  "llms": "Result of gpu-spatial-analysis.line-simplification: roads → simplifiedRoads\n\n- lines: 223\n- input roads: 223 lines\n- Planar coordinates (m); uniform scale.\n- 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lines",
+    "value": "223"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div><svg class=\"cv-figure\" width=\"640\" height=\"360\" viewBox=\"0 0 640 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[3605.56005859375,9245.9599609375],[5084.509765625,10443.5302734375]]\" role=\"img\" aria-label=\"Result: simplifiedRoads\"><defs><pattern id=\"lens-gpu-spatial-analysis-line-simplification-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-line-simplification-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-line-simplification-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"input\"><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M510.72,199.7 L470.49,137.92\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M510.72,199.7 L463.41,136.1\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M475.93,51.68 L492.21,120.33\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"5\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M417.63,107.83 L393.71,68.8\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"50\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M383.42,225.53 L341.52,227.2\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"102\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M455.74,103.39 L436.05,70.14\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"152\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M454.4,149.72 L477.8,172.64\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"183\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M472.32,177.69 L472.34,174.36 L467.39,174.87 L470,178.85\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"185\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M456.61,140.91 L473.05,166.64\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"205\"></path><path class=\"cv-mark cv-mark--input cv-line\" data-role=\"input\" stroke-width=\"1\" fill=\"none\" stroke=\"#5f6672\" d=\"M415.88,58.38 L436.65,120.68\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"206\"></path></g><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"1.5\" fill=\"none\" stroke=\"#0072b2\" d=\"M510.72,199.7 L463.04,120.77\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"1.5\" fill=\"none\" stroke=\"#0072b2\" d=\"M463.04,120.77 L431.13,66.77\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"152\"></path><path class=\"cv-mark cv-mark--output cv-line\" data-role=\"output\" stroke-width=\"1.5\" fill=\"none\" stroke=\"#0072b2\" d=\"M471.03,173.36 L472.32,177.69\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"185\"></path></g><g data-role=\"highlight\"></g></svg></div><p class=\"cv-legend\">grey: input roads · blue: output simplifiedRoads</p><p class=\"cv-note\">Planar coordinates (m); uniform scale. · 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 513 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.617Z",
+    "runId": "run-cbbf5b9b",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-cbbf5b9b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

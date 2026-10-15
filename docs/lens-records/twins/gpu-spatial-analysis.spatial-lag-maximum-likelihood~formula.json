@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-lag-maximum-likelihood",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-lag-maximum-likelihood",
+  "viewId": "formula-card",
+  "caption": "Formula Spatial lag model y = rho W y + X b + e (spreg ML_Lag, exact log-determinant replaced by a truncated trace series). e0, e1 are the OLS residuals of y and W y on [1, X]; SSR(rho) = e0'e0 - 2 rho e0'e1 + rho^2 e1'e1; concentrated log-likelihoo…",
+  "description": "Formula Spatial lag model y = rho W y + X b + e (spreg ML_Lag, exact log-determinant replaced by a truncated trace series). e0, e1 are the OLS residuals of y and W y on [1, X]; SSR(rho) = e0'e0 - 2 rho e0'e1 + rho^2 e1'e1; concentrated log-likelihoo…",
+  "llms": "Formula Spatial lag model y = rho W y + X b + e (spreg ML_Lag, exact log-determinant replaced by a truncated trace series). e0, e1 are the OLS residuals of y and W y on [1, X]; SSR(rho) = e0'e0 - 2 rho e0'e1 + rho^2 e1'e1; concentrated log-likelihood l(rho) = -(n/2) ln(SSR(rho)/n) + ln|I - rho W| with ln|I - rho W| = -sum_{q=1..Q} (rho s)^q tr((W/s)^q)/q (Horner). rho = global maximum on [-B, B], B = min(0.99, series limit)/||W||_inf: analytic derivative on 1025 grid points, sign changes refined by 32 bisection steps. b = b0 - rho b1; sigma2 = SSR/n; variance = inverse information matrix of (b, rho, sigma2).\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-lag-maximum-likelihood</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{objective}{\\ell(\\rho)}&amp;=-\\frac n2\\ln\\frac{\\term{sumOfSquares}{\\mathrm{SSR}(\\rho)}}{n}+\\term{logDeterminant}{\\ln|I-\\rho W|}\\\\\n\\mathrm{SSR}(\\rho)&amp;=e_0^\\top e_0-2\\rho\\,e_0^\\top e_1+\\rho^2e_1^\\top e_1,\n&amp;\\ln|I-\\rho W|&amp;=-\\sum_{q=1}^{Q}\\frac{(\\rho s)^q}{q}\\operatorname{tr}\\!\\big((W/s)^q\\big)\\\\\n\\term{rho}{\\hat\\rho}&amp;=\\arg\\max_{|\\rho|\\le B}\\ \\ell(\\rho),\n&amp;\\hat\\beta&amp;=\\hat\\beta_0-\\hat\\rho\\,\\hat\\beta_1\n\\end{aligned}</pre><p class=\"lens-ascii\">Spatial lag model y = rho W y + X b + e (spreg ML_Lag, exact log-determinant replaced by a truncated trace series). e0, e1 are the OLS residuals of y and W y on [1, X]; SSR(rho) = e0&#39;e0 - 2 rho e0&#39;e1 + rho^2 e1&#39;e1; concentrated log-likelihood l(rho) = -(n/2) ln(SSR(rho)/n) + ln|I - rho W| with ln|I - rho W| = -sum_{q=1..Q} (rho s)^q tr((W/s)^q)/q (Horner). rho = global maximum on [-B, B], B = min(0.99, series limit)/||W||_inf: analytic derivative on 1025 grid points, sign changes refined by 32 bisection steps. b = b0 - rho b1; sigma2 = SSR/n; variance = inverse information matrix of (b, rho, sigma2).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-maximum-likelihood-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"objective\">objective · output · getObjective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-maximum-likelihood-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"sumOfSquares\">sumOfSquares · intermediate · getSumOfSquares</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-maximum-likelihood-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"logDeterminant\">logDeterminant · intermediate · getSpatialLogDeterminant</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-maximum-likelihood-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"rho\">rho · output · rho</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "objective",
+        "output",
+        "getObjective",
+        "—",
+        "metadata"
+      ],
+      [
+        "sumOfSquares",
+        "intermediate",
+        "getSumOfSquares",
+        "—",
+        "metadata"
+      ],
+      [
+        "logDeterminant",
+        "intermediate",
+        "getSpatialLogDeterminant",
+        "—",
+        "metadata"
+      ],
+      [
+        "rho",
+        "output",
+        "rho",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{objective}{\\ell(\\rho)}&=-\\frac n2\\ln\\frac{\\term{sumOfSquares}{\\mathrm{SSR}(\\rho)}}{n}+\\term{logDeterminant}{\\ln|I-\\rho W|}\\\\\n\\mathrm{SSR}(\\rho)&=e_0^\\top e_0-2\\rho\\,e_0^\\top e_1+\\rho^2e_1^\\top e_1,\n&\\ln|I-\\rho W|&=-\\sum_{q=1}^{Q}\\frac{(\\rho s)^q}{q}\\operatorname{tr}\\!\\big((W/s)^q\\big)\\\\\n\\term{rho}{\\hat\\rho}&=\\arg\\max_{|\\rho|\\le B}\\ \\ell(\\rho),\n&\\hat\\beta&=\\hat\\beta_0-\\hat\\rho\\,\\hat\\beta_1\n\\end{aligned}",
+    "ascii": "Spatial lag model y = rho W y + X b + e (spreg ML_Lag, exact log-determinant replaced by a truncated trace series). e0, e1 are the OLS residuals of y and W y on [1, X]; SSR(rho) = e0'e0 - 2 rho e0'e1 + rho^2 e1'e1; concentrated log-likelihood l(rho) = -(n/2) ln(SSR(rho)/n) + ln|I - rho W| with ln|I - rho W| = -sum_{q=1..Q} (rho s)^q tr((W/s)^q)/q (Horner). rho = global maximum on [-B, B], B = min(0.99, series limit)/||W||_inf: analytic derivative on 1025 grid points, sign changes refined by 32 bisection steps. b = b0 - rho b1; sigma2 = SSR/n; variance = inverse information matrix of (b, rho, sigma2).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.382Z",
+    "runId": "run-ce9d2986",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ce9d2986",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

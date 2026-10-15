@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-scan-statistic",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-scan-statistic",
+  "viewId": "formula-card",
+  "caption": "Formula Poisson model, high rates: for a window with c observed cases and baseline weight W, e = W C / B, LLR = c ln(c / e) + (C - c) ln((C - c) / (C - e)) when c > e, else 0. The cluster is the window with the largest LLR. p = (1 + #{replicates s w…",
+  "description": "Formula Poisson model, high rates: for a window with c observed cases and baseline weight W, e = W C / B, LLR = c ln(c / e) + (C - c) ln((C - c) / (C - e)) when c > e, else 0. The cluster is the window with the largest LLR. p = (1 + #{replicates s w…",
+  "llms": "Formula Poisson model, high rates: for a window with c observed cases and baseline weight W, e = W C / B, LLR = c ln(c / e) + (C - c) ln((C - c) / (C - e)) when c > e, else 0. The cluster is the window with the largest LLR. p = (1 + #{replicates s with maximum LLR_s >= LLR}) / (P + 1): one-sided, the maximum over all windows already accounts for the search, ties count as exceedances.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.spatial-scan-statistic</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{llr}{\\Lambda} = c \\ln\\frac{c}{\\term{expected}{e}} + (\\term{totalCases}{C} - c)\\ln\\frac{C - c}{C - e}, \\quad e = \\term{windowWeight}{W}\\,\\frac{C}{\\term{totalWeight}{B}}, \\quad p = \\frac{1 + \\term{exceeding}{\\#\\{s : \\Lambda_s^{\\max} \\ge \\Lambda\\}}}{P + 1}</pre><p class=\"lens-ascii\">Poisson model, high rates: for a window with c observed cases and baseline weight W, e = W C / B, LLR = c ln(c / e) + (C - c) ln((C - c) / (C - e)) when c &gt; e, else 0. The cluster is the window with the largest LLR. p = (1 + #{replicates s with maximum LLR_s &gt;= LLR}) / (P + 1): one-sided, the maximum over all windows already accounts for the search, ties count as exceedances.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-evaluate\" data-value=\"llr\">LLR · output · getLogLikelihoodRatio</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-evaluate\" data-value=\"expected\">e · intermediate · expected</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-evaluate\" data-value=\"totalCases\">C · parameter · totalCases</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-evaluate\" data-value=\"windowWeight\">W · intermediate · windowWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-evaluate\" data-value=\"totalWeight\">B · parameter · totalWeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-scan-statistic-compiled:scan-statistic-round-select-0\" data-value=\"exceeding\">#{max LLR_s &gt;= LLR} · intermediate · exceeding</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "LLR",
+        "output",
+        "getLogLikelihoodRatio",
+        "—",
+        "metadata"
+      ],
+      [
+        "e",
+        "intermediate",
+        "expected",
+        "—",
+        "metadata"
+      ],
+      [
+        "C",
+        "parameter",
+        "totalCases",
+        "—",
+        "metadata"
+      ],
+      [
+        "W",
+        "intermediate",
+        "windowWeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "B",
+        "parameter",
+        "totalWeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "#{max LLR_s >= LLR}",
+        "intermediate",
+        "exceeding",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{llr}{\\Lambda} = c \\ln\\frac{c}{\\term{expected}{e}} + (\\term{totalCases}{C} - c)\\ln\\frac{C - c}{C - e}, \\quad e = \\term{windowWeight}{W}\\,\\frac{C}{\\term{totalWeight}{B}}, \\quad p = \\frac{1 + \\term{exceeding}{\\#\\{s : \\Lambda_s^{\\max} \\ge \\Lambda\\}}}{P + 1}",
+    "ascii": "Poisson model, high rates: for a window with c observed cases and baseline weight W, e = W C / B, LLR = c ln(c / e) + (C - c) ln((C - c) / (C - e)) when c > e, else 0. The cluster is the window with the largest LLR. p = (1 + #{replicates s with maximum LLR_s >= LLR}) / (P + 1): one-sided, the maximum over all windows already accounts for the search, ties count as exceedances.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.594Z",
+    "runId": "run-c975d964",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c975d964",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

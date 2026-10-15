@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.lattice-weights",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.lattice-weights",
+  "viewId": "formula-card",
+  "caption": "Formula Rook: w_ij = 1 for 0 < abs(dx)+abs(dy) <= radius; queen uses 0 < max(abs(dx),abs(dy)) <= radius. Both cells must be in bounds and unmasked. Capacity overflow is reported. bound symbols: 4/4. structure metadata only.",
+  "description": "Formula Rook: w_ij = 1 for 0 < abs(dx)+abs(dy) <= radius; queen uses 0 < max(abs(dx),abs(dy)) <= radius. Both cells must be in bounds and unmasked. Capacity overflow is reported. bound symbols: 4/4. structure metadata only.",
+  "llms": "Formula Rook: w_ij = 1 for 0 < abs(dx)+abs(dy) <= radius; queen uses 0 < max(abs(dx),abs(dy)) <= radius. Both cells must be in bounds and unmasked. Capacity overflow is reported.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>lattice-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\mathbf{1}[0&lt;|\\term{horizontal}{d_x}|+|\\term{vertical}{d_y}|\\le\\term{radius}{r}]</pre><p class=\"lens-ascii\">Rook: w_ij = 1 for 0 &lt; abs(dx)+abs(dy) &lt;= radius; queen uses 0 &lt; max(abs(dx),abs(dy)) &lt;= radius. Both cells must be in bounds and unmasked. Capacity overflow is reported.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.lattice-weights-compiled:lattice-weights-emit\" data-value=\"weight\">weight · output · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.lattice-weights-compiled:lattice-weights-counts\" data-value=\"horizontal\">horizontal · intermediate · dx</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.lattice-weights-compiled:lattice-weights-counts\" data-value=\"vertical\">vertical · intermediate · dy</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.lattice-weights-compiled:lattice-weights-counts\" data-value=\"radius\">radius · parameter · RADIUS</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weight",
+        "output",
+        "weights",
+        "—",
+        "metadata"
+      ],
+      [
+        "horizontal",
+        "intermediate",
+        "dx",
+        "—",
+        "metadata"
+      ],
+      [
+        "vertical",
+        "intermediate",
+        "dy",
+        "—",
+        "metadata"
+      ],
+      [
+        "radius",
+        "parameter",
+        "RADIUS",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{weight}{w_{ij}}=\\mathbf{1}[0<|\\term{horizontal}{d_x}|+|\\term{vertical}{d_y}|\\le\\term{radius}{r}]",
+    "ascii": "Rook: w_ij = 1 for 0 < abs(dx)+abs(dy) <= radius; queen uses 0 < max(abs(dx),abs(dy)) <= radius. Both cells must be in bounds and unmasked. Capacity overflow is reported.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "0 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.610Z",
+    "runId": "run-9a0f06c8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9a0f06c8",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

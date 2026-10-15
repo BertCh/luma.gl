@@ -1,0 +1,55 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.dot-density",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.dot-density",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-dot-density. nodes: 159. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-dot-density. nodes: 159. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-dot-density\n\n- nodes: 159\n- 1 visible units vs budget 24\n- 159 hidden nodes\n- Edges by kind: raw 330, war 76, indirect 30, waw 26\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "159"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-dot-density-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-dot-density-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-dot-density-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:dot-density\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:dot-density\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">dot-density</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:dot-density\" aria-label=\"Expand dot-density\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">dot-density-triangulation-classify-rings: commandCount=1 · dot-density-triangulation-classify-rings: maximumWorkgroupCount=1 · dot-density-triangulation-classify-rings: maximumInvocationCount=200</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:dot-density\" aria-label=\"Inspect dot-density\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.562Z",
+    "runId": "run-56813e87",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-56813e87",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test",
+  "viewId": "formula-card",
+  "caption": "Formula s_k = population standard deviation of the local estimates beta_ik over the tracts with a finite fit. Permutation p relabels (X, y) among the tracts with a keyed swap-or-not shuffle, refits every tract at the bandwidth already selected on th…",
+  "description": "Formula s_k = population standard deviation of the local estimates beta_ik over the tracts with a finite fit. Permutation p relabels (X, y) among the tracts with a keyed swap-or-not shuffle, refits every tract at the bandwidth already selected on th…",
+  "llms": "Formula s_k = population standard deviation of the local estimates beta_ik over the tracts with a finite fit. Permutation p relabels (X, y) among the tracts with a keyed swap-or-not shuffle, refits every tract at the bandwidth already selected on the observed data, and records s_k^(p). g_k = number of permutations with s_k^(p) >= s_k; pseudo p = (g_k + 1)/(P + 1); z_k = (s_k - mean of s_k^(p))/sd of s_k^(p). Failed permuted fits are left out and counted.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gwr-nonstationarity-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{observedStandardDeviation}{s_k}&amp;=\\operatorname{sd}_i\\,\\beta_{ik},\n&amp;\\term{simulatedMean}{\\bar s_k}&amp;=\\frac{1}{P}\\sum_{p=1}^{P}s_k^{(p)}\\\\\n\\term{exceedances}{g_k}&amp;=\\#\\{p:\\ s_k^{(p)}\\ge s_k\\},\n&amp;\\term{pseudoPValue}{p_k}&amp;=\\frac{g_k+1}{\\term{permutationCount}{P}+1}\\\\\n\\term{zSimulated}{z_k}&amp;=\\frac{s_k-\\bar s_k}{\\term{simulatedDeviation}{\\sigma_{s_k}}}\n\\end{aligned}</pre><p class=\"lens-ascii\">s_k = population standard deviation of the local estimates beta_ik over the tracts with a finite fit. Permutation p relabels (X, y) among the tracts with a keyed swap-or-not shuffle, refits every tract at the bandwidth already selected on the observed data, and records s_k^(p). g_k = number of permutations with s_k^(p) &gt;= s_k; pseudo p = (g_k + 1)/(P + 1); z_k = (s_k - mean of s_k^(p))/sd of s_k^(p). Failed permuted fits are left out and counted.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:gwr-nonstationarity-test-finish\" data-value=\"observedStandardDeviation\">observedStandardDeviation · output · observed</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:geographically-weighted-regression-tile-statistics\" data-value=\"simulatedMean\">simulatedMean · output · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:gwr-nonstationarity-test-finish\" data-value=\"exceedances\">exceedances · intermediate · greater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:geographically-weighted-regression-search-init\" data-value=\"pseudoPValue\">pseudoPValue · output · table</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:gwr-nonstationarity-test-finish\" data-value=\"permutationCount\">permutations P · parameter · permutationCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:gwr-nonstationarity-test-finish\" data-value=\"zSimulated\">zSimulated · output · simulatedDeviation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-nonstationarity-test-compiled:gwr-nonstationarity-test-finish\" data-value=\"simulatedDeviation\">simulatedDeviation · intermediate · simulatedDeviation</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "observedStandardDeviation",
+        "output",
+        "observed",
+        "—",
+        "metadata"
+      ],
+      [
+        "simulatedMean",
+        "output",
+        "mean",
+        "—",
+        "metadata"
+      ],
+      [
+        "exceedances",
+        "intermediate",
+        "greater",
+        "—",
+        "metadata"
+      ],
+      [
+        "pseudoPValue",
+        "output",
+        "table",
+        "—",
+        "metadata"
+      ],
+      [
+        "permutations P",
+        "parameter",
+        "permutationCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "zSimulated",
+        "output",
+        "simulatedDeviation",
+        "—",
+        "metadata"
+      ],
+      [
+        "simulatedDeviation",
+        "intermediate",
+        "simulatedDeviation",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{observedStandardDeviation}{s_k}&=\\operatorname{sd}_i\\,\\beta_{ik},\n&\\term{simulatedMean}{\\bar s_k}&=\\frac{1}{P}\\sum_{p=1}^{P}s_k^{(p)}\\\\\n\\term{exceedances}{g_k}&=\\#\\{p:\\ s_k^{(p)}\\ge s_k\\},\n&\\term{pseudoPValue}{p_k}&=\\frac{g_k+1}{\\term{permutationCount}{P}+1}\\\\\n\\term{zSimulated}{z_k}&=\\frac{s_k-\\bar s_k}{\\term{simulatedDeviation}{\\sigma_{s_k}}}\n\\end{aligned}",
+    "ascii": "s_k = population standard deviation of the local estimates beta_ik over the tracts with a finite fit. Permutation p relabels (X, y) among the tracts with a keyed swap-or-not shuffle, refits every tract at the bandwidth already selected on the observed data, and records s_k^(p). g_k = number of permutations with s_k^(p) >= s_k; pseudo p = (g_k + 1)/(P + 1); z_k = (s_k - mean of s_k^(p))/sd of s_k^(p). Failed permuted fits are left out and counted.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "pseudo-p-grid",
+      "label": "Pseudo-p grid",
+      "blocks": [
+        "exact-p"
+      ],
+      "status": "pass",
+      "reason": "achievable grid k/(99+1) = k/100; floor 1/100 = 0.01"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:19.769Z",
+    "runId": "run-8391752a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8391752a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

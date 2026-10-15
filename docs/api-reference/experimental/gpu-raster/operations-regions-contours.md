@@ -383,6 +383,36 @@ Settings of `getGPURasterSieveParameterValues`:
 
 {/* /parameters */}
 
+#### `GPURasterPatchMetrics`
+
+Measures pixel count, area and perimeter of each labelled patch of the burn mask.
+
+::lens{scenario=gpu-raster.raster-patch-metrics rung=result caption="Burn-mask patches; one patch holds most of the 2473 burned cells."}
+
+#### How it computes
+
+{/* lens:GPURasterPatchMetrics */}
+
+::lens{scenario=gpu-raster.raster-patch-metrics rung=datum datum=0 caption="Patch 0, the largest: its pixel count, exposed faces, area and perimeter."}
+::lens{scenario=gpu-raster.raster-patch-metrics rung=formula caption="Area is pixels times cell area; perimeter sums exposed faces times their face length."}
+::lens{scenario=gpu-raster.raster-patch-metrics rung=kernel caption="Run segments accumulate counts and exposed faces with integer atomics, then columns are finalized."}
+::lens{scenario=gpu-raster.raster-patch-metrics rung=graph caption="Connected components and dense labels feed the key, count, face and area nodes."}
+
+#### `GPURasterSieve`
+
+Removes patches smaller than a pixel threshold from a patch label raster.
+
+::lens{scenario=gpu-raster.raster-sieve rung=result caption="Burn patches of 12 cells or more survive; smaller patches become background."}
+
+#### How it computes
+
+{/* lens:GPURasterSieve */}
+
+::lens{scenario=gpu-raster.raster-sieve rung=datum datum=32 caption="Patch 32, 11 cells: smaller than the threshold of 12, so its target is background."}
+::lens{scenario=gpu-raster.raster-sieve rung=formula caption="A patch keeps its label when its size reaches the minimum; otherwise it becomes background."}
+::lens{scenario=gpu-raster.raster-sieve rung=kernel caption="Counts per patch decide each target, then one pass relabels every pixel."}
+::lens{scenario=gpu-raster.raster-sieve rung=graph caption="Labelling feeds counts, per-patch targets and the relabel node."}
+
 ## Marching-squares contour classification
 
 Use `GPURasterContourClassifier` when another GPU algorithm needs to know where a scalar

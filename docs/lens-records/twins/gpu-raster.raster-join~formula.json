@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-join",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-join",
+  "viewId": "formula-card",
+  "caption": "Formula cell = floor((p - origin) / cellSize) per axis, with origin the south-west corner of the raster and the row counted from the smallest y (mirrored for north-up grids); the point takes Z[cell], or no zone when the cell is outside the raster or…",
+  "description": "Formula cell = floor((p - origin) / cellSize) per axis, with origin the south-west corner of the raster and the row counted from the smallest y (mirrored for north-up grids); the point takes Z[cell], or no zone when the cell is outside the raster or…",
+  "llms": "Formula cell = floor((p - origin) / cellSize) per axis, with origin the south-west corner of the raster and the row counted from the smallest y (mirrored for north-up grids); the point takes Z[cell], or no zone when the cell is outside the raster or Z[cell] >= zoneCount; counts[z] += 1 for each joined point; points outside the raster are tallied in outsideCount.\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-join.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{zone}{z(p)}=\\term{zones}{Z}\\!\\left[\\left\\lfloor\\frac{\\term{position}{p}-\\term{origin}{o}}{\\term{cellSize}{s}}\\right\\rfloor\\right]</pre><p class=\"lens-ascii\">cell = floor((p - origin) / cellSize) per axis, with origin the south-west corner of the raster and the row counted from the smallest y (mirrored for north-up grids); the point takes Z[cell], or no zone when the cell is outside the raster or Z[cell] &gt;= zoneCount; counts[z] += 1 for each joined point; points outside the raster are tallied in outsideCount.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-join-compiled:raster-join-lookup\" data-value=\"zone\">zone · output · pointZones</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-join-compiled:raster-join-lookup\" data-value=\"zones\">zone raster · input · zones</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-join-compiled:polygon-rasterization-edges\" data-value=\"position\">point · input · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-join-compiled:polygon-rasterization-edges\" data-value=\"origin\">origin · parameter · origin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-join-compiled:polygon-rasterization-edges\" data-value=\"cellSize\">cell size · parameter · cellSize</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "zone",
+        "output",
+        "pointZones",
+        "—",
+        "metadata"
+      ],
+      [
+        "zone raster",
+        "input",
+        "zones",
+        "—",
+        "metadata"
+      ],
+      [
+        "point",
+        "input",
+        "position",
+        "—",
+        "metadata"
+      ],
+      [
+        "origin",
+        "parameter",
+        "origin",
+        "—",
+        "metadata"
+      ],
+      [
+        "cell size",
+        "parameter",
+        "cellSize",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{zone}{z(p)}=\\term{zones}{Z}\\!\\left[\\left\\lfloor\\frac{\\term{position}{p}-\\term{origin}{o}}{\\term{cellSize}{s}}\\right\\rfloor\\right]",
+    "ascii": "cell = floor((p - origin) / cellSize) per axis, with origin the south-west corner of the raster and the row counted from the smallest y (mirrored for north-up grids); the point takes Z[cell], or no zone when the cell is outside the raster or Z[cell] >= zoneCount; counts[z] += 1 for each joined point; points outside the raster are tallied in outsideCount.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.253Z",
+    "runId": "run-40b36eaa",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-40b36eaa",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

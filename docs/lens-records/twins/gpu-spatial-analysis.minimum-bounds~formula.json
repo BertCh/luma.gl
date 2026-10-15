@@ -1,0 +1,120 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.minimum-bounds",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.minimum-bounds",
+  "viewId": "formula-card",
+  "caption": "Formula For each nonzero hull edge e, use its unit direction u and left normal n. Candidate area A[e]=(max dot(h,u)-min dot(h,u))*(max dot(h,n)-min dot(h,n)). Start B at the first candidate; replace it only when A[e] < (1-1e-6)*B. rectangleSizes.are…",
+  "description": "Formula For each nonzero hull edge e, use its unit direction u and left normal n. Candidate area A[e]=(max dot(h,u)-min dot(h,u))*(max dot(h,n)-min dot(h,n)). Start B at the first candidate; replace it only when A[e] < (1-1e-6)*B. rectangleSizes.are…",
+  "llms": "Formula For each nonzero hull edge e, use its unit direction u and left normal n. Candidate area A[e]=(max dot(h,u)-min dot(h,u))*(max dot(h,n)-min dot(h,n)). Start B at the first candidate; replace it only when A[e] < (1-1e-6)*B. rectangleSizes.area is the last B. Hull points are anchor-relative; one-point/collinear rectangles have zero area, empty or overflowing hulls report NaN. This formula describes the rectangle selection; circles use shuffled Welzl with a recomputed covering radius.\n\n- bound symbols: 6/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.minimum-bounds</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{area}{A_e}&amp;=\\left(\\max_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{direction}{u_e}-\\min_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{direction}{u_e}\\right)\\left(\\max_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{normal}{n_e}-\\min_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{normal}{n_e}\\right)\\\\\\term{best}{B_e}&amp;=\\begin{cases}\\term{area}{A_e}&amp;\\term{area}{A_e}&lt;(1-10^{-6})\\term{best}{B_{e-1}}\\\\\\term{best}{B_{e-1}}&amp;\\text{otherwise}\\end{cases},\\quad\\term{best}{B_0}=\\term{area}{A_0},\\quad\\term{output}{A_{\\rm rect}}=\\term{best}{B_{\\rm last}}\\end{aligned}</pre><p class=\"lens-ascii\">For each nonzero hull edge e, use its unit direction u and left normal n. Candidate area A[e]=(max dot(h,u)-min dot(h,u))*(max dot(h,n)-min dot(h,n)). Start B at the first candidate; replace it only when A[e] &lt; (1-1e-6)*B. rectangleSizes.area is the last B. Hull points are anchor-relative; one-point/collinear rectangles have zero area, empty or overflowing hulls report NaN. This formula describes the rectangle selection; circles use shuffled Welzl with a recomputed covering radius.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-rectangle\" data-value=\"area\">Hull-edge-aligned rectangle area · intermediate · area</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Hull vertex · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-rectangle\" data-value=\"points\">Anchor-relative hull points · input · loadPoint</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-rectangle\" data-value=\"direction\">Unit hull-edge direction · intermediate · direction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-rectangle\" data-value=\"normal\">Left normal · intermediate · normal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-rectangle\" data-value=\"best\">Best area so far · intermediate · bestArea</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-minimum-bounds-compiled:minimum-bounds-hull-chain\" data-value=\"output\">rectangleSizes area component · output · sizes</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Hull-edge-aligned rectangle area",
+        "intermediate",
+        "area",
+        "—",
+        "metadata"
+      ],
+      [
+        "Hull vertex",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Anchor-relative hull points",
+        "input",
+        "loadPoint",
+        "—",
+        "metadata"
+      ],
+      [
+        "Unit hull-edge direction",
+        "intermediate",
+        "direction",
+        "—",
+        "metadata"
+      ],
+      [
+        "Left normal",
+        "intermediate",
+        "normal",
+        "—",
+        "metadata"
+      ],
+      [
+        "Best area so far",
+        "intermediate",
+        "bestArea",
+        "—",
+        "metadata"
+      ],
+      [
+        "rectangleSizes area component",
+        "output",
+        "sizes",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{area}{A_e}&=\\left(\\max_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{direction}{u_e}-\\min_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{direction}{u_e}\\right)\\left(\\max_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{normal}{n_e}-\\min_{\\term{index}{j}}\\term{points}{h_j}\\cdot\\term{normal}{n_e}\\right)\\\\\\term{best}{B_e}&=\\begin{cases}\\term{area}{A_e}&\\term{area}{A_e}<(1-10^{-6})\\term{best}{B_{e-1}}\\\\\\term{best}{B_{e-1}}&\\text{otherwise}\\end{cases},\\quad\\term{best}{B_0}=\\term{area}{A_0},\\quad\\term{output}{A_{\\rm rect}}=\\term{best}{B_{\\rm last}}\\end{aligned}",
+    "ascii": "For each nonzero hull edge e, use its unit direction u and left normal n. Candidate area A[e]=(max dot(h,u)-min dot(h,u))*(max dot(h,n)-min dot(h,n)). Start B at the first candidate; replace it only when A[e] < (1-1e-6)*B. rectangleSizes.area is the last B. Hull points are anchor-relative; one-point/collinear rectangles have zero area, empty or overflowing hulls report NaN. This formula describes the rectangle selection; circles use shuffled Welzl with a recomputed covering radius.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.024Z",
+    "runId": "run-8b3dbedd",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8b3dbedd",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.grid-generator",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.grid-generator",
+  "viewId": "formula-card",
+  "caption": "Formula Square and point centers are origin+((column+1/2)*cellWidth,(row+1/2)*cellHeight). Hex and triangle centers are the vertex mean of the generated cell (V=6 or 3). Hex kernels compute the equivalent center directly from width/sqrt(3), staggere…",
+  "description": "Formula Square and point centers are origin+((column+1/2)*cellWidth,(row+1/2)*cellHeight). Hex and triangle centers are the vertex mean of the generated cell (V=6 or 3). Hex kernels compute the equivalent center directly from width/sqrt(3), staggere…",
+  "llms": "Formula Square and point centers are origin+((column+1/2)*cellWidth,(row+1/2)*cellHeight). Hex and triangle centers are the vertex mean of the generated cell (V=6 or 3). Hex kernels compute the equivalent center directly from width/sqrt(3), staggered rows or columns and orientation; triangles use (a+b+c)/3. Vertices and unique corners come from shared integer lattice expressions, preserving identical seam coordinates. This formula describes cell centers; extent masks use boundary-inclusive intersection predicates.\n\n- bound symbols: 5/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.grid-generator</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{centers}{c}=\\begin{cases}\\term{origin}{o}+((\\term{column}{i}+\\tfrac12)\\term{width}{w},(\\term{row}{j}+\\tfrac12)\\term{height}{h})&amp;\\text{square or point}\\\\\\dfrac{1}{\\term{count}{V}}\\sum_{\\term{index}{k}=0}^{\\term{count}{V}-1}\\term{vertices}{v_k}&amp;\\text{hex or triangle}\\end{cases}</pre><p class=\"lens-ascii\">Square and point centers are origin+((column+1/2)*cellWidth,(row+1/2)*cellHeight). Hex and triangle centers are the vertex mean of the generated cell (V=6 or 3). Hex kernels compute the equivalent center directly from width/sqrt(3), staggered rows or columns and orientation; triangles use (a+b+c)/3. Vertices and unique corners come from shared integer lattice expressions, preserving identical seam coordinates. This formula describes cell centers; extent masks use boundary-inclusive intersection predicates.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-grid-generator-compiled:grid-generator-generate\" data-value=\"centers\">Cell centers · output · centersOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-grid-generator-compiled:grid-generator-generate\" data-value=\"origin\">Grid origin (minX,minY) · parameter · origin</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"column\">Column · index · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"row\">Row · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-grid-generator-compiled:grid-generator-generate\" data-value=\"width\">Cell width · parameter · w</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-grid-generator-compiled:grid-generator-generate\" data-value=\"height\">Cell height · parameter · h</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"count\">Vertices per polygon cell · constant · unbound — no binding declared</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Cell vertex · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-grid-generator-compiled:grid-generator-generate\" data-value=\"vertices\">Generated polygon vertices · intermediate · positionsOut</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Cell centers",
+        "output",
+        "centersOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "Grid origin (minX,minY)",
+        "parameter",
+        "origin",
+        "—",
+        "metadata"
+      ],
+      [
+        "Column",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Row",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Cell width",
+        "parameter",
+        "w",
+        "—",
+        "metadata"
+      ],
+      [
+        "Cell height",
+        "parameter",
+        "h",
+        "—",
+        "metadata"
+      ],
+      [
+        "Vertices per polygon cell",
+        "constant",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Cell vertex",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Generated polygon vertices",
+        "intermediate",
+        "positionsOut",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{centers}{c}=\\begin{cases}\\term{origin}{o}+((\\term{column}{i}+\\tfrac12)\\term{width}{w},(\\term{row}{j}+\\tfrac12)\\term{height}{h})&\\text{square or point}\\\\\\dfrac{1}{\\term{count}{V}}\\sum_{\\term{index}{k}=0}^{\\term{count}{V}-1}\\term{vertices}{v_k}&\\text{hex or triangle}\\end{cases}",
+    "ascii": "Square and point centers are origin+((column+1/2)*cellWidth,(row+1/2)*cellHeight). Hex and triangle centers are the vertex mean of the generated cell (V=6 or 3). Hex kernels compute the equivalent center directly from width/sqrt(3), staggered rows or columns and orientation; triangles use (a+b+c)/3. Vertices and unique corners come from shared integer lattice expressions, preserving identical seam coordinates. This formula describes cell centers; extent masks use boundary-inclusive intersection predicates.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:51.305Z",
+    "runId": "run-ce19a8dc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ce19a8dc",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

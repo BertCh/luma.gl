@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.solar-irradiance",
+  "rung": "datum",
+  "datum": 2908,
+  "size": "full",
+  "scenarioId": "gpu-terrain.solar-irradiance",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2908. irradianceInsolation: 6080.65576171875. values read back from the GPU run. solar-irradiance: 3 quantities.",
+  "description": "Receipt of grid cells 2908. irradianceInsolation: 6080.65576171875. values read back from the GPU run. solar-irradiance: 3 quantities.",
+  "llms": "Receipt of grid cells 2908\n\n- irradianceInsolation: 6080.65576171875\n- solar-irradiance: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "irradianceInsolation",
+    "value": "6080.65576171875"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2908</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"solar-irradiance\"><tr><th scope=\"rowgroup\" colspan=\"5\">solar-irradiance</th></tr><tr data-provenance=\"readback\"><td>solar-irradiance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-irradiance-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1225.5999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>solar-irradiance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-irradiance-snapshots-irradianceSunHours-0\" title=\"hours the solar disk is visible\">irradianceSunHours</button></td><td>10.5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>solar-irradiance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-irradiance-snapshots-irradianceInsolation-0\" title=\"direct insolation on the sloped surface (Wh/m²)\">irradianceInsolation</button></td><td>6080.65576171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-solar-irradiance-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-solar-irradiance-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-solar-irradiance-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2843\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2843: 1276.4000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2843</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2844\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2844: 1212.5</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2844</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2845\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2845: 1193.699951171875</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2845</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2907\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2907: 1303.5999755859375</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2907</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2908\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2908: 1225.5999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2908</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2909\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2909: 1209.699951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2909</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2971\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2971: 1303.4000244140625</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2971</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2972\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2972: 1233.300048828125</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2972</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2973\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2973: 1219.199951171875</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2973</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "solar-irradiance",
+        "dem",
+        "1225.5999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "solar-irradiance",
+        "irradianceSunHours",
+        "10.5",
+        "0",
+        "readback"
+      ],
+      [
+        "solar-irradiance",
+        "irradianceInsolation",
+        "6080.65576171875",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:32:35.694Z",
+    "runId": "run-bee12c3a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-bee12c3a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2908
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

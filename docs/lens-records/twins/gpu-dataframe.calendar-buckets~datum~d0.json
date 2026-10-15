@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.calendar-buckets",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.calendar-buckets",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Observation 0. hour: 8. values read back from the GPU run. calendar-buckets: 4 quantities.",
+  "description": "Receipt of Observation 0. hour: 8. values read back from the GPU run. calendar-buckets: 4 quantities.",
+  "llms": "Receipt of Observation 0\n\n- hour: 8\n- calendar-buckets: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "hour",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"calendar-buckets\"><tr><th scope=\"rowgroup\" colspan=\"5\">calendar-buckets</th></tr><tr data-provenance=\"readback\"><td>calendar-buckets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-calendar-buckets-snapshots-timestampWords-0\" title=\"Epoch milliseconds as signed 64-bit (low, high) words of the local clock time.\">timestampWords</button></td><td>1818021856, 389</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>calendar-buckets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-calendar-buckets-snapshots-month-0\" title=\"Month of the local time, 1 to 12.\">month</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>calendar-buckets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-calendar-buckets-snapshots-weekday-0\" title=\"Weekday of the local time, 0 is Monday.\">weekday</button></td><td>6</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>calendar-buckets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-calendar-buckets-snapshots-hour-0\" title=\"Hour of the local time, 0 to 23.\">hour</button></td><td>8</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "calendar-buckets",
+        "timestampWords",
+        "1818021856, 389",
+        "0",
+        "readback"
+      ],
+      [
+        "calendar-buckets",
+        "month",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "calendar-buckets",
+        "weekday",
+        "6",
+        "0",
+        "readback"
+      ],
+      [
+        "calendar-buckets",
+        "hour",
+        "8",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.707Z",
+    "runId": "run-5e2c801a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5e2c801a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

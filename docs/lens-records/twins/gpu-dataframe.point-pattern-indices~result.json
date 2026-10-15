@@ -1,0 +1,60 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.point-pattern-indices",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'point-pattern-parameters',\n  format: 'float32',\n  length: GPU_POINT_PATTERN_INDICES_PARAMETER_LENGTH,\n  values: getGPUPointPatternIndicesParameterValues({bounds: studyWindow, maximumDistance: 500})\n});\ngraph.add(\n  new GPUPointPatternIndices({\n    positions,\n    parameters: parameters.importToGraph(graph),\n    gridSize: [32, 32],\n    quadratGrid, // 8 x 10 quadrats\n    output: {\n      nearestNeighborDistances,\n      nearestNeighborIds,\n      clarkEvans,\n      quadratCounts,\n      quadratStatistics\n    }\n  })\n);\n// clarkEvans: [n, observed, expected, ratio, standardError, z, p], Donnelly edge correction",
+    "language": "ts",
+    "lineCount": 22
+  },
+  "scenarioId": "gpu-dataframe.point-pattern-indices",
+  "viewId": "result-view",
+  "caption": "Result of gpu-dataframe.point-pattern-indices: positions → quadratStatistics. rows: 7. values read back from the GPU run. input positions: 1500 points.",
+  "description": "Result of gpu-dataframe.point-pattern-indices: positions → quadratStatistics. rows: 7. values read back from the GPU run. input positions: 1500 points.",
+  "llms": "Result of gpu-dataframe.point-pattern-indices: positions → quadratStatistics\n\n- rows: 7\n- input positions: 1500 points\n- Planar coordinates (m); uniform scale.\n- 1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">nearestNeighborDistances</th><th class=\"cv-col--output\" scope=\"col\">nearestNeighborIds</th><th class=\"cv-col--output\" scope=\"col\">quadratCounts</th><th class=\"cv-col--output\" scope=\"col\">clarkEvans</th><th class=\"cv-col--output\" scope=\"col\">quadratStatistics</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">10.3</td><td class=\"cv-col--output\" data-provenance=\"readback\">1049</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">1500</td><td class=\"cv-col--output\" data-provenance=\"readback\">80</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">231</td><td class=\"cv-col--output\" data-provenance=\"readback\">266</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">122</td><td class=\"cv-col--output\" data-provenance=\"readback\">18.8</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">23.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">471</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">497</td><td class=\"cv-col--output\" data-provenance=\"readback\">1840</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">248</td><td class=\"cv-col--output\" data-provenance=\"readback\">328</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.246</td><td class=\"cv-col--output\" data-provenance=\"readback\">97.9</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">61.6</td><td class=\"cv-col--output\" data-provenance=\"readback\">469</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">6.92</td><td class=\"cv-col--output\" data-provenance=\"readback\">7740</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1760</td><td class=\"cv-col--output\" data-provenance=\"readback\">1188</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">-54.2</td><td class=\"cv-col--output\" data-provenance=\"readback\">79</td></tr><tr><td colspan=\"5\">… 1494 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input positions · blue: output nearestNeighborDistances, nearestNeighborIds, quadratCounts, clarkEvans, quadratStatistics</p><p class=\"cv-note\">1500 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.833Z",
+    "runId": "run-8298752f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8298752f",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

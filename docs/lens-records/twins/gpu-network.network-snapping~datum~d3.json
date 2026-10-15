@@ -1,0 +1,84 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-snapping",
+  "rung": "datum",
+  "datum": 3,
+  "size": "full",
+  "scenarioId": "gpu-network.network-snapping",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of point to snap 3. snappedPositions: -87.6278076171875, 41.87693786621094. values read back from the GPU run. assignment: 1 quantities.",
+  "description": "Receipt of point to snap 3. snappedPositions: -87.6278076171875, 41.87693786621094. values read back from the GPU run. assignment: 1 quantities.",
+  "llms": "Receipt of point to snap 3\n\n- snappedPositions: -87.6278076171875, 41.87693786621094\n- assignment: 1 quantities\n- network-snapping: 3 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "snappedPositions",
+    "value": "-87.6278076171875, 41.87693786621094"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of point to snap 3</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"assignment\"><tr><th scope=\"rowgroup\" colspan=\"5\">assignment</th></tr><tr data-provenance=\"readback\"><td>assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"snapDistances\" title=\"snap distance in meters (great-circle)\">snapDistances</button></td><td>8.468342781066895</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-snapping\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-snapping</th></tr><tr data-provenance=\"readback\"><td>network-snapping</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"facilityPositions\" title=\"input: facility longitude/latitude as uploaded\">facilityPositions</button></td><td>-87.62779998779297, 41.876861572265625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-snapping</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"snappedEdges\">snappedEdges</button></td><td>49</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-snapping</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"snappedPositions\" title=\"output: GPU snapped positions on the nearest road edge, coloured by snap distance\">snappedPositions</button></td><td>-87.6278076171875, 41.87693786621094</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.snapping.nearest</h4><div><pre class=\"lens-tex\">\\term{bestEdge}{e^*}=\\operatorname*{argmin}_{e}\\ \\term{distance}{d(p,e)}</pre><p class=\"lens-ascii\">For each point p the scan visits every edge row e in ascending order and keeps the edge with the smallest point-to-segment distance d(p,e): bestEdge = e when bestEdge is NONE or d &lt; bestDistance (strict, so ties go to the smallest edge row; NaN never wins). Distances are in the spatial context length unit (meters for a great-circle longitude/latitude context); with a maximum snap distance, edges beyond it are skipped and an unsnapped point gets NONE.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "assignment",
+        "snapDistances",
+        "8.468342781066895",
+        "0",
+        "readback"
+      ],
+      [
+        "network-snapping",
+        "facilityPositions",
+        "-87.62779998779297, 41.876861572265625",
+        "0",
+        "readback"
+      ],
+      [
+        "network-snapping",
+        "snappedEdges",
+        "49",
+        "0",
+        "readback"
+      ],
+      [
+        "network-snapping",
+        "snappedPositions",
+        "-87.6278076171875, 41.87693786621094",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:13.048Z",
+    "runId": "run-538f15db",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients snappedEdges, snapDistances, snappedPositions retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-538f15db",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

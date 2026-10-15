@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-lag-impacts",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-lag-impacts",
+  "viewId": "formula-card",
+  "caption": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, a…",
+  "description": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, a…",
+  "llms": "Formula D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, as for a failed fit.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-lag-impacts</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{direct}{D_k}&amp;=\\frac{\\term{beta}{\\beta_k}}{n}\\Big(n+\\sum_{q=1}^{Q}\\term{rho}{\\rho}^q\\operatorname{tr}W^q\\Big)=\\frac{\\beta_k}{n}\\operatorname{tr}(I-\\rho W)^{-1}\\\\\n\\term{total}{T_k}&amp;=\\frac{\\beta_k}{n}\\Big(n+\\sum_{q=1}^{Q}\\rho^q\\,\\mathbf 1^\\top W^q\\mathbf 1\\Big)=\\frac{\\beta_k}{n}\\mathbf 1^\\top(I-\\rho W)^{-1}\\mathbf 1\\\\\n\\term{indirect}{N_k}&amp;=T_k-D_k\n\\end{aligned}</pre><p class=\"lens-ascii\">D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1&#39;(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s &lt; 1; otherwise NaN, as for a failed fit.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-impacts-impacts\" data-value=\"direct\">direct · output · direct</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-maximum-likelihood-ols-response-finish\" data-value=\"beta\">coefficient · input · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-maximum-likelihood-rho-search\" data-value=\"rho\">spatial lag parameter · input · rho</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:contiguity-weights-pair-total\" data-value=\"total\">total · output · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-impacts-compiled:spatial-lag-impacts-impacts\" data-value=\"indirect\">indirect · output · impacts</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "direct",
+        "output",
+        "direct",
+        "—",
+        "metadata"
+      ],
+      [
+        "coefficient",
+        "input",
+        "beta",
+        "—",
+        "metadata"
+      ],
+      [
+        "spatial lag parameter",
+        "input",
+        "rho",
+        "—",
+        "metadata"
+      ],
+      [
+        "total",
+        "output",
+        "total",
+        "—",
+        "metadata"
+      ],
+      [
+        "indirect",
+        "output",
+        "impacts",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{direct}{D_k}&=\\frac{\\term{beta}{\\beta_k}}{n}\\Big(n+\\sum_{q=1}^{Q}\\term{rho}{\\rho}^q\\operatorname{tr}W^q\\Big)=\\frac{\\beta_k}{n}\\operatorname{tr}(I-\\rho W)^{-1}\\\\\n\\term{total}{T_k}&=\\frac{\\beta_k}{n}\\Big(n+\\sum_{q=1}^{Q}\\rho^q\\,\\mathbf 1^\\top W^q\\mathbf 1\\Big)=\\frac{\\beta_k}{n}\\mathbf 1^\\top(I-\\rho W)^{-1}\\mathbf 1\\\\\n\\term{indirect}{N_k}&=T_k-D_k\n\\end{aligned}",
+    "ascii": "D_k = beta_k tr((I - rho W)^-1)/n; T_k = beta_k 1'(I - rho W)^-1 1/n; indirect = T_k - D_k. Both inverses are the truncated series n + sum_{q=1..Q} (rho s)^q c_q with the stored powers of W/s (Horner), valid for |rho| s < 1; otherwise NaN, as for a failed fit.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.260Z",
+    "runId": "run-c6a95dbe",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c6a95dbe",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

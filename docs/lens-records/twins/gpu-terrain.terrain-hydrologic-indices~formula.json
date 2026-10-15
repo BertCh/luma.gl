@@ -1,0 +1,113 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-hydrologic-indices",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-hydrologic-indices",
+  "viewId": "formula-card",
+  "caption": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
+  "description": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A i…",
+  "llms": "Formula TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-hydrologic-indices.twi</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{wetness}{\\mathrm{TWI}} = \\ln\\frac{\\term{catchment}{a}}{\\term{tangent}{\\tan\\beta}},\\quad a = \\frac{\\term{area}{A}}{\\sqrt{\\Delta x\\,\\Delta y}},\\quad \\tan\\beta = \\max\\bigl(\\term{steepest}{s},\\ \\term{minimumSlope}{s_{\\min}}\\bigr),\\quad s = \\max_k \\frac{z_c - z_k}{d_k},\\quad \\mathrm{SPI} = a \\tan\\beta</pre><p class=\"lens-ascii\">TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a &lt;= 0 gives -Infinity</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"wetness\">TWI · output · wetness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"catchment\">a · intermediate · catchment</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"tangent\">tan β · intermediate · tangent</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"area\">A · input · area</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"steepest\">s · intermediate · steepest</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-hydrologic-indices-compiled:terrain-hydrologic-indices-indices\" data-value=\"minimumSlope\">s_min · parameter · minimumSlope</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "TWI",
+        "output",
+        "wetness",
+        "—",
+        "metadata"
+      ],
+      [
+        "a",
+        "intermediate",
+        "catchment",
+        "—",
+        "metadata"
+      ],
+      [
+        "tan β",
+        "intermediate",
+        "tangent",
+        "—",
+        "metadata"
+      ],
+      [
+        "A",
+        "input",
+        "area",
+        "—",
+        "metadata"
+      ],
+      [
+        "s",
+        "intermediate",
+        "steepest",
+        "—",
+        "metadata"
+      ],
+      [
+        "s_min",
+        "parameter",
+        "minimumSlope",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{wetness}{\\mathrm{TWI}} = \\ln\\frac{\\term{catchment}{a}}{\\term{tangent}{\\tan\\beta}},\\quad a = \\frac{\\term{area}{A}}{\\sqrt{\\Delta x\\,\\Delta y}},\\quad \\tan\\beta = \\max\\bigl(\\term{steepest}{s},\\ \\term{minimumSlope}{s_{\\min}}\\bigr),\\quad s = \\max_k \\frac{z_c - z_k}{d_k},\\quad \\mathrm{SPI} = a \\tan\\beta",
+    "ascii": "TWI = ln(a / tanB); a = A / sqrt(groundX * groundY) at the cell row, A = contributing area in m2 incl. the cell; tanB = max(s, minimumSlope), s = max over valid neighbours of (z - zk) / d_k, floor 0; SPI = a * tanB; NaN where the cell or A is not finite; a <= 0 gives -Infinity",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.926Z",
+    "runId": "run-0a8bd878",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0a8bd878",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

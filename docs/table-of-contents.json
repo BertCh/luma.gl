@@ -576,10 +576,55 @@
               "api-reference/experimental/gpu-graph-layouts"
             ]
           },
-          "api-reference/experimental/gpu-network",
-          "api-reference/experimental/gpu-spatial-analysis",
+          {
+            "type": "category",
+            "label": "GPU Network",
+            "items": [
+              "api-reference/experimental/gpu-network/README",
+              "api-reference/experimental/gpu-network/concepts",
+              "api-reference/experimental/gpu-network/operators"
+            ]
+          },
+          {
+            "type": "category",
+            "label": "GPU Spatial Analysis",
+            "items": [
+              "api-reference/experimental/gpu-spatial-analysis/README",
+              "api-reference/experimental/gpu-spatial-analysis/concepts",
+              "api-reference/experimental/gpu-spatial-analysis/operators",
+              {
+                "type": "category",
+                "label": "Operator Families",
+                "items": [
+                  "api-reference/experimental/gpu-spatial-analysis/operators-weights",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-statistics",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-dynamics",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-accessibility",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-joins",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-validity",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-density",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-cells",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-lines",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-geometry",
+                  "api-reference/experimental/gpu-spatial-analysis/operators-regression",
+                  "api-reference/experimental/gpu-spatial-analysis/recipes"
+                ]
+              }
+            ]
+          },
           "api-reference/experimental/gpu-spatial-analysis-cross-reference",
-          "api-reference/experimental/gpu-terrain",
+          "api-reference/experimental/analysis-catalog",
+          "api-reference/experimental/computation-views",
+          "api-reference/experimental/gpu-core/computation-record",
+          {
+            "type": "category",
+            "label": "GPU Terrain",
+            "items": [
+              "api-reference/experimental/gpu-terrain/README",
+              "api-reference/experimental/gpu-terrain/concepts",
+              "api-reference/experimental/gpu-terrain/operators"
+            ]
+          },
           {
             "type": "category",
             "label": "GPU Raster",

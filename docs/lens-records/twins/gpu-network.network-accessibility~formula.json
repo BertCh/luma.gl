@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-accessibility",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-accessibility",
+  "viewId": "formula-card",
+  "caption": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
+  "description": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Inf…",
+  "llms": "Formula Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.\n\n- bound symbols: 5/5\n- compute passes were not coalesced as in production\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.accessibility.gravity</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{gravitySum}{A_j}=\\sum_{i}\\term{weight}{O_i}\\,e^{-\\term{beta}{\\beta}\\,\\term{cost}{c_{ij}}}\\quad\\text{over }c_{ij}\\le\\term{threshold}{T}</pre><p class=\"lens-ascii\">Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 &lt;= cost &lt;= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"gravitySum\">gravity score · output · gravitySum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-cost-matrix-batch-0-relax-0\" data-value=\"weight\">opportunity weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"beta\">decay rate · parameter · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-cost-matrix-batch-0-seed\" data-value=\"cost\">matrix cost · input · cost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\" data-value=\"threshold\">cost cutoff · parameter · threshold</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-accessibility-compiled:network-accessibility-scores\">network-accessibility-scores</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "gravity score",
+        "output",
+        "gravitySum",
+        "—",
+        "metadata"
+      ],
+      [
+        "opportunity weight",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "decay rate",
+        "parameter",
+        "beta",
+        "—",
+        "metadata"
+      ],
+      [
+        "matrix cost",
+        "input",
+        "cost",
+        "—",
+        "metadata"
+      ],
+      [
+        "cost cutoff",
+        "parameter",
+        "threshold",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{gravitySum}{A_j}=\\sum_{i}\\term{weight}{O_i}\\,e^{-\\term{beta}{\\beta}\\,\\term{cost}{c_{ij}}}\\quad\\text{over }c_{ij}\\le\\term{threshold}{T}",
+    "ascii": "Exponential-decay variant, opportunity-rows orientation: for every column node j the kernel sums rows i in ascending order and adds weight[i] * exp(-beta * cost[i,j]) for finite costs 0 <= cost <= threshold and finite weights (unreached +Infinity entries and non-finite weights are skipped; the sum is deterministic, no float atomics, and weights are not normalised). The cumulative variant omits the decay and the power variant uses max(cost, minimumCost)^-beta; they are alternative branches of the same kernel.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:27:12.678Z",
+    "runId": "run-e583d7a0",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, gravity retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-e583d7a0",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

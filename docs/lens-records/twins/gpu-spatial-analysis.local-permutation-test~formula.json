@@ -1,0 +1,127 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-permutation-test",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-permutation-test",
+  "viewId": "formula-card",
+  "caption": "Formula p_i = min(m (M_i + 1), P + 1) / (P + 1); g_i = #{p : s_ip >= s_i}, l_i = #{p : s_ip <= s_i}; the default two-sided tail has m = 2 and M_i = min(g_i, l_i), so a row whose simulations all tie the observed value has p = 1. greater: m = 1, M = g…",
+  "description": "Formula p_i = min(m (M_i + 1), P + 1) / (P + 1); g_i = #{p : s_ip >= s_i}, l_i = #{p : s_ip <= s_i}; the default two-sided tail has m = 2 and M_i = min(g_i, l_i), so a row whose simulations all tie the observed value has p = 1. greater: m = 1, M = g…",
+  "llms": "Formula p_i = min(m (M_i + 1), P + 1) / (P + 1); g_i = #{p : s_ip >= s_i}, l_i = #{p : s_ip <= s_i}; the default two-sided tail has m = 2 and M_i = min(g_i, l_i), so a row whose simulations all tie the observed value has p = 1. greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_ip - mean| >= |s_i - mean|}; directed: m = 1, M = min(g, l). Each simulation s_ip assigns k_i distinct other rows (Philox draw, partial Fisher-Yates) to the focus row neighbor slots; the observed and simulated terms use the same f32 expression. The p-values lie on the grid k/(P+1).\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>local-permutation-pseudo-p</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{pValue}{p_i}&amp;=\\frac{\\min\\left(m\\,(\\term{count}{M_i}+1),\\;\\term{permutations}{P}+1\\right)}{\\term{permutations}{P}+1},\n&amp;\\term{count}{M_i}&amp;=\\min(\\term{greater}{g_i},\\term{lesser}{l_i})\\\\\n\\term{greater}{g_i}&amp;=\\#\\{\\term{simulated}{s_{ip}}\\ge\\term{observed}{s_i}\\},\n&amp;\\term{lesser}{l_i}&amp;=\\#\\{\\term{simulated}{s_{ip}}\\le\\term{observed}{s_i}\\}\n\\end{aligned}</pre><p class=\"lens-ascii\">p_i = min(m (M_i + 1), P + 1) / (P + 1); g_i = #{p : s_ip &gt;= s_i}, l_i = #{p : s_ip &lt;= s_i}; the default two-sided tail has m = 2 and M_i = min(g_i, l_i), so a row whose simulations all tie the observed value has p = 1. greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_ip - mean| &gt;= |s_i - mean|}; directed: m = 1, M = min(g, l). Each simulation s_ip assigns k_i distinct other rows (Philox draw, partial Fisher-Yates) to the focus row neighbor slots; the observed and simulated terms use the same f32 expression. The p-values lie on the grid k/(P+1).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-classify\" data-value=\"pValue\">pValue · output · pValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:contiguity-weights-pair-counts\" data-value=\"count\">exceedance count · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-permute\" data-value=\"permutations\">permutations · parameter · permutations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-permute\" data-value=\"greater\">greater · intermediate · greater</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-permute\" data-value=\"lesser\">lesser · intermediate · lesser</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-observed\" data-value=\"simulated\">simulated · intermediate · simulated</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-permutation-test-compiled:local-permutation-test-observed\" data-value=\"observed\">observed · intermediate · observed</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "pValue",
+        "output",
+        "pValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "exceedance count",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "permutations",
+        "parameter",
+        "permutations",
+        "—",
+        "metadata"
+      ],
+      [
+        "greater",
+        "intermediate",
+        "greater",
+        "—",
+        "metadata"
+      ],
+      [
+        "lesser",
+        "intermediate",
+        "lesser",
+        "—",
+        "metadata"
+      ],
+      [
+        "simulated",
+        "intermediate",
+        "simulated",
+        "—",
+        "metadata"
+      ],
+      [
+        "observed",
+        "intermediate",
+        "observed",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{pValue}{p_i}&=\\frac{\\min\\left(m\\,(\\term{count}{M_i}+1),\\;\\term{permutations}{P}+1\\right)}{\\term{permutations}{P}+1},\n&\\term{count}{M_i}&=\\min(\\term{greater}{g_i},\\term{lesser}{l_i})\\\\\n\\term{greater}{g_i}&=\\#\\{\\term{simulated}{s_{ip}}\\ge\\term{observed}{s_i}\\},\n&\\term{lesser}{l_i}&=\\#\\{\\term{simulated}{s_{ip}}\\le\\term{observed}{s_i}\\}\n\\end{aligned}",
+    "ascii": "p_i = min(m (M_i + 1), P + 1) / (P + 1); g_i = #{p : s_ip >= s_i}, l_i = #{p : s_ip <= s_i}; the default two-sided tail has m = 2 and M_i = min(g_i, l_i), so a row whose simulations all tie the observed value has p = 1. greater: m = 1, M = g; lesser: m = 1, M = l; folded: m = 1, M = #{|s_ip - mean| >= |s_i - mean|}; directed: m = 1, M = min(g, l). Each simulation s_ip assigns k_i distinct other rows (Philox draw, partial Fisher-Yates) to the focus row neighbor slots; the observed and simulated terms use the same f32 expression. The p-values lie on the grid k/(P+1).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    },
+    {
+      "guardId": "pseudo-p-grid",
+      "label": "Pseudo-p grid",
+      "blocks": [
+        "exact-p"
+      ],
+      "status": "pass",
+      "reason": "achievable grid k/(99+1) = k/100; floor 1/100 = 0.01"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:22:47.295Z",
+    "runId": "run-072cd56f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-072cd56f",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

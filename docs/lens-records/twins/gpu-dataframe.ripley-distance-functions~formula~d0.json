@@ -1,0 +1,139 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-distance-functions",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.ripley-distance-functions",
+  "viewId": "formula-card",
+  "caption": "Formula border: G=#events(b>=r and NN<=r)/#events(b>=r); F=#references(b>=r and NN<=r)/#references(b>=r); J=(1-G)/(1-F). radii: 200. values read back from the GPU run.",
+  "description": "Formula border: G=#events(b>=r and NN<=r)/#events(b>=r); F=#references(b>=r and NN<=r)/#references(b>=r); J=(1-G)/(1-F). radii: 200. values read back from the GPU run.",
+  "llms": "Formula border: G=#events(b>=r and NN<=r)/#events(b>=r); F=#references(b>=r and NN<=r)/#references(b>=r); J=(1-G)/(1-F).\n\n- radii: 200\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "radii",
+    "value": "200"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPURipleyDistanceFunctions</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{G(r)}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{r}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]},\\quad \\term{f}{F(r)}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{J(r)}=\\frac{1-\\term{g}{G(r)}}{1-\\term{f}{F(r)}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{0.818}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{200}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{200}]},\\quad \\term{f}{0.0501807}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{0.191615}=\\frac{1-\\term{g}{0.818}}{1-\\term{f}{0.0501807}}</pre><p class=\"lens-ascii\">border: G=#events(b&gt;=r and NN&lt;=r)/#events(b&gt;=r); F=#references(b&gt;=r and NN&lt;=r)/#references(b&gt;=r); J=(1-G)/(1-F).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"nearestDistance\">nearestDistance · intermediate · nearestDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"pairDistance\">pairDistance · intermediate · pairDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-g-pairs\" data-value=\"borderDistance\">borderDistance · intermediate · borderDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"radii\">radii · output · radii<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"g\">g · output · g<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"f\">f · output · f<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"j\">j · output · j<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-f-reference\" data-value=\"referenceHits\">referenceHits · intermediate · referenceAccumulators</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.ripley-distance-functions-compiled:ripley-distance-functions-finish\" data-value=\"referenceEligible\">referenceEligible · intermediate · denominator</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "nearestDistance",
+        "intermediate",
+        "nearestDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "pairDistance",
+        "intermediate",
+        "pairDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "borderDistance",
+        "intermediate",
+        "borderDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "radii",
+        "output",
+        "radii",
+        "200",
+        "readback"
+      ],
+      [
+        "g",
+        "output",
+        "g",
+        "0.8180000185966492",
+        "readback"
+      ],
+      [
+        "f",
+        "output",
+        "f",
+        "0.05018065124750137",
+        "readback"
+      ],
+      [
+        "j",
+        "output",
+        "j",
+        "0.19161535799503326",
+        "readback"
+      ],
+      [
+        "referenceHits",
+        "intermediate",
+        "referenceAccumulators",
+        "—",
+        "metadata"
+      ],
+      [
+        "referenceEligible",
+        "intermediate",
+        "denominator",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{nearestDistance}{d_i}=\\min_{j\\ne i}\\term{pairDistance}{d_{ij}},\\quad \\term{g}{G(r)}=\\frac{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]\\mathbf{1}[\\term{nearestDistance}{d_i}\\leq\\term{radii}{r}]}{\\sum_{\\text{events}}\\mathbf{1}[\\term{borderDistance}{b_i}\\geq\\term{radii}{r}]},\\quad \\term{f}{F(r)}=\\frac{\\term{referenceHits}{\\#\\{u:b_u\\geq r,d_u\\leq r\\}}}{\\term{referenceEligible}{\\#\\{u:b_u\\geq r\\}}},\\quad \\term{j}{J(r)}=\\frac{1-\\term{g}{G(r)}}{1-\\term{f}{F(r)}}",
+    "ascii": "border: G=#events(b>=r and NN<=r)/#events(b>=r); F=#references(b>=r and NN<=r)/#references(b>=r); J=(1-G)/(1-F).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.866Z",
+    "runId": "run-3a1dcea5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3a1dcea5",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

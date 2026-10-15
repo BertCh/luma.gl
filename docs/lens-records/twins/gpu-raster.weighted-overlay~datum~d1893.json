@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.weighted-overlay",
+  "rung": "datum",
+  "datum": 1893,
+  "size": "full",
+  "scenarioId": "gpu-raster.weighted-overlay",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1893. suitabilityScore: 0.6499999761581421. values read back from the GPU run. weighted-overlay: 4 quantities.",
+  "description": "Receipt of grid cells 1893. suitabilityScore: 0.6499999761581421. values read back from the GPU run. weighted-overlay: 4 quantities.",
+  "llms": "Receipt of grid cells 1893\n\n- suitabilityScore: 0.6499999761581421\n- weighted-overlay: 4 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "suitabilityScore",
+    "value": "0.6499999761581421"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1893</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"weighted-overlay\"><tr><th scope=\"rowgroup\" colspan=\"5\">weighted-overlay</th></tr><tr data-provenance=\"readback\"><td>weighted-overlay</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-weighted-overlay-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1089</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>weighted-overlay</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-weighted-overlay-snapshots-overlayLandCover-0\" title=\"WorldCover code; weight 0.7\">overlayLandCover</button></td><td>50</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>weighted-overlay</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-weighted-overlay-snapshots-overlayElevation-0\" title=\"elevation (m); weight 0.3\">overlayElevation</button></td><td>1089</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>weighted-overlay</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-weighted-overlay-snapshots-suitabilityScore-0\" title=\"suitability (0–1), land cover 70%, elevation 30%\">suitabilityScore</button></td><td>0.6499999761581421</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-weighted-overlay-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-weighted-overlay-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-weighted-overlay-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1828\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1828: 1093.4000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1828</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1829\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1829: 1092.5999755859375</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1829</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1830\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1830: 1091.5</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1830</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1892\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1892: 1090.0999755859375</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1892</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1893\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1893: 1089</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1893</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1894\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1894: 1088.199951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1894</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1956\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1956: 1086.5999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1956</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1957\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1957: 1086.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1957</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1958\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1958: 1086.0999755859375</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1958</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weighted-overlay",
+        "landscapeElevation",
+        "1089",
+        "0",
+        "readback"
+      ],
+      [
+        "weighted-overlay",
+        "overlayLandCover",
+        "50",
+        "0",
+        "readback"
+      ],
+      [
+        "weighted-overlay",
+        "overlayElevation",
+        "1089",
+        "0",
+        "readback"
+      ],
+      [
+        "weighted-overlay",
+        "suitabilityScore",
+        "0.6499999761581421",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.315Z",
+    "runId": "run-98b4be5e",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-98b4be5e",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1893
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

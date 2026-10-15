@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-frame-projection",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-frame-projection",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of vertex 0. projectedRoads: 732.69189453125, -65.07313537597656. values read back from the GPU run. gpu-local-frame-projection: 3 quantities.",
+  "description": "Receipt of vertex 0. projectedRoads: 732.69189453125, -65.07313537597656. values read back from the GPU run. gpu-local-frame-projection: 3 quantities.",
+  "llms": "Receipt of vertex 0\n\n- projectedRoads: 732.69189453125, -65.07313537597656\n- gpu-local-frame-projection: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "projectedRoads",
+    "value": "732.69189453125, -65.07313537597656"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of vertex 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"gpu-local-frame-projection\"><tr><th scope=\"rowgroup\" colspan=\"5\">gpu-local-frame-projection</th></tr><tr data-provenance=\"readback\"><td>gpu-local-frame-projection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-frame-projection-snapshots-roads-0\">roads</button></td><td>-87.66222381591797, 41.907958984375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>gpu-local-frame-projection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-frame-projection-snapshots-validity-0\" title=\"projection validity: 1 accepted, 0 outside bounds (unitless)\">validity</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>gpu-local-frame-projection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-frame-projection-snapshots-projectedRoads-0\" title=\"local azimuthal-equidistant metres; input uses geographic degrees, output uses a different coordinate model\">projectedRoads</button></td><td>732.69189453125, -65.07313537597656</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "gpu-local-frame-projection",
+        "roads",
+        "-87.66222381591797, 41.907958984375",
+        "0",
+        "readback"
+      ],
+      [
+        "gpu-local-frame-projection",
+        "validity",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "gpu-local-frame-projection",
+        "projectedRoads",
+        "732.69189453125, -65.07313537597656",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "fail",
+      "reason": "metric glyphs need projected coordinates or a geodesic metric"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.784Z",
+    "runId": "run-440b0a1c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-440b0a1c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

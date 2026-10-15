@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Stably sorts each state's stations by rainfall, descending, in one batched dispatch.
+
+::lens{scenario=gpu-core.segmented-sort rung=result caption="Within state AR, the wettest station (13.0 mm) comes first; other states sort independently."}
+
 `GPUSegmentedSort` stably sorts many independent key/value domains that already reside in four
 packed GPU buffers. Each segment remains a separate comparison domain, but equal-width segments
 share one compute dispatch. One hundred three-row sorts therefore require one graph node and one
@@ -16,6 +20,16 @@ The primitive does not pack streaming chunks, allocate physical GPU buffers, sub
 read results back. Its inputs and outputs remain caller-owned `GraphDataView<'uint32'>` views.
 
 <GPUOperationContract operation="gpu-segmented-sort" />
+
+#### How it computes
+
+{/* lens:GPUSegmentedSort */}
+
+::lens{scenario=gpu-core.segmented-sort rung=kernel caption="Inspect the bitonic kernels, widths 2 to 256, that sort within state boundaries."}
+
+::lens{scenario=gpu-core.segmented-sort rung=graph caption="Trace the bitonic dispatches that order every state segment in one graph node."}
+
+::lens{scenario=gpu-core.segmented-sort rung=datum caption="Follow state AR's wettest station, 13.0 mm, to the front of its segment."}
 
 ## When to use segmented sorting
 

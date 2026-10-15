@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-frame-projection",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-frame-projection",
+  "viewId": "formula-card",
+  "caption": "Formula For a valid selected patch, p = destinationOrigin + sum(i+j<=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shade…",
+  "description": "Formula For a valid selected patch, p = destinationOrigin + sum(i+j<=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shade…",
+  "llms": "Formula For a valid selected patch, p = destinationOrigin + sum(i+j<=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shader uses Horner evaluation (double-single for precise inputs); invalid or out-of-bounds rows output zero and validity 0.\n\n- bound symbols: 0/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "0/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.local-frame-projection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{projected}{p}=\\term{origin}{o}+\\sum_{\\term{index}{i}+\\term{index}{j}\\le3}\\term{coefficients}{c_{ij}}\\term{normalized}{u}^{\\term{index}{i}}\\term{normalized}{v}^{\\term{index}{j}}</pre><p class=\"lens-ascii\">For a valid selected patch, p = destinationOrigin + sum(i+j&lt;=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shader uses Horner evaluation (double-single for precise inputs); invalid or out-of-bounds rows output zero and validity 0.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"projected\">projected · output · unknown — wgsl projected not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"origin\">Patch destination offset in frame meters · parameter · unknown — wgsl destinationOffset not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"coefficients\">coefficients · parameter · unknown — wgsl projectionPlans not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"normalized\">normalized · input · unknown — wgsl normalized not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "projected",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Patch destination offset in frame meters",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "coefficients",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "normalized",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "index",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{projected}{p}=\\term{origin}{o}+\\sum_{\\term{index}{i}+\\term{index}{j}\\le3}\\term{coefficients}{c_{ij}}\\term{normalized}{u}^{\\term{index}{i}}\\term{normalized}{v}^{\\term{index}{j}}",
+    "ascii": "For a valid selected patch, p = destinationOrigin + sum(i+j<=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shader uses Horner evaluation (double-single for precise inputs); invalid or out-of-bounds rows output zero and validity 0.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "fail",
+      "reason": "metric glyphs need projected coordinates or a geodesic metric"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.784Z",
+    "runId": "run-440b0a1c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-440b0a1c",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

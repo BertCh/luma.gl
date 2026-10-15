@@ -1,0 +1,118 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.neighborhood-summary",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.neighborhood-summary",
+  "viewId": "formula-card",
+  "caption": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to a…",
+  "description": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to a…",
+  "llms": "Formula mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>neighborhood-summary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{mean}{\\bar{x}_i}&amp;=\\frac{\\term{weightedSum}{\\sum_s w_s x_s}}{\\term{weightSum}{W_i}},\n&amp;\\term{weightSum}{W_i}&amp;=\\sum_s \\term{weight}{w_s}\\\\\n\\term{entropy}{H_i}&amp;=-\\sum_c \\term{share}{p_c}\\ln p_c,\n&amp;\\term{share}{p_c}&amp;=\\frac{\\term{frequency}{f_c}}{W_i},\n&amp;\\term{frequency}{f_c}&amp;=\\sum_{s:\\,c_s=c} w_s\n\\end{aligned}</pre><p class=\"lens-ascii\">mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"mean\">mean · output · mean</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weightedSum\">weightedSum · intermediate · weightedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-numeric\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"entropy\">entropy · output · entropyTotal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"share\">share · intermediate · share</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.neighborhood-summary-compiled:neighborhood-summary-categorical\" data-value=\"frequency\">frequency · intermediate · frequency</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mean",
+        "output",
+        "mean",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightedSum",
+        "intermediate",
+        "weightedSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightSum",
+        "intermediate",
+        "weightSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "entropy",
+        "output",
+        "entropyTotal",
+        "—",
+        "metadata"
+      ],
+      [
+        "share",
+        "intermediate",
+        "share",
+        "—",
+        "metadata"
+      ],
+      [
+        "frequency",
+        "intermediate",
+        "frequency",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{mean}{\\bar{x}_i}&=\\frac{\\term{weightedSum}{\\sum_s w_s x_s}}{\\term{weightSum}{W_i}},\n&\\term{weightSum}{W_i}&=\\sum_s \\term{weight}{w_s}\\\\\n\\term{entropy}{H_i}&=-\\sum_c \\term{share}{p_c}\\ln p_c,\n&\\term{share}{p_c}&=\\frac{\\term{frequency}{f_c}}{W_i},\n&\\term{frequency}{f_c}&=\\sum_{s:\\,c_s=c} w_s\n\\end{aligned}",
+    "ascii": "mean_i = sum_s w_s x_s / W_i; W_i = sum_s w_s; H_i = -sum_c p_c ln p_c; p_c = f_c / W_i; f_c = sum of w_s over members with category c. Members s of row i are the focal row (only with includeFocal) and the CSR slots with positive weight to another unmasked row (numeric statistics also need a finite value). With row-standardised weights the slot weights are re-divided by the sum of the active slot weights. NaN when W_i = 0; zero-weight slots are not members.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.415Z",
+    "runId": "run-10a38e04",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-10a38e04",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

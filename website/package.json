@@ -31,6 +31,7 @@
     "@stackblitz/sdk": "^1.11.0",
     "@vis.gl/docusaurus-website": "2.0.0-beta.1",
     "clsx": "^1.1.1",
+    "katex": "^0.16.21",
     "maplibre-gl": "^5.13.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -41,6 +42,7 @@
     "@docusaurus/tsconfig": "^3.10.2",
     "docusaurus-mdx-checker": "^3.0.0",
     "docusaurus-plugin-typedoc": "^1.4.2",
+    "hast-util-from-html": "^2.0.3",
     "typedoc": "^0.28.19",
     "typedoc-plugin-markdown": "^4.10.0",
     "typescript": "6.0.3"

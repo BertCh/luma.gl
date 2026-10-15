@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-line-graph",
+  "rung": "datum",
+  "datum": 5,
+  "size": "full",
+  "scenarioId": "gpu-network.network-line-graph",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of turn (line-graph arc) 5. lineWeights: 44.79985046386719. values read back from the GPU run. representation: 2 quantities.",
+  "description": "Receipt of turn (line-graph arc) 5. lineWeights: 44.79985046386719. values read back from the GPU run. representation: 2 quantities.",
+  "llms": "Receipt of turn (line-graph arc) 5\n\n- lineWeights: 44.79985046386719\n- representation: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "lineWeights",
+    "value": "44.79985046386719"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of turn (line-graph arc) 5</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"representation\"><tr><th scope=\"rowgroup\" colspan=\"5\">representation</th></tr><tr data-provenance=\"readback\"><td>representation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"lineNeighbors\" title=\"GPU next edge of each legal turn (first arcCount rows)\">lineNeighbors</button></td><td>1836</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>representation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"lineWeights\" title=\"GPU turn cost in seconds: travel time of the next edge plus turn cost\">lineWeights</button></td><td>44.79985046386719</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.line-graph.arc-weight</h4><div><pre class=\"lens-tex\">\\term{lineWeights}{44.7999}=\\begin{cases}\\term{baseCost}{w_f}+\\max(\\term{getTurnCost}{p_{ef}},0)&amp;\\term{baseCost}{w_f}\\ge0\\\\-1&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">lineWeights[arc e -&gt; f] = baseCost &gt;= 0 ? baseCost + max(turnCost, 0) : -1, where baseCost = weights[f] is the cost of the NEXT edge f (not of the entering edge e) and turnCost = getTurnCost(e, f) = angleCost * |angle| plus the left or right extra beyond straightAngle; a turn with |angle| &gt;= uTurnAngle pays uTurnCost instead, and a negative uTurnCost bans it (no arc is emitted). Banned pairs are removed too, so every emitted arc has turnCost &gt;= 0. The angle is between the great-circle arrival bearing of e and the departure bearing of f at the turn node, positive to the left. Arcs of one edge are listed in ascending next-edge order.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "representation",
+        "lineNeighbors",
+        "1836",
+        "0",
+        "readback"
+      ],
+      [
+        "representation",
+        "lineWeights",
+        "44.79985046386719",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.666Z",
+    "runId": "run-dbd219e1",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients lineOffsets, lineNeighbors, lineWeights, arcCount, overflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-dbd219e1",
+    "rung": "datum",
+    "bindings": {
+      "entity": 5
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

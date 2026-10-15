@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-grouped-aggregation-query",
+  "rung": "formula",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-grouped-aggregation-query",
+  "viewId": "formula-card",
+  "caption": "Formula sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition. sum: 370. values read…",
+  "description": "Formula sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition. sum: 370. values read…",
+  "llms": "Formula sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition\n\n- sum: 370\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sum",
+    "value": "370"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUDataFrameGroupedAggregationQuery</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{sum}{S}_g = \\sum_{i:\\term{key}{k}_i=g,\\;\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i</pre><p class=\"lens-ascii\">sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{sum}{370}_g = \\sum_{i:\\term{key}{k}_i=g,\\;\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i</pre><p class=\"lens-ascii\">sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-grouped-aggregation-query-compiled:gpu-dataframe.data-frame-grouped-aggregation-query-gpu-dataframe-query-group-metric-1-clear\" data-value=\"sum\">sum · output · outputValues<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-grouped-aggregation-query-compiled:gpu-dataframe.data-frame-grouped-aggregation-query-gpu-dataframe-query-visibility-batch-0-compact-scan-level-0-scan\" data-value=\"value\">value · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-grouped-aggregation-query-compiled:gpu-dataframe.data-frame-grouped-aggregation-query-gpu-dataframe-query-group-metric-0-chunk-0-local\" data-value=\"accepted\">accepted · input · selectionMask</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.data-frame-grouped-aggregation-query-compiled:gpu-dataframe.data-frame-grouped-aggregation-query-gpu-dataframe-query-group-metric-0-chunk-0-local\" data-value=\"key\">key · input · groupKeys</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sum",
+        "output",
+        "outputValues",
+        "370",
+        "readback"
+      ],
+      [
+        "value",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "accepted",
+        "input",
+        "selectionMask",
+        "—",
+        "metadata"
+      ],
+      [
+        "key",
+        "input",
+        "groupKeys",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{sum}{S}_g = \\sum_{i:\\term{key}{k}_i=g,\\;\\term{accepted}{a}_i\\ne0}\\term{value}{x}_i",
+    "ascii": "sum[g] = sum(value[i] for accepted rows with key[i] = g in the dense group domain); null when no finite, selected, valid values contribute; stored sum is zero for empty input; float32 accumulation rounds each addition",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.283Z",
+    "runId": "run-430590d2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-430590d2",
+    "rung": "formula",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.particle-advection",
+  "rung": "datum",
+  "datum": 11,
+  "size": "full",
+  "scenarioId": "gpu-raster.particle-advection",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of particles 11. particleSpeeds: 0.13914059102535248. values read back from the GPU run. advection-11: 1 quantities.",
+  "description": "Receipt of particles 11. particleSpeeds: 0.13914059102535248. values read back from the GPU run. advection-11: 1 quantities.",
+  "llms": "Receipt of particles 11\n\n- particleSpeeds: 0.13914059102535248\n- advection-11: 1 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "particleSpeeds",
+    "value": "0.13914059102535248"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of particles 11</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"advection-11\"><tr><th scope=\"rowgroup\" colspan=\"5\">advection-11</th></tr><tr data-provenance=\"readback\"><td>advection-11</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-particle-advection-snapshots-particleSpeeds-0\" title=\"wind speed at the final position (deg/h)\">particleSpeeds</button></td><td>0.13914059102535248</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "advection-11",
+        "particleSpeeds",
+        "0.13914059102535248",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.505Z",
+    "runId": "run-79dc3d3a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-79dc3d3a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 11
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

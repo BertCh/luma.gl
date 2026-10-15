@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-geary",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-geary",
+  "viewId": "formula-card",
+  "caption": "Formula c_i = sum_j w_ij (x_i - x_j)^2 / sigma^2, over active neighbors j; sigma^2 is the population variance of the analysis rows, so this is the sum of squared differences of standardized values. Row-standardized weights are divided by what remain…",
+  "description": "Formula c_i = sum_j w_ij (x_i - x_j)^2 / sigma^2, over active neighbors j; sigma^2 is the population variance of the analysis rows, so this is the sum of squared differences of standardized values. Row-standardized weights are divided by what remain…",
+  "llms": "Formula c_i = sum_j w_ij (x_i - x_j)^2 / sigma^2, over active neighbors j; sigma^2 is the population variance of the analysis rows, so this is the sum of squared differences of standardized values. Row-standardized weights are divided by what remains of the row sum, so masked neighbors drop out. Small c_i means similar neighbors. NaN for excluded rows, for islands under islands = exclude (0 under keep) and for a constant variable. There is no analytic p-value or class.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>local-geary</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{result}{c_i}&amp;=\\frac{\\term{sum}{\\sum_j w_{ij}(x_i-x_j)^2}}{\\term{variance}{\\sigma^2}},\n&amp;\\term{sum}{\\sum_j w_{ij}(x_i-x_j)^2}&amp;=\\sum_j\\term{weight}{w_{ij}}\\left(\\term{focus}{x_i}-\\term{other}{x_j}\\right)^2\n\\end{aligned}</pre><p class=\"lens-ascii\">c_i = sum_j w_ij (x_i - x_j)^2 / sigma^2, over active neighbors j; sigma^2 is the population variance of the analysis rows, so this is the sum of squared differences of standardized values. Row-standardized weights are divided by what remains of the row sum, so masked neighbors drop out. Small c_i means similar neighbors. NaN for excluded rows, for islands under islands = exclude (0 under keep) and for a constant variable. There is no analytic p-value or class.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:local-geary-statistic\" data-value=\"result\">result · output · result</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:contiguity-weights-pair-total\" data-value=\"sum\">sum · intermediate · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:local-geary-moments-variance\" data-value=\"variance\">variance · intermediate · variance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:local-geary-row-states\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:local-geary-center\" data-value=\"focus\">focus · intermediate · focus</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.local-geary-compiled:contiguity-weights-pair-counts\" data-value=\"other\">other · intermediate · other</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "output",
+        "result",
+        "—",
+        "metadata"
+      ],
+      [
+        "sum",
+        "intermediate",
+        "sum",
+        "—",
+        "metadata"
+      ],
+      [
+        "variance",
+        "intermediate",
+        "variance",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "focus",
+        "intermediate",
+        "focus",
+        "—",
+        "metadata"
+      ],
+      [
+        "other",
+        "intermediate",
+        "other",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{result}{c_i}&=\\frac{\\term{sum}{\\sum_j w_{ij}(x_i-x_j)^2}}{\\term{variance}{\\sigma^2}},\n&\\term{sum}{\\sum_j w_{ij}(x_i-x_j)^2}&=\\sum_j\\term{weight}{w_{ij}}\\left(\\term{focus}{x_i}-\\term{other}{x_j}\\right)^2\n\\end{aligned}",
+    "ascii": "c_i = sum_j w_ij (x_i - x_j)^2 / sigma^2, over active neighbors j; sigma^2 is the population variance of the analysis rows, so this is the sum of squared differences of standardized values. Row-standardized weights are divided by what remains of the row sum, so masked neighbors drop out. Small c_i means similar neighbors. NaN for excluded rows, for islands under islands = exclude (0 under keep) and for a constant variable. There is no analytic p-value or class.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:22:47.098Z",
+    "runId": "run-19485d24",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-19485d24",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

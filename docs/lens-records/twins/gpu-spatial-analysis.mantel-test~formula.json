@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.mantel-test",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.mantel-test",
+  "viewId": "formula-card",
+  "caption": "Formula r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N <= 1 or a variance is 0. p = (1 + #{permutations s w…",
+  "description": "Formula r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N <= 1 or a variance is 0. p = (1 + #{permutations s w…",
+  "llms": "Formula r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N <= 1 or a variance is 0. p = (1 + #{permutations s with r_s >= r}) / (P + 1): one-sided (positive space-time correlation), +1 counts the observed value, ties count as exceedances.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.mantel-test</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{r}{r} = \\frac{\\term{covariance}{S_{xy}}}{\\sqrt{\\term{varianceX}{S_{xx}}\\,\\term{varianceY}{S_{yy}}}}, \\quad S_{xy} = \\sum xy - \\frac{\\sum x \\sum y}{\\term{pairCount}{N}}, \\qquad \\term{p}{p} = \\frac{1 + \\#\\{s : r_s \\ge r\\}}{P + 1}</pre><p class=\"lens-ascii\">r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i &lt; j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N &lt;= 1 or a variance is 0. p = (1 + #{permutations s with r_s &gt;= r}) / (P + 1): one-sided (positive space-time correlation), +1 counts the observed value, ties count as exceedances.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:mantel-test-reduce\" data-value=\"r\">r · output · result</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:mantel-test-reduce\" data-value=\"covariance\">S_xy · intermediate · covariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:mantel-test-reduce\" data-value=\"varianceX\">S_xx · intermediate · varianceX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:mantel-test-reduce\" data-value=\"varianceY\">S_yy · intermediate · varianceY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:neighbor-search-count\" data-value=\"pairCount\">N · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-mantel-test-compiled:mantel-test-summary\" data-value=\"p\">p · output · pGreater</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "r",
+        "output",
+        "result",
+        "—",
+        "metadata"
+      ],
+      [
+        "S_xy",
+        "intermediate",
+        "covariance",
+        "—",
+        "metadata"
+      ],
+      [
+        "S_xx",
+        "intermediate",
+        "varianceX",
+        "—",
+        "metadata"
+      ],
+      [
+        "S_yy",
+        "intermediate",
+        "varianceY",
+        "—",
+        "metadata"
+      ],
+      [
+        "N",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "p",
+        "output",
+        "pGreater",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{r}{r} = \\frac{\\term{covariance}{S_{xy}}}{\\sqrt{\\term{varianceX}{S_{xx}}\\,\\term{varianceY}{S_{yy}}}}, \\quad S_{xy} = \\sum xy - \\frac{\\sum x \\sum y}{\\term{pairCount}{N}}, \\qquad \\term{p}{p} = \\frac{1 + \\#\\{s : r_s \\ge r\\}}{P + 1}",
+    "ascii": "r = S_xy / sqrt(S_xx S_yy) over the N listed pairs i < j, x = spatial distance, y = |t_i - t_j|; S_xy = sum xy - sum x sum y / N, S_xx = sum xx - (sum x)^2 / N, S_yy likewise. r = 0 when N <= 1 or a variance is 0. p = (1 + #{permutations s with r_s >= r}) / (P + 1): one-sided (positive space-time correlation), +1 counts the observed value, ties count as exceedances.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:00:10.540Z",
+    "runId": "run-40844b92",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-40844b92",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

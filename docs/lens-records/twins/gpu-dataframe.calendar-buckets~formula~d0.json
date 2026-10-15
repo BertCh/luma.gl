@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.calendar-buckets",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.calendar-buckets",
+  "viewId": "formula-card",
+  "caption": "Formula local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t). hour: 8. values read back from the GPU run.",
+  "description": "Formula local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t). hour: 8. values read back from the GPU run.",
+  "llms": "Formula local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).\n\n- hour: 8\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "hour",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUCalendarBuckets</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{days}{d}=\\left\\lfloor\\frac{\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)}}{86400000}\\right\\rfloor,\\quad \\term{hour}{h}=\\left\\lfloor\\frac{(\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)})\\bmod86400000}{3600000}\\right\\rfloor,\\quad \\term{weekday}{v}=(\\term{days}{d}+3-\\term{firstDay}{f})\\bmod7,\\quad \\term{hourWeekdayCounts}{C_{24v+h}}=\\sum_{\\text{valid rows}}\\mathbf{1}[\\term{weekday}{v_{\\rm row}}=\\term{weekday}{v}\\land\\term{hour}{h_{\\rm row}}=\\term{hour}{h}]</pre><p class=\"lens-ascii\">local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{days}{d}=\\left\\lfloor\\frac{\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)}}{86400000}\\right\\rfloor,\\quad \\term{hour}{8}=\\left\\lfloor\\frac{(\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)})\\bmod86400000}{3600000}\\right\\rfloor,\\quad \\term{weekday}{6}=(\\term{days}{d}+3-\\term{firstDay}{f})\\bmod7,\\quad \\term{hourWeekdayCounts}{C_{24v+h}}=\\sum_{\\text{valid rows}}\\mathbf{1}[\\term{weekday}{6}=\\term{weekday}{6}\\land\\term{hour}{8}=\\term{hour}{8}]</pre><p class=\"lens-ascii\">local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"days\">days · intermediate · days</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"timestamps\">timestamps · input · timestamps</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"offsetMilliseconds\">offsetMilliseconds · intermediate · offsetMilliseconds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"hour\">hour · output · hour<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"weekday\">weekday · output · weekday<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"firstDay\">firstDay · parameter · firstDay</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.calendar-buckets-compiled:calendar-buckets-decode-0\" data-value=\"hourWeekdayCounts\">hourWeekdayCounts · output · hourWeekdayCountsOut</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "days",
+        "intermediate",
+        "days",
+        "—",
+        "metadata"
+      ],
+      [
+        "timestamps",
+        "input",
+        "timestamps",
+        "—",
+        "metadata"
+      ],
+      [
+        "offsetMilliseconds",
+        "intermediate",
+        "offsetMilliseconds",
+        "—",
+        "metadata"
+      ],
+      [
+        "hour",
+        "output",
+        "hour",
+        "8",
+        "readback"
+      ],
+      [
+        "weekday",
+        "output",
+        "weekday",
+        "6",
+        "readback"
+      ],
+      [
+        "firstDay",
+        "parameter",
+        "firstDay",
+        "—",
+        "metadata"
+      ],
+      [
+        "hourWeekdayCounts",
+        "output",
+        "hourWeekdayCountsOut",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "readback",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{days}{d}=\\left\\lfloor\\frac{\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)}}{86400000}\\right\\rfloor,\\quad \\term{hour}{h}=\\left\\lfloor\\frac{(\\term{timestamps}{t}+\\term{offsetMilliseconds}{\\Delta(t)})\\bmod86400000}{3600000}\\right\\rfloor,\\quad \\term{weekday}{v}=(\\term{days}{d}+3-\\term{firstDay}{f})\\bmod7,\\quad \\term{hourWeekdayCounts}{C_{24v+h}}=\\sum_{\\text{valid rows}}\\mathbf{1}[\\term{weekday}{v_{\\rm row}}=\\term{weekday}{v}\\land\\term{hour}{h_{\\rm row}}=\\term{hour}{h}]",
+    "ascii": "local=t+offsetMilliseconds(t); day=floor(local/86400000); hour=floor(mod(local,86400000)/3600000); weekday=mod(day+3-firstDay,7); count[weekday*24+hour]++; transitions use upper_bound(t).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.707Z",
+    "runId": "run-5e2c801a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5e2c801a",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

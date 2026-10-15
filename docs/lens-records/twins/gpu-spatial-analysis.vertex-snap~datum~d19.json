@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.vertex-snap",
+  "rung": "datum",
+  "datum": 19,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.vertex-snap",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of park vertex 19. snappedParks: 5994.22021484375, 17365.869140625. values read back from the GPU run. vertex-snap: 3 quantities.",
+  "description": "Receipt of park vertex 19. snappedParks: 5994.22021484375, 17365.869140625. values read back from the GPU run. vertex-snap: 3 quantities.",
+  "llms": "Receipt of park vertex 19\n\n- snappedParks: 5994.22021484375, 17365.869140625\n- vertex-snap: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "snappedParks",
+    "value": "5994.22021484375, 17365.869140625"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park vertex 19</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"vertex-snap\"><tr><th scope=\"rowgroup\" colspan=\"5\">vertex-snap</th></tr><tr data-provenance=\"readback\"><td>vertex-snap</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-vertex-snap-snapshots-positions-0\">positions</button></td><td>5982.16015625, 17359.189453125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>vertex-snap</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-vertex-snap-snapshots-referenceRows-0\" title=\"row of the community-area vertex the park vertex moved to; 0xffffffff when it stayed\">referenceRows</button></td><td>49</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>vertex-snap</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-vertex-snap-snapshots-snappedParks-0\" title=\"park vertices after snapping to area vertices closer than 50 m\">snappedParks</button></td><td>5994.22021484375, 17365.869140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "vertex-snap",
+        "positions",
+        "5982.16015625, 17359.189453125",
+        "0",
+        "readback"
+      ],
+      [
+        "vertex-snap",
+        "referenceRows",
+        "49",
+        "0",
+        "readback"
+      ],
+      [
+        "vertex-snap",
+        "snappedParks",
+        "5994.22021484375, 17365.869140625",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.881Z",
+    "runId": "run-a273d8d2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a273d8d2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 19
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

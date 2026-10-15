@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-grid-path",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-grid-path",
+  "viewId": "formula-card",
+  "caption": "Formula Distance component for valid origin-anchored local IJK coordinates u and v: Delta = u - v; d = max(Delta.x, Delta.y, Delta.z) - min(Delta.x, Delta.y, Delta.z). This is the maximum component after IJK normalization. Invalid/masked local conve…",
+  "description": "Formula Distance component for valid origin-anchored local IJK coordinates u and v: Delta = u - v; d = max(Delta.x, Delta.y, Delta.z) - min(Delta.x, Delta.y, Delta.z). This is the maximum component after IJK normalization. Invalid/masked local conve…",
+  "llms": "Formula Distance component for valid origin-anchored local IJK coordinates u and v: Delta = u - v; d = max(Delta.x, Delta.y, Delta.z) - min(Delta.x, Delta.y, Delta.z). This is the maximum component after IJK normalization. Invalid/masked local conversions write 0xffffffff. Optional paths use sequential integer cube rounding and unique-neighbor lookup, not this closed-form distance alone; failed path lookup writes counts=0 while retaining distance. Successful stored prefixes report distance+1 even when capacity truncates them.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-grid-path</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{difference}{\\Delta}=\\term{originLocal}{u}-\\term{destinationLocal}{v},\\qquad \\term{distance}{d}=\\max(\\term{difference}{\\Delta_x},\\term{difference}{\\Delta_y},\\term{difference}{\\Delta_z})-\\min(\\term{difference}{\\Delta_x},\\term{difference}{\\Delta_y},\\term{difference}{\\Delta_z})</pre><p class=\"lens-ascii\">Distance component for valid origin-anchored local IJK coordinates u and v: Delta = u - v; d = max(Delta.x, Delta.y, Delta.z) - min(Delta.x, Delta.y, Delta.z). This is the maximum component after IJK normalization. Invalid/masked local conversions write 0xffffffff. Optional paths use sequential integer cube rounding and unique-neighbor lookup, not this closed-form distance alone; failed path lookup writes counts=0 while retaining distance. Successful stored prefixes report distance+1 even when capacity truncates them.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-grid-path-compiled:originCells-keys-keys\" data-value=\"difference\">IJK difference before normalization · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-grid-path-compiled:cell-grid-path-path\" data-value=\"originLocal\">Origin local IJK · intermediate · originLocal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-grid-path-compiled:cell-grid-path-path\" data-value=\"destinationLocal\">Destination local IJK · intermediate · destinationLocal</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-grid-path-compiled:cell-grid-path-path\" data-value=\"distance\">distance · output · outDistances</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "IJK difference before normalization",
+        "intermediate",
+        "difference",
+        "—",
+        "metadata"
+      ],
+      [
+        "Origin local IJK",
+        "intermediate",
+        "originLocal",
+        "—",
+        "metadata"
+      ],
+      [
+        "Destination local IJK",
+        "intermediate",
+        "destinationLocal",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance",
+        "output",
+        "outDistances",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{difference}{\\Delta}=\\term{originLocal}{u}-\\term{destinationLocal}{v},\\qquad \\term{distance}{d}=\\max(\\term{difference}{\\Delta_x},\\term{difference}{\\Delta_y},\\term{difference}{\\Delta_z})-\\min(\\term{difference}{\\Delta_x},\\term{difference}{\\Delta_y},\\term{difference}{\\Delta_z})",
+    "ascii": "Distance component for valid origin-anchored local IJK coordinates u and v: Delta = u - v; d = max(Delta.x, Delta.y, Delta.z) - min(Delta.x, Delta.y, Delta.z). This is the maximum component after IJK normalization. Invalid/masked local conversions write 0xffffffff. Optional paths use sequential integer cube rounding and unique-neighbor lookup, not this closed-form distance alone; failed path lookup writes counts=0 while retaining distance. Successful stored prefixes report distance+1 even when capacity truncates them.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:34.265Z",
+    "runId": "run-06e84027",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-06e84027",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

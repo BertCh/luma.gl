@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.class-assignment",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.class-assignment",
+  "viewId": "formula-card",
+  "caption": "Formula class(x) = #{ k in 1..K-1 : b_k <= x }. Ties go to the upper class (the comparison is <=). A NaN or masked value gets class 0xffffffff (no class). bound symbols: 4/4. structure metadata only.",
+  "description": "Formula class(x) = #{ k in 1..K-1 : b_k <= x }. Ties go to the upper class (the comparison is <=). A NaN or masked value gets class 0xffffffff (no class). bound symbols: 4/4. structure metadata only.",
+  "llms": "Formula class(x) = #{ k in 1..K-1 : b_k <= x }. Ties go to the upper class (the comparison is <=). A NaN or masked value gets class 0xffffffff (no class).\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.class-assignment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{class}{c(x)} = \\#\\{\\, k \\in \\{1,\\dots,\\term{count}{K}-1\\} : \\term{edge}{b_k} \\le \\term{value}{x} \\,\\}</pre><p class=\"lens-ascii\">class(x) = #{ k in 1..K-1 : b_k &lt;= x }. Ties go to the upper class (the comparison is &lt;=). A NaN or masked value gets class 0xffffffff (no class).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-finish\" data-value=\"class\">class · output · below</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-quantiles-histogram-0\" data-value=\"count\">K · parameter · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-assignment-assign\" data-value=\"edge\">b_k · input · breaks</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-class-assignment-compiled:class-breaks-extremes\" data-value=\"value\">x · input · value</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "class",
+        "output",
+        "below",
+        "—",
+        "metadata"
+      ],
+      [
+        "K",
+        "parameter",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "b_k",
+        "input",
+        "breaks",
+        "—",
+        "metadata"
+      ],
+      [
+        "x",
+        "input",
+        "value",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{class}{c(x)} = \\#\\{\\, k \\in \\{1,\\dots,\\term{count}{K}-1\\} : \\term{edge}{b_k} \\le \\term{value}{x} \\,\\}",
+    "ascii": "class(x) = #{ k in 1..K-1 : b_k <= x }. Ties go to the upper class (the comparison is <=). A NaN or masked value gets class 0xffffffff (no class).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.151Z",
+    "runId": "run-125fbf11",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-125fbf11",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

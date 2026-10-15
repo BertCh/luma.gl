@@ -1,0 +1,53 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.lisa-markov",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.lisa-markov",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-lisa-markov. nodes: 133. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-lisa-markov. nodes: 133. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-lisa-markov\n\n- nodes: 133\n- 1 visible units vs budget 24\n- 133 hidden nodes\n- Edges by kind: raw 323, war 16\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "133"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-lisa-markov-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-lisa-markov-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-lisa-markov-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:lisa-markov\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:lisa-markov\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">lisa-markov</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:lisa-markov\" aria-label=\"Expand lisa-markov\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">lisa-markov-pack-values: commandCount=1 · lisa-markov-pack-values: maximumWorkgroupCount=28 · lisa-markov-pack-values: maximumInvocationCount=6992</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:lisa-markov\" aria-label=\"Inspect lisa-markov\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    },
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.762Z",
+    "runId": "run-61558d73",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-61558d73",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

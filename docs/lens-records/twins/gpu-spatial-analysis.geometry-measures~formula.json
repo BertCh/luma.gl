@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geometry-measures",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geometry-measures",
+  "viewId": "formula-card",
+  "caption": "Formula Length/perimeter component: L[f] = sum over feature edges e of d(p[e],p[e+1]), using compensated f32 sums. Lines are open; polygon rings close implicitly, including hole perimeters; points have no edges. d is Euclidean, spherical central-ang…",
+  "description": "Formula Length/perimeter component: L[f] = sum over feature edges e of d(p[e],p[e+1]), using compensated f32 sums. Lines are open; polygon rings close implicitly, including hole perimeters; points have no edges. d is Euclidean, spherical central-ang…",
+  "llms": "Formula Length/perimeter component: L[f] = sum over feature edges e of d(p[e],p[e+1]), using compensated f32 sums. Lines are open; polygon rings close implicitly, including hole perimeters; points have no edges. d is Euclidean, spherical central-angle distance, or capped Vincenty inverse with Lambert reduced-latitude fallback, as selected by spatialContext. Area and centroid use separate model-specific kernels.\n\n- bound symbols: 3/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.geometry-measures</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{lengths}{L_f}=\\sum_{\\term{edge}{e}\\in\\term{edges}{E_f}}\\term{distance}{d}(\\term{positions}{p_e},\\term{positions}{p_{e+1}})</pre><p class=\"lens-ascii\">Length/perimeter component: L[f] = sum over feature edges e of d(p[e],p[e+1]), using compensated f32 sums. Lines are open; polygon rings close implicitly, including hole perimeters; points have no edges. d is Euclidean, spherical central-angle distance, or capped Vincenty inverse with Lambert reduced-latitude fallback, as selected by spatialContext. Area and centroid use separate model-specific kernels.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-measures-compiled:geometry-measures-feature-output\" data-value=\"lengths\">lengths · output · lengths</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-measures-compiled:geometry-measures-features\" data-value=\"positions\">positions · input · positions</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"edges\">Feature edge ranges derived from offsets · input · unknown — wgsl featureOffsets not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-geometry-measures-compiled:geometry-measures-features\" data-value=\"distance\">distance · intermediate · getEdgeLength</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"edge\">edge · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "lengths",
+        "output",
+        "lengths",
+        "—",
+        "metadata"
+      ],
+      [
+        "positions",
+        "input",
+        "positions",
+        "—",
+        "metadata"
+      ],
+      [
+        "Feature edge ranges derived from offsets",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance",
+        "intermediate",
+        "getEdgeLength",
+        "—",
+        "metadata"
+      ],
+      [
+        "edge",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{lengths}{L_f}=\\sum_{\\term{edge}{e}\\in\\term{edges}{E_f}}\\term{distance}{d}(\\term{positions}{p_e},\\term{positions}{p_{e+1}})",
+    "ascii": "Length/perimeter component: L[f] = sum over feature edges e of d(p[e],p[e+1]), using compensated f32 sums. Lines are open; polygon rings close implicitly, including hole perimeters; points have no edges. d is Euclidean, spherical central-angle distance, or capped Vincenty inverse with Lambert reduced-latitude fallback, as selected by spatialContext. Area and centroid use separate model-specific kernels.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "geographic coordinates with a geodesic metric"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.690Z",
+    "runId": "run-10d86df8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-10d86df8",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

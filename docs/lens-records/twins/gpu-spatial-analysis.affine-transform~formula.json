@@ -1,0 +1,115 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.affine-transform",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.affine-transform",
+  "viewId": "formula-card",
+  "caption": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 8/…",
+  "description": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff). bound symbols: 8/…",
+  "llms": "Formula p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).\n\n- bound symbols: 8/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.affine-transform</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\begin{pmatrix}\\term{a}{a}&amp;\\term{b}{b}\\\\\\term{d}{d}&amp;\\term{e}{e}\\end{pmatrix}(\\term{point}{p}-\\term{origin}{o})+\\term{origin}{o}+\\term{translation}{t}</pre><p class=\"lens-ascii\">p&#39; = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input&#39;s fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"output\">Transformed vertex · output · outputPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"point\">Input vertex · input · point</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"a\">Matrix coefficient a · parameter · a</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"b\">Matrix coefficient b · parameter · b</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"d\">Matrix coefficient d · parameter · d</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"e\">Matrix coefficient e · parameter · e</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-measures-features\" data-value=\"origin\">Resolved origin · intermediate · origin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-affine-transform-compiled:affine-transform-transform\" data-value=\"translation\">Translation vector · parameter · translation</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Transformed vertex",
+        "output",
+        "outputPositions",
+        "—",
+        "metadata"
+      ],
+      [
+        "Input vertex",
+        "input",
+        "point",
+        "—",
+        "metadata"
+      ],
+      [
+        "Matrix coefficient a",
+        "parameter",
+        "a",
+        "—",
+        "metadata"
+      ],
+      [
+        "Matrix coefficient b",
+        "parameter",
+        "b",
+        "—",
+        "metadata"
+      ],
+      [
+        "Matrix coefficient d",
+        "parameter",
+        "d",
+        "—",
+        "metadata"
+      ],
+      [
+        "Matrix coefficient e",
+        "parameter",
+        "e",
+        "—",
+        "metadata"
+      ],
+      [
+        "Resolved origin",
+        "intermediate",
+        "origin",
+        "—",
+        "metadata"
+      ],
+      [
+        "Translation vector",
+        "parameter",
+        "translation",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{output}{p'}=\\begin{pmatrix}\\term{a}{a}&\\term{b}{b}\\\\\\term{d}{d}&\\term{e}{e}\\end{pmatrix}(\\term{point}{p}-\\term{origin}{o})+\\term{origin}{o}+\\term{translation}{t}",
+    "ascii": "p' = [[a,b],[d,e]]*(p-o)+o+t. Global parameters compose scale, skew, rotation and translation about the input's fixed, center or centroid origin. Per-feature transforms use their six coefficients with o=0 and t=(xoff,yoff).",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.641Z",
+    "runId": "run-20eae8f1",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-20eae8f1",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

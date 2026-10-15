@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-reclassify",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-reclassify",
+  "viewId": "formula-card",
+  "caption": "Formula For valid x, k = number of active ascending breaks <= x (closed:left; closed:right counts breaks < x), reclassified = classValues[k]; invalid means NaN, optional sentinel, or validity==0 and writes NaN (classes output would be UINT_MAX). Her…",
+  "description": "Formula For valid x, k = number of active ascending breaks <= x (closed:left; closed:right counts breaks < x), reclassified = classValues[k]; invalid means NaN, optional sentinel, or validity==0 and writes NaN (classes output would be UINT_MAX). Her…",
+  "llms": "Formula For valid x, k = number of active ascending breaks <= x (closed:left; closed:right counts breaks < x), reclassified = classValues[k]; invalid means NaN, optional sentinel, or validity==0 and writes NaN (classes output would be UINT_MAX). Here breaks=[20,35,45,65], values=[2,4,5,3,1], mapping observed tree/grass/crop/built-up/water to suitability 2/4/5/3/1.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-reclassify.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{y}=\\term{classes}{v_k},\\quad k=\\#\\{\\term{breaks}{b_j}\\le\\term{value}{x}\\}\\quad(\\text{valid }x;\\ \\text{otherwise NaN})</pre><p class=\"lens-ascii\">For valid x, k = number of active ascending breaks &lt;= x (closed:left; closed:right counts breaks &lt; x), reclassified = classValues[k]; invalid means NaN, optional sentinel, or validity==0 and writes NaN (classes output would be UINT_MAX). Here breaks=[20,35,45,65], values=[2,4,5,3,1], mapping observed tree/grass/crop/built-up/water to suitability 2/4/5/3/1.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-reclassify-compiled:raster-reclassify-classify\" data-value=\"value\">land cover · input · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-reclassify-compiled:raster-reclassify-classify\" data-value=\"breaks\">breaks · parameter · breaks</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-reclassify-compiled:raster-reclassify-classify\" data-value=\"classes\">class values · parameter · classValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-reclassify-compiled:raster-reclassify-classify\" data-value=\"result\">suitability · output · reclassifiedOut</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "land cover",
+        "input",
+        "source",
+        "—",
+        "metadata"
+      ],
+      [
+        "breaks",
+        "parameter",
+        "breaks",
+        "—",
+        "metadata"
+      ],
+      [
+        "class values",
+        "parameter",
+        "classValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "suitability",
+        "output",
+        "reclassifiedOut",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{result}{y}=\\term{classes}{v_k},\\quad k=\\#\\{\\term{breaks}{b_j}\\le\\term{value}{x}\\}\\quad(\\text{valid }x;\\ \\text{otherwise NaN})",
+    "ascii": "For valid x, k = number of active ascending breaks <= x (closed:left; closed:right counts breaks < x), reclassified = classValues[k]; invalid means NaN, optional sentinel, or validity==0 and writes NaN (classes output would be UINT_MAX). Here breaks=[20,35,45,65], values=[2,4,5,3,1], mapping observed tree/grass/crop/built-up/water to suitability 2/4/5/3/1.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.294Z",
+    "runId": "run-4f548652",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4f548652",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

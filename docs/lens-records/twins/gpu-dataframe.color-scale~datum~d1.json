@@ -1,0 +1,84 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.color-scale",
+  "rung": "datum",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.color-scale",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Census tract 1. colors: 4286528776. values read back from the GPU run. color-scale: 3 quantities.",
+  "description": "Receipt of Census tract 1. colors: 4286528776. values read back from the GPU run. color-scale: 3 quantities.",
+  "llms": "Receipt of Census tract 1\n\n- colors: 4286528776\n- color-scale: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "colors",
+    "value": "4286528776"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Census tract 1</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"color-scale\"><tr><th scope=\"rowgroup\" colspan=\"5\">color-scale</th></tr><tr data-provenance=\"readback\"><td>color-scale</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-color-scale-snapshots-values-0\" title=\"Share of residents below 150% of the poverty line; suppressed estimates are NaN.\">values</button></td><td>43</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>color-scale</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-color-scale-snapshots-classIndices-0\" title=\"Palette class per tract; 4294967295 marks a no-data tract.\">classIndices</button></td><td>4</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>color-scale</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-color-scale-snapshots-colors-0\" title=\"Packed rgba8 colour per tract: r | g &lt;&lt; 8 | b &lt;&lt; 16 | a &lt;&lt; 24.\">colors</button></td><td>4286528776</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "color-scale",
+        "values",
+        "43",
+        "0",
+        "readback"
+      ],
+      [
+        "color-scale",
+        "classIndices",
+        "4",
+        "0",
+        "readback"
+      ],
+      [
+        "color-scale",
+        "colors",
+        "4286528776",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.740Z",
+    "runId": "run-45d42653",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-45d42653",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.point-pattern-indices",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.point-pattern-indices",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Observation 0. nearestNeighborIds: 1049. values read back from the GPU run. point-pattern-indices: 3 quantities.",
+  "description": "Receipt of Observation 0. nearestNeighborIds: 1049. values read back from the GPU run. point-pattern-indices: 3 quantities.",
+  "llms": "Receipt of Observation 0\n\n- nearestNeighborIds: 1049\n- point-pattern-indices: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nearestNeighborIds",
+    "value": "1049"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"point-pattern-indices\"><tr><th scope=\"rowgroup\" colspan=\"5\">point-pattern-indices</th></tr><tr data-provenance=\"readback\"><td>point-pattern-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.point-pattern-indices-snapshots-positions-0\">positions</button></td><td>8101.26171875, 14639.115234375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>point-pattern-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.point-pattern-indices-snapshots-nearestNeighborDistances-0\" title=\"Metres to the nearest other observation; zero for duplicated locations.\">nearestNeighborDistances</button></td><td>10.254714012145996</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>point-pattern-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.point-pattern-indices-snapshots-nearestNeighborIds-0\" title=\"Row of the nearest other observation; ties go to the smallest row.\">nearestNeighborIds</button></td><td>1049</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "point-pattern-indices",
+        "positions",
+        "8101.26171875, 14639.115234375",
+        "0",
+        "readback"
+      ],
+      [
+        "point-pattern-indices",
+        "nearestNeighborDistances",
+        "10.254714012145996",
+        "0",
+        "readback"
+      ],
+      [
+        "point-pattern-indices",
+        "nearestNeighborIds",
+        "1049",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.833Z",
+    "runId": "run-8298752f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8298752f",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.segmented-reduction",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.segmented-reduction",
+  "viewId": "formula-card",
+  "caption": "Formula y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits. bound symbols: 3/3. structure metadata only.",
+  "description": "Formula y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits. bound symbols: 3/3. structure metadata only.",
+  "llms": "Formula y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.segmented-reduction</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_s}=\\operatorname{op}_{\\term{offsets}{o_s}\\le j&lt;o_{s+1}}\\term{x}{x_j},\\quad\\operatorname{op}\\in\\{\\operatorname{sum},\\operatorname{min},\\operatorname{max}\\}</pre><p class=\"lens-ascii\">y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-segmented-reduction-compiled:state-rainfall-total\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-segmented-reduction-compiled:state-rainfall-total\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-segmented-reduction-compiled:state-rainfall-total\" data-value=\"offsets\">offsets · input · segmentOffsets</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-segmented-reduction-compiled:state-rainfall-total\">state-rainfall-total</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "offsets",
+        "input",
+        "segmentOffsets",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_s}=\\operatorname{op}_{\\term{offsets}{o_s}\\le j<o_{s+1}}\\term{x}{x_j},\\quad\\operatorname{op}\\in\\{\\operatorname{sum},\\operatorname{min},\\operatorname{max}\\}",
+    "ascii": "y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.528Z",
+    "runId": "run-070a0970",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-070a0970",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

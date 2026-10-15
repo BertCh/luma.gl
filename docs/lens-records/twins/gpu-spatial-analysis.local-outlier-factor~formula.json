@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-outlier-factor",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-outlier-factor",
+  "viewId": "formula-card",
+  "caption": "Formula Over the kNN table: k-distance d_k(j) = largest neighbour distance of row j; reach(i, j) = max(d_k(j), d(i, j)); local reachability density lrd(i) = 1 / (mean over neighbours j of reach(i, j) + densityFloor); LOF(i) = mean over neighbours j…",
+  "description": "Formula Over the kNN table: k-distance d_k(j) = largest neighbour distance of row j; reach(i, j) = max(d_k(j), d(i, j)); local reachability density lrd(i) = 1 / (mean over neighbours j of reach(i, j) + densityFloor); LOF(i) = mean over neighbours j…",
+  "llms": "Formula Over the kNN table: k-distance d_k(j) = largest neighbour distance of row j; reach(i, j) = max(d_k(j), d(i, j)); local reachability density lrd(i) = 1 / (mean over neighbours j of reach(i, j) + densityFloor); LOF(i) = mean over neighbours j of lrd(j) / lrd(i). A row with no neighbours gets density 0 and LOF 1. Scores near 1 are as dense as their neighbours; well above 1 is locally sparse. There is no null distribution, so the outlier mask uses a threshold the caller chooses.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>local-outlier-factor</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{kDistance}{d_k(j)}&amp;=\\max_{o\\in N(j)}d(j,o),\\qquad \\term{reach}{\\mathrm{reach}(i,j)}=\\max\\bigl(d_k(j),\\ d(i,j)\\bigr)\\\\\n\\term{density}{\\mathrm{lrd}(i)}&amp;=\\frac{1}{\\overline{\\mathrm{reach}}(i)+\\term{densityFloor}{\\epsilon}}\\\\\n\\term{lof}{\\mathrm{LOF}(i)}&amp;=\\frac{\\overline{\\mathrm{lrd}}\\bigl(N(i)\\bigr)}{\\mathrm{lrd}(i)}\n\\end{aligned}</pre><p class=\"lens-ascii\">Over the kNN table: k-distance d_k(j) = largest neighbour distance of row j; reach(i, j) = max(d_k(j), d(i, j)); local reachability density lrd(i) = 1 / (mean over neighbours j of reach(i, j) + densityFloor); LOF(i) = mean over neighbours j of lrd(j) / lrd(i). A row with no neighbours gets density 0 and LOF 1. Scores near 1 are as dense as their neighbours; well above 1 is locally sparse. There is no null distribution, so the outlier mask uses a threshold the caller chooses.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-local-outlier-factor-compiled:local-outlier-factor-k-distance\" data-value=\"kDistance\">kDistance · intermediate · kDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-local-outlier-factor-compiled:neighbor-search-emit\" data-value=\"reach\">reach · intermediate · distances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-local-outlier-factor-compiled:local-outlier-factor-density\" data-value=\"density\">density · intermediate · density</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-local-outlier-factor-compiled:neighbor-search-grid-bounds\" data-value=\"densityFloor\">densityFloor · parameter · parameters</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-local-outlier-factor-compiled:local-outlier-factor-score\" data-value=\"lof\">lof · output · lof</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "kDistance",
+        "intermediate",
+        "kDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "reach",
+        "intermediate",
+        "distances",
+        "—",
+        "metadata"
+      ],
+      [
+        "density",
+        "intermediate",
+        "density",
+        "—",
+        "metadata"
+      ],
+      [
+        "densityFloor",
+        "parameter",
+        "parameters",
+        "—",
+        "metadata"
+      ],
+      [
+        "lof",
+        "output",
+        "lof",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{kDistance}{d_k(j)}&=\\max_{o\\in N(j)}d(j,o),\\qquad \\term{reach}{\\mathrm{reach}(i,j)}=\\max\\bigl(d_k(j),\\ d(i,j)\\bigr)\\\\\n\\term{density}{\\mathrm{lrd}(i)}&=\\frac{1}{\\overline{\\mathrm{reach}}(i)+\\term{densityFloor}{\\epsilon}}\\\\\n\\term{lof}{\\mathrm{LOF}(i)}&=\\frac{\\overline{\\mathrm{lrd}}\\bigl(N(i)\\bigr)}{\\mathrm{lrd}(i)}\n\\end{aligned}",
+    "ascii": "Over the kNN table: k-distance d_k(j) = largest neighbour distance of row j; reach(i, j) = max(d_k(j), d(i, j)); local reachability density lrd(i) = 1 / (mean over neighbours j of reach(i, j) + densityFloor); LOF(i) = mean over neighbours j of lrd(j) / lrd(i). A row with no neighbours gets density 0 and LOF 1. Scores near 1 are as dense as their neighbours; well above 1 is locally sparse. There is no null distribution, so the outlier mask uses a threshold the caller chooses.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:25.179Z",
+    "runId": "run-7ae93a76",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7ae93a76",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

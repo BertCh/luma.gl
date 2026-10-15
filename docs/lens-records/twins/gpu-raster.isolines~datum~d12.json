@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.isolines",
+  "rung": "datum",
+  "datum": 12,
+  "size": "full",
+  "scenarioId": "gpu-raster.isolines",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of contour polylines 12. isolinesPolylineClosed: 0. values read back from the GPU run. isolines: 2 quantities.",
+  "description": "Receipt of contour polylines 12. isolinesPolylineClosed: 0. values read back from the GPU run. isolines: 2 quantities.",
+  "llms": "Receipt of contour polylines 12\n\n- isolinesPolylineClosed: 0\n- isolines: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "isolinesPolylineClosed",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of contour polylines 12</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"isolines\"><tr><th scope=\"rowgroup\" colspan=\"5\">isolines</th></tr><tr data-provenance=\"readback\"><td>isolines</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-isolines-snapshots-isolinesPolylineLevels-0\" title=\"contour level index of each polyline (0 = 1100 m)\">isolinesPolylineLevels</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>isolines</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-isolines-snapshots-isolinesPolylineClosed-0\" title=\"1 for a closed ring, 0 for an open chain\">isolinesPolylineClosed</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "isolines",
+        "isolinesPolylineLevels",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "isolines",
+        "isolinesPolylineClosed",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.115Z",
+    "runId": "run-58759974",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-58759974",
+    "rung": "datum",
+    "bindings": {
+      "entity": 12
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

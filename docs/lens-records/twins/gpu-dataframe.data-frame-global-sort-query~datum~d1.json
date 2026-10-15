@@ -1,0 +1,65 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-global-sort-query",
+  "rung": "datum",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-global-sort-query",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Global rank 1. sortedPoverty150Pct: 75.30000305175781. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of Global rank 1. sortedPoverty150Pct: 75.30000305175781. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of Global rank 1\n\n- sortedPoverty150Pct: 75.30000305175781\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sortedPoverty150Pct",
+    "value": "75.30000305175781"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Global rank 1</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"globalRowIndices\" title=\"Source row of each global rank: the published prefix of globalRowIndices.\">globalRowIndices</button></td><td>396</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"sortedPoverty150Pct\" title=\"poverty150Pct at globalRowIndices: an exact gather of two readbacks.\">sortedPoverty150Pct</button></td><td>75.30000305175781</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "globalRowIndices",
+        "396",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "sortedPoverty150Pct",
+        "75.30000305175781",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.126Z",
+    "runId": "run-3329e72d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3329e72d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

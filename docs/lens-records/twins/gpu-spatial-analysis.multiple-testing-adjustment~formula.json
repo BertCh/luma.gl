@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.multiple-testing-adjustment",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.multiple-testing-adjustment",
+  "viewId": "formula-card",
+  "caption": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]);…",
+  "description": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]);…",
+  "llms": "Formula Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is <= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>multiple-testing-adjustment</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\min_{l\\ge k}\\;\\term{stepValue}{\\frac{p_{(l)}\\,m\\,c}{l}}\\Bigr),\n&amp;c&amp;=\\begin{cases}1&amp;\\text{Benjamini-Hochberg}\\\\\\term{scale}{\\textstyle\\sum_{i=1}^{m}1/i}&amp;\\text{Benjamini-Yekutieli}\\end{cases}\\\\\n\\term{adjusted}{\\tilde{p}_{(k)}}&amp;=\\min\\Bigl(1,\\;\\max_{l\\le k}\\,(\\term{family}{m}-l+1)\\,p_{(l)}\\Bigr),\n&amp;\\term{adjusted}{\\tilde{p}}&amp;=\\min(1,\\;\\term{family}{m}\\,\\term{pValues}{p})\n\\end{aligned}</pre><p class=\"lens-ascii\">Bonferroni: min(1, m p). Holm: min(1, max_{l&lt;=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l&gt;=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is &lt;= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-scatter\" data-value=\"adjusted\">adjusted · output · adjusted</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-block-scan\" data-value=\"stepValue\">stepValue · intermediate · getStepValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-family\" data-value=\"scale\">c(m) · intermediate · familyScale</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:multiple-testing-adjustment-family\" data-value=\"family\">family size m · intermediate · family</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.multiple-testing-adjustment-compiled:hot-spot-analysis-neighbors\" data-value=\"pValues\">pValues · input · pValues</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "adjusted",
+        "output",
+        "adjusted",
+        "—",
+        "metadata"
+      ],
+      [
+        "stepValue",
+        "intermediate",
+        "getStepValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "c(m)",
+        "intermediate",
+        "familyScale",
+        "—",
+        "metadata"
+      ],
+      [
+        "family size m",
+        "intermediate",
+        "family",
+        "—",
+        "metadata"
+      ],
+      [
+        "pValues",
+        "input",
+        "pValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{adjusted}{\\tilde{p}_{(k)}}&=\\min\\Bigl(1,\\;\\min_{l\\ge k}\\;\\term{stepValue}{\\frac{p_{(l)}\\,m\\,c}{l}}\\Bigr),\n&c&=\\begin{cases}1&\\text{Benjamini-Hochberg}\\\\\\term{scale}{\\textstyle\\sum_{i=1}^{m}1/i}&\\text{Benjamini-Yekutieli}\\end{cases}\\\\\n\\term{adjusted}{\\tilde{p}_{(k)}}&=\\min\\Bigl(1,\\;\\max_{l\\le k}\\,(\\term{family}{m}-l+1)\\,p_{(l)}\\Bigr),\n&\\term{adjusted}{\\tilde{p}}&=\\min(1,\\;\\term{family}{m}\\,\\term{pValues}{p})\n\\end{aligned}",
+    "ascii": "Bonferroni: min(1, m p). Holm: min(1, max_{l<=k} (m - l + 1) p_(l)). Benjamini-Hochberg: min(1, min_{l>=k} p_(l) m / l). Benjamini-Yekutieli: BH times c(m) = sum_{i=1..m} 1/i. p_(k) is the k-th smallest tested p-value (finite and in [0, 1]); the family size is m = max(tested rows, minimumFamilySize). A row is significant at level alpha exactly when its adjusted p-value is <= alpha; ties get identical adjusted values; untested rows are NaN. Equal to statsmodels multipletests.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:22:47.368Z",
+    "runId": "run-293b86ef",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-293b86ef",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

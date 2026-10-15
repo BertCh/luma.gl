@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.simple-local-relief",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.simple-local-relief",
+  "viewId": "formula-card",
+  "caption": "Formula SLRM = verticalExaggeration * (z_centre - mean of z over the (2r+1)^2 window), r = radius in pixels (no cell size involved). Window coordinates outside the raster replicate the edge pixel (numpy pad edge, so an edge sample may count several…",
+  "description": "Formula SLRM = verticalExaggeration * (z_centre - mean of z over the (2r+1)^2 window), r = radius in pixels (no cell size involved). Window coordinates outside the raster replicate the edge pixel (numpy pad edge, so an edge sample may count several…",
+  "llms": "Formula SLRM = verticalExaggeration * (z_centre - mean of z over the (2r+1)^2 window), r = radius in pixels (no cell size involved). Window coordinates outside the raster replicate the edge pixel (numpy pad edge, so an edge sample may count several times); invalid samples are excluded from both the sum and the count N; an invalid centre gives NaN. Computed as -total/N with total = sum(z_j - z_c), from an exact 64-bit summed-area table (quantum 2^-16) or the separable row/column filter on very large grids.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.simple-local-relief.slrm</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{relief}{\\mathrm{SLRM}} = \\term{exaggeration}{v}\\left(z_c - \\frac{1}{\\term{count}{N}}\\sum_{j \\in W_{\\term{radius}{r}}} z_j\\right)</pre><p class=\"lens-ascii\">SLRM = verticalExaggeration * (z_centre - mean of z over the (2r+1)^2 window), r = radius in pixels (no cell size involved). Window coordinates outside the raster replicate the edge pixel (numpy pad edge, so an edge sample may count several times); invalid samples are excluded from both the sum and the count N; an invalid centre gives NaN. Computed as -total/N with total = sum(z_j - z_c), from an exact 64-bit summed-area table (quantum 2^-16) or the separable row/column filter on very large grids.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-simple-local-relief-compiled:simple-local-relief-mean-deviation\" data-value=\"relief\">SLRM · output · deviationValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-simple-local-relief-compiled:simple-local-relief-mean-deviation\" data-value=\"exaggeration\">v · parameter · radiusSettings</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-simple-local-relief-compiled:simple-local-relief-mean-deviation\" data-value=\"count\">N · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-simple-local-relief-compiled:simple-local-relief-mean-deviation\" data-value=\"radius\">radius · parameter · radius</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "SLRM",
+        "output",
+        "deviationValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "v",
+        "parameter",
+        "radiusSettings",
+        "—",
+        "metadata"
+      ],
+      [
+        "N",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "radius",
+        "parameter",
+        "radius",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{relief}{\\mathrm{SLRM}} = \\term{exaggeration}{v}\\left(z_c - \\frac{1}{\\term{count}{N}}\\sum_{j \\in W_{\\term{radius}{r}}} z_j\\right)",
+    "ascii": "SLRM = verticalExaggeration * (z_centre - mean of z over the (2r+1)^2 window), r = radius in pixels (no cell size involved). Window coordinates outside the raster replicate the edge pixel (numpy pad edge, so an edge sample may count several times); invalid samples are excluded from both the sum and the count N; an invalid centre gives NaN. Computed as -total/N with total = sum(z_j - z_c), from an exact 64-bit summed-area table (quantum 2^-16) or the separable row/column filter on very large grids.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.736Z",
+    "runId": "run-d8b0d765",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d8b0d765",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

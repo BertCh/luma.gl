@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.outline-geometry",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.outline-geometry",
+  "viewId": "formula-card",
+  "caption": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use…",
+  "description": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use…",
+  "llms": "Formula Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.outline-geometry</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{output}{p&#39;}=\\term{point}{p}+\\term{distance}{d}\\begin{cases}\\term{direction}{u}&amp;\\text{planar}\\\\\\dfrac{180}{\\pi\\term{radius}{R}}\\left(\\dfrac{\\term{direction}{u_x}}{\\max(\\cos(\\pi\\term{point}{p_y}/180),10^{-6})},\\term{direction}{u_y}\\right)&amp;\\text{longitude/latitude}\\end{cases}</pre><p class=\"lens-ascii\">Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"output\">Emitted triangle vertex · output · outputPositions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"point\">Endpoint or disc center in offsetPoint · input · p</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"distance\">Nonnegative outline distance · parameter · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"direction\">Disc direction or signed segment normal · intermediate · direction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-outline-geometry-compiled:outline-geometry-generate\" data-value=\"radius\">Context sphere radius in length units · constant · RADIUS</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Emitted triangle vertex",
+        "output",
+        "outputPositions",
+        "—",
+        "metadata"
+      ],
+      [
+        "Endpoint or disc center in offsetPoint",
+        "input",
+        "p",
+        "—",
+        "metadata"
+      ],
+      [
+        "Nonnegative outline distance",
+        "parameter",
+        "distance",
+        "—",
+        "metadata"
+      ],
+      [
+        "Disc direction or signed segment normal",
+        "intermediate",
+        "direction",
+        "—",
+        "metadata"
+      ],
+      [
+        "Context sphere radius in length units",
+        "constant",
+        "RADIUS",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{output}{p'}=\\term{point}{p}+\\term{distance}{d}\\begin{cases}\\term{direction}{u}&\\text{planar}\\\\\\dfrac{180}{\\pi\\term{radius}{R}}\\left(\\dfrac{\\term{direction}{u_x}}{\\max(\\cos(\\pi\\term{point}{p_y}/180),10^{-6})},\\term{direction}{u_y}\\right)&\\text{longitude/latitude}\\end{cases}",
+    "ascii": "Each emitted offset vertex is p + d*u in planar coordinates, or p + (180*d/(pi*R))*(u.x/max(cos(pi*p.y/180),1e-6),u.y) in longitude/latitude. Disc directions are (cos(theta),sin(theta)); segment corners use signed local normals; centers use u=0. Distance d is clamped nonnegative. This is an equirectangular drawing approximation, not spherical destination.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.165Z",
+    "runId": "run-1472cb85",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1472cb85",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

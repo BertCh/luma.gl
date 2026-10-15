@@ -11,6 +11,12 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Join or look up unique right-side keys
 
+### `GPUDataFrameJoinQuery`
+
+Match each left row to its unique right-side key and publish paired stable row ids for inner, left, semi or anti joins.
+
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=result caption="All 1,500 observations pair with a tract; observation 0 (tract 46) gets poverty 9.7%."}
+
 GPU Dataframe supports bounded, unique-right-key `uint32` inner, left outer, semi, and anti joins, together
 with source-aligned lookups. Left and right tables may have different batch topologies, empty
 chunks, nullable keys, and explicit original source-row offsets. The right-side hash index is built
@@ -51,17 +57,6 @@ const matchedCustomers = customers
 const unmatchedCustomers = customers
   .antiJoin(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
   .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
-
-const lookups = customers
-  .lookup(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
-  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
-
-lookups.rowIndices;
-lookups.rightRowIndices;
-lookups.matchMask;
-lookups.probeCounts;
-lookups.indexStatistics;
-lookups.contractViolation;
 ```
 
 For every join, `rowIndices` and `rightRowIndices` contain paired stable source identifiers;
@@ -77,8 +72,6 @@ before capacity truncation. `overflows` flags insufficient output capacity per o
 - `semiJoin` publishes only selected left rows with an existing right partner.
 - `antiJoin` publishes only selected unmatched left rows, including nullable left keys; every
   published `rightValidity` entry is zero.
-- `lookup` preserves source-aligned right identifiers and exposes a match flag and probe count for
-  every left row without compacting the original batches.
 
 All four join modes support the same `capacity`, `indexCapacity`, and `maxProbeCount` options and
 compose with filtered, projected, or derived left plans. Publication remains stable within each
@@ -94,6 +87,45 @@ ordering on both sides.
 
 Many-to-many joins, right/full outer joins, multi-key joins, string-key hashing, and CPU-side result
 materialization remain intentionally unsupported.
+
+#### How it computes
+
+{/* lens:GPUDataFrameJoinQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=datum bind=page datum=0 caption="Pair 0 joins observation 0 to tract row 46, whose poverty rate is 9.7%."}
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=kernel caption="Look at the right-index build and the per-batch probe: matches are counted, then published."}
+::lens{scenario=gpu-dataframe.data-frame-join-query rung=graph caption="Build the right hash index, validate its contract, probe each left row, then scan and publish pairs."}
+
+### `GPUDataFrameLookupQuery`
+
+Look up each left row's unique right-side partner and publish source-aligned right row ids with a match flag.
+
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=result caption="All 1,500 observations match a tract; the gathered poverty rate sits beside each source row."}
+
+```ts
+const lookups = customers
+  .lookup(accounts, {leftOn: 'customerId', rightOn: 'accountId'})
+  .compile(new GPUCommandGraph<GPUDataFrameQueryParameters>(device));
+
+lookups.rowIndices;
+lookups.rightRowIndices;
+lookups.matchMask;
+lookups.probeCounts;
+lookups.indexStatistics;
+lookups.contractViolation;
+```
+
+`lookup` preserves source-aligned right identifiers and exposes a match flag and probe count for
+every left row without compacting the original batches. It shares the join's unique-right-key
+contract, the six index statistic words, and `contractViolation`.
+
+#### How it computes
+
+{/* lens:GPUDataFrameLookupQuery */}
+
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=datum bind=page datum=0 caption="Observation 0 (tract 46) matches tract row 46 and reads poverty 9.7%."}
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=kernel caption="Look at the per-row probe: each observation hashes its key and walks a bounded number of slots."}
+::lens{scenario=gpu-dataframe.data-frame-lookup-query rung=graph caption="Build the right hash index, validate its contract, then probe every left row; nothing is compacted."}
 
 ## Share GPU outputs with rendering and GPUCrossfilter
 

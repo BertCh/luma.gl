@@ -7,7 +7,8 @@ import path from 'node:path';
 import {describe, expect, test} from 'vitest';
 import {
   EXPERIMENTAL_DOCS_TAB_GROUPS,
-  GPU_CORE_DOCS_TAB_GROUPS
+  GPU_CORE_DOCS_TAB_GROUPS,
+  type DocsTab
 } from '../../website/src/components/docs/experimental-docs-catalog';
 
 const DOCUMENTATION_DIRECTORY = path.join(process.cwd(), 'docs');
@@ -108,7 +109,14 @@ describe('GPU module documentation contract', () => {
     ).filter(
       filename =>
         filename.endsWith('.md') &&
-        !['README.md', 'concepts.md', 'recipes.md', 'tutorial.md'].includes(filename)
+        // The computation-record page documents the record schema and helpers, not an operation.
+        ![
+          'README.md',
+          'concepts.md',
+          'recipes.md',
+          'tutorial.md',
+          'computation-record.md'
+        ].includes(filename)
     );
 
     const contractSource = readFileSync(
@@ -159,7 +167,7 @@ describe('GPU module documentation contract', () => {
     );
 
     for (const groups of [EXPERIMENTAL_DOCS_TAB_GROUPS, GPU_CORE_DOCS_TAB_GROUPS]) {
-      const tabs = groups.flatMap(group => group.tabs);
+      const tabs = groups.flatMap<DocsTab<string>>(group => group.tabs);
       expect(new Set(tabs.map(tab => tab.id)).size).toBe(tabs.length);
 
       for (const tab of tabs) {
@@ -282,8 +290,8 @@ function collectTableOfContentsIdentifiers(value: unknown): string[] {
   if (!value || typeof value !== 'object') return [];
   const record = value as Record<string, unknown>;
   return [
-    ...(typeof record.id === 'string' ? [record.id] : []),
-    ...collectTableOfContentsIdentifiers(record.items)
+    ...(typeof record['id'] === 'string' ? [record['id']] : []),
+    ...collectTableOfContentsIdentifiers(record['items'])
   ];
 }
 

@@ -1,0 +1,136 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geographically-weighted-regression",
+  "rung": "datum",
+  "datum": 300,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geographically-weighted-regression",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. lens: 7 quantities.",
+  "description": "Receipt of Chicago tract 300. poverty150PctTValue: 6.391848087310791. values read back from the GPU run. lens: 7 quantities.",
+  "llms": "Receipt of Chicago tract 300\n\n- poverty150PctTValue: 6.391848087310791\n- lens: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "poverty150PctTValue",
+    "value": "6.391848087310791"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 300</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"lens\"><tr><th scope=\"rowgroup\" colspan=\"5\">lens</th></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-response-0\" title=\"CDC PLACES diabetes prevalence (%)\">response</button></td><td>7.800000190734863</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-localR2-0\">localR2</button></td><td>0.6277381181716919</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-interceptCoefficient-0\">interceptCoefficient</button></td><td>3.392695903778076</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctCoefficient-0\" title=\"Local effect of poverty150Pct on diabetes: percentage points per point of poverty; diverging scale with midpoint 0\">poverty150PctCoefficient</button></td><td>0.26478657126426697</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-noVehiclePctCoefficient-0\">noVehiclePctCoefficient</button></td><td>-0.051684726029634476</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-uninsuredPctCoefficient-0\">uninsuredPctCoefficient</button></td><td>0.019236896187067032</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>lens</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-snapshots-poverty150PctTValue-0\">poverty150PctTValue</button></td><td>6.391848087310791</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "lens",
+        "response",
+        "7.800000190734863",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "localR2",
+        "0.6277381181716919",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "interceptCoefficient",
+        "3.392695903778076",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "poverty150PctCoefficient",
+        "0.26478657126426697",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "noVehiclePctCoefficient",
+        "-0.051684726029634476",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "uninsuredPctCoefficient",
+        "0.019236896187067032",
+        "0",
+        "readback"
+      ],
+      [
+        "lens",
+        "poverty150PctTValue",
+        "6.391848087310791",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: adjusted-alpha"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:19.595Z",
+    "runId": "run-f87097cc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f87097cc",
+    "rung": "datum",
+    "bindings": {
+      "entity": 300
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

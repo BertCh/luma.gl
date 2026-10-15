@@ -8,10 +8,26 @@ import {WorkgroupReductionBenchmark} from '@site/src/components/docs/workgroup-r
 
 ## Overview
 
+Reduces 1,024 station rainfall values to one maximum on the GPU.
+
+::lens{scenario=gpu-core.reduction rung=result caption="The single output cell holds the 310.1 mm maximum over all stations."}
+
 `GPUReduction` records a hierarchical reduction over a packed `uint32`, `sint32`, or `float32`
 graph data view or fixed-width graph vector.
 
 <GPUOperationContract operation="gpu-reduction" />
+
+#### How it computes
+
+{/* lens:GPUReduction */}
+
+::lens{scenario=gpu-core.reduction rung=kernel caption="Inspect the 256-lane max tree that reduces 1,024 stations to 4 partials."}
+
+::lens{scenario=gpu-core.reduction rung=graph caption="Trace 3 compute nodes from level-0 partials to the finalized maximum."}
+
+::lens{scenario=gpu-core.reduction rung=datum caption="Follow the 310.1 mm maximum from the station values into its output cell."}
+
+::lens{scenario=gpu-core.reduction rung=formula caption="Read the max expression applied across all 1,024 station rainfalls."}
 
 ## Concepts
 

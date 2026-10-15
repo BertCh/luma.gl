@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-length-per-polygon",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-length-per-polygon",
+  "viewId": "formula-card",
+  "caption": "Formula For polygon f, L[f]=sum_s insideLength[s,f], W[f]=sum_s pathWeight[s]*insideLength[s,f], N[f]=sum_s 1[insideLength[s,f]>0]. Inside length sums pieces between ring crossings whose midpoint passes even-odd containment. Planar pieces measure (t…",
+  "description": "Formula For polygon f, L[f]=sum_s insideLength[s,f], W[f]=sum_s pathWeight[s]*insideLength[s,f], N[f]=sum_s 1[insideLength[s,f]>0]. Inside length sums pieces between ring crossings whose midpoint passes even-odd containment. Planar pieces measure (t…",
+  "llms": "Formula For polygon f, L[f]=sum_s insideLength[s,f], W[f]=sum_s pathWeight[s]*insideLength[s,f], N[f]=sum_s 1[insideLength[s,f]>0]. Inside length sums pieces between ring crossings whose midpoint passes even-odd containment. Planar pieces measure (t1-t0)*length(b-a); longitude/latitude pieces measure sphere radius times geodesicCentralAngle between their degree-linear endpoints. Weights are per path, repeated for each segment. Capacity overflow can undercount.\n\n- bound symbols: 3/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-length-per-polygon</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{lengths}{L_f}=\\sum_{\\term{index}{s}}\\term{inside}{\\ell_{sf}},\\quad\\term{weighted}{W_f}=\\sum_{\\term{index}{s}}\\term{weights}{w_s}\\term{inside}{\\ell_{sf}},\\quad\\term{counts}{N_f}=\\sum_{\\term{index}{s}}\\mathbb{1}[\\term{inside}{\\ell_{sf}}&gt;0]</pre><p class=\"lens-ascii\">For polygon f, L[f]=sum_s insideLength[s,f], W[f]=sum_s pathWeight[s]*insideLength[s,f], N[f]=sum_s 1[insideLength[s,f]&gt;0]. Inside length sums pieces between ring crossings whose midpoint passes even-odd containment. Planar pieces measure (t1-t0)*length(b-a); longitude/latitude pieces measure sphere radius times geodesicCentralAngle between their degree-linear endpoints. Weights are per path, repeated for each segment. Capacity overflow can undercount.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lengths\">Length sum (unweighted sum dispatch) · output · unknown — wgsl segmentOutput not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">Input segment · index · unbound — no binding declared</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-length-per-polygon-compiled:line-length-per-polygon-clip\" data-value=\"inside\">Segment length inside polygon · intermediate · insideLengths</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"weighted\">Length sum (weighted sum dispatch) · output · unknown — wgsl segmentOutput not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-length-per-polygon-compiled:line-length-per-polygon-build-segments\" data-value=\"weights\">Per-path weight copied to each segment · input · segmentWeights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-length-per-polygon-compiled:line-length-per-polygon-candidates-candidates-carry\" data-value=\"counts\">Contributing segment count · output · counts</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Length sum (unweighted sum dispatch)",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Input segment",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ],
+      [
+        "Segment length inside polygon",
+        "intermediate",
+        "insideLengths",
+        "—",
+        "metadata"
+      ],
+      [
+        "Length sum (weighted sum dispatch)",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Per-path weight copied to each segment",
+        "input",
+        "segmentWeights",
+        "—",
+        "metadata"
+      ],
+      [
+        "Contributing segment count",
+        "output",
+        "counts",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{lengths}{L_f}=\\sum_{\\term{index}{s}}\\term{inside}{\\ell_{sf}},\\quad\\term{weighted}{W_f}=\\sum_{\\term{index}{s}}\\term{weights}{w_s}\\term{inside}{\\ell_{sf}},\\quad\\term{counts}{N_f}=\\sum_{\\term{index}{s}}\\mathbb{1}[\\term{inside}{\\ell_{sf}}>0]",
+    "ascii": "For polygon f, L[f]=sum_s insideLength[s,f], W[f]=sum_s pathWeight[s]*insideLength[s,f], N[f]=sum_s 1[insideLength[s,f]>0]. Inside length sums pieces between ring crossings whose midpoint passes even-odd containment. Planar pieces measure (t1-t0)*length(b-a); longitude/latitude pieces measure sphere radius times geodesicCentralAngle between their degree-linear endpoints. Weights are per path, repeated for each segment. Capacity overflow can undercount.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:08.227Z",
+    "runId": "run-08419a6a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-08419a6a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

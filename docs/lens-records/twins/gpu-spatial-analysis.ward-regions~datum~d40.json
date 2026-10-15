@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.ward-regions",
+  "rung": "datum",
+  "datum": 40,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.ward-regions",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 40. weightsRowOffsets: 221. values read back from the GPU run. ward-regions: 3 quantities.",
+  "description": "Receipt of Chicago tract 40. weightsRowOffsets: 221. values read back from the GPU run. ward-regions: 3 quantities.",
+  "llms": "Receipt of Chicago tract 40\n\n- weightsRowOffsets: 221\n- ward-regions: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "weightsRowOffsets",
+    "value": "221"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 40</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"ward-regions\"><tr><th scope=\"rowgroup\" colspan=\"5\">ward-regions</th></tr><tr data-provenance=\"readback\"><td>ward-regions</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.ward-regions-snapshots-values-0\" title=\"Population below 150% poverty line (%)\">values</button></td><td>5.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>ward-regions</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.ward-regions-snapshots-labels-0\" title=\"Ward region (nominal; label is the smallest tract row)\">labels</button></td><td>25</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>ward-regions</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.ward-regions-snapshots-weightsRowOffsets-0\">weightsRowOffsets</button></td><td>221</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "ward-regions",
+        "values",
+        "5.400000095367432",
+        "0",
+        "readback"
+      ],
+      [
+        "ward-regions",
+        "labels",
+        "25",
+        "0",
+        "readback"
+      ],
+      [
+        "ward-regions",
+        "weightsRowOffsets",
+        "221",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:58:56.241Z",
+    "runId": "run-2324b314",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-2324b314",
+    "rung": "datum",
+    "bindings": {
+      "entity": 40
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-clustering",
+  "rung": "datum",
+  "datum": 1000,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-clustering",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 1000. resultObservations: 4664.1142578125, 307.3216247558594. values read back from the GPU run. spatial-clustering: 4 quantities.",
+  "description": "Receipt of observation 1000. resultObservations: 4664.1142578125, 307.3216247558594. values read back from the GPU run. spatial-clustering: 4 quantities.",
+  "llms": "Receipt of observation 1000\n\n- resultObservations: 4664.1142578125, 307.3216247558594\n- spatial-clustering: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "resultObservations",
+    "value": "4664.1142578125, 307.3216247558594"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 1000</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"spatial-clustering\"><tr><th scope=\"rowgroup\" colspan=\"5\">spatial-clustering</th></tr><tr data-provenance=\"readback\"><td>spatial-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-spatial-clustering-snapshots-observations-0\">observations</button></td><td>4664.1142578125, 307.3216247558594</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-spatial-clustering-snapshots-coreFlags-0\" title=\"Core point: at least 6 observations within 250 m, itself included\">coreFlags</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-spatial-clustering-snapshots-labels-0\" title=\"Cluster id (nominal); 0xffffffff is noise\">labels</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-clustering</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-spatial-clustering-snapshots-resultObservations-0\">resultObservations</button></td><td>4664.1142578125, 307.3216247558594</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "spatial-clustering",
+        "observations",
+        "4664.1142578125, 307.3216247558594",
+        "0",
+        "readback"
+      ],
+      [
+        "spatial-clustering",
+        "coreFlags",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "spatial-clustering",
+        "labels",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "spatial-clustering",
+        "resultObservations",
+        "4664.1142578125, 307.3216247558594",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:25.514Z",
+    "runId": "run-b8de80d0",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b8de80d0",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1000
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

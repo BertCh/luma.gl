@@ -1,0 +1,113 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-cast-shadow",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-cast-shadow",
+  "viewId": "formula-card",
+  "caption": "Formula h = atan(max over pixel centres k on the digital line toward the sun of rise_k / d_k), rise_k = zFactor * (z_k - z_0) - c * d_k^2, in degrees; V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi with u = clamp((altitude - h) / radius, -1, 1); radius…",
+  "description": "Formula h = atan(max over pixel centres k on the digital line toward the sun of rise_k / d_k), rise_k = zFactor * (z_k - z_0) - c * d_k^2, in degrees; V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi with u = clamp((altitude - h) / radius, -1, 1); radius…",
+  "llms": "Formula h = atan(max over pixel centres k on the digital line toward the sun of rise_k / d_k), rise_k = zFactor * (z_k - z_0) - c * d_k^2, in degrees; V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi with u = clamp((altitude - h) / radius, -1, 1); radius 0 gives a step; V = 0 when altitude + radius <= 0; h = 0 with no valid sample; NaN at a nodata centre\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-cast-shadow.sun-horizon</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{horizonAngle}{h} = \\arctan\\max_{k}\\frac{\\term{rise}{\\zeta (z_k - z_0) - c\\,d_k^2}}{\\term{groundDistance}{d_k}},\\quad \\term{visibility}{V} = 1 - \\frac{\\arccos u - u\\sqrt{1 - u^2}}{\\pi},\\ u = \\operatorname{clip}\\!\\left(\\frac{\\term{altitude}{\\alpha} - h}{\\term{radius}{\\rho}},\\,-1,\\,1\\right)</pre><p class=\"lens-ascii\">h = atan(max over pixel centres k on the digital line toward the sun of rise_k / d_k), rise_k = zFactor * (z_k - z_0) - c * d_k^2, in degrees; V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi with u = clamp((altitude - h) / radius, -1, 1); radius 0 gives a step; V = 0 when altitude + radius &lt;= 0; h = 0 with no valid sample; NaN at a nodata centre</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"horizonAngle\">h · intermediate · horizonAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"rise\">rise · intermediate · rise</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"groundDistance\">d_k · intermediate · groundDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"visibility\">V · output · visibilityValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"altitude\">α · parameter · altitudeDegrees</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-cast-shadow-compiled:terrain-cast-shadow-sweep\" data-value=\"radius\">ρ · parameter · radiusDegrees</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "h",
+        "intermediate",
+        "horizonAngle",
+        "—",
+        "metadata"
+      ],
+      [
+        "rise",
+        "intermediate",
+        "rise",
+        "—",
+        "metadata"
+      ],
+      [
+        "d_k",
+        "intermediate",
+        "groundDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "V",
+        "output",
+        "visibilityValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "α",
+        "parameter",
+        "altitudeDegrees",
+        "—",
+        "metadata"
+      ],
+      [
+        "ρ",
+        "parameter",
+        "radiusDegrees",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{horizonAngle}{h} = \\arctan\\max_{k}\\frac{\\term{rise}{\\zeta (z_k - z_0) - c\\,d_k^2}}{\\term{groundDistance}{d_k}},\\quad \\term{visibility}{V} = 1 - \\frac{\\arccos u - u\\sqrt{1 - u^2}}{\\pi},\\ u = \\operatorname{clip}\\!\\left(\\frac{\\term{altitude}{\\alpha} - h}{\\term{radius}{\\rho}},\\,-1,\\,1\\right)",
+    "ascii": "h = atan(max over pixel centres k on the digital line toward the sun of rise_k / d_k), rise_k = zFactor * (z_k - z_0) - c * d_k^2, in degrees; V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi with u = clamp((altitude - h) / radius, -1, 1); radius 0 gives a step; V = 0 when altitude + radius <= 0; h = 0 with no valid sample; NaN at a nodata centre",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.796Z",
+    "runId": "run-0bf6712a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0bf6712a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

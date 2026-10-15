@@ -1,0 +1,79 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.ripley-envelope",
+  "rung": "datum",
+  "datum": 9,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.ripley-envelope",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Observation 9. positions: 12950.67578125, -16353.2724609375. values read back from the GPU run. ripley-envelope: 1 quantities.",
+  "description": "Receipt of Observation 9. positions: 12950.67578125, -16353.2724609375. values read back from the GPU run. ripley-envelope: 1 quantities.",
+  "llms": "Receipt of Observation 9\n\n- positions: 12950.67578125, -16353.2724609375\n- ripley-envelope: 1 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "positions",
+    "value": "12950.67578125, -16353.2724609375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Observation 9</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"ripley-envelope\"><tr><th scope=\"rowgroup\" colspan=\"5\">ripley-envelope</th></tr><tr data-provenance=\"readback\"><td>ripley-envelope</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.ripley-envelope-snapshots-positions-0\">positions</button></td><td>12950.67578125, -16353.2724609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "ripley-envelope",
+        "positions",
+        "12950.67578125, -16353.2724609375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.937Z",
+    "runId": "run-d20ff9ef",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d20ff9ef",
+    "rung": "datum",
+    "bindings": {
+      "entity": 9
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

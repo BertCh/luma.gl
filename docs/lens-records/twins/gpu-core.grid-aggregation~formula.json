@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.grid-aggregation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.grid-aggregation",
+  "viewId": "formula-card",
+  "caption": "Formula Per-cell sum|min|max|mean of finite weights; optional counts count accepted weights. Empty sum=0, empty min/max/mean=NaN. mean=sum/count. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0,…",
+  "description": "Formula Per-cell sum|min|max|mean of finite weights; optional counts count accepted weights. Empty sum=0, empty min/max/mean=NaN. mean=sum/count. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0,…",
+  "llms": "Formula Per-cell sum|min|max|mean of finite weights; optional counts count accepted weights. Empty sum=0, empty min/max/mean=NaN. mean=sum/count. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.\n\n- bound symbols: 3/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.grid-aggregation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">S_c=\\{i:\\operatorname{cell}(\\term{positions}{p_i})=c\\},\\quad\\term{y}{y_c}=\\operatorname{op}_{i\\in S_c}\\term{weights}{w_i},\\quad\\term{counts}{n_c}=|S_c|</pre><p class=\"lens-ascii\">Per-cell sum|min|max|mean of finite weights; optional counts count accepted weights. Empty sum=0, empty min/max/mean=NaN. mean=sum/count. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-aggregation-compiled:station-grid-rainfall-output-0-input-0-sum\" data-value=\"positions\">positions · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-aggregation-compiled:station-grid-rainfall-output-0-input-0-sum\" data-value=\"weights\">weights · input · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-aggregation-compiled:station-grid-rainfall-output-0-clear\" data-value=\"y\">y · output · outputValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"counts\">counts · output · unknown — wgsl outputCounts not found in this record</span></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-grid-aggregation-compiled:station-grid-rainfall-output-0-input-0-sum\">station-grid-rainfall-output-0-input-0-sum</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "positions",
+        "input",
+        "positions",
+        "—",
+        "metadata"
+      ],
+      [
+        "weights",
+        "input",
+        "weights",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "S_c=\\{i:\\operatorname{cell}(\\term{positions}{p_i})=c\\},\\quad\\term{y}{y_c}=\\operatorname{op}_{i\\in S_c}\\term{weights}{w_i},\\quad\\term{counts}{n_c}=|S_c|",
+    "ascii": "Per-cell sum|min|max|mean of finite weights; optional counts count accepted weights. Empty sum=0, empty min/max/mean=NaN. mean=sum/count. cell=row*width+column; coordinate(v,a,z,size)=min(size-1,trunc((v-a)/(z-a)*size)), a=z or v=a gives 0, v=z gives size-1. Cross-zero bounds scale v,a,z by max(abs(a),abs(z)) before division. Ignore nonfinite/out-of-bounds points; bounds are inclusive and must be finite and ordered.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:30.823Z",
+    "runId": "run-4f99a707",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4f99a707",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -68,7 +68,7 @@ Values alone do not explain where a pixel is or what it measures. GPURaster pres
 - Each band's native scalar format: `float32`, `uint32`, or `sint32`.
 - Optional band calibration: `physicalValue = rawValue * scale + offset`.
 - Optional band `verticalDatum`: descriptive height-datum metadata, which derived bands do not
-  inherit. See [GPU Terrain: Heights and datums](../gpu-terrain.md#heights-and-datums).
+  inherit. See [GPU Terrain: Heights and datums](../gpu-terrain/concepts.md#heights-and-datums).
 - An affine transform from pixel positions to spatial coordinates.
 - The coordinate reference system, when supplied.
 - Whether a pixel represents an area or a point.
@@ -695,6 +695,21 @@ transport, format parsing, and worker policy on the loading side of the boundary
 | Measure each region's valid intensity, geometry, centroid, and affine area | `GPURasterRegionMeasurements`; use `getRasterRegionWorldCentroid` for precise world coordinates. |
 | Give a region crossing tile seams one global ID and correctly merged metrics | `GPURasterCrossTileComponents` over converged owned cores and mergeable local measurement rows. |
 | Look up complete constructors, format constraints, ownership, and code examples | The [GPURaster API reference](/docs/api-reference/experimental/gpu-raster). |
+
+## GPU execution model
+
+How GPURaster operations run on the device: the command graph they declare, the kernels it
+compiles to, and the resources each pass reads and writes, drawn from a recorded real run.
+
+{/* lens:execution-model */}
+
+Pointwise band algebra is one kernel over every cell. Cost distance is a tiled min-relaxation: each
+workgroup relaxes a 16 × 16 tile in shared memory, and gated rounds repeat until no tile changes.
+
+::lens{scenario=gpu-raster.raster-arithmetic rung=graph caption="Pointwise algebra: one kernel, one invocation per cell, no loop."}
+::lens{scenario=gpu-raster.cost-distance rung=graph caption="Cost distance: reset, seed, then gated relaxation rounds closed by group gates."}
+::lens{scenario=gpu-raster.cost-distance rung=iterations caption="The cost front in recorded rounds; settledAt stamps date each cell's last improvement."}
+::lens{scenario=gpu-raster.cost-distance rung=kernel caption="One workgroup per 16 × 16 tile; inactive tiles return before loading their halo."}
 
 ## A short glossary
 

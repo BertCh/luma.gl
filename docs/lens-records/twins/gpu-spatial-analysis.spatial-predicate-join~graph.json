@@ -1,0 +1,46 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-predicate-join",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-predicate-join",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-spatial-predicate-join. nodes: 31. structure metadata only. 3 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-spatial-predicate-join. nodes: 31. structure metadata only. 3 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-spatial-predicate-join\n\n- nodes: 31\n- 3 visible units vs budget 24\n- 29 hidden nodes\n- Edges by kind: raw 70, indirect 3, war 2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "31"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"192\" style=\"grid-column:1;grid-row:1 / span 3\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-spatial-predicate-join-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-spatial-predicate-join-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-spatial-predicate-join-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>group:spatial-predicate-join → node:gpu-histogram-local: raw ×1; rightIds</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:gpu-histogram-clear → node:gpu-histogram-local: raw ×1; tractMatches</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:spatial-predicate-join\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:spatial-predicate-join\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">spatial-predicate-join</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:spatial-predicate-join\" aria-label=\"Expand spatial-predicate-join\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">spatial-predicate-join-left-rings: commandCount=1 · spatial-predicate-join-left-rings: maximumWorkgroupCount=1 · spatial-predicate-join-left-rings: maximumInvocationCount=102</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:gpu-histogram-clear\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-histogram-clear\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">gpu-histogram-clear</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=256</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:gpu-histogram-local\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-histogram-local\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">gpu-histogram-local</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=80 · maximumInvocationCount=20480</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:gpu-histogram-local\" aria-label=\"Inspect gpu-histogram-local\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 192
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.472Z",
+    "runId": "run-7a111d3e",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7a111d3e",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

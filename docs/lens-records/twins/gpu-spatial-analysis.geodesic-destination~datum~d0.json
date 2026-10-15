@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geodesic-destination",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geodesic-destination",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of bearing and distance 0. destinations: -87.90480041503906, 46.47837448120117. values read back from the GPU run. geodesic-destination: 6 quantities.",
+  "description": "Receipt of bearing and distance 0. destinations: -87.90480041503906, 46.47837448120117. values read back from the GPU run. geodesic-destination: 6 quantities.",
+  "llms": "Receipt of bearing and distance 0\n\n- destinations: -87.90480041503906, 46.47837448120117\n- geodesic-destination: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "destinations",
+    "value": "-87.90480041503906, 46.47837448120117"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of bearing and distance 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"geodesic-destination\"><tr><th scope=\"rowgroup\" colspan=\"5\">geodesic-destination</th></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-origins-0\" title=\"ORD position repeated for each bearing and distance row\">origins</button></td><td>-87.90480041503906, 41.978599548339844</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-bearings-0\" title=\"stated initial bearing in degrees clockwise from north\">bearings</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-distances-0\" title=\"stated distance in m: 500 km, 1,000 km and 2,000 km rings\">distances</button></td><td>500000</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-finalBearings-0\" title=\"bearing on arrival in degrees clockwise from north, in (-180, 180]\">finalBearings</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-converged-0\" title=\"1 when the Vincenty direct iteration converged within 16 iterations\">converged</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-destination</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-destination-snapshots-destinations-0\" title=\"WGS84 geodesic destination (capped Vincenty direct) of each row\">destinations</button></td><td>-87.90480041503906, 46.47837448120117</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "geodesic-destination",
+        "origins",
+        "-87.90480041503906, 41.978599548339844",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-destination",
+        "bearings",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-destination",
+        "distances",
+        "500000",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-destination",
+        "finalBearings",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-destination",
+        "converged",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-destination",
+        "destinations",
+        "-87.90480041503906, 46.47837448120117",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:45.868Z",
+    "runId": "run-c0051c47",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c0051c47",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

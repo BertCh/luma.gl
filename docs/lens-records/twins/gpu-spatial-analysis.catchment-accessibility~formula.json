@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.catchment-accessibility",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.catchment-accessibility",
+  "viewId": "formula-card",
+  "caption": "Formula R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band. bound symbols: 5/5. structure metadata only.",
+  "description": "Formula R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band. bound symbols: 5/5. structure metadata only.",
+  "llms": "Formula R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.catchment-accessibility</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{accessibility}{A_i}=\\sum_{j}\\term{weight}{w_{ij}}\\,\\term{ratio}{R_j},\\qquad \\term{ratio}{R_j}=\\frac{\\term{supply}{S_j}}{\\sum_{i}\\term{demand}{P_i}\\,\\term{weight}{w_{ji}}}</pre><p class=\"lens-ascii\">R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:catchment-accessibility-scores\" data-value=\"accessibility\">A_i · output · accessibility</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:catchment-accessibility-ratios\" data-value=\"ratio\">R_j · intermediate · ratios</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:catchment-accessibility-ratios\" data-value=\"supply\">S_j · input · supply</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:catchment-accessibility-ratios\" data-value=\"demand\">P_i · input · demand</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:library-catchments-weights\" data-value=\"weight\">w · parameter · weights</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-catchment-accessibility-compiled:catchment-accessibility-scores\">catchment-accessibility-scores</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "A_i",
+        "output",
+        "accessibility",
+        "—",
+        "metadata"
+      ],
+      [
+        "R_j",
+        "intermediate",
+        "ratios",
+        "—",
+        "metadata"
+      ],
+      [
+        "S_j",
+        "input",
+        "supply",
+        "—",
+        "metadata"
+      ],
+      [
+        "P_i",
+        "input",
+        "demand",
+        "—",
+        "metadata"
+      ],
+      [
+        "w",
+        "parameter",
+        "weights",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{accessibility}{A_i}=\\sum_{j}\\term{weight}{w_{ij}}\\,\\term{ratio}{R_j},\\qquad \\term{ratio}{R_j}=\\frac{\\term{supply}{S_j}}{\\sum_{i}\\term{demand}{P_i}\\,\\term{weight}{w_{ji}}}",
+    "ascii": "R_j = S_j / sum_i P_i w_ji over the demand row of facility j (0 when the sum is 0); A_i = sum_j w_ij R_j over the facility row of demand i. Weights are 1 inside the catchment for a binary band.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.072Z",
+    "runId": "run-3d666c7c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3d666c7c",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.mat-vec",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.mat-vec",
+  "viewId": "formula-card",
+  "caption": "Formula y[r]=sum(j=0..columns-1, A[r*columns+j]*x[j]); row-major float32, partials accumulate across chunks. bound symbols: 3/3. structure metadata only.",
+  "description": "Formula y[r]=sum(j=0..columns-1, A[r*columns+j]*x[j]); row-major float32, partials accumulate across chunks. bound symbols: 3/3. structure metadata only.",
+  "llms": "Formula y[r]=sum(j=0..columns-1, A[r*columns+j]*x[j]); row-major float32, partials accumulate across chunks.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.mat-vec</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{y_r}=\\sum_{j=0}^{C-1}\\term{matrix}{A_{rC+j}}\\term{vector}{x_j}</pre><p class=\"lens-ascii\">y[r]=sum(j=0..columns-1, A[r*columns+j]*x[j]); row-major float32, partials accumulate across chunks.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-vec-compiled:row-means-0\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-vec-compiled:row-means-0\" data-value=\"matrix\">matrix · input · matrixValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-vec-compiled:row-means-0\" data-value=\"vector\">vector · input · vectorValues</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-mat-vec-compiled:row-means-0\">row-means-0</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "matrix",
+        "input",
+        "matrixValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "vector",
+        "input",
+        "vectorValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{y_r}=\\sum_{j=0}^{C-1}\\term{matrix}{A_{rC+j}}\\term{vector}{x_j}",
+    "ascii": "y[r]=sum(j=0..columns-1, A[r*columns+j]*x[j]); row-major float32, partials accumulate across chunks.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.197Z",
+    "runId": "run-9204fc5b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9204fc5b",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

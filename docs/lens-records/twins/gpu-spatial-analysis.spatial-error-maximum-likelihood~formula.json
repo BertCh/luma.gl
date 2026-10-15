@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-error-maximum-likelihood",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-error-maximum-likelihood",
+  "viewId": "formula-card",
+  "caption": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg ML_Error, exact log-determinant replaced by a truncated trace series). With Z = [1, X - mean, y - mean], G0 = Z'Z, G1 + G1' = Z'WZ + (Z'WZ)', G2 = (WZ)'(WZ) the Gram matrix of the fil…",
+  "description": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg ML_Error, exact log-determinant replaced by a truncated trace series). With Z = [1, X - mean, y - mean], G0 = Z'Z, G1 + G1' = Z'WZ + (Z'WZ)', G2 = (WZ)'(WZ) the Gram matrix of the fil…",
+  "llms": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg ML_Error, exact log-determinant replaced by a truncated trace series). With Z = [1, X - mean, y - mean], G0 = Z'Z, G1 + G1' = Z'WZ + (Z'WZ)', G2 = (WZ)'(WZ) the Gram matrix of the filtered columns is A(lambda) = G0 - lambda (G1 + G1') + lambda^2 G2; one unit-scaled Cholesky solve per lambda gives beta and EE(lambda) = yy - 2 beta'r + beta'A beta. l(lambda) = -(n/2) ln(EE/n) + ln|I - lambda W|; lambda = global maximum on [-B, B] (1025-point derivative scan, 32 bisection steps). sigma2 = EE/n; Var(b) = sigma2 (Xs'Xs)^-1 treats lambda as known.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-error-maximum-likelihood</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{objective}{\\ell(\\lambda)}&amp;=-\\frac n2\\ln\\frac{\\term{errorSumOfSquares}{\\mathrm{EE}(\\lambda)}}{n}+\\term{logDeterminant}{\\ln|I-\\lambda W|}\\\\\n\\mathrm{EE}(\\lambda)&amp;=y_s^\\top y_s-2\\hat\\beta^\\top r+\\hat\\beta^\\top A\\hat\\beta,\n&amp;A(\\lambda)&amp;=G_0-\\lambda(G_1+G_1^\\top)+\\lambda^2G_2\\\\\n\\term{lambda}{\\hat\\lambda}&amp;=\\arg\\max_{|\\lambda|\\le B}\\ \\ell(\\lambda)\n\\end{aligned}</pre><p class=\"lens-ascii\">Spatial error model y = Xb + u, u = lambda W u + e (spreg ML_Error, exact log-determinant replaced by a truncated trace series). With Z = [1, X - mean, y - mean], G0 = Z&#39;Z, G1 + G1&#39; = Z&#39;WZ + (Z&#39;WZ)&#39;, G2 = (WZ)&#39;(WZ) the Gram matrix of the filtered columns is A(lambda) = G0 - lambda (G1 + G1&#39;) + lambda^2 G2; one unit-scaled Cholesky solve per lambda gives beta and EE(lambda) = yy - 2 beta&#39;r + beta&#39;A beta. l(lambda) = -(n/2) ln(EE/n) + ln|I - lambda W|; lambda = global maximum on [-B, B] (1025-point derivative scan, 32 bisection steps). sigma2 = EE/n; Var(b) = sigma2 (Xs&#39;Xs)^-1 treats lambda as known.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-maximum-likelihood-compiled:spatial-error-maximum-likelihood-lambda-search\" data-value=\"objective\">objective · output · getObjective</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-maximum-likelihood-compiled:spatial-error-maximum-likelihood-lambda-search\" data-value=\"errorSumOfSquares\">errorSumOfSquares · intermediate · errorSumOfSquares</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-maximum-likelihood-compiled:spatial-error-maximum-likelihood-lambda-search\" data-value=\"logDeterminant\">logDeterminant · intermediate · getSpatialLogDeterminant</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-maximum-likelihood-compiled:spatial-error-maximum-likelihood-lambda-search\" data-value=\"lambda\">lambda · output · lambda</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "objective",
+        "output",
+        "getObjective",
+        "—",
+        "metadata"
+      ],
+      [
+        "errorSumOfSquares",
+        "intermediate",
+        "errorSumOfSquares",
+        "—",
+        "metadata"
+      ],
+      [
+        "logDeterminant",
+        "intermediate",
+        "getSpatialLogDeterminant",
+        "—",
+        "metadata"
+      ],
+      [
+        "lambda",
+        "output",
+        "lambda",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{objective}{\\ell(\\lambda)}&=-\\frac n2\\ln\\frac{\\term{errorSumOfSquares}{\\mathrm{EE}(\\lambda)}}{n}+\\term{logDeterminant}{\\ln|I-\\lambda W|}\\\\\n\\mathrm{EE}(\\lambda)&=y_s^\\top y_s-2\\hat\\beta^\\top r+\\hat\\beta^\\top A\\hat\\beta,\n&A(\\lambda)&=G_0-\\lambda(G_1+G_1^\\top)+\\lambda^2G_2\\\\\n\\term{lambda}{\\hat\\lambda}&=\\arg\\max_{|\\lambda|\\le B}\\ \\ell(\\lambda)\n\\end{aligned}",
+    "ascii": "Spatial error model y = Xb + u, u = lambda W u + e (spreg ML_Error, exact log-determinant replaced by a truncated trace series). With Z = [1, X - mean, y - mean], G0 = Z'Z, G1 + G1' = Z'WZ + (Z'WZ)', G2 = (WZ)'(WZ) the Gram matrix of the filtered columns is A(lambda) = G0 - lambda (G1 + G1') + lambda^2 G2; one unit-scaled Cholesky solve per lambda gives beta and EE(lambda) = yy - 2 beta'r + beta'A beta. l(lambda) = -(n/2) ln(EE/n) + ln|I - lambda W|; lambda = global maximum on [-B, B] (1025-point derivative scan, 32 bisection steps). sigma2 = EE/n; Var(b) = sigma2 (Xs'Xs)^-1 treats lambda as known.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.121Z",
+    "runId": "run-714fb48e",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-714fb48e",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

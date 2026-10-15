@@ -1,0 +1,91 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.focal-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.focal-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula mean_c = sum_{k in W_c} x_k / n_c; s_c = sqrt(sum_{k in W_c} (x_k - mean_c)^2 / n_c) (population deviation, centred second pass). W_c = the valid cells of the square or circular window around cell c, clipped at the raster edge; n_c = their c…",
+  "description": "Formula mean_c = sum_{k in W_c} x_k / n_c; s_c = sqrt(sum_{k in W_c} (x_k - mean_c)^2 / n_c) (population deviation, centred second pass). W_c = the valid cells of the square or circular window around cell c, clipped at the raster edge; n_c = their c…",
+  "llms": "Formula mean_c = sum_{k in W_c} x_k / n_c; s_c = sqrt(sum_{k in W_c} (x_k - mean_c)^2 / n_c) (population deviation, centred second pass). W_c = the valid cells of the square or circular window around cell c, clipped at the raster edge; n_c = their count. The result is nodata (NaN) when n_c < max(minimumCount, 1), or when the cell itself is nodata and propagateCenterNoData is set.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>focal-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{mean}{\\bar{x}_c}&amp;=\\frac{\\term{sum}{\\sum_{k\\in W_c}x_k}}{\\term{count}{n_c}},\n&amp;\\term{standardDeviation}{s_c}&amp;=\\sqrt{\\frac{\\term{squaredDeviationSum}{\\sum_{k\\in W_c}(x_k-\\bar{x}_c)^2}}{n_c}}\n\\end{aligned}</pre><p class=\"lens-ascii\">mean_c = sum_{k in W_c} x_k / n_c; s_c = sqrt(sum_{k in W_c} (x_k - mean_c)^2 / n_c) (population deviation, centred second pass). W_c = the valid cells of the square or circular window around cell c, clipped at the raster edge; n_c = their count. The result is nodata (NaN) when n_c &lt; max(minimumCount, 1), or when the cell itself is nodata and propagateCenterNoData is set.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.focal-statistics-compiled:focal-statistics-moments\" data-value=\"mean\">mean · output · meanOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.focal-statistics-compiled:focal-statistics-moments\" data-value=\"sum\">sum · intermediate · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.focal-statistics-compiled:focal-statistics-moments\" data-value=\"count\">count · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.focal-statistics-compiled:focal-statistics-moments\" data-value=\"standardDeviation\">standardDeviation · output · deviationOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.focal-statistics-compiled:focal-statistics-moments\" data-value=\"squaredDeviationSum\">squaredDeviationSum · intermediate · squaredDeviationSum</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mean",
+        "output",
+        "meanOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "sum",
+        "intermediate",
+        "sum",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardDeviation",
+        "output",
+        "deviationOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "squaredDeviationSum",
+        "intermediate",
+        "squaredDeviationSum",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{mean}{\\bar{x}_c}&=\\frac{\\term{sum}{\\sum_{k\\in W_c}x_k}}{\\term{count}{n_c}},\n&\\term{standardDeviation}{s_c}&=\\sqrt{\\frac{\\term{squaredDeviationSum}{\\sum_{k\\in W_c}(x_k-\\bar{x}_c)^2}}{n_c}}\n\\end{aligned}",
+    "ascii": "mean_c = sum_{k in W_c} x_k / n_c; s_c = sqrt(sum_{k in W_c} (x_k - mean_c)^2 / n_c) (population deviation, centred second pass). W_c = the valid cells of the square or circular window around cell c, clipped at the raster edge; n_c = their count. The result is nodata (NaN) when n_c < max(minimumCount, 1), or when the cell itself is nodata and propagateCenterNoData is set.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.242Z",
+    "runId": "run-948eca64",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-948eca64",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

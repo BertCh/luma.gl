@@ -1,0 +1,135 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.zonal-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.zonal-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass a…",
+  "description": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass a…",
+  "llms": "Formula S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.\n\n- bound symbols: 8/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>zonal-statistics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{sums}{S_f}&amp;=\\sum_{i:\\ \\term{row}{z_i}=f,\\ \\term{valid}{v_i\\ \\text{finite}}}\\term{values}{v_i},\n&amp;\\term{means}{\\bar{v}_f}&amp;=\\frac{S_f}{\\term{valueCounts}{N_f}}\\\\\n\\term{standardDeviations}{s_f}&amp;=\\sqrt{\\frac{\\term{squaredDeviationSums}{\\sum_i(v_i-\\bar{v}_f)^2}}{N_f-1}}\n\\end{aligned}</pre><p class=\"lens-ascii\">S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f &lt; 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"sums\">sums · output · sums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-deviation\" data-value=\"row\">row · input · row</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-prepare\" data-value=\"valid\">valid · intermediate · valid</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-prepare\" data-value=\"values\">values · input · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"means\">means · output · means</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-means\" data-value=\"valueCounts\">valueCounts · intermediate · valueCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-variances\" data-value=\"standardDeviations\">standardDeviations · output · standardDeviations</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.zonal-statistics-compiled:zonal-statistics-variances\" data-value=\"squaredDeviationSums\">squaredDeviationSums · intermediate · squaredDeviationSums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sums",
+        "output",
+        "sums",
+        "—",
+        "metadata"
+      ],
+      [
+        "row",
+        "input",
+        "row",
+        "—",
+        "metadata"
+      ],
+      [
+        "valid",
+        "intermediate",
+        "valid",
+        "—",
+        "metadata"
+      ],
+      [
+        "values",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "means",
+        "output",
+        "means",
+        "—",
+        "metadata"
+      ],
+      [
+        "valueCounts",
+        "intermediate",
+        "valueCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardDeviations",
+        "output",
+        "standardDeviations",
+        "—",
+        "metadata"
+      ],
+      [
+        "squaredDeviationSums",
+        "intermediate",
+        "squaredDeviationSums",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{sums}{S_f}&=\\sum_{i:\\ \\term{row}{z_i}=f,\\ \\term{valid}{v_i\\ \\text{finite}}}\\term{values}{v_i},\n&\\term{means}{\\bar{v}_f}&=\\frac{S_f}{\\term{valueCounts}{N_f}}\\\\\n\\term{standardDeviations}{s_f}&=\\sqrt{\\frac{\\term{squaredDeviationSums}{\\sum_i(v_i-\\bar{v}_f)^2}}{N_f-1}}\n\\end{aligned}",
+    "ascii": "S_f = sum of v_i over points i with zone z_i = f and v_i finite; N_f = their count; mean_f = S_f / N_f (NaN when N_f = 0); s_f = sqrt(sum (v_i - mean_f)^2 / (N_f - 1)) (NaN when N_f < 2). Unweighted form. The deviation sum is a second pass about the mean. Points whose zone row is not below featureCount are unassigned and contribute to no zone.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.710Z",
+    "runId": "run-99bac098",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-99bac098",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

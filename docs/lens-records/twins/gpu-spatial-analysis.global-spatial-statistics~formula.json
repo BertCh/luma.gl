@@ -1,0 +1,134 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.global-spatial-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.global-spatial-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula I = n * sum_ij w_ij c_i c_j / (S0 * sum c_i^2); E[I] = -1/(n-1); z = (I - E[I]) / sqrt(V_rand); p = erfc(|z| / sqrt(2)) for the default two-sided tail. c = x - mean over the n analysis rows; S0 = sum w_ij over included pairs; V_rand is esda…",
+  "description": "Formula I = n * sum_ij w_ij c_i c_j / (S0 * sum c_i^2); E[I] = -1/(n-1); z = (I - E[I]) / sqrt(V_rand); p = erfc(|z| / sqrt(2)) for the default two-sided tail. c = x - mean over the n analysis rows; S0 = sum w_ij over included pairs; V_rand is esda…",
+  "llms": "Formula I = n * sum_ij w_ij c_i c_j / (S0 * sum c_i^2); E[I] = -1/(n-1); z = (I - E[I]) / sqrt(V_rand); p = erfc(|z| / sqrt(2)) for the default two-sided tail. c = x - mean over the n analysis rows; S0 = sum w_ij over included pairs; V_rand is esda VI_rand (sample kurtosis). Geary C and General G use the same z and p with their own moments. For G, E[G] = S0/(n(n-1)); both inference triples report the analytical VG and normal approximation, evaluated in centered form. Binary weights and islands = keep match esda.G; row weights give a weighted generalization. Inference is undefined for n < 4 or S0 = 0. Constant positive data give G variance zero (z and p undefined); G also requires non-negative values and a positive pair-product denominator.\n\n- bound symbols: 9/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "9/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>global-moran</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{statistic}{I}&amp;=\\frac{\\term{count}{n}\\,\\term{crossSum}{\\sum_{ij}w_{ij}c_ic_j}}{\\term{weightSum}{S_0}\\,\\term{sumSquares}{\\sum_i c_i^2}},\n&amp;\\term{expected}{E[I]}&amp;=-\\frac{1}{\\term{count}{n}-1}\\\\\n\\term{zRandomization}{z}&amp;=\\frac{\\term{statistic}{I}-\\term{expected}{E[I]}}{\\sqrt{\\term{varianceRandomization}{V_{\\mathrm{rand}}}}},\n&amp;\\term{pValue}{p}&amp;=\\operatorname{erfc}\\left(\\frac{|\\term{zRandomization}{z}|}{\\sqrt{2}}\\right)\n\\end{aligned}</pre><p class=\"lens-ascii\">I = n * sum_ij w_ij c_i c_j / (S0 * sum c_i^2); E[I] = -1/(n-1); z = (I - E[I]) / sqrt(V_rand); p = erfc(|z| / sqrt(2)) for the default two-sided tail. c = x - mean over the n analysis rows; S0 = sum w_ij over included pairs; V_rand is esda VI_rand (sample kurtosis). Geary C and General G use the same z and p with their own moments. For G, E[G] = S0/(n(n-1)); both inference triples report the analytical VG and normal approximation, evaluated in centered form. Binary weights and islands = keep match esda.G; row weights give a weighted generalization. Inference is undefined for n &lt; 4 or S0 = 0. Constant positive data give G variance zero (z and p undefined); G also requires non-negative values and a positive pair-product denominator.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"statistic\">Moran I · output · statistic</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"count\">analysis rows · intermediate · n</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-include\" data-value=\"crossSum\">crossSum · intermediate · COLUMN_MORAN_CROSS</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"weightSum\">weightSum · intermediate · s0</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"sumSquares\">sumSquares · intermediate · sumSquares</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"expected\">expected · intermediate · expected</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"varianceRandomization\">varianceRandomization · intermediate · varianceRandomization</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"zRandomization\">zRandomization · output · zRandomization</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.global-spatial-statistics-compiled:global-spatial-statistics-finalize\" data-value=\"pValue\">pValue · output · getPValue</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Moran I",
+        "output",
+        "statistic",
+        "—",
+        "metadata"
+      ],
+      [
+        "analysis rows",
+        "intermediate",
+        "n",
+        "—",
+        "metadata"
+      ],
+      [
+        "crossSum",
+        "intermediate",
+        "COLUMN_MORAN_CROSS",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightSum",
+        "intermediate",
+        "s0",
+        "—",
+        "metadata"
+      ],
+      [
+        "sumSquares",
+        "intermediate",
+        "sumSquares",
+        "—",
+        "metadata"
+      ],
+      [
+        "expected",
+        "intermediate",
+        "expected",
+        "—",
+        "metadata"
+      ],
+      [
+        "varianceRandomization",
+        "intermediate",
+        "varianceRandomization",
+        "—",
+        "metadata"
+      ],
+      [
+        "zRandomization",
+        "output",
+        "zRandomization",
+        "—",
+        "metadata"
+      ],
+      [
+        "pValue",
+        "output",
+        "getPValue",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{statistic}{I}&=\\frac{\\term{count}{n}\\,\\term{crossSum}{\\sum_{ij}w_{ij}c_ic_j}}{\\term{weightSum}{S_0}\\,\\term{sumSquares}{\\sum_i c_i^2}},\n&\\term{expected}{E[I]}&=-\\frac{1}{\\term{count}{n}-1}\\\\\n\\term{zRandomization}{z}&=\\frac{\\term{statistic}{I}-\\term{expected}{E[I]}}{\\sqrt{\\term{varianceRandomization}{V_{\\mathrm{rand}}}}},\n&\\term{pValue}{p}&=\\operatorname{erfc}\\left(\\frac{|\\term{zRandomization}{z}|}{\\sqrt{2}}\\right)\n\\end{aligned}",
+    "ascii": "I = n * sum_ij w_ij c_i c_j / (S0 * sum c_i^2); E[I] = -1/(n-1); z = (I - E[I]) / sqrt(V_rand); p = erfc(|z| / sqrt(2)) for the default two-sided tail. c = x - mean over the n analysis rows; S0 = sum w_ij over included pairs; V_rand is esda VI_rand (sample kurtosis). Geary C and General G use the same z and p with their own moments. For G, E[G] = S0/(n(n-1)); both inference triples report the analytical VG and normal approximation, evaluated in centered form. Binary weights and islands = keep match esda.G; row weights give a weighted generalization. Inference is undefined for n < 4 or S0 = 0. Constant positive data give G variance zero (z and p undefined); G also requires non-negative values and a positive pair-product denominator.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:07.929Z",
+    "runId": "run-5c8551ce",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5c8551ce",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

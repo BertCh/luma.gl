@@ -1,0 +1,101 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-profile",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-profile",
+  "viewId": "formula-card",
+  "caption": "Formula Per line of planar length L (sum of vertex-to-vertex distances): samples at d_k = k * spacing for k * spacing < L, plus a last sample at exactly L (a zero-length line gives one sample, an empty line none); p_k interpolates linearly along the…",
+  "description": "Formula Per line of planar length L (sum of vertex-to-vertex distances): samples at d_k = k * spacing for k * spacing < L, plus a last sample at exactly L (a zero-length line gives one sample, an empty line none); p_k interpolates linearly along the…",
+  "llms": "Formula Per line of planar length L (sum of vertex-to-vertex distances): samples at d_k = k * spacing for k * spacing < L, plus a last sample at exactly L (a zero-length line gives one sample, an empty line none); p_k interpolates linearly along the segment holding d_k; z_k is the GPURasterSampling rule (bilinear here) at p_k, NaN outside the extent or at nodata; gain sums the positive and loss the negative differences between consecutive finite samples, minimum and maximum cover finite samples. Sums use a fixed reduce-then-scan tree, so float32 rounding differs from a serial sum.\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-profile.samples</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{distance}{d_k}=\\min(k\\,\\term{spacing}{s},\\ L),\\quad \\term{position}{p_k}=\\operatorname{lerp}\\bigl(\\text{polyline},\\ d_k\\bigr),\\quad \\term{value}{z_k}=\\operatorname{bilinear}\\bigl(\\term{raster}{r},\\ p_k\\bigr),\\quad \\term{gain}{G}=\\sum_{k}\\max(0,\\ z_k-z_{k-1})</pre><p class=\"lens-ascii\">Per line of planar length L (sum of vertex-to-vertex distances): samples at d_k = k * spacing for k * spacing &lt; L, plus a last sample at exactly L (a zero-length line gives one sample, an empty line none); p_k interpolates linearly along the segment holding d_k; z_k is the GPURasterSampling rule (bilinear here) at p_k, NaN outside the extent or at nodata; gain sums the positive and loss the negative differences between consecutive finite samples, minimum and maximum cover finite samples. Sums use a fixed reduce-then-scan tree, so float32 rounding differs from a serial sum.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-locate\" data-value=\"distance\">distance along line · intermediate · distancesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-sample-counts\" data-value=\"spacing\">spacing · parameter · params</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-locate\" data-value=\"position\">sample position · intermediate · positionsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-sample\" data-value=\"value\">sampled value · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-sample\" data-value=\"raster\">raster · input · raster</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-profile-compiled:raster-profile-cumulative-blocks\" data-value=\"gain\">gain · output · gain</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "distance along line",
+        "intermediate",
+        "distancesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "spacing",
+        "parameter",
+        "params",
+        "—",
+        "metadata"
+      ],
+      [
+        "sample position",
+        "intermediate",
+        "positionsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "sampled value",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "raster",
+        "input",
+        "raster",
+        "—",
+        "metadata"
+      ],
+      [
+        "gain",
+        "output",
+        "gain",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{distance}{d_k}=\\min(k\\,\\term{spacing}{s},\\ L),\\quad \\term{position}{p_k}=\\operatorname{lerp}\\bigl(\\text{polyline},\\ d_k\\bigr),\\quad \\term{value}{z_k}=\\operatorname{bilinear}\\bigl(\\term{raster}{r},\\ p_k\\bigr),\\quad \\term{gain}{G}=\\sum_{k}\\max(0,\\ z_k-z_{k-1})",
+    "ascii": "Per line of planar length L (sum of vertex-to-vertex distances): samples at d_k = k * spacing for k * spacing < L, plus a last sample at exactly L (a zero-length line gives one sample, an empty line none); p_k interpolates linearly along the segment holding d_k; z_k is the GPURasterSampling rule (bilinear here) at p_k, NaN outside the extent or at nodata; gain sums the positive and loss the negative differences between consecutive finite samples, minimum and maximum cover finite samples. Sums use a fixed reduce-then-scan tree, so float32 rounding differs from a serial sum.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.611Z",
+    "runId": "run-98a5703d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-98a5703d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

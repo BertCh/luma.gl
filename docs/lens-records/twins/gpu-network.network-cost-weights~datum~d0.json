@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-cost-weights",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-network.network-cost-weights",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of facility 0. weightRowCounts: 823. values read back from the GPU run. network-cost-weights: 2 quantities.",
+  "description": "Receipt of facility 0. weightRowCounts: 823. values read back from the GPU run. network-cost-weights: 2 quantities.",
+  "llms": "Receipt of facility 0\n\n- weightRowCounts: 823\n- network-cost-weights: 2 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "weightRowCounts",
+    "value": "823"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of facility 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"network-cost-weights\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-cost-weights</th></tr><tr data-provenance=\"readback\"><td>network-cost-weights</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"weightRowStart\" title=\"first retained entry of each facility row (GPU row offsets)\">weightRowStart</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-cost-weights</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"weightRowCounts\" title=\"retained entries per facility row (the GPU count pass before the scan)\">weightRowCounts</button></td><td>823</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "network-cost-weights",
+        "weightRowStart",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "network-cost-weights",
+        "weightRowCounts",
+        "823",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:44:26.833Z",
+    "runId": "run-6fc767ed",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients matrixCosts, converged, snappedEdges, startNodes, startCosts, network-cost-weights-row-counts, weightOffsets, weightNeighbors, weightValues, weightDistances, weightOverflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-6fc767ed",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

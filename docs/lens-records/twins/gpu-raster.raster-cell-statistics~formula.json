@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-cell-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-cell-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Her…",
+  "description": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Her…",
+  "llms": "Formula Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-cell-statistics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{mean}{\\mu}=\\frac{\\term{sum}{\\sum_{\\ell\\in V} x_\\ell}}{\\max(\\term{count}{|V|},1)}\\quad(|V|=2;\\ \\text{otherwise NaN})</pre><p class=\"lens-ascii\">Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count &gt;= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"mean\">mean · output · meanOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"sum\">sum · intermediate · sum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-cell-statistics-compiled:raster-cell-statistics-moments\" data-value=\"count\">count · intermediate · count</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mean",
+        "output",
+        "meanOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "sum",
+        "intermediate",
+        "sum",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{mean}{\\mu}=\\frac{\\term{sum}{\\sum_{\\ell\\in V} x_\\ell}}{\\max(\\term{count}{|V|},1)}\\quad(|V|=2;\\ \\text{otherwise NaN})",
+    "ascii": "Mean output: count valid layers (NaN and optional sentinel excluded), sum in layer order, mean = sum/max(count,1); write mean only when count >= max(1,minimumValidCount) and (noDataPolicy is ignore or count == layerCount), otherwise NaN. Here two reflectance layers, propagate, minimumValidCount=2; DN 0 is uploaded as NaN and valid DN is scaled by 0.0001.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.274Z",
+    "runId": "run-3c91b4bf",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3c91b4bf",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

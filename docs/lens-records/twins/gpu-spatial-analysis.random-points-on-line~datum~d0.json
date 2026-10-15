@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.random-points-on-line",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.random-points-on-line",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of sample slot 0. fractions: 0.008271872997283936. values read back from the GPU run. random-points-on-line: 3 quantities.",
+  "description": "Receipt of sample slot 0. fractions: 0.008271872997283936. values read back from the GPU run. random-points-on-line: 3 quantities.",
+  "llms": "Receipt of sample slot 0\n\n- fractions: 0.008271872997283936\n- random-points-on-line: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "fractions",
+    "value": "0.008271872997283936"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of sample slot 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"random-points-on-line\"><tr><th scope=\"rowgroup\" colspan=\"5\">random-points-on-line</th></tr><tr data-provenance=\"readback\"><td>random-points-on-line</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-random-points-on-line-snapshots-points-0\">points</button></td><td>4372.7099609375, -3207.61767578125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>random-points-on-line</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-random-points-on-line-snapshots-sourceIds-0\">sourceIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>random-points-on-line</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-random-points-on-line-snapshots-fractions-0\">fractions</button></td><td>0.008271872997283936</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "random-points-on-line",
+        "points",
+        "4372.7099609375, -3207.61767578125",
+        "0",
+        "readback"
+      ],
+      [
+        "random-points-on-line",
+        "sourceIds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "random-points-on-line",
+        "fractions",
+        "0.008271872997283936",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.051Z",
+    "runId": "run-c6b38345",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c6b38345",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

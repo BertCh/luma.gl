@@ -1,0 +1,154 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geographically-weighted-regression",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geographically-weighted-regression",
+  "viewId": "formula-card",
+  "caption": "Formula w_ij = (1 - (d_ij/h_i)^2)^2 for d_ij < h_i, else 0 (bisquare); h_i = 1.00001 x distance to the k-th nearest included tract (adaptive). beta_i = (Z_i' W_i Z_i)^-1 Z_i' W_i y with z_j = (1, x_j - x_i), so the intercept is the fit at tract i an…",
+  "description": "Formula w_ij = (1 - (d_ij/h_i)^2)^2 for d_ij < h_i, else 0 (bisquare); h_i = 1.00001 x distance to the k-th nearest included tract (adaptive). beta_i = (Z_i' W_i Z_i)^-1 Z_i' W_i y with z_j = (1, x_j - x_i), so the intercept is the fit at tract i an…",
+  "llms": "Formula w_ij = (1 - (d_ij/h_i)^2)^2 for d_ij < h_i, else 0 (bisquare); h_i = 1.00001 x distance to the k-th nearest included tract (adaptive). beta_i = (Z_i' W_i Z_i)^-1 Z_i' W_i y with z_j = (1, x_j - x_i), so the intercept is the fit at tract i and S_ii = [(Z'WZ)^-1]_00. AICc = n ln(RSS/n) + n ln 2pi + n (n + tr S)/(n - 2 - tr S) is minimised over k by golden-section search. se_ik = sqrt(sigma2 [C C']_kk) with C = (Z'WZ)^-1 Z'W and sigma2 = RSS/(n - tr S); t_ik = beta_ik/se_ik. Singular tracts give NaN.\n\n- bound symbols: 9/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "9/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>geographically-weighted-regression</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{weight}{w_{ij}}&amp;=\\left(1-\\frac{d_{ij}^2}{\\term{bandwidth}{h_i}^2}\\right)^2\\ (d_{ij}&lt;h_i),\\ \\text{else }0\\\\\n\\term{coefficients}{\\beta_i}&amp;=(Z_i^\\top W_i Z_i)^{-1}Z_i^\\top W_i\\,y,\n&amp;\\term{hat}{S_{ii}}&amp;=\\left[(Z_i^\\top W_i Z_i)^{-1}\\right]_{00}\\\\\n\\term{aicc}{\\mathrm{AICc}}&amp;=n\\ln\\frac{\\term{residualSum}{\\mathrm{RSS}}}{n}+n\\ln 2\\pi+\\frac{n\\,(n+\\term{traceSum}{\\operatorname{tr}S})}{n-2-\\operatorname{tr}S},\n&amp;\\term{standardErrors}{\\mathrm{se}_{ik}}&amp;=\\sqrt{\\hat\\sigma^2\\,[C_iC_i^\\top]_{kk}}\\\\\n\\term{tValues}{t_{ik}}&amp;=\\frac{\\beta_{ik}}{\\mathrm{se}_{ik}}\n\\end{aligned}</pre><p class=\"lens-ascii\">w_ij = (1 - (d_ij/h_i)^2)^2 for d_ij &lt; h_i, else 0 (bisquare); h_i = 1.00001 x distance to the k-th nearest included tract (adaptive). beta_i = (Z_i&#39; W_i Z_i)^-1 Z_i&#39; W_i y with z_j = (1, x_j - x_i), so the intercept is the fit at tract i and S_ii = [(Z&#39;WZ)^-1]_00. AICc = n ln(RSS/n) + n ln 2pi + n (n + tr S)/(n - 2 - tr S) is minimised over k by golden-section search. se_ik = sqrt(sigma2 [C C&#39;]_kk) with C = (Z&#39;WZ)^-1 Z&#39;W and sigma2 = RSS/(n - tr S); t_ik = beta_ik/se_ik. Singular tracts give NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-search-bounds-rows\" data-value=\"weight\">weight · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-search-bounds-rows\" data-value=\"bandwidth\">bandwidth · parameter · bandwidth</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-search-bounds-rows\" data-value=\"coefficients\">local coefficients · output · beta</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-search-bounds-rows\" data-value=\"hat\">hat · intermediate · hat</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-select\" data-value=\"aicc\">aicc · intermediate · candidateScore</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-search-bounds-rows\" data-value=\"residualSum\">residualSum · intermediate · residualSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-tile-candidates\" data-value=\"traceSum\">effective parameters · intermediate · traceSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-fit\" data-value=\"standardErrors\">standardErrors · output · standardError</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographically-weighted-regression-compiled:geographically-weighted-regression-fit\" data-value=\"tValues\">tValues · output · tValue</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weight",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "bandwidth",
+        "parameter",
+        "bandwidth",
+        "—",
+        "metadata"
+      ],
+      [
+        "local coefficients",
+        "output",
+        "beta",
+        "—",
+        "metadata"
+      ],
+      [
+        "hat",
+        "intermediate",
+        "hat",
+        "—",
+        "metadata"
+      ],
+      [
+        "aicc",
+        "intermediate",
+        "candidateScore",
+        "—",
+        "metadata"
+      ],
+      [
+        "residualSum",
+        "intermediate",
+        "residualSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "effective parameters",
+        "intermediate",
+        "traceSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardErrors",
+        "output",
+        "standardError",
+        "—",
+        "metadata"
+      ],
+      [
+        "tValues",
+        "output",
+        "tValue",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{weight}{w_{ij}}&=\\left(1-\\frac{d_{ij}^2}{\\term{bandwidth}{h_i}^2}\\right)^2\\ (d_{ij}<h_i),\\ \\text{else }0\\\\\n\\term{coefficients}{\\beta_i}&=(Z_i^\\top W_i Z_i)^{-1}Z_i^\\top W_i\\,y,\n&\\term{hat}{S_{ii}}&=\\left[(Z_i^\\top W_i Z_i)^{-1}\\right]_{00}\\\\\n\\term{aicc}{\\mathrm{AICc}}&=n\\ln\\frac{\\term{residualSum}{\\mathrm{RSS}}}{n}+n\\ln 2\\pi+\\frac{n\\,(n+\\term{traceSum}{\\operatorname{tr}S})}{n-2-\\operatorname{tr}S},\n&\\term{standardErrors}{\\mathrm{se}_{ik}}&=\\sqrt{\\hat\\sigma^2\\,[C_iC_i^\\top]_{kk}}\\\\\n\\term{tValues}{t_{ik}}&=\\frac{\\beta_{ik}}{\\mathrm{se}_{ik}}\n\\end{aligned}",
+    "ascii": "w_ij = (1 - (d_ij/h_i)^2)^2 for d_ij < h_i, else 0 (bisquare); h_i = 1.00001 x distance to the k-th nearest included tract (adaptive). beta_i = (Z_i' W_i Z_i)^-1 Z_i' W_i y with z_j = (1, x_j - x_i), so the intercept is the fit at tract i and S_ii = [(Z'WZ)^-1]_00. AICc = n ln(RSS/n) + n ln 2pi + n (n + tr S)/(n - 2 - tr S) is minimised over k by golden-section search. se_ik = sqrt(sigma2 [C C']_kk) with C = (Z'WZ)^-1 Z'W and sigma2 = RSS/(n - tr S); t_ik = beta_ik/se_ik. Singular tracts give NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: adjusted-alpha"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:19.595Z",
+    "runId": "run-f87097cc",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f87097cc",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

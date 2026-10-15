@@ -7,6 +7,10 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Joins the 143 stations with at least 100 mm of rain back to their station indices through a hash index.
+
+::lens{scenario=gpu-core.hash-join rung=result caption="All 143 stations with at least 100 mm find their station index; pairs keep the left order."}
+
 `GPUHashJoin` turns sparse exact lookup into stable, capacity-bounded inner-join row pairs. It
 queries a previously built `GPUHashIndex` or `GPUBatchHashIndex`, scans the match mask, and
 publishes aligned left and right row IDs without CPU selection, hidden submission, or readback.
@@ -21,6 +25,16 @@ matched value or `GPU_HASH_INDEX_EMPTY_KEY`, plus a found mask. `GPUHashJoin` ad
 compaction needed when downstream work should run only for matching rows.
 
 <GPUOperationContract operation="gpu-hash-join" />
+
+#### How it computes
+
+{/* lens:GPUHashJoin */}
+
+::lens{scenario=gpu-core.hash-join rung=kernel caption="Inspect lanes writing each matched pair to the output slot given by the scan offset."}
+
+::lens{scenario=gpu-core.hash-join rung=graph caption="Trace the index build, the lookup, the match scan, and the pair scatter."}
+
+::lens{scenario=gpu-core.hash-join rung=datum caption="Follow one wet station through the lookup to its joined pair."}
 
 ## Concepts
 

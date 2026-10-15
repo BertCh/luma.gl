@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.group-statistics",
+  "rung": "datum",
+  "datum": 34,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.group-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Community area 34. medians: 35.650001525878906. values read back from the GPU run. group-statistics: 6 quantities.",
+  "description": "Receipt of Community area 34. medians: 35.650001525878906. values read back from the GPU run. group-statistics: 6 quantities.",
+  "llms": "Receipt of Community area 34\n\n- medians: 35.650001525878906\n- group-statistics: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "medians",
+    "value": "35.650001525878906"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Community area 34</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"group-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">group-statistics</th></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-groupKeys-0\" title=\"Distinct community areas in ascending order.\">groupKeys</button></td><td>35</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-groupRows-0\" title=\"Tracts per community area, including tracts with a suppressed estimate.\">groupRows</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-counts-0\" title=\"Tracts with a finite poverty estimate per community area.\">counts</button></td><td>10</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-means-0\">means</button></td><td>39.29999923706055</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-variances-0\" title=\"Sample variance (n - 1); NaN for a group with a single finite value.\">variances</button></td><td>357.6466369628906</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>group-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-group-statistics-snapshots-medians-0\">medians</button></td><td>35.650001525878906</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "group-statistics",
+        "groupKeys",
+        "35",
+        "0",
+        "readback"
+      ],
+      [
+        "group-statistics",
+        "groupRows",
+        "10",
+        "0",
+        "readback"
+      ],
+      [
+        "group-statistics",
+        "counts",
+        "10",
+        "0",
+        "readback"
+      ],
+      [
+        "group-statistics",
+        "means",
+        "39.29999923706055",
+        "0",
+        "readback"
+      ],
+      [
+        "group-statistics",
+        "variances",
+        "357.6466369628906",
+        "0",
+        "readback"
+      ],
+      [
+        "group-statistics",
+        "medians",
+        "35.650001525878906",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:16:19.261Z",
+    "runId": "run-ec274132",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ec274132",
+    "rung": "datum",
+    "bindings": {
+      "entity": 34
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

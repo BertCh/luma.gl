@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-profile",
+  "rung": "datum",
+  "datum": 14,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-profile",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of profile samples 14. profileDistances: 3500. values read back from the GPU run. raster-profile: 2 quantities.",
+  "description": "Receipt of profile samples 14. profileDistances: 3500. values read back from the GPU run. raster-profile: 2 quantities.",
+  "llms": "Receipt of profile samples 14\n\n- profileDistances: 3500\n- raster-profile: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "profileDistances",
+    "value": "3500"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of profile samples 14</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-profile\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-profile</th></tr><tr data-provenance=\"readback\"><td>raster-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-profile-snapshots-profileValues-0\" title=\"DEM elevation at each sample (m)\">profileValues</button></td><td>1217.210693359375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-profile</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-profile-snapshots-profileDistances-0\" title=\"distance along the line (m)\">profileDistances</button></td><td>3500</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-profile",
+        "profileValues",
+        "1217.210693359375",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-profile",
+        "profileDistances",
+        "3500",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.611Z",
+    "runId": "run-98a5703d",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-98a5703d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 14
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

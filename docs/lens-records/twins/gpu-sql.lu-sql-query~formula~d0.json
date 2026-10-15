@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-sql.lu-sql-query",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-sql.lu-sql-query",
+  "viewId": "formula-card",
+  "caption": "Formula noVehicleRate[i] = noVehicle[i] / households[i]. noVehicleRate: 0.3811. values read back from the GPU run.",
+  "description": "Formula noVehicleRate[i] = noVehicle[i] / households[i]. noVehicleRate: 0.3811. values read back from the GPU run.",
+  "llms": "Formula noVehicleRate[i] = noVehicle[i] / households[i]\n\n- noVehicleRate: 0.3811\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "noVehicleRate",
+    "value": "0.3811"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:derived:noVehicleRate</h3><span class=\"lens-provenance lens-provenance--metadata\" data-provenance=\"metadata\">derived from the AST</span></header><div><pre class=\"lens-tex\">\\term{noVehicleRate}{\\mathit{noVehicleRate}}_i = \\term{expression2}{\\frac{\\term{noVehicle}{\\mathit{noVehicle}}_i}{\\term{households}{\\mathit{households}}_i}}</pre><p class=\"lens-ascii\">noVehicleRate[i] = noVehicle[i] / households[i]</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{noVehicleRate}{0.381137}_i = \\term{expression2}{\\frac{\\term{noVehicle}{\\left(885\\right)}_i}{\\term{households}{\\left(2322\\right)}_i}}</pre><p class=\"lens-ascii\">noVehicleRate[i] = noVehicle[i] / households[i]</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-sql.lu-sql-query-compiled:gpu-sql.lu-sql-query-gpu-dataframe-query-predicate-batch-0\" data-value=\"noVehicleRate\">noVehicleRate · output · derived0<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-sql.lu-sql-query-compiled:gpu-sql.lu-sql-query-gpu-dataframe-query-predicate-batch-0\" data-value=\"noVehicle\">noVehicle · input · input0<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-sql.lu-sql-query-compiled:gpu-sql.lu-sql-query-gpu-dataframe-query-predicate-batch-0\" data-value=\"households\">households · input · input1<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-sql.lu-sql-query-compiled:gpu-sql.lu-sql-query-gpu-dataframe-query-predicate-batch-0\" data-value=\"expression2\">e_2 · intermediate · expression2Value</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "noVehicleRate",
+        "output",
+        "derived0",
+        "0.381136953830719",
+        "readback"
+      ],
+      [
+        "noVehicle",
+        "input",
+        "input0",
+        "885",
+        "readback"
+      ],
+      [
+        "households",
+        "input",
+        "input1",
+        "2322",
+        "readback"
+      ],
+      [
+        "e_2",
+        "intermediate",
+        "expression2Value",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{noVehicleRate}{\\mathit{noVehicleRate}}_i = \\term{expression2}{\\frac{\\term{noVehicle}{\\mathit{noVehicle}}_i}{\\term{households}{\\mathit{households}}_i}}",
+    "ascii": "noVehicleRate[i] = noVehicle[i] / households[i]",
+    "derivation": "derived"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:48.021Z",
+    "runId": "run-7c77836c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7c77836c",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

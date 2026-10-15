@@ -1,0 +1,139 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.variogram",
+  "rung": "formula",
+  "datum": 3,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.variogram",
+  "viewId": "formula-card",
+  "caption": "Formula gamma[h]=sum_{i<j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d<=maximumDistance; fixed-point accumulation. semivariances: 962.6. values read back from the GPU run.",
+  "description": "Formula gamma[h]=sum_{i<j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d<=maximumDistance; fixed-point accumulation. semivariances: 962.6. values read back from the GPU run.",
+  "llms": "Formula gamma[h]=sum_{i<j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d<=maximumDistance; fixed-point accumulation.\n\n- semivariances: 962.6\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "semivariances",
+    "value": "962.6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUVariogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{semivariances}{\\gamma_h}=\\frac{1}{2\\term{pairCounts}{N_h}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div><div class=\"lens-worked-example\"><h4>Entity 3</h4><div><pre class=\"lens-tex\">\\term{semivariances}{962.588}=\\frac{1}{2\\term{pairCounts}{6216}}\\sum_{\\substack{\\term{focus}{i}&lt;\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)</pre><p class=\"lens-ascii\">gamma[h]=sum_{i&lt;j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d&lt;=maximumDistance; fixed-point accumulation.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-finish\" data-value=\"semivariances\">semivariances · output · semivariances<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-finish\" data-value=\"pairCounts\">pairCounts · output · pairCounts<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"focus\">focus · index · focus</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"neighbor\">neighbor · index · neighbor</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"lag\">lag · index · lag</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-unit-quantile-histogram-0\" data-value=\"values\">included value difference · intermediate · difference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"pairDistance\">pairDistance · intermediate · pairDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-cell-keys\" data-value=\"maximumDistance\">maximumDistance · parameter · maximumDistance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.variogram-compiled:variogram-histogram-pairs\" data-value=\"lagCount\">lagCount · constant · LAG_COUNT</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "semivariances",
+        "output",
+        "semivariances",
+        "962.587890625",
+        "readback"
+      ],
+      [
+        "pairCounts",
+        "output",
+        "pairCounts",
+        "6216",
+        "readback"
+      ],
+      [
+        "focus",
+        "index",
+        "focus",
+        "—",
+        "metadata"
+      ],
+      [
+        "neighbor",
+        "index",
+        "neighbor",
+        "—",
+        "metadata"
+      ],
+      [
+        "lag",
+        "index",
+        "lag",
+        "—",
+        "metadata"
+      ],
+      [
+        "included value difference",
+        "intermediate",
+        "difference",
+        "—",
+        "metadata"
+      ],
+      [
+        "pairDistance",
+        "intermediate",
+        "pairDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "maximumDistance",
+        "parameter",
+        "maximumDistance",
+        "—",
+        "metadata"
+      ],
+      [
+        "lagCount",
+        "constant",
+        "LAG_COUNT",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{semivariances}{\\gamma_h}=\\frac{1}{2\\term{pairCounts}{N_h}}\\sum_{\\substack{\\term{focus}{i}<\\term{neighbor}{j}\\\\\\text{pair in lag }\\term{lag}{h}}}(\\term{values}{z_i-z_j})^2,\\quad \\term{lag}{h}=\\min\\left(\\left\\lfloor\\frac{\\term{pairDistance}{d}}{\\term{maximumDistance}{D}}\\term{lagCount}{H}\\right\\rfloor,\\term{lagCount}{H}-1\\right)",
+    "ascii": "gamma[h]=sum_{i<j in h}(z_i-z_j)^2/(2*N[h]); h=min(floor(d/maximumDistance*lagCount),lagCount-1), d<=maximumDistance; fixed-point accumulation.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.060Z",
+    "runId": "run-ebe24810",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-ebe24810",
+    "rung": "formula",
+    "bindings": {
+      "entity": 3
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

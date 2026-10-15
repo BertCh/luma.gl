@@ -1,0 +1,52 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-patch-metrics",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "new GPURasterConnectedComponents({\n  ...grid, // width and height\n  input: makeGPURasterBand(burnMask, grid), // 1 where dNBR > 0.27\n  output: sparseLabels,\n  outputValidity: sparseValidity,\n  converged\n}).addToGraph(graph);\nnew GPURasterDenseComponents({\n  ...grid, // width and height\n  input: sparseLabels,\n  inputValidity: sparseValidity,\n  converged,\n  output: labels, // patch 1, 2, ... in row-major order of their first cell\n  outputValidity: labelValidity,\n  componentCount,\n  overflow\n}).addToGraph(graph);\ngraph.add(\n  new GPURasterPatchMetrics({\n    grid,\n    labels,\n    status: {converged, componentCount, overflow},\n    output: {pixelCounts, areas, perimeters, perimeterFaceCounts} // one row per patch\n  })\n);",
+    "language": "ts",
+    "lineCount": 25
+  },
+  "scenarioId": "gpu-raster.raster-patch-metrics",
+  "viewId": "result-view",
+  "caption": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces. rows: 48. values read back from the GPU run. input patchLabels: 4096 cells.",
+  "description": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces. rows: 48. values read back from the GPU run. input patchLabels: 4096 cells.",
+  "llms": "Result of gpu-raster.raster-patch-metrics: patchLabels → patchPerimeterFaces\n\n- rows: 48\n- input patchLabels: 4096 cells\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- 45 categories; 5 largest coloured\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "48"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">patchPixelCounts</th><th class=\"cv-col--output\" scope=\"col\">patchAreas</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeters</th><th class=\"cv-col--output\" scope=\"col\">patchPerimeterFaces</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2199</td><td class=\"cv-col--output\" data-provenance=\"readback\">31665600</td><td class=\"cv-col--output\" data-provenance=\"readback\">114960</td><td class=\"cv-col--output\" data-provenance=\"readback\">958</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">42</td><td class=\"cv-col--output\" data-provenance=\"readback\">604800</td><td class=\"cv-col--output\" data-provenance=\"readback\">3840</td><td class=\"cv-col--output\" data-provenance=\"readback\">32</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">14400</td><td class=\"cv-col--output\" data-provenance=\"readback\">480</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">43200</td><td class=\"cv-col--output\" data-provenance=\"readback\">960</td><td class=\"cv-col--output\" data-provenance=\"readback\">8</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">28800</td><td class=\"cv-col--output\" data-provenance=\"readback\">720</td><td class=\"cv-col--output\" data-provenance=\"readback\">6</td></tr><tr><td colspan=\"4\">… 42 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input patchLabels · blue: output patchPixelCounts, patchAreas, patchPerimeters, patchPerimeterFaces</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded · 45 categories; 5 largest coloured · cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.358Z",
+    "runId": "run-31742123",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-31742123",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

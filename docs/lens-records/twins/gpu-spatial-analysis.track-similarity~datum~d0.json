@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.track-similarity",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.track-similarity",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of track pair 0. pairStatus: 0. values read back from the GPU run. track-similarity: 6 quantities.",
+  "description": "Receipt of track pair 0. pairStatus: 0. values read back from the GPU run. track-similarity: 6 quantities.",
+  "llms": "Receipt of track pair 0\n\n- pairStatus: 0\n- track-similarity: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "pairStatus",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of track pair 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"track-similarity\"><tr><th scope=\"rowgroup\" colspan=\"5\">track-similarity</th></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-pairA-0\" title=\"first track index of the pair\">pairA</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-pairB-0\" title=\"second track index of the pair\">pairB</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-hausdorff-0\" title=\"symmetric Hausdorff distance in m (vertex to segment)\">hausdorff</button></td><td>4999.24658203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-frechet-0\" title=\"discrete Frechet distance in m\">frechet</button></td><td>5913.216796875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-maximumDistance-0\" title=\"largest vertex-to-vertex distance in m\">maximumDistance</button></td><td>10521.240234375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>track-similarity</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-track-similarity-snapshots-pairStatus-0\" title=\"status bits: 1 empty track, 2 Frechet cap exceeded, 4 invalid pair\">pairStatus</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "track-similarity",
+        "pairA",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "track-similarity",
+        "pairB",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "track-similarity",
+        "hausdorff",
+        "4999.24658203125",
+        "0",
+        "readback"
+      ],
+      [
+        "track-similarity",
+        "frechet",
+        "5913.216796875",
+        "0",
+        "readback"
+      ],
+      [
+        "track-similarity",
+        "maximumDistance",
+        "10521.240234375",
+        "0",
+        "readback"
+      ],
+      [
+        "track-similarity",
+        "pairStatus",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:44.615Z",
+    "runId": "run-316f6023",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-316f6023",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

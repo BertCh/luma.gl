@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-subgraph-filter",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-subgraph-filter",
+  "viewId": "formula-card",
+  "caption": "Formula For every enabled range, live = live && value >= parameters[base] && value < parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask…",
+  "description": "Formula For every enabled range, live = live && value >= parameters[base] && value < parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask…",
+  "llms": "Formula For every enabled range, live = live && value >= parameters[base] && value < parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask starts at 1 (or at the caller mask), so the result is the AND of all ranges; an edge slot is finally kept only when both of its endpoints are live, and dropIsolated also removes nodes left without a live slot. Integer and comparison arithmetic only, so the result is exact.\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: transients nodeMask, edgeMask, liveCounts retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.subgraph-filter.range</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{live}{m}\\leftarrow\\term{live}{m}\\land\\bigl(\\term{parameters}{p}[\\term{base}{b}]\\le\\term{value}{x}&lt;\\term{parameters}{p}[\\term{base}{b}+1]\\bigr)</pre><p class=\"lens-ascii\">For every enabled range, live = live &amp;&amp; value &gt;= parameters[base] &amp;&amp; value &lt; parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask starts at 1 (or at the caller mask), so the result is the AND of all ranges; an edge slot is finally kept only when both of its endpoints are live, and dropIsolated also removes nodes left without a live slot. Integer and comparison arithmetic only, so the result is exact.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-subgraph-filter-compiled:network-subgraph-filter-edge-columns-0\" data-value=\"live\">slot is kept · output · live</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-subgraph-filter-compiled:network-subgraph-filter-edge-columns-0\" data-value=\"parameters\">range bounds · parameter · parameters</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-subgraph-filter-compiled:network-subgraph-filter-edge-columns-0\" data-value=\"base\">range record offset · intermediate · base</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-subgraph-filter-compiled:network-subgraph-filter-edge-columns-0\" data-value=\"value\">column value · input · value</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-subgraph-filter-compiled:network-subgraph-filter-edge-columns-0\">network-subgraph-filter-edge-columns-0</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "slot is kept",
+        "output",
+        "live",
+        "—",
+        "metadata"
+      ],
+      [
+        "range bounds",
+        "parameter",
+        "parameters",
+        "—",
+        "metadata"
+      ],
+      [
+        "range record offset",
+        "intermediate",
+        "base",
+        "—",
+        "metadata"
+      ],
+      [
+        "column value",
+        "input",
+        "value",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{live}{m}\\leftarrow\\term{live}{m}\\land\\bigl(\\term{parameters}{p}[\\term{base}{b}]\\le\\term{value}{x}<\\term{parameters}{p}[\\term{base}{b}+1]\\bigr)",
+    "ascii": "For every enabled range, live = live && value >= parameters[base] && value < parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask starts at 1 (or at the caller mask), so the result is the AND of all ranges; an edge slot is finally kept only when both of its endpoints are live, and dropIsolated also removes nodes left without a live slot. Integer and comparison arithmetic only, so the result is exact.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.853Z",
+    "runId": "run-e072e683",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients nodeMask, edgeMask, liveCounts retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-e072e683",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

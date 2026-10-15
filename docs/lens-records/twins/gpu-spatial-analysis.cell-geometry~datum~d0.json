@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-geometry",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-geometry",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of cell (one per place) 0. vertexCounts: 6. values read back from the GPU run. cell-geometry: 4 quantities.",
+  "description": "Receipt of cell (one per place) 0. vertexCounts: 6. values read back from the GPU run. cell-geometry: 4 quantities.",
+  "llms": "Receipt of cell (one per place) 0\n\n- vertexCounts: 6\n- cell-geometry: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "vertexCounts",
+    "value": "6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of cell (one per place) 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"cell-geometry\"><tr><th scope=\"rowgroup\" colspan=\"5\">cell-geometry</th></tr><tr data-provenance=\"readback\"><td>cell-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-geometry-snapshots-places-0\" title=\"context\">places</button></td><td>-87.67891693115234, 41.91227722167969</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>cell-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-geometry-snapshots-cells-0\" title=\"H3 cell key (resolution 9) as (low, high) uint32 words\">cells</button></td><td>2898788351, 143812172</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>cell-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-geometry-snapshots-centers-0\" title=\"cell centre [longitude, latitude] in degrees\">centers</button></td><td>-87.67864990234375, 41.912269592285156</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>cell-geometry</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-geometry-snapshots-vertexCounts-0\" title=\"boundary vertices written per cell (6 for a hexagon)\">vertexCounts</button></td><td>6</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "cell-geometry",
+        "places",
+        "-87.67891693115234, 41.91227722167969",
+        "0",
+        "readback"
+      ],
+      [
+        "cell-geometry",
+        "cells",
+        "2898788351, 143812172",
+        "0",
+        "readback"
+      ],
+      [
+        "cell-geometry",
+        "centers",
+        "-87.67864990234375, 41.912269592285156",
+        "0",
+        "readback"
+      ],
+      [
+        "cell-geometry",
+        "vertexCounts",
+        "6",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:17:33.126Z",
+    "runId": "run-f07c8f4d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f07c8f4d",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

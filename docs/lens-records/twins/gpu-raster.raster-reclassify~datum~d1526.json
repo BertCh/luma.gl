@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-reclassify",
+  "rung": "datum",
+  "datum": 1526,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-reclassify",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1526. suitability: 5. values read back from the GPU run. raster-reclassify: 3 quantities.",
+  "description": "Receipt of grid cells 1526. suitability: 5. values read back from the GPU run. raster-reclassify: 3 quantities.",
+  "llms": "Receipt of grid cells 1526\n\n- suitability: 5\n- raster-reclassify: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "suitability",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1526</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-reclassify\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-reclassify</th></tr><tr data-provenance=\"readback\"><td>raster-reclassify</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-reclassify-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1080</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-reclassify</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-reclassify-snapshots-suitabilityLandCover-0\" title=\"WorldCover class code\">suitabilityLandCover</button></td><td>40</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-reclassify</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-reclassify-snapshots-suitability-0\" title=\"land-cover suitability rank (1 low to 5 high)\">suitability</button></td><td>5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-raster-reclassify-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-reclassify-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-reclassify-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1461\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1461: 1083.4000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1461</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1462\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1462: 1081.300048828125</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1462</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1463\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1463: 1080.800048828125</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1463</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1525\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1525: 1081.9000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1525</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1526\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1526: 1080</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1526</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1527\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1527: 1079.4000244140625</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1527</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1589\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1589: 1081.699951171875</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1589</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1590\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1590: 1079.9000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1590</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1591\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1591: 1079</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1591</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-reclassify",
+        "landscapeElevation",
+        "1080",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-reclassify",
+        "suitabilityLandCover",
+        "40",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-reclassify",
+        "suitability",
+        "5",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.294Z",
+    "runId": "run-4f548652",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-4f548652",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1526
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

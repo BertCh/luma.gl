@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.spatial-correlogram",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.spatial-correlogram",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Weather station 0. prcp: 2.299999952316284. values read back from the GPU run. spatial-correlogram: 2 quantities.",
+  "description": "Receipt of Weather station 0. prcp: 2.299999952316284. values read back from the GPU run. spatial-correlogram: 2 quantities.",
+  "llms": "Receipt of Weather station 0\n\n- prcp: 2.299999952316284\n- spatial-correlogram: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "prcp",
+    "value": "2.299999952316284"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Weather station 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"spatial-correlogram\"><tr><th scope=\"rowgroup\" colspan=\"5\">spatial-correlogram</th></tr><tr data-provenance=\"readback\"><td>spatial-correlogram</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.spatial-correlogram-snapshots-positions-0\">positions</button></td><td>521754.84375, -772805.875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>spatial-correlogram</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe.spatial-correlogram-snapshots-prcp-0\">prcp</button></td><td>2.299999952316284</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "spatial-correlogram",
+        "positions",
+        "521754.84375, -772805.875",
+        "0",
+        "readback"
+      ],
+      [
+        "spatial-correlogram",
+        "prcp",
+        "2.299999952316284",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.011Z",
+    "runId": "run-58052775",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-58052775",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

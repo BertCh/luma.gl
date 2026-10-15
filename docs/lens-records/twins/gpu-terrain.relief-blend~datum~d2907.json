@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.relief-blend",
+  "rung": "datum",
+  "datum": 2907,
+  "size": "full",
+  "scenarioId": "gpu-terrain.relief-blend",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2907. reliefBlend: 0.41660061478614807. values read back from the GPU run. relief-blend: 4 quantities.",
+  "description": "Receipt of grid cells 2907. reliefBlend: 0.41660061478614807. values read back from the GPU run. relief-blend: 4 quantities.",
+  "llms": "Receipt of grid cells 2907\n\n- reliefBlend: 0.41660061478614807\n- relief-blend: 4 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "reliefBlend",
+    "value": "0.41660061478614807"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2907</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"relief-blend\"><tr><th scope=\"rowgroup\" colspan=\"5\">relief-blend</th></tr><tr data-provenance=\"readback\"><td>relief-blend</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-relief-blend-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1303.5999755859375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>relief-blend</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-relief-blend-snapshots-hillshade-0\" title=\"bottom layer: hillshade (0–1)\">hillshade</button></td><td>0.4262942671775818</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>relief-blend</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-relief-blend-snapshots-slope-0\" title=\"top layer: slope (degrees), stretched 0–50 and inverted\">slope</button></td><td>29.654653549194336</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>relief-blend</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-relief-blend-snapshots-reliefBlend-0\" title=\"blended grey (0–1)\">reliefBlend</button></td><td>0.41660061478614807</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-relief-blend-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-relief-blend-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-relief-blend-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2842\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2842: 1325.4000244140625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2842</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2843\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2843: 1276.4000244140625</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2843</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2844\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2844: 1212.5</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2844</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2906\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>2906: 1368.4000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2906</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2907\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2907: 1303.5999755859375</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2907</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2908\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2908: 1225.5999755859375</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2908</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2970\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#2171b5\"></rect><title>2970: 1368.5</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2970</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2971\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2971: 1303.4000244140625</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2971</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2972\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2972: 1233.300048828125</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2972</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "relief-blend",
+        "dem",
+        "1303.5999755859375",
+        "0",
+        "readback"
+      ],
+      [
+        "relief-blend",
+        "hillshade",
+        "0.4262942671775818",
+        "0",
+        "readback"
+      ],
+      [
+        "relief-blend",
+        "slope",
+        "29.654653549194336",
+        "0",
+        "readback"
+      ],
+      [
+        "relief-blend",
+        "reliefBlend",
+        "0.41660061478614807",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.036Z",
+    "runId": "run-0bba101a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0bba101a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2907
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

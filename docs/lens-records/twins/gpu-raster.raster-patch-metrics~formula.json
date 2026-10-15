@@ -1,0 +1,105 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-patch-metrics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-patch-metrics",
+  "viewId": "formula-card",
+  "caption": "Formula For dense patch label p (row p-1): n_p = pixels with that label; area = n_p * |a*e - b*d| of the grid affine (14400 m2 here); a pixel face is exposed when its 4-neighbour holds another label, background or an invalid pixel, or lies outside t…",
+  "description": "Formula For dense patch label p (row p-1): n_p = pixels with that label; area = n_p * |a*e - b*d| of the grid affine (14400 m2 here); a pixel face is exposed when its 4-neighbour holds another label, background or an invalid pixel, or lies outside t…",
+  "llms": "Formula For dense patch label p (row p-1): n_p = pixels with that label; area = n_p * |a*e - b*d| of the grid affine (14400 m2 here); a pixel face is exposed when its 4-neighbour holds another label, background or an invalid pixel, or lies outside the raster (countRasterBorder true); perimeter = (exposed faces between vertical neighbours) * column step + (exposed faces between horizontal neighbours) * row step (120 m here); holes add their inner boundary. All counts are exact integer atomics; while the labelling has not converged every column is filled with the unresolved sentinel (NaN for floats).\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-patch-metrics.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{area}{A_p}=\\term{count}{n_p}\\,\\lvert\\det G\\rvert,\\qquad \\term{perimeter}{P_p}=\\term{verticalFaces}{f_p^{\\updownarrow}}\\,\\Delta x+\\term{horizontalFaces}{f_p^{\\leftrightarrow}}\\,\\Delta y</pre><p class=\"lens-ascii\">For dense patch label p (row p-1): n_p = pixels with that label; area = n_p * |a*e - b*d| of the grid affine (14400 m2 here); a pixel face is exposed when its 4-neighbour holds another label, background or an invalid pixel, or lies outside the raster (countRasterBorder true); perimeter = (exposed faces between vertical neighbours) * column step + (exposed faces between horizontal neighbours) * row step (120 m here); holes add their inner boundary. All counts are exact integer atomics; while the labelling has not converged every column is filled with the unresolved sentinel (NaN for floats).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-patch-metrics-compiled:raster-patch-metrics-areas\" data-value=\"area\">area · output · areas</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-patch-metrics-compiled:raster-patch-metrics-counts\" data-value=\"count\">pixel count · intermediate · pixelCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-patch-metrics-compiled:raster-patch-metrics-perimeters\" data-value=\"perimeter\">perimeter · output · perimeters</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-patch-metrics-compiled:raster-patch-metrics-faces\" data-value=\"verticalFaces\">faces · intermediate · acrossRows</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-patch-metrics-compiled:raster-patch-metrics-faces\" data-value=\"horizontalFaces\">faces · intermediate · acrossColumns</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "area",
+        "output",
+        "areas",
+        "—",
+        "metadata"
+      ],
+      [
+        "pixel count",
+        "intermediate",
+        "pixelCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "perimeter",
+        "output",
+        "perimeters",
+        "—",
+        "metadata"
+      ],
+      [
+        "faces",
+        "intermediate",
+        "acrossRows",
+        "—",
+        "metadata"
+      ],
+      [
+        "faces",
+        "intermediate",
+        "acrossColumns",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{area}{A_p}=\\term{count}{n_p}\\,\\lvert\\det G\\rvert,\\qquad \\term{perimeter}{P_p}=\\term{verticalFaces}{f_p^{\\updownarrow}}\\,\\Delta x+\\term{horizontalFaces}{f_p^{\\leftrightarrow}}\\,\\Delta y",
+    "ascii": "For dense patch label p (row p-1): n_p = pixels with that label; area = n_p * |a*e - b*d| of the grid affine (14400 m2 here); a pixel face is exposed when its 4-neighbour holds another label, background or an invalid pixel, or lies outside the raster (countRasterBorder true); perimeter = (exposed faces between vertical neighbours) * column step + (exposed faces between horizontal neighbours) * row step (120 m here); holes add their inner boundary. All counts are exact integer atomics; while the labelling has not converged every column is filled with the unresolved sentinel (NaN for floats).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.358Z",
+    "runId": "run-31742123",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-31742123",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

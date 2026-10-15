@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-error-gm",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-error-gm",
+  "viewId": "formula-card",
+  "caption": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg GM_Error_Hom, A1 = hom_sc, one iteration; estimator kelejian-prucha is GM_Error). Step 1: OLS residuals u give moments u'A1u, u'A2u with A1 = (W'W - (t/n) I)/(1 + (t/n)^2), t = tr(W'W…",
+  "description": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg GM_Error_Hom, A1 = hom_sc, one iteration; estimator kelejian-prucha is GM_Error). Step 1: OLS residuals u give moments u'A1u, u'A2u with A1 = (W'W - (t/n) I)/(1 + (t/n)^2), t = tr(W'W…",
+  "llms": "Formula Spatial error model y = Xb + u, u = lambda W u + e (spreg GM_Error_Hom, A1 = hom_sc, one iteration; estimator kelejian-prucha is GM_Error). Step 1: OLS residuals u give moments u'A1u, u'A2u with A1 = (W'W - (t/n) I)/(1 + (t/n)^2), t = tr(W'W), A2 = (W + W')/2; r(lambda) = A lambda + B lambda^2 - g is minimised unweighted on a grid in [-0.99/||W||_inf, 0.99/||W||_inf] refined by bisection. Step 2: FGLS betas at that lambda, moments recomputed on their residuals and weighted by psi^-1. Final: y_s = y - lambda W y, X_s = X - lambda W X (filtered constant included); beta = (Xs'Xs)^-1 Xs'ys, sigma2 = u_s'u_s/n. Standard errors treat lambda as known; lambda has its own standard error.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-error-gm</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{moments}{r(\\lambda)}&amp;=\\mathbf A\\lambda+\\mathbf B\\lambda^2-\\mathbf g,\n&amp;\\term{lambda}{\\hat\\lambda}&amp;=\\arg\\min_{|\\lambda|\\le 0.99/\\|W\\|_\\infty}\\ r(\\lambda)^\\top\\Psi^{-1}r(\\lambda)\\\\\n\\term{filteredResponse}{y_s}&amp;=y-\\lambda Wy,\\quad X_s=X-\\lambda WX,\n&amp;\\hat\\beta&amp;=(X_s^\\top X_s)^{-1}X_s^\\top y_s\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&amp;=\\frac{u_s^\\top u_s}{n},\n&amp;\\mathrm{Var}(\\hat\\beta)&amp;=\\hat\\sigma^2(X_s^\\top X_s)^{-1}\n\\end{aligned}</pre><p class=\"lens-ascii\">Spatial error model y = Xb + u, u = lambda W u + e (spreg GM_Error_Hom, A1 = hom_sc, one iteration; estimator kelejian-prucha is GM_Error). Step 1: OLS residuals u give moments u&#39;A1u, u&#39;A2u with A1 = (W&#39;W - (t/n) I)/(1 + (t/n)^2), t = tr(W&#39;W), A2 = (W + W&#39;)/2; r(lambda) = A lambda + B lambda^2 - g is minimised unweighted on a grid in [-0.99/||W||_inf, 0.99/||W||_inf] refined by bisection. Step 2: FGLS betas at that lambda, moments recomputed on their residuals and weighted by psi^-1. Final: y_s = y - lambda W y, X_s = X - lambda W X (filtered constant included); beta = (Xs&#39;Xs)^-1 Xs&#39;ys, sigma2 = u_s&#39;u_s/n. Standard errors treat lambda as known; lambda has its own standard error.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-gm-compiled:spatial-error-gm-lambda-solve\" data-value=\"moments\">moment residual · intermediate · getMomentResidual</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-gm-compiled:spatial-error-gm-ols-solve\" data-value=\"lambda\">lambda · output · lambda</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-gm-compiled:spatial-error-gm-filtered-moments-tiles\" data-value=\"filteredResponse\">filteredResponse · intermediate · ys</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-error-gm-compiled:spatial-error-gm-ols-finish\" data-value=\"sigmaSquared\">sigmaSquared · intermediate · sigmaSquared</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "moment residual",
+        "intermediate",
+        "getMomentResidual",
+        "—",
+        "metadata"
+      ],
+      [
+        "lambda",
+        "output",
+        "lambda",
+        "—",
+        "metadata"
+      ],
+      [
+        "filteredResponse",
+        "intermediate",
+        "ys",
+        "—",
+        "metadata"
+      ],
+      [
+        "sigmaSquared",
+        "intermediate",
+        "sigmaSquared",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{moments}{r(\\lambda)}&=\\mathbf A\\lambda+\\mathbf B\\lambda^2-\\mathbf g,\n&\\term{lambda}{\\hat\\lambda}&=\\arg\\min_{|\\lambda|\\le 0.99/\\|W\\|_\\infty}\\ r(\\lambda)^\\top\\Psi^{-1}r(\\lambda)\\\\\n\\term{filteredResponse}{y_s}&=y-\\lambda Wy,\\quad X_s=X-\\lambda WX,\n&\\hat\\beta&=(X_s^\\top X_s)^{-1}X_s^\\top y_s\\\\\n\\term{sigmaSquared}{\\hat\\sigma^2}&=\\frac{u_s^\\top u_s}{n},\n&\\mathrm{Var}(\\hat\\beta)&=\\hat\\sigma^2(X_s^\\top X_s)^{-1}\n\\end{aligned}",
+    "ascii": "Spatial error model y = Xb + u, u = lambda W u + e (spreg GM_Error_Hom, A1 = hom_sc, one iteration; estimator kelejian-prucha is GM_Error). Step 1: OLS residuals u give moments u'A1u, u'A2u with A1 = (W'W - (t/n) I)/(1 + (t/n)^2), t = tr(W'W), A2 = (W + W')/2; r(lambda) = A lambda + B lambda^2 - g is minimised unweighted on a grid in [-0.99/||W||_inf, 0.99/||W||_inf] refined by bisection. Step 2: FGLS betas at that lambda, moments recomputed on their residuals and weighted by psi^-1. Final: y_s = y - lambda W y, X_s = X - lambda W X (filtered constant included); beta = (Xs'Xs)^-1 Xs'ys, sigma2 = u_s'u_s/n. Standard errors treat lambda as known; lambda has its own standard error.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:19.970Z",
+    "runId": "run-cc82c6ec",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-cc82c6ec",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

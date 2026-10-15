@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.column-quantiles",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.column-quantiles",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Quantile probability 0. quantiles: 14.100000381469727. values read back from the GPU run. column-quantiles: 2 quantities.",
+  "description": "Receipt of Quantile probability 0. quantiles: 14.100000381469727. values read back from the GPU run. column-quantiles: 2 quantities.",
+  "llms": "Receipt of Quantile probability 0\n\n- quantiles: 14.100000381469727\n- column-quantiles: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "quantiles",
+    "value": "14.100000381469727"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Quantile probability 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"column-quantiles\"><tr><th scope=\"rowgroup\" colspan=\"5\">column-quantiles</th></tr><tr data-provenance=\"readback\"><td>column-quantiles</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-quantiles-snapshots-probability-0\">probability</button></td><td>0.25</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>column-quantiles</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-column-quantiles-snapshots-quantiles-0\">quantiles</button></td><td>14.100000381469727</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "column-quantiles",
+        "probability",
+        "0.25",
+        "0",
+        "readback"
+      ],
+      [
+        "column-quantiles",
+        "quantiles",
+        "14.100000381469727",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.777Z",
+    "runId": "run-18961656",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-18961656",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

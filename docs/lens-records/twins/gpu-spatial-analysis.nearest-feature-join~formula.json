@@ -1,0 +1,88 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.nearest-feature-join",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.nearest-feature-join",
+  "viewId": "formula-card",
+  "caption": "Formula For this planar point-to-point k=1 run, choose the lexicographically smallest (squared Euclidean distance, feature row); publish sqrt(distanceSquared) in metres. General geometry uses pairResult minimum edge distance and containment distance…",
+  "description": "Formula For this planar point-to-point k=1 run, choose the lexicographically smallest (squared Euclidean distance, feature row); publish sqrt(distanceSquared) in metres. General geometry uses pairResult minimum edge distance and containment distance…",
+  "llms": "Formula For this planar point-to-point k=1 run, choose the lexicographically smallest (squared Euclidean distance, feature row); publish sqrt(distanceSquared) in metres. General geometry uses pairResult minimum edge distance and containment distance zero.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.nearest-feature-join</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{nearest}{j^*(i)}=\\underset{\\term{feature}{j}}{\\operatorname{argmin}}\\;(\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2^2},\\term{feature}{j})</pre><p class=\"lens-ascii\">For this planar point-to-point k=1 run, choose the lexicographically smallest (squared Euclidean distance, feature row); publish sqrt(distanceSquared) in metres. General geometry uses pairResult minimum edge distance and containment distance zero.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-join-compiled:nearest-feature-join-columns\" data-value=\"nearest\">nearest library · output · neighborIds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-join-compiled:nearest-feature-join-traverse\" data-value=\"feature\">feature row · input · featureRow</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-join-compiled:nearest-feature-join-traverse\" data-value=\"distance\">squared planar distance · intermediate · pairResult</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-nearest-feature-join-compiled:nearest-feature-join-traverse\">nearest-feature-join-traverse</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "nearest library",
+        "output",
+        "neighborIds",
+        "—",
+        "metadata"
+      ],
+      [
+        "feature row",
+        "input",
+        "featureRow",
+        "—",
+        "metadata"
+      ],
+      [
+        "squared planar distance",
+        "intermediate",
+        "pairResult",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{nearest}{j^*(i)}=\\underset{\\term{feature}{j}}{\\operatorname{argmin}}\\;(\\term{distance}{\\lVert\\mathbf{x}_i-\\mathbf{f}_j\\rVert_2^2},\\term{feature}{j})",
+    "ascii": "For this planar point-to-point k=1 run, choose the lexicographically smallest (squared Euclidean distance, feature row); publish sqrt(distanceSquared) in metres. General geometry uses pairResult minimum edge distance and containment distance zero.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.068Z",
+    "runId": "run-3d82c73e",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3d82c73e",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

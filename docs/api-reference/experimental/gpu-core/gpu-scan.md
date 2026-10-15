@@ -8,10 +8,28 @@ import {WorkgroupScanBenchmark} from '@site/src/components/docs/workgroup-scan-b
 
 ## Overview
 
+Computes inclusive or exclusive running totals from unsigned input values, optionally restarting at segment flags.
+
+::lens{scenario=gpu-core.scan rung=result caption="Each output cell sums rainfall up to its station; output[9] is bracketed."}
+
 `GPUScan` computes a parallel prefix sum, commonly called a scan, over `uint32` values in a
 `GPUCommandGraph`. Scans are exclusive by default and may be inclusive, segmented, or both.
 
 <GPUOperationContract operation="gpu-scan" />
+
+#### How it computes
+
+{/* lens:GPUScan */}
+
+::lens{scenario=gpu-core.scan rung=kernel caption="Inspect 256 lanes per workgroup and the exact rainfall scan shader."}
+
+::lens{scenario=gpu-core.scan rung=iterations caption="Follow 2 scan levels and the final offset pass through the captured frames."}
+
+::lens{scenario=gpu-core.scan rung=graph caption="Trace 3 compute nodes from local prefixes to global totals."}
+
+::lens{scenario=gpu-core.scan rung=datum caption="Follow station 9 into its scan invocation and output slot."}
+
+::lens{scenario=gpu-core.scan rung=formula caption="Read the inclusive prefix sum for station 9, with unsigned wraparound."}
 
 ## Concepts
 

@@ -1,0 +1,91 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segregation",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.segregation",
+  "viewId": "formula-card",
+  "caption": "Formula h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0. bound symbols: 5/5. structure m…",
+  "description": "Formula h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0. bound symbols: 5/5. structure m…",
+  "llms": "Formula h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.segregation</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{theil}{h_i}=\\frac{\\term{population}{t_i}\\,(\\term{diversity}{E}-\\term{entropy}{E_i})}{E\\,\\term{total}{T}},\\qquad H=\\sum_i h_i</pre><p class=\"lens-ascii\">h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-local\" data-value=\"theil\">h_i · output · localTheil</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-terms\" data-value=\"population\">t_i · input · unitPopulation</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-terms\" data-value=\"diversity\">E · intermediate · diversity</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-terms\" data-value=\"entropy\">E_i · intermediate · entropy</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-local\" data-value=\"total\">T · intermediate · populationTotal</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-segregation-compiled:segregation-scale-0-local\">segregation-scale-0-local</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "h_i",
+        "output",
+        "localTheil",
+        "—",
+        "metadata"
+      ],
+      [
+        "t_i",
+        "input",
+        "unitPopulation",
+        "—",
+        "metadata"
+      ],
+      [
+        "E",
+        "intermediate",
+        "diversity",
+        "—",
+        "metadata"
+      ],
+      [
+        "E_i",
+        "intermediate",
+        "entropy",
+        "—",
+        "metadata"
+      ],
+      [
+        "T",
+        "intermediate",
+        "populationTotal",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{theil}{h_i}=\\frac{\\term{population}{t_i}\\,(\\term{diversity}{E}-\\term{entropy}{E_i})}{E\\,\\term{total}{T}},\\qquad H=\\sum_i h_i",
+    "ascii": "h_i = t_i (E - E_i) / (E T), H = sum_i h_i. E = sum_m P_m ln(1 / P_m) is the diversity of all residents, E_i the same for tract i, t_i its population, T the total. Undefined (NaN) when E = 0 or the total is 0.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.234Z",
+    "runId": "run-1f078a31",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1f078a31",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

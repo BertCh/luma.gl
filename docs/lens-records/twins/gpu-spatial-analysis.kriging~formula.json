@@ -1,0 +1,144 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.kriging",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.kriging",
+  "viewId": "formula-card",
+  "caption": "Formula [GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t<1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,…",
+  "description": "Formula [GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t<1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,…",
+  "llms": "Formula [GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t<1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,mu+sum(w_i*gammaBar_i)). Up to k nearest rows inside the radius, then duplicate positions coalesced; an exact hit returns their mean with zero variance. Too few distinct neighbors or rejected pivots/variance produce NaN; only normalized variance >= -1e-4 is clamped.\n\n- bound symbols: 10/10\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "10/10"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.kriging</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{bmatrix}\\term{matrix}{\\bar\\Gamma}&amp;1\\\\1^T&amp;0\\end{bmatrix}\\begin{bmatrix}\\term{weights}{w}\\\\\\term{multiplier}{\\mu}\\end{bmatrix}=\\begin{bmatrix}\\term{target}{\\bar\\gamma_u}\\\\1\\end{bmatrix},\\quad \\term{prediction}{\\hat z}=\\term{base}{z_0}+\\sum_i\\term{weights}{w_i}(\\term{values}{\\bar z_i}-\\term{base}{z_0}),\\quad \\term{variance}{\\sigma^2}=(\\term{nugget}{a}+\\term{sill}{s})\\max(0,\\term{multiplier}{\\mu}+\\sum_i\\term{weights}{w_i}\\term{target}{\\bar\\gamma_{iu}})</pre><p class=\"lens-ascii\">[GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t&lt;1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,mu+sum(w_i*gammaBar_i)). Up to k nearest rows inside the radius, then duplicate positions coalesced; an exact hit returns their mean with zero variance. Too few distinct neighbors or rejected pivots/variance produce NaN; only normalized variance &gt;= -1e-4 is clamped.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"matrix\">normalized variogram matrix · intermediate · system</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"weights\">kriging weights · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"multiplier\">Lagrange multiplier · intermediate · system</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"target\">normalized target variogram · intermediate · targetGamma</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"prediction\">rainfall prediction · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"base\">nearest distinct value · intermediate · baseValue</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"values\">mean value at distinct position · input · uniqueValueSums</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"variance\">kriging variance · output · varianceOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"nugget\">nugget · parameter · nugget</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\" data-value=\"sill\">partial sill · parameter · sill</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-kriging-compiled:kriging-solve\">kriging-solve</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "normalized variogram matrix",
+        "intermediate",
+        "system",
+        "—",
+        "metadata"
+      ],
+      [
+        "kriging weights",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "Lagrange multiplier",
+        "intermediate",
+        "system",
+        "—",
+        "metadata"
+      ],
+      [
+        "normalized target variogram",
+        "intermediate",
+        "targetGamma",
+        "—",
+        "metadata"
+      ],
+      [
+        "rainfall prediction",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "nearest distinct value",
+        "intermediate",
+        "baseValue",
+        "—",
+        "metadata"
+      ],
+      [
+        "mean value at distinct position",
+        "input",
+        "uniqueValueSums",
+        "—",
+        "metadata"
+      ],
+      [
+        "kriging variance",
+        "output",
+        "varianceOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "nugget",
+        "parameter",
+        "nugget",
+        "—",
+        "metadata"
+      ],
+      [
+        "partial sill",
+        "parameter",
+        "sill",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{bmatrix}\\term{matrix}{\\bar\\Gamma}&1\\\\1^T&0\\end{bmatrix}\\begin{bmatrix}\\term{weights}{w}\\\\\\term{multiplier}{\\mu}\\end{bmatrix}=\\begin{bmatrix}\\term{target}{\\bar\\gamma_u}\\\\1\\end{bmatrix},\\quad \\term{prediction}{\\hat z}=\\term{base}{z_0}+\\sum_i\\term{weights}{w_i}(\\term{values}{\\bar z_i}-\\term{base}{z_0}),\\quad \\term{variance}{\\sigma^2}=(\\term{nugget}{a}+\\term{sill}{s})\\max(0,\\term{multiplier}{\\mu}+\\sum_i\\term{weights}{w_i}\\term{target}{\\bar\\gamma_{iu}})",
+    "ascii": "[GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t<1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,mu+sum(w_i*gammaBar_i)). Up to k nearest rows inside the radius, then duplicate positions coalesced; an exact hit returns their mean with zero variance. Too few distinct neighbors or rejected pivots/variance produce NaN; only normalized variance >= -1e-4 is clamped.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.289Z",
+    "runId": "run-86170ed5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-86170ed5",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

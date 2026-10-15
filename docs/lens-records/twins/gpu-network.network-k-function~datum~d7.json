@@ -1,0 +1,100 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-k-function",
+  "rung": "datum",
+  "datum": 7,
+  "size": "full",
+  "scenarioId": "gpu-network.network-k-function",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of distance band 7. envelope-maximum: 30397.8828125. values read back from the GPU run. summary: 2 quantities.",
+  "description": "Receipt of distance band 7. envelope-maximum: 30397.8828125. values read back from the GPU run. summary: 2 quantities.",
+  "llms": "Receipt of distance band 7\n\n- envelope-maximum: 30397.8828125\n- summary: 2 quantities\n- network-k-function: 4 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "envelope-maximum",
+    "value": "30397.8828125"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of distance band 7</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"summary\"><tr><th scope=\"rowgroup\" colspan=\"5\">summary</th></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"pairCounts\" title=\"output: unordered crash pairs with network distance below each band threshold\">pairCounts</button></td><td>278</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"kValues\" title=\"output: network K of the observed crashes at each band threshold, in metres\">kValues</button></td><td>35210.8828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-k-function\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-k-function</th></tr><tr data-provenance=\"readback\"><td>network-k-function</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"bandThreshold\" title=\"input: distance threshold of each band in metres, maximumDistance * k / (bandCount - 1) from the uploaded maximum distance\">bandThreshold</button></td><td>1000</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-k-function</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"envelope-minimum\" title=\"output: pointwise minimum K in metres across 19 Philox patterns (seed 17); not a confidence interval\">envelope-minimum</button></td><td>20771.884765625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-k-function</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"envelope-mean\" title=\"output: pointwise mean K in metres across 19 Philox patterns (seed 17); not a confidence interval\">envelope-mean</button></td><td>26771.46875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-k-function</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"envelope-maximum\" title=\"output: pointwise maximum K in metres across 19 Philox patterns (seed 17); not a confidence interval\">envelope-maximum</button></td><td>30397.8828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.k-function.k</h4><div><pre class=\"lens-tex\">\\term{k}{K(d_k)}=2\\,\\term{cumulative}{P(d_k)}\\,\\term{networkLength}{L}\\,/\\,\\term{count}{n}^{2}\\qquad(n\\ge 2,\\ \\text{else }0)</pre><p class=\"lens-ascii\">K(d_k) = 2 * cumulative * networkLength / (count * count) for count &gt;= 2 snapped events, else 0. cumulative is the number of unordered event pairs whose network distance is strictly below the band threshold d_k = maximumDistance * k / (bandCount - 1) (a prefix sum of the per-band pair histogram); networkLength is the length of every road counted once. The denominator is count squared (the spaghetti GlobalAutoK normalisation), not count * (count - 1). With zero simulations only the observed row exists.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "summary",
+        "pairCounts",
+        "278",
+        "0",
+        "readback"
+      ],
+      [
+        "summary",
+        "kValues",
+        "35210.8828125",
+        "0",
+        "readback"
+      ],
+      [
+        "network-k-function",
+        "bandThreshold",
+        "1000",
+        "0",
+        "readback"
+      ],
+      [
+        "network-k-function",
+        "envelope-minimum",
+        "20771.884765625",
+        "0",
+        "readback"
+      ],
+      [
+        "network-k-function",
+        "envelope-mean",
+        "26771.46875",
+        "0",
+        "readback"
+      ],
+      [
+        "network-k-function",
+        "envelope-maximum",
+        "30397.8828125",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:06.860Z",
+    "runId": "run-9a9fc58c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-9a9fc58c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 7
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

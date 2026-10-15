@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-topographic-position",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-topographic-position",
+  "viewId": "formula-card",
+  "caption": "Formula q = round(z/Q) with Q = quantum (default 1/256); the annulus A holds cells with Chebyshev distance in (innerRadius, radius] from the centre, clipped to the raster and to valid cells (N of them); innerRadius 0 excludes only the centre. TPI =…",
+  "description": "Formula q = round(z/Q) with Q = quantum (default 1/256); the annulus A holds cells with Chebyshev distance in (innerRadius, radius] from the centre, clipped to the raster and to valid cells (N of them); innerRadius 0 excludes only the centre. TPI =…",
+  "llms": "Formula q = round(z/Q) with Q = quantum (default 1/256); the annulus A holds cells with Chebyshev distance in (innerRadius, radius] from the centre, clipped to the raster and to valid cells (N of them); innerRadius 0 excludes only the centre. TPI = z_c - mean(z over A) = -Q * sum_A (q_a - q_c) / N, with the sum taken exactly modulo 2^64 from the summed-area table. NaN where the centre is invalid or N = 0. One output plane per scale.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-topographic-position.annulus-mean</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{tpi}{\\mathrm{TPI}} = -\\,\\frac{\\term{quantum}{Q}\\;\\term{centredSum}{\\textstyle\\sum_{a}\\left(q_a - q_c\\right)}}{\\term{annulusCount}{N}}</pre><p class=\"lens-ascii\">q = round(z/Q) with Q = quantum (default 1/256); the annulus A holds cells with Chebyshev distance in (innerRadius, radius] from the centre, clipped to the raster and to valid cells (N of them); innerRadius 0 excludes only the centre. TPI = z_c - mean(z over A) = -Q * sum_A (q_a - q_c) / N, with the sum taken exactly modulo 2^64 from the summed-area table. NaN where the centre is invalid or N = 0. One output plane per scale.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-topographic-position-compiled:terrain-topographic-position-evaluate\" data-value=\"tpi\">TPI · output · tpi</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-topographic-position-compiled:terrain-topographic-position-evaluate\" data-value=\"quantum\">Q · constant · QUANTUM</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-topographic-position-compiled:terrain-topographic-position-evaluate\" data-value=\"centredSum\">centred sum · intermediate · getCentredSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-topographic-position-compiled:terrain-topographic-position-evaluate\" data-value=\"annulusCount\">N · intermediate · annulus</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "TPI",
+        "output",
+        "tpi",
+        "—",
+        "metadata"
+      ],
+      [
+        "Q",
+        "constant",
+        "QUANTUM",
+        "—",
+        "metadata"
+      ],
+      [
+        "centred sum",
+        "intermediate",
+        "getCentredSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "N",
+        "intermediate",
+        "annulus",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{tpi}{\\mathrm{TPI}} = -\\,\\frac{\\term{quantum}{Q}\\;\\term{centredSum}{\\textstyle\\sum_{a}\\left(q_a - q_c\\right)}}{\\term{annulusCount}{N}}",
+    "ascii": "q = round(z/Q) with Q = quantum (default 1/256); the annulus A holds cells with Chebyshev distance in (innerRadius, radius] from the centre, clipped to the raster and to valid cells (N of them); innerRadius 0 excludes only the centre. TPI = z_c - mean(z over A) = -Q * sum_A (q_a - q_c) / N, with the sum taken exactly modulo 2^64 from the summed-area table. NaN where the centre is invalid or N = 0. One output plane per scale.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.865Z",
+    "runId": "run-c5e17cc9",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c5e17cc9",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

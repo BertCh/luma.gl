@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.fft2d",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.fft2d",
+  "viewId": "formula-card",
+  "caption": "Formula Y[v,u]=a*sum(x[r*W+c]*exp(s*2*pi*i*(u*c/W+v*r/H))); forward s=-1,a=1; inverse s=+1,a=1/(W*H), once on final pass per batch. Row-major complex vec2f. bound symbols: 4/4. structure metadata only.",
+  "description": "Formula Y[v,u]=a*sum(x[r*W+c]*exp(s*2*pi*i*(u*c/W+v*r/H))); forward s=-1,a=1; inverse s=+1,a=1/(W*H), once on final pass per batch. Row-major complex vec2f. bound symbols: 4/4. structure metadata only.",
+  "llms": "Formula Y[v,u]=a*sum(x[r*W+c]*exp(s*2*pi*i*(u*c/W+v*r/H))); forward s=-1,a=1; inverse s=+1,a=1/(W*H), once on final pass per batch. Row-major complex vec2f.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.fft2d</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{Y_{v,u}}=a\\sum_{r=0}^{H-1}\\sum_{c=0}^{W-1}\\term{x}{x_{rW+c}}e^{s2\\pi\\mathrm{i}(uc/W+vr/H)}</pre><p class=\"lens-ascii\">Y[v,u]=a*sum(x[r*W+c]*exp(s*2*pi*i*(u*c/W+v*r/H))); forward s=-1,a=1; inverse s=+1,a=1/(W*H), once on final pass per batch. Row-major complex vec2f.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-0\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-0\" data-value=\"y\">y · output · outputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-0\" data-value=\"sign\">sign · parameter · directionSign</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-0\" data-value=\"normalization\">normalization · parameter · normalizationScale</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-0\">horizontal bit-reversal 6</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-1\">horizontal butterfly 1</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-2\">horizontal butterfly 2</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-3\">horizontal butterfly 3</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-4\">horizontal butterfly 4</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-5\">horizontal butterfly 5</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-6\">horizontal butterfly 6</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-7\">vertical bit-reversal 6</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-8\">vertical butterfly 1</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-9\">vertical butterfly 2</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-10\">vertical butterfly 3</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-11\">vertical butterfly 4</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-12\">vertical butterfly 5</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft2d-compiled:tile-spectrum-13\">vertical butterfly 6</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "sign",
+        "parameter",
+        "directionSign",
+        "—",
+        "metadata"
+      ],
+      [
+        "normalization",
+        "parameter",
+        "normalizationScale",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{Y_{v,u}}=a\\sum_{r=0}^{H-1}\\sum_{c=0}^{W-1}\\term{x}{x_{rW+c}}e^{s2\\pi\\mathrm{i}(uc/W+vr/H)}",
+    "ascii": "Y[v,u]=a*sum(x[r*W+c]*exp(s*2*pi*i*(u*c/W+v*r/H))); forward s=-1,a=1; inverse s=+1,a=1/(W*H), once on final pass per batch. Row-major complex vec2f.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.148Z",
+    "runId": "run-f52d2709",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f52d2709",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

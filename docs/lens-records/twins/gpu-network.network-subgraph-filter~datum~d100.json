@@ -1,0 +1,68 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-subgraph-filter",
+  "rung": "datum",
+  "datum": 100,
+  "size": "full",
+  "scenarioId": "gpu-network.network-subgraph-filter",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of directed edge 100. weights: 12.399999618530273. values read back from the GPU run. representation: 1 quantities.",
+  "description": "Receipt of directed edge 100. weights: 12.399999618530273. values read back from the GPU run. representation: 1 quantities.",
+  "llms": "Receipt of directed edge 100\n\n- weights: 12.399999618530273\n- representation: 1 quantities\n- network-subgraph-filter: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients nodeMask, edgeMask, liveCounts retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "weights",
+    "value": "12.399999618530273"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of directed edge 100</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"representation\"><tr><th scope=\"rowgroup\" colspan=\"5\">representation</th></tr><tr data-provenance=\"readback\"><td>representation</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"edgeMask\" title=\"GPU edge mask: 1 when the slot is kept (in range, both endpoints live)\">edgeMask</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"network-subgraph-filter\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-subgraph-filter</th></tr><tr data-provenance=\"readback\"><td>network-subgraph-filter</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"weights\" title=\"travel time in seconds of every directed edge slot (uploaded weights read back)\">weights</button></td><td>12.399999618530273</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-network.subgraph-filter.range</h4><div><pre class=\"lens-tex\">\\term{live}{m}\\leftarrow\\term{live}{m}\\land\\bigl(\\term{parameters}{p}[\\term{base}{b}]\\le\\term{value}{x}&lt;\\term{parameters}{p}[\\term{base}{b}+1]\\bigr)</pre><p class=\"lens-ascii\">For every enabled range, live = live &amp;&amp; value &gt;= parameters[base] &amp;&amp; value &lt; parameters[base + 1]: half-open, so the maximum itself is excluded, and a NaN value never passes. A disabled range (parameters[base + 2] == 0) is skipped. The mask starts at 1 (or at the caller mask), so the result is the AND of all ranges; an edge slot is finally kept only when both of its endpoints are live, and dropIsolated also removes nodes left without a live slot. Integer and comparison arithmetic only, so the result is exact.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "representation",
+        "edgeMask",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "network-subgraph-filter",
+        "weights",
+        "12.399999618530273",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.853Z",
+    "runId": "run-e072e683",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients nodeMask, edgeMask, liveCounts retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-e072e683",
+    "rung": "datum",
+    "bindings": {
+      "entity": 100
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

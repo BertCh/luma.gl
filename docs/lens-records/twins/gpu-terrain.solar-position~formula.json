@@ -1,0 +1,109 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.solar-position",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.solar-position",
+  "viewId": "formula-card",
+  "caption": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_ge…",
+  "description": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_ge…",
+  "llms": "Formula H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric > threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| > 90; dec and E (equation of time) from the NOAA Julian-century series\n\n- bound symbols: 7/7\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-position.noaa</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hourAngle}{H} = \\frac{(\\term{minutesUTC}{m} + \\term{equationOfTime}{E} + 4\\,\\term{longitude}{\\lambda}) \\bmod 1440}{4} - 180^\\circ,\\quad \\sin \\term{geometricAltitude}{\\alpha_g} = \\sin\\term{latitude}{\\varphi}\\,\\sin\\term{declination}{\\delta} + \\cos\\varphi\\cos\\delta\\cos H</pre><p class=\"lens-ascii\">H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric &gt; threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| &gt; 90; dec and E (equation of time) from the NOAA Julian-century series</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"hourAngle\">H · intermediate · hourAngleDegrees</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"minutesUTC\">m · input · minutesUTC</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"equationOfTime\">E · intermediate · equationOfTime</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"longitude\">λ · input · longitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"geometricAltitude\">α_g · output · geometricAltitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"latitude\">φ · input · latitude</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-position-compiled:solar-position-sun\" data-value=\"declination\">δ · intermediate · declination</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "H",
+        "intermediate",
+        "hourAngleDegrees",
+        "—",
+        "metadata"
+      ],
+      [
+        "m",
+        "input",
+        "minutesUTC",
+        "—",
+        "metadata"
+      ],
+      [
+        "E",
+        "intermediate",
+        "equationOfTime",
+        "—",
+        "metadata"
+      ],
+      [
+        "λ",
+        "input",
+        "longitude",
+        "—",
+        "metadata"
+      ],
+      [
+        "α_g",
+        "output",
+        "geometricAltitude",
+        "—",
+        "metadata"
+      ],
+      [
+        "φ",
+        "input",
+        "latitude",
+        "—",
+        "metadata"
+      ],
+      [
+        "δ",
+        "intermediate",
+        "declination",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{hourAngle}{H} = \\frac{(\\term{minutesUTC}{m} + \\term{equationOfTime}{E} + 4\\,\\term{longitude}{\\lambda}) \\bmod 1440}{4} - 180^\\circ,\\quad \\sin \\term{geometricAltitude}{\\alpha_g} = \\sin\\term{latitude}{\\varphi}\\,\\sin\\term{declination}{\\delta} + \\cos\\varphi\\cos\\delta\\cos H",
+    "ascii": "H = ((minutesUTC + E + 4 * longitude) mod 1440) / 4 - 180; sin(alt_geometric) = sin(lat) sin(dec) + cos(lat) cos(dec) cos(H); azimuth = (atan2(sin H, cos H sin(lat) - tan(dec) cos(lat)) + 180) mod 360, clockwise from north; altitude = alt_geometric + NOAA refraction (default on); daylight = alt_geometric > threshold (-0.833); NaN azimuth and altitude and daylight 0 for non-finite coordinates or |lat| > 90; dec and E (equation of time) from the NOAA Julian-century series",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.712Z",
+    "runId": "run-3d748df4",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3d748df4",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

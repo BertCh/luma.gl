@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.space-time-hot-spots-recipe",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.space-time-hot-spots-recipe",
+  "viewId": "formula-card",
+  "caption": "Formula Binning step of the recipe: sigma counts whole calendar steps (month: year * 12 + month - 1) of the local event time, the slice is floor((sigma(time) - sigma(origin)) / I) for I steps per slice, the cell is the lattice cell of the planar pos…",
+  "description": "Formula Binning step of the recipe: sigma counts whole calendar steps (month: year * 12 + month - 1) of the local event time, the slice is floor((sigma(time) - sigma(origin)) / I) for I steps per slice, the cell is the lattice cell of the planar pos…",
+  "llms": "Formula Binning step of the recipe: sigma counts whole calendar steps (month: year * 12 + month - 1) of the local event time, the slice is floor((sigma(time) - sigma(origin)) / I) for I steps per slice, the cell is the lattice cell of the planar position (cell width h = bounds width / W columns, row 0 southmost), and N[c, t] counts the events of cell c and slice t (integer atomics, so the cube is exact). Events outside the lattice or the slice range are skipped and counted. The cube then goes through GPUEmergingHotSpots: Gi* z per bin, a per-cell Mann-Kendall trend and the 17 emerging categories.\n\n- bound symbols: 4/4\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>space-time-cube-binning</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{slice}{t_e}&amp;=\\left\\lfloor\\frac{\\term{stepOffset}{\\sigma(\\mathrm{time}_e)-\\sigma(\\mathrm{origin})}}{I}\\right\\rfloor,\\qquad \\term{cell}{c_e}=\\lfloor (y_e-y_{\\min})/h\\rfloor\\,W+\\lfloor (x_e-x_{\\min})/h\\rfloor\\\\\n\\term{cube}{N_{c,t}}&amp;=\\sum_e\\,[\\,c_e=c\\,]\\,[\\,t_e=t\\,]\n\\end{aligned}</pre><p class=\"lens-ascii\">Binning step of the recipe: sigma counts whole calendar steps (month: year * 12 + month - 1) of the local event time, the slice is floor((sigma(time) - sigma(origin)) / I) for I steps per slice, the cell is the lattice cell of the planar position (cell width h = bounds width / W columns, row 0 southmost), and N[c, t] counts the events of cell c and slice t (integer atomics, so the cube is exact). Events outside the lattice or the slice range are skipped and counted. The cube then goes through GPUEmergingHotSpots: Gi* z per bin, a per-cell Mann-Kendall trend and the 17 emerging categories.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-space-time-hot-spots-recipe-compiled:space-time-hot-spots-skipped-count\" data-value=\"slice\">slice · intermediate · slice</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-space-time-hot-spots-recipe-compiled:space-time-hot-spots-skipped-count\" data-value=\"stepOffset\">stepOffset · intermediate · stepOffset</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-space-time-hot-spots-recipe-compiled:space-time-hot-spots-skipped-count\" data-value=\"cell\">cell · intermediate · cell</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-space-time-hot-spots-recipe-compiled:space-time-hot-spots-cube-count\" data-value=\"cube\">cube · output · cubeOutput</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "slice",
+        "intermediate",
+        "slice",
+        "—",
+        "metadata"
+      ],
+      [
+        "stepOffset",
+        "intermediate",
+        "stepOffset",
+        "—",
+        "metadata"
+      ],
+      [
+        "cell",
+        "intermediate",
+        "cell",
+        "—",
+        "metadata"
+      ],
+      [
+        "cube",
+        "output",
+        "cubeOutput",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{slice}{t_e}&=\\left\\lfloor\\frac{\\term{stepOffset}{\\sigma(\\mathrm{time}_e)-\\sigma(\\mathrm{origin})}}{I}\\right\\rfloor,\\qquad \\term{cell}{c_e}=\\lfloor (y_e-y_{\\min})/h\\rfloor\\,W+\\lfloor (x_e-x_{\\min})/h\\rfloor\\\\\n\\term{cube}{N_{c,t}}&=\\sum_e\\,[\\,c_e=c\\,]\\,[\\,t_e=t\\,]\n\\end{aligned}",
+    "ascii": "Binning step of the recipe: sigma counts whole calendar steps (month: year * 12 + month - 1) of the local event time, the slice is floor((sigma(time) - sigma(origin)) / I) for I steps per slice, the cell is the lattice cell of the planar position (cell width h = bounds width / W columns, row 0 southmost), and N[c, t] counts the events of cell c and slice t (integer atomics, so the cube is exact). Events outside the lattice or the slice range are skipped and counted. The cube then goes through GPUEmergingHotSpots: Gi* z per bin, a per-cell Mann-Kendall trend and the 17 emerging categories.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:25.494Z",
+    "runId": "run-b5a8afd8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b5a8afd8",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

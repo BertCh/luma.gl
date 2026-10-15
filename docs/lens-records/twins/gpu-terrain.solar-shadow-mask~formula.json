@@ -1,0 +1,93 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.solar-shadow-mask",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.solar-shadow-mask",
+  "viewId": "formula-card",
+  "caption": "Formula V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi; u = clamp((altitude - h) / radius, -1, 1); h = horizon blended linearly between the two sectors around the sun azimuth; radius 0 gives the step V = altitude > h; V = 0 when altitude + radius <= 0;…",
+  "description": "Formula V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi; u = clamp((altitude - h) / radius, -1, 1); h = horizon blended linearly between the two sectors around the sun azimuth; radius 0 gives the step V = altitude > h; V = 0 when altitude + radius <= 0;…",
+  "llms": "Formula V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi; u = clamp((altitude - h) / radius, -1, 1); h = horizon blended linearly between the two sectors around the sun azimuth; radius 0 gives the step V = altitude > h; V = 0 when altitude + radius <= 0; NaN where the horizon is NaN\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.solar-shadow-mask.disk-visibility</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{visibility}{V} = 1 - \\frac{\\arccos \\term{diskOffset}{u} - u\\sqrt{1 - u^2}}{\\pi},\\quad u = \\operatorname{clip}\\!\\left(\\frac{\\term{altitude}{\\alpha} - \\term{horizonAngle}{h}}{\\term{radius}{\\rho}},\\,-1,\\,1\\right)</pre><p class=\"lens-ascii\">V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi; u = clamp((altitude - h) / radius, -1, 1); h = horizon blended linearly between the two sectors around the sun azimuth; radius 0 gives the step V = altitude &gt; h; V = 0 when altitude + radius &lt;= 0; NaN where the horizon is NaN</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-shadow-mask-compiled:solar-shadow-mask-shadow\" data-value=\"visibility\">V · output · visibilityValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-shadow-mask-compiled:terrain-horizon-sector-ranges\" data-value=\"diskOffset\">u · intermediate · u</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-shadow-mask-compiled:solar-shadow-mask-shadow\" data-value=\"altitude\">α · parameter · altitudeDegrees</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-shadow-mask-compiled:terrain-horizon-horizon-march-0\" data-value=\"horizonAngle\">h · input · horizonAngle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-solar-shadow-mask-compiled:solar-shadow-mask-shadow\" data-value=\"radius\">ρ · parameter · radiusDegrees</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "V",
+        "output",
+        "visibilityValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "u",
+        "intermediate",
+        "u",
+        "—",
+        "metadata"
+      ],
+      [
+        "α",
+        "parameter",
+        "altitudeDegrees",
+        "—",
+        "metadata"
+      ],
+      [
+        "h",
+        "input",
+        "horizonAngle",
+        "—",
+        "metadata"
+      ],
+      [
+        "ρ",
+        "parameter",
+        "radiusDegrees",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{visibility}{V} = 1 - \\frac{\\arccos \\term{diskOffset}{u} - u\\sqrt{1 - u^2}}{\\pi},\\quad u = \\operatorname{clip}\\!\\left(\\frac{\\term{altitude}{\\alpha} - \\term{horizonAngle}{h}}{\\term{radius}{\\rho}},\\,-1,\\,1\\right)",
+    "ascii": "V = 1 - (acos(u) - u * sqrt(1 - u^2)) / pi; u = clamp((altitude - h) / radius, -1, 1); h = horizon blended linearly between the two sectors around the sun azimuth; radius 0 gives the step V = altitude > h; V = 0 when altitude + radius <= 0; NaN where the horizon is NaN",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.736Z",
+    "runId": "run-84340cb2",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-84340cb2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

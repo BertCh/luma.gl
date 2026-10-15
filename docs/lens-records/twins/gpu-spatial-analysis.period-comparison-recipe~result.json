@@ -1,0 +1,49 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.period-comparison-recipe",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const comparison = addPeriodComparisonRecipe(graph, {\n  family: 'quadbin',\n  resolution: 16,\n  tableCapacity,\n  unionCapacity,\n  before: {positions: spring},\n  after: {positions: autumn},\n  classify: 'delta',\n  classBreaksParameters: parameters[0].importToGraph(graph),\n  colorScaleParameters: parameters[1].importToGraph(graph),\n  palette: parameters[2].importToGraph(graph),\n  methods: ['custom'],\n  maximumClassCount: 5,\n  maximumPaletteCount: 5,\n  outputs: {comparison: {cells, delta, zScore, status: {count, overflow}}, classIndices, colors}\n});\n// delta is autumn minus spring per cell; classIndices holds its diverging class",
+    "language": "ts",
+    "lineCount": 17
+  },
+  "scenarioId": "gpu-spatial-analysis.period-comparison-recipe",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.period-comparison-recipe: spring, autumn → overflow. rows: 1. values read back from the GPU run. input spring: 655 points.",
+  "description": "Result of gpu-spatial-analysis.period-comparison-recipe: spring, autumn → overflow. rows: 1. values read back from the GPU run. input spring: 655 points.",
+  "llms": "Result of gpu-spatial-analysis.period-comparison-recipe: spring, autumn → overflow\n\n- rows: 1\n- input spring: 655 points\n- input autumn: 566 points\n- Simple equirectangular projection (x scaled by cos 41.97°); not equal-area.\n- 655 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 566 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">delta</th><th class=\"cv-col--output\" scope=\"col\">zScore</th><th class=\"cv-col--output\" scope=\"col\">classIndices</th><th class=\"cv-col--output\" scope=\"col\">count</th><th class=\"cv-col--output\" scope=\"col\">overflow</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.41</td><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">187</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">-3</td><td class=\"cv-col--output\" data-provenance=\"readback\">-1.13</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">-2</td><td class=\"cv-col--output\" data-provenance=\"readback\">-1</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">7</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.12</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.577</td><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"5\">… 2042 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input spring, autumn · blue: output delta, zScore, classIndices, count, overflow</p><p class=\"cv-note\">655 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 566 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:07.354Z",
+    "runId": "run-3a315103",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3a315103",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

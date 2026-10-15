@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.contiguity-weights",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.contiguity-weights",
+  "viewId": "formula-card",
+  "caption": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within…",
+  "description": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within…",
+  "llms": "Formula Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.\n\n- bound symbols: 2/2\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>contiguity-weights</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{weight}{w_{ij}}=\\mathbf{1}[i\\ne j\\ \\land\\ \\term{keys}{K_i}\\cap K_j\\ne\\varnothing]</pre><p class=\"lens-ascii\">Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.contiguity-weights-compiled:contiguity-weights-emit\" data-value=\"weight\">weight · output · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.contiguity-weights-compiled:contiguity-weights-pair-counts\" data-value=\"keys\">keys · intermediate · groupId</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "weight",
+        "output",
+        "weights",
+        "—",
+        "metadata"
+      ],
+      [
+        "keys",
+        "intermediate",
+        "groupId",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{weight}{w_{ij}}=\\mathbf{1}[i\\ne j\\ \\land\\ \\term{keys}{K_i}\\cap K_j\\ne\\varnothing]",
+    "ascii": "Binary contiguity: w_ij = 1 iff i != j and K_i intersects K_j. Queen K contains snapped vertex keys; rook K contains undirected nondegenerate edge keys. All rings and parts participate; invalid vertices are ignored; only unique pairs within capacity are emitted.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "1 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:01:53.259Z",
+    "runId": "run-6a29691d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-6a29691d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

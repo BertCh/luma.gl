@@ -26,11 +26,17 @@ algorithm whose result is immediately needed on the CPU, a CPU graph library may
 import {GPUCommandGraph} from '@luma.gl/gpgpu/gpu-core';
 import {GPUGraph, GPUGraphPageRank, GPUGraphTopology} from '@luma.gl/gpgpu/gpu-graph';
 
-const graph = new GPUCommandGraph({device, id: 'graph-analysis'});
-const topology = new GPUGraphTopology({device, graph, edges, vertexCount});
-const pageRank = new GPUGraphPageRank({device, graph, topology});
-
-pageRank.addPasses();
+// sourceVertices, targetVertices and ranks are existing packed GPUVector columns.
+// forward and reverse are caller-owned GPUGraphAdjacency allocations:
+// offsets[V + 1], neighbors[E], edgeIds[E], count[1], overflow[1].
+const graph = new GPUCommandGraph(device, {id: 'graph-analysis'});
+const railGraph = new GPUGraph({vertexCount, sourceVertices, targetVertices, directed: true});
+const railTopology = new GPUGraphTopology({
+  graph: railGraph, forward, reverse, invalidEdgeCount // uint32 scalar
+});
+railTopology.addToGraph(graph);
+const pageRank = new GPUGraphPageRank({topology: railTopology, output: ranks});
+pageRank.addToGraph(graph);
 const compiledGraph = graph.compile();
 ```
 
@@ -45,6 +51,15 @@ back. Operations contribute nodes and graph views only.
 - Iterative operations expose capacity, convergence, and incomplete-result behavior explicitly.
 - Weighted, directed, and undirected semantics are operation-specific and documented in the
   operations reference.
+
+## GPU execution model
+
+Topology and algorithms contribute GPU passes to one caller-owned command graph, which the application compiles and submits.
+
+{/* lens:execution-model */}
+
+::lens{scenario=gpu-graph.graph-page-rank rung=graph caption="Inspect the dependencies between CSR construction and PageRank's bounded iterations."}
+::lens{scenario=gpu-graph.graph-page-rank rung=kernel caption="Inspect actual dispatch dimensions, storage bindings, and recorded WGSL for a PageRank pass."}
 
 ## Explore a live graph
 
@@ -76,6 +91,10 @@ back. Operations contribute nodes and graph views only.
 
 The [operations reference](./gpu-graph-operations) documents usage, buffers, execution, capacity,
 validation, and performance for each family.
+
+## Catalog
+
+::lens-catalog{entry=gpu-graph}
 
 ## Limits and compatibility
 

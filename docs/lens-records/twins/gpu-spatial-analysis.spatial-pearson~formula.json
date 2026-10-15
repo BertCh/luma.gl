@@ -1,0 +1,107 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-pearson",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-pearson",
+  "viewId": "formula-card",
+  "caption": "Formula r = sum_ij w_ij (x_i - mx)(y_j - my) / sqrt(sum_ij w_ij (x_i - mx)^2 * sum_ij w_ij (y_j - my)^2); mx = sum_ij w_ij x_i / sum_ij w_ij, my = sum_ij w_ij y_j / sum_ij w_ij. Sums run over directed edges (i, j) with positive weight to another inc…",
+  "description": "Formula r = sum_ij w_ij (x_i - mx)(y_j - my) / sqrt(sum_ij w_ij (x_i - mx)^2 * sum_ij w_ij (y_j - my)^2); mx = sum_ij w_ij x_i / sum_ij w_ij, my = sum_ij w_ij y_j / sum_ij w_ij. Sums run over directed edges (i, j) with positive weight to another inc…",
+  "llms": "Formula r = sum_ij w_ij (x_i - mx)(y_j - my) / sqrt(sum_ij w_ij (x_i - mx)^2 * sum_ij w_ij (y_j - my)^2); mx = sum_ij w_ij x_i / sum_ij w_ij, my = sum_ij w_ij y_j / sum_ij w_ij. Sums run over directed edges (i, j) with positive weight to another included row; the weights are used as given and the means are edge-weighted, not the plain column means. Clamped to [-1, 1]; NaN for zero weight or zero variance. There is no analytic p-value.\n\n- bound symbols: 7/7\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/7"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-pearson</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{statistic}{r}&amp;=\\frac{\\term{numerator}{\\sum_{ij}w_{ij}(x_i-\\bar{x})(y_j-\\bar{y})}}{\\sqrt{\\term{squareX}{\\sum_{ij}w_{ij}(x_i-\\bar{x})^2}\\;\\term{squareY}{\\sum_{ij}w_{ij}(y_j-\\bar{y})^2}}}\\\\\n\\term{meanX}{\\bar{x}}&amp;=\\frac{\\sum_{ij}w_{ij}x_i}{\\term{weightTotal}{\\sum_{ij}w_{ij}}},\n\\qquad\\term{meanY}{\\bar{y}}=\\frac{\\sum_{ij}w_{ij}y_j}{\\term{weightTotal}{\\sum_{ij}w_{ij}}}\n\\end{aligned}</pre><p class=\"lens-ascii\">r = sum_ij w_ij (x_i - mx)(y_j - my) / sqrt(sum_ij w_ij (x_i - mx)^2 * sum_ij w_ij (y_j - my)^2); mx = sum_ij w_ij x_i / sum_ij w_ij, my = sum_ij w_ij y_j / sum_ij w_ij. Sums run over directed edges (i, j) with positive weight to another included row; the weights are used as given and the means are edge-weighted, not the plain column means. Clamped to [-1, 1]; NaN for zero weight or zero variance. There is no analytic p-value.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-statistic\" data-value=\"statistic\">statistic · output · answer</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-statistic\" data-value=\"numerator\">numerator · intermediate · numerator</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-statistic\" data-value=\"squareX\">squareX · intermediate · squareX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-statistic\" data-value=\"squareY\">squareY · intermediate · squareY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-centered\" data-value=\"meanX\">meanX · intermediate · meanX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-centered\" data-value=\"meanY\">meanY · intermediate · meanY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-pearson-compiled:spatial-pearson-centered\" data-value=\"weightTotal\">weightTotal · intermediate · weightTotal</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "statistic",
+        "output",
+        "answer",
+        "—",
+        "metadata"
+      ],
+      [
+        "numerator",
+        "intermediate",
+        "numerator",
+        "—",
+        "metadata"
+      ],
+      [
+        "squareX",
+        "intermediate",
+        "squareX",
+        "—",
+        "metadata"
+      ],
+      [
+        "squareY",
+        "intermediate",
+        "squareY",
+        "—",
+        "metadata"
+      ],
+      [
+        "meanX",
+        "intermediate",
+        "meanX",
+        "—",
+        "metadata"
+      ],
+      [
+        "meanY",
+        "intermediate",
+        "meanY",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightTotal",
+        "intermediate",
+        "weightTotal",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{statistic}{r}&=\\frac{\\term{numerator}{\\sum_{ij}w_{ij}(x_i-\\bar{x})(y_j-\\bar{y})}}{\\sqrt{\\term{squareX}{\\sum_{ij}w_{ij}(x_i-\\bar{x})^2}\\;\\term{squareY}{\\sum_{ij}w_{ij}(y_j-\\bar{y})^2}}}\\\\\n\\term{meanX}{\\bar{x}}&=\\frac{\\sum_{ij}w_{ij}x_i}{\\term{weightTotal}{\\sum_{ij}w_{ij}}},\n\\qquad\\term{meanY}{\\bar{y}}=\\frac{\\sum_{ij}w_{ij}y_j}{\\term{weightTotal}{\\sum_{ij}w_{ij}}}\n\\end{aligned}",
+    "ascii": "r = sum_ij w_ij (x_i - mx)(y_j - my) / sqrt(sum_ij w_ij (x_i - mx)^2 * sum_ij w_ij (y_j - my)^2); mx = sum_ij w_ij x_i / sum_ij w_ij, my = sum_ij w_ij y_j / sum_ij w_ij. Sums run over directed edges (i, j) with positive weight to another included row; the weights are used as given and the means are edge-weighted, not the plain column means. Clamped to [-1, 1]; NaN for zero weight or zero variance. There is no analytic p-value.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:22:47.442Z",
+    "runId": "run-349edd10",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-349edd10",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

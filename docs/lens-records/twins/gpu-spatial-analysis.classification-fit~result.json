@@ -1,0 +1,49 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.classification-fit",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPUClassificationFit({\n    values: unemployment,\n    classes,\n    classCount: 5,\n    output: {counts, medians, absoluteDeviations, squaredDeviations, summary}\n  })\n);\n// summary: [GADF, ADCM, ADAM, GVF, TSS]; counts and medians: one row per class, then all rows",
+    "language": "ts",
+    "lineCount": 9
+  },
+  "scenarioId": "gpu-spatial-analysis.classification-fit",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.classification-fit: countyVertices, countyOffsets, unemployment, classes, classMap → summary. rows: 5. values read back from the GPU run. input countyVertices: 11552 rows.",
+  "description": "Result of gpu-spatial-analysis.classification-fit: countyVertices, countyOffsets, unemployment, classes, classMap → summary. rows: 5. values read back from the GPU run. input countyVertices: 11552 rows.",
+  "llms": "Result of gpu-spatial-analysis.classification-fit: countyVertices, countyOffsets, unemployment, classes, classMap → summary\n\n- rows: 5\n- input countyVertices: 11552 rows\n- input countyOffsets: 438 rows\n- input unemployment: 437 rows\n- input classes: 437 rows\n- input classMap: 437 polygons\n- Simple equirectangular projection (x scaled by cos 42.23°); not equal-area.\n- 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">countyVertices</th><th scope=\"col\">countyOffsets</th><th scope=\"col\">unemployment</th><th scope=\"col\">classes</th><th class=\"cv-col--output\" scope=\"col\">counts</th><th class=\"cv-col--output\" scope=\"col\">medians</th><th class=\"cv-col--output\" scope=\"col\">absoluteDeviations</th><th class=\"cv-col--output\" scope=\"col\">squaredDeviations</th><th class=\"cv-col--output\" scope=\"col\">summary</th></tr></thead><tbody><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">3.6</td><td data-provenance=\"readback\">2</td><td class=\"cv-col--output\" data-provenance=\"readback\">72</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">9</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.86</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.713</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">16</td><td data-provenance=\"readback\">6.3</td><td data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">87</td><td class=\"cv-col--output\" data-provenance=\"readback\">3.2</td><td class=\"cv-col--output\" data-provenance=\"readback\">11.1</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.89</td><td class=\"cv-col--output\" data-provenance=\"readback\">107</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">4.2</td><td data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">93</td><td class=\"cv-col--output\" data-provenance=\"readback\">3.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">13.7</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.72</td><td class=\"cv-col--output\" data-provenance=\"readback\">372</td></tr><tr><td data-provenance=\"readback\">-91.5</td><td data-provenance=\"readback\">42</td><td data-provenance=\"readback\">7</td><td data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">94</td><td class=\"cv-col--output\" data-provenance=\"readback\">4.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">14.8</td><td class=\"cv-col--output\" data-provenance=\"readback\">3.35</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.848</td></tr><tr><td data-provenance=\"readback\">-91.4</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">2.4</td><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">91</td><td class=\"cv-col--output\" data-provenance=\"readback\">5.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">58.4</td><td class=\"cv-col--output\" data-provenance=\"readback\">72.9</td><td class=\"cv-col--output\" data-provenance=\"readback\">82.7</td></tr><tr><td data-provenance=\"readback\">-91.4</td><td data-provenance=\"readback\">61</td><td data-provenance=\"readback\">5.7</td><td data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">437</td><td class=\"cv-col--output\" data-provenance=\"readback\">3.8</td><td class=\"cv-col--output\" data-provenance=\"readback\">372</td><td class=\"cv-col--output\" data-provenance=\"readback\">543</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"9\">… 11546 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input countyVertices, countyOffsets, unemployment, classes, classMap · blue: output counts, medians, absoluteDeviations, squaredDeviations, summary</p><p class=\"cv-note\">5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 5776 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.182Z",
+    "runId": "run-c8c4c189",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c8c4c189",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

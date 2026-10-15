@@ -1,46 +1,74 @@
-import React, {type ReactNode, useMemo, useState} from 'react';
+import React, {type ReactNode, useState} from 'react';
 
-import {planGPUCoreExecutionSlices} from './gpu-core-compiler-model';
+import {useGPUCoreAnatomyModel, RecordPendingPanel} from './gpu-core-compiler-anatomy';
 
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US', {notation: 'compact', maximumFractionDigits: 1});
 
-/** Small live lab for CPU conditions, bounded execution, and visible validation failure. */
+/**
+ * Execution-slice lab over the recorded `gpu-core.scan.anatomy` run. It offers only the invocation
+ * budgets the run recorded. Optional-branch and undersized-output controls are absent because the
+ * run recorded neither.
+ */
 export function GPUCoreExecutionLab(): ReactNode {
-  const [analysisEnabled, setAnalysisEnabled] = useState(true);
-  const [maximumInvocationCount, setMaximumInvocationCount] = useState(1_100_000);
-  const [outputCapacity, setOutputCapacity] = useState(4);
-  const requiredCapacity = 4;
-  const slices = useMemo(() => planGPUCoreExecutionSlices(maximumInvocationCount), [maximumInvocationCount]);
-  const valid = outputCapacity >= requiredCapacity;
+  const model = useGPUCoreAnatomyModel();
+  const [selectedBudget, setSelectedBudget] = useState<number | undefined>();
+
+  if (model.status !== 'ready') {
+    return <RecordPendingPanel model={model} />;
+  }
+  const series = model.sliceSeries.find(candidate => candidate.budget === selectedBudget) ?? model.sliceSeries[0];
 
   return (
-    <section className="gpu-core-execution-lab" aria-label="Conditional and budgeted execution lab">
+    <section className="gpu-core-execution-lab" aria-label="Budgeted execution lab">
       <header>
-        <span className="gpu-core-tutorial__eyebrow">Interactive execution policy</span>
-        <h3>Skip, slice, and reject work before it surprises the frame</h3>
-        <p>These controls change parameters and a legal execution plan; they do not rebuild graph topology.</p>
+        <span className="gpu-core-tutorial__eyebrow">Recorded execution policy</span>
+        <h3>Slice work at node boundaries before it surprises the frame</h3>
+        <p>
+          Slices come from the recorded run ({model.provenance.adapterLabel}, run{' '}
+          <code>{model.provenance.runId}</code>); changing the budget selects another recorded plan and
+          does not rebuild graph topology.
+        </p>
       </header>
-      <div className="gpu-core-execution-lab__controls">
-        <label className="gpu-core-execution-lab__switch">
-          <input checked={analysisEnabled} onChange={event => setAnalysisEnabled(event.currentTarget.checked)} type="checkbox" />
-          <span>Optional analysis</span>
-        </label>
-        <label>
-          Per-frame invocation budget <strong>{NUMBER_FORMAT.format(maximumInvocationCount)}</strong>
-          <input max={2_400_000} min={128_000} onChange={event => setMaximumInvocationCount(Number(event.currentTarget.value))} step={128_000} type="range" value={maximumInvocationCount} />
-        </label>
-        <label>
-          Output capacity <strong>{outputCapacity}</strong>
-          <input max={6} min={1} onChange={event => setOutputCapacity(Number(event.currentTarget.value))} step={1} type="range" value={outputCapacity} />
-        </label>
-      </div>
-      <div className="gpu-core-execution-lab__status">
-        <div><span>Condition</span><strong>{analysisEnabled ? 'analysis branch encoded' : 'analysis branch skipped'}</strong></div>
-        <div><span>Execution</span><strong>{slices.length} frame {slices.length === 1 ? 'slice' : 'slices'}</strong></div>
-        <div><span>Validation</span><strong className={valid ? undefined : 'gpu-core-execution-lab__error'}>{valid ? 'ready to encode' : `capacity ${outputCapacity} is below required ${requiredCapacity}`}</strong></div>
-      </div>
-      {!analysisEnabled ? <p className="gpu-core-execution-lab__warning">Skipped writers do not clear retained output. Condition the dependent readers or version the result.</p> : null}
-      {!valid ? <p className="gpu-core-execution-lab__error-panel" role="alert"><strong>Encoding blocked.</strong> Increase output capacity or reduce the bounded request. The graph reports this contract failure before submission.</p> : null}
+      {series ? (
+        <>
+          <div className="gpu-core-execution-lab__controls" role="group" aria-label="Recorded invocation budgets">
+            <span>Per-frame invocation budget</span>
+            {model.sliceSeries.map(candidate => (
+              <button
+                aria-pressed={candidate.budget === series.budget}
+                key={candidate.budget}
+                onClick={() => setSelectedBudget(candidate.budget)}
+                type="button"
+              >
+                {NUMBER_FORMAT.format(candidate.budget)}
+              </button>
+            ))}
+          </div>
+          <div className="gpu-core-execution-lab__status">
+            <div>
+              <span>Execution</span>
+              <strong>
+                {series.slices.length} frame {series.slices.length === 1 ? 'slice' : 'slices'}
+              </strong>
+            </div>
+            <div>
+              <span>Oversized steps</span>
+              <strong>{series.slices.filter(slice => slice.oversized).length}</strong>
+            </div>
+          </div>
+          <ol>
+            {series.slices.map(slice => (
+              <li key={slice.index}>
+                <strong>Frame {slice.index + 1}</strong>:{' '}
+                {slice.nodeIds.map(nodeIdentifier => model.nodes.find(node => node.id === nodeIdentifier)?.label ?? nodeIdentifier).join(', ')}
+                {slice.oversized ? ' (exceeds the budget and runs alone)' : ''}
+              </li>
+            ))}
+          </ol>
+        </>
+      ) : (
+        <p>The run recorded no frame slices.</p>
+      )}
     </section>
   );
 }

@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-rgb-decode",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-terrain.terrain-rgb-decode",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation.",
+  "description": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation. cells: 1,024. values read back from the GPU run. input terrariumRGBA: 1024 cells.",
+  "llms": "Result of gpu-terrain.terrain-rgb-decode: terrariumRGBA → decodedElevation\n\n- cells: 1,024\n- input terrariumRGBA: 1024 cells\n- Planar coordinates (m); uniform scale.\n- 134 categories; 5 largest coloured\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- cell size 20 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "1,024"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[640,640]]\" role=\"img\" aria-label=\"Result: decodedElevation\"><defs><pattern id=\"lens-gpu-terrain-terrain-rgb-decode-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-rgb-decode-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-rgb-decode-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"84\" height=\"84\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.6\" fill=\"#c6dbef\" stroke=\"#ffffff\" x=\"38\" y=\"6\" data-provenance=\"readback\" data-raster-width=\"32\" data-raster-height=\"32\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAAD1BMVEUIPX8ca7BKmMmKv93G2+8lu7AZAAAEK0lEQVR4AQEgBN/7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEBAAEBAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQECAAEBAQAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEBAQICAAEBAQEBAAAAAAAAAAAAAAAAAAABAQEBAQEBAQEBAgICAAEBAQEBAQAAAAAAAAAAAAAAAAEBAQEBAQEBAQEBAgICAAIBAQEBAQEAAAAAAAAAAAAAAQEBAQEBAQEBAQICAgICAAICAQEBAQEBAAAAAAAAAAEBAQEBAQEBAQEBAgICAgICAAMCAgEBAQEBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAAMDAgIBAQEBAQEBAQEBAQEBAQEBAQECAgICAgICAgIDAAMDAgICAQEBAQEBAQEBAQEBAQEBAQICAgICAgICAgIDAAMDAwMCAgIBAQEBAQEBAQEBAQEBAQICAgICAgICAgMDAAIDAwMDAgICAQEBAQEBAQEBAQECAgICAgICAgICAgMDAAIDAwMDAwICAgIBAQEBAQEBAgICAgICAgICAgICAwMDAAIDAwMDAwMCAgICAgICAgICAgICAgICAgMDAwMDAwMDAAIDAwMDAwMDAgICAgICAgICAgICAgIDAwMDAwMDAwMDAAIDAwMDAwMDAwICAgICAgICAgICAgMDAwMDAwMDAwMDAAMDAwMDAwMDAwMCAgICAgICAgICAwMDAwMDAwMDAwMDAAMDAwMDAwMDAwMDAwMDAwMCAgMDAwMDAwMDAwMDAwMEAAIDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMEBAQEAAICAwMDAwQEBAMDAwMDAwMDAwMDAwQEBAQEBAQEBAQEAAICAgMDAwQEBAQEAwMDAwMDBAQEBAQEBAQEBAQEBAQEAAICAgIDAwQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAEBAgIDAwQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAEBAgICAwMEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAEBAQECAgMDAwQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAEBAQEBAgICAwQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAEBAQEBAQICAwMEBAQEBAQEBAQEBAMDBAQEBAQEBAQEAAEBAQEBAgICAwMDAwQEBAQDAwMDAwMDAwMDBAQEBAQDWn4HyWwm7GYAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.147Z",
+    "runId": "run-41e8bc9b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-41e8bc9b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

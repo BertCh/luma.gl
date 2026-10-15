@@ -7,11 +7,27 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Counts station rainfall into 16 equal-width bins over a 0 to 320 mm domain.
+
+::lens{scenario=gpu-core.histogram rung=result caption="The modal 0-20 mm bin holds 580 of 1,024 stations; counts fall with rainfall."}
+
 `GPUHistogram` counts scalar values into a caller-owned `uint32` output view. Inputs may be packed
 or interleaved scalar columns. The output length defines the bin count. Bins can be equal-width
 over a domain or separated by explicit, irregular edges.
 
 <GPUOperationContract operation="gpu-histogram" />
+
+#### How it computes
+
+{/* lens:GPUHistogram */}
+
+::lens{scenario=gpu-core.histogram rung=kernel caption="Inspect 256 lanes tallying rainfall into 16 workgroup-local bin counters."}
+
+::lens{scenario=gpu-core.histogram rung=graph caption="Trace the clear node followed by the local counting node."}
+
+::lens{scenario=gpu-core.histogram rung=datum caption="Follow one station into the 20 mm bin it increments."}
+
+::lens{scenario=gpu-core.histogram rung=formula caption="Read the bin index derived from rainfall, domain, and 16 bins."}
 
 ## Concepts
 

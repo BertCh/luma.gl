@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.adjacency-matrix",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.adjacency-matrix",
+  "viewId": "formula-card",
+  "caption": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are…",
+  "description": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are…",
+  "llms": "Formula getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.\n\n- bound symbols: 5/5\n- compute passes were not coalesced as in production\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.adjacency-matrix.bin</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{getBin}{b}(\\term{position}{p},\\term{start}{s},\\term{end}{e})=\\left\\lfloor\\frac{(\\term{position}{p}-\\term{start}{s})\\,\\term{RESOLUTION}{R}}{\\term{end}{e}-\\term{start}{s}}\\right\\rfloor</pre><p class=\"lens-ascii\">getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -&gt; v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"getBin\">matrix bin · output · getBin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"position\">matrix position · input · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"start\">window start · parameter · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"end\">window end · parameter · end</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\" data-value=\"RESOLUTION\">bins per axis · parameter · RESOLUTION</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.adjacency-matrix-compiled:adjacency-matrix-bin-counts\">adjacency-matrix-bin-counts</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "matrix bin",
+        "output",
+        "getBin",
+        "—",
+        "metadata"
+      ],
+      [
+        "matrix position",
+        "input",
+        "position",
+        "—",
+        "metadata"
+      ],
+      [
+        "window start",
+        "parameter",
+        "start",
+        "—",
+        "metadata"
+      ],
+      [
+        "window end",
+        "parameter",
+        "end",
+        "—",
+        "metadata"
+      ],
+      [
+        "bins per axis",
+        "parameter",
+        "RESOLUTION",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{getBin}{b}(\\term{position}{p},\\term{start}{s},\\term{end}{e})=\\left\\lfloor\\frac{(\\term{position}{p}-\\term{start}{s})\\,\\term{RESOLUTION}{R}}{\\term{end}{e}-\\term{start}{s}}\\right\\rfloor",
+    "ascii": "getBin(position, start, end) = (position - start) * RESOLUTION / (end - start) with u32 division (floor). A live slot u -> v adds 1 (atomically) to cell getBin(order[u]) * RESOLUTION + getBin(order[v]): rows are source positions, columns are target positions, and slots whose positions fall outside the window [start, end) are dropped. Counts are exact integers, so the matrix does not depend on thread order; with fewer bins than nodes, each bin covers several consecutive matrix positions.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.362Z",
+    "runId": "run-8c02d3d4",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients order, matrixCounts, maximumCount retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-8c02d3d4",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

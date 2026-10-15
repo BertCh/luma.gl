@@ -103,7 +103,7 @@ Target Release Date: Q3, 2026
     `warnGPUShortLongitudeLatitudeDistance`, `GPU_SHORT_LONGITUDE_LATITUDE_DISTANCE_FACTOR`), and tier-2
     parameter settings accept an optional `spatialContext` without changing packed layouts.
     `addSpaceTimeHotSpotsRecipe` accepts `timeZone` transition tables, mutually exclusive with
-    `utcOffsets`. See [Precision of longitude/latitude positions](/docs/api-reference/experimental/gpu-spatial-analysis#precision-of-longitudelatitude-positions).
+    `utcOffsets`. See [Precision of longitude/latitude positions](/docs/api-reference/experimental/gpu-spatial-analysis/concepts#precision-of-longitudelatitude-positions).
 
 **@luma.gl/engine**
 

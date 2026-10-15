@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-noding",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-noding",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of noded segment 0. sourceEdgeIds: 0. values read back from the GPU run. line-noding: 2 quantities.",
+  "description": "Receipt of noded segment 0. sourceEdgeIds: 0. values read back from the GPU run. line-noding: 2 quantities.",
+  "llms": "Receipt of noded segment 0\n\n- sourceEdgeIds: 0\n- line-noding: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sourceEdgeIds",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of noded segment 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"line-noding\"><tr><th scope=\"rowgroup\" colspan=\"5\">line-noding</th></tr><tr data-provenance=\"readback\"><td>line-noding</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-noding-snapshots-sourceFeatureIds-0\" title=\"source road of each noded segment (zero-based line row)\">sourceFeatureIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-noding</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-noding-snapshots-sourceEdgeIds-0\" title=\"edge of the source road that each noded segment lies on\">sourceEdgeIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "line-noding",
+        "sourceFeatureIds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "line-noding",
+        "sourceEdgeIds",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:05.277Z",
+    "runId": "run-e78d21f7",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e78d21f7",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

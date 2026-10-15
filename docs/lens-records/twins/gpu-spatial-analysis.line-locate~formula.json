@@ -1,0 +1,136 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-locate",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-locate",
+  "viewId": "formula-card",
+  "caption": "Formula Planar location on the selected positive-length segment: t=clamp((m-M[s])/(M[s+1]-M[s]),0,1); p=(1-t)*a+t*b+h*(-v.y,v.x). m is the scaled/offset event measure (then multiplied by line length in fraction mode) clamped to the line. v is the un…",
+  "description": "Formula Planar location on the selected positive-length segment: t=clamp((m-M[s])/(M[s+1]-M[s]),0,1); p=(1-t)*a+t*b+h*(-v.y,v.x). m is the scaled/offset event measure (then multiplied by line length in fraction mode) clamped to the line. v is the un…",
+  "llms": "Formula Planar location on the selected positive-length segment: t=clamp((m-M[s])/(M[s+1]-M[s]),0,1); p=(1-t)*a+t*b+h*(-v.y,v.x). m is the scaled/offset event measure (then multiplied by line length in fraction mode) clamped to the line. v is the unit tangent. Zero spans use t=0; single vertices use v=0; invalid lines give NaN. Spherical mode instead slerps and applies the lateral offset by geodesic destination.\n\n- bound symbols: 8/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "8/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.line-locate</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{fraction}{t}=\\operatorname{clamp}\\left(\\frac{\\term{measure}{m}-\\term{prefix}{M_s}}{\\term{span}{M_{s+1}-M_s}},0,1\\right),\\quad \\term{position}{p}=(1-\\term{fraction}{t})\\term{start}{a}+\\term{fraction}{t}\\term{end}{b}+\\term{offset}{h}(-\\term{tangent}{v_y},\\term{tangent}{v_x})</pre><p class=\"lens-ascii\">Planar location on the selected positive-length segment: t=clamp((m-M[s])/(M[s+1]-M[s]),0,1); p=(1-t)*a+t*b+h*(-v.y,v.x). m is the scaled/offset event measure (then multiplied by line length in fraction mode) clamped to the line. v is the unit tangent. Zero spans use t=0; single vertices use v=0; invalid lines give NaN. Spherical mode instead slerps and applies the lateral offset by geodesic destination.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:linear-referencing-project\" data-value=\"fraction\">fraction · intermediate · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:linear-referencing-vertex-measures\" data-value=\"measure\">measure · input · measure</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:linear-referencing-project\" data-value=\"prefix\">prefix · input · vertexMeasures</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:line-locate-locate\" data-value=\"span\">span · input · segmentMeasure</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:line-locate-locate\" data-value=\"position\">position · output · position</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:linear-referencing-segments\" data-value=\"start\">start · input · start</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:linear-referencing-segments\" data-value=\"end\">end · input · end</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"offset\">offset · input · unknown — wgsl eventOffsets not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-line-locate-compiled:line-locate-locate\" data-value=\"tangent\">tangent · intermediate · tangent</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "fraction",
+        "intermediate",
+        "fraction",
+        "—",
+        "metadata"
+      ],
+      [
+        "measure",
+        "input",
+        "measure",
+        "—",
+        "metadata"
+      ],
+      [
+        "prefix",
+        "input",
+        "vertexMeasures",
+        "—",
+        "metadata"
+      ],
+      [
+        "span",
+        "input",
+        "segmentMeasure",
+        "—",
+        "metadata"
+      ],
+      [
+        "position",
+        "output",
+        "position",
+        "—",
+        "metadata"
+      ],
+      [
+        "start",
+        "input",
+        "start",
+        "—",
+        "metadata"
+      ],
+      [
+        "end",
+        "input",
+        "end",
+        "—",
+        "metadata"
+      ],
+      [
+        "offset",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "tangent",
+        "intermediate",
+        "tangent",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{fraction}{t}=\\operatorname{clamp}\\left(\\frac{\\term{measure}{m}-\\term{prefix}{M_s}}{\\term{span}{M_{s+1}-M_s}},0,1\\right),\\quad \\term{position}{p}=(1-\\term{fraction}{t})\\term{start}{a}+\\term{fraction}{t}\\term{end}{b}+\\term{offset}{h}(-\\term{tangent}{v_y},\\term{tangent}{v_x})",
+    "ascii": "Planar location on the selected positive-length segment: t=clamp((m-M[s])/(M[s+1]-M[s]),0,1); p=(1-t)*a+t*b+h*(-v.y,v.x). m is the scaled/offset event measure (then multiplied by line length in fraction mode) clamped to the line. v is the unit tangent. Zero spans use t=0; single vertices use v=0; invalid lines give NaN. Spherical mode instead slerps and applies the lateral offset by geodesic destination.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.493Z",
+    "runId": "run-e3865fa2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e3865fa2",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

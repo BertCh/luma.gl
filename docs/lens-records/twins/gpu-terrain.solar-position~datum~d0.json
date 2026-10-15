@@ -1,0 +1,83 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.solar-position",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-terrain.solar-position",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of sun sites 0. solarDaylight: 1. values read back from the GPU run. solar-position: 4 quantities.",
+  "description": "Receipt of sun sites 0. solarDaylight: 1. values read back from the GPU run. solar-position: 4 quantities.",
+  "llms": "Receipt of sun sites 0\n\n- solarDaylight: 1\n- solar-position: 4 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "solarDaylight",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of sun sites 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"solar-position\"><tr><th scope=\"rowgroup\" colspan=\"5\">solar-position</th></tr><tr data-provenance=\"readback\"><td>solar-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-position-snapshots-solarSites-0\" title=\"site longitude, latitude (degrees east, north)\">solarSites</button></td><td>-120.94999694824219, 40.13999938964844</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>solar-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-position-snapshots-solarAzimuth-0\" title=\"sun azimuth (degrees clockwise from north)\">solarAzimuth</button></td><td>174.1328887939453</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>solar-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-position-snapshots-solarAltitude-0\" title=\"sun altitude above the horizon (degrees, refracted)\">solarAltitude</button></td><td>66.50923919677734</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>solar-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-solar-position-snapshots-solarDaylight-0\" title=\"daylight (1 when the sun is above -0.833°)\">solarDaylight</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "solar-position",
+        "solarSites",
+        "-120.94999694824219, 40.13999938964844",
+        "0",
+        "readback"
+      ],
+      [
+        "solar-position",
+        "solarAzimuth",
+        "174.1328887939453",
+        "0",
+        "readback"
+      ],
+      [
+        "solar-position",
+        "solarAltitude",
+        "66.50923919677734",
+        "0",
+        "readback"
+      ],
+      [
+        "solar-position",
+        "solarDaylight",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.712Z",
+    "runId": "run-3d748df4",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-3d748df4",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

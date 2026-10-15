@@ -1,0 +1,110 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-outlier-factor",
+  "rung": "datum",
+  "datum": 1000,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-outlier-factor",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of observation 1000. resultObservations: 4664.1142578125, 307.3216247558594. values read back from the GPU run. local-outlier-factor: 6 quantities.",
+  "description": "Receipt of observation 1000. resultObservations: 4664.1142578125, 307.3216247558594. values read back from the GPU run. local-outlier-factor: 6 quantities.",
+  "llms": "Receipt of observation 1000\n\n- resultObservations: 4664.1142578125, 307.3216247558594\n- local-outlier-factor: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "resultObservations",
+    "value": "4664.1142578125, 307.3216247558594"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of observation 1000</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"local-outlier-factor\"><tr><th scope=\"rowgroup\" colspan=\"5\">local-outlier-factor</th></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-observations-0\">observations</button></td><td>4664.1142578125, 307.3216247558594</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-kDistance-0\" title=\"Distance to the 10th nearest observation (m)\">kDistance</button></td><td>17.53226089477539</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-localReachabilityDensity-0\" title=\"Local reachability density (1/m): inverse mean reach distance plus 10 m\">localReachabilityDensity</button></td><td>0.033506304025650024</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-outlier-0\" title=\"1 where lof is above the chosen cut of 3, else 0\">outlier</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-lof-0\" title=\"Local outlier factor; 1 is as dense as the neighbours\">lof</button></td><td>1.0407278537750244</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>local-outlier-factor</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-local-outlier-factor-snapshots-resultObservations-0\">resultObservations</button></td><td>4664.1142578125, 307.3216247558594</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "local-outlier-factor",
+        "observations",
+        "4664.1142578125, 307.3216247558594",
+        "0",
+        "readback"
+      ],
+      [
+        "local-outlier-factor",
+        "kDistance",
+        "17.53226089477539",
+        "0",
+        "readback"
+      ],
+      [
+        "local-outlier-factor",
+        "localReachabilityDensity",
+        "0.033506304025650024",
+        "0",
+        "readback"
+      ],
+      [
+        "local-outlier-factor",
+        "outlier",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "local-outlier-factor",
+        "lof",
+        "1.0407278537750244",
+        "0",
+        "readback"
+      ],
+      [
+        "local-outlier-factor",
+        "resultObservations",
+        "4664.1142578125, 307.3216247558594",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:53:25.179Z",
+    "runId": "run-7ae93a76",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7ae93a76",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1000
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

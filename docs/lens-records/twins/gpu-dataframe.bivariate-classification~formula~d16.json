@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.bivariate-classification",
+  "rung": "formula",
+  "datum": 16,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.bivariate-classification",
+  "viewId": "formula-card",
+  "caption": "Formula classIds=classY*classCountX+classX; each axis counts inner edges <= value; NaN/masked rows are 0xffffffff. classIds: 8. values read back from the GPU run.",
+  "description": "Formula classIds=classY*classCountX+classX; each axis counts inner edges <= value; NaN/masked rows are 0xffffffff. classIds: 8. values read back from the GPU run.",
+  "llms": "Formula classIds=classY*classCountX+classX; each axis counts inner edges <= value; NaN/masked rows are 0xffffffff.\n\n- classIds: 8\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "classIds",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUBivariateClassification</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIds}{c}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div><div class=\"lens-worked-example\"><h4>Entity 16</h4><div><pre class=\"lens-tex\">\\term{classIds}{8}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}</pre><p class=\"lens-ascii\">classIds=classY*classCountX+classX; each axis counts inner edges &lt;= value; NaN/masked rows are 0xffffffff.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classIds\">classIds · output · classes<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classY\">classY · intermediate · classY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classCountX\">classCountX · parameter · classCountX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.bivariate-classification-compiled:bivariate-classification-classify\" data-value=\"classX\">classX · intermediate · classX</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "classIds",
+        "output",
+        "classes",
+        "8",
+        "readback"
+      ],
+      [
+        "classY",
+        "intermediate",
+        "classY",
+        "—",
+        "metadata"
+      ],
+      [
+        "classCountX",
+        "parameter",
+        "classCountX",
+        "—",
+        "metadata"
+      ],
+      [
+        "classX",
+        "intermediate",
+        "classX",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{classIds}{c}=\\term{classY}{c_y}\\term{classCountX}{k_x}+\\term{classX}{c_x}",
+    "ascii": "classIds=classY*classCountX+classX; each axis counts inner edges <= value; NaN/masked rows are 0xffffffff.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.691Z",
+    "runId": "run-12a42d43",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-12a42d43",
+    "rung": "formula",
+    "bindings": {
+      "entity": 16
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.point-horizon-visibility",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const parameters = new GPUParameterBuffer(device, {\n  id: 'point-horizon-visibility-parameters',\n  format: 'float32',\n  length: GPU_POINT_HORIZON_VISIBILITY_PARAMETER_LENGTH,\n  values: getGPUPointHorizonVisibilityParameterValues(\n    {projection: 'planar', curvatureCoefficient: 6.8278187e-8},\n    grid\n  )\n});\ngraph.add(\n  new GPUPointHorizonVisibility({\n    grid,\n    elevation: makeGPURasterBand(dem, grid),\n    projection: 'planar',\n    traversal: 'march',\n    maximumDistance: 10000,\n    cellSize: 120,\n    observers,\n    targets,\n    parameters: parameters.importToGraph(graph),\n    output: {visibility, details}\n  })\n);",
+    "language": "ts",
+    "lineCount": 23
+  },
+  "scenarioId": "gpu-terrain.point-horizon-visibility",
+  "viewId": "result-view",
+  "caption": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
+  "description": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility. rows: 12. values read back from the GPU run. input dem: 4096 cells.",
+  "llms": "Result of gpu-terrain.point-horizon-visibility: dem, horizonObservers, horizonTargets → pointHorizonVisibility\n\n- rows: 12\n- input dem: 4096 cells\n- input horizonObservers: 12 rows\n- input horizonTargets: 48 rows\n- Planar coordinates (m); uniform scale.\n- cell size 120 m\n- Raster pixel grid; origin not recorded\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">horizonObservers</th><th scope=\"col\">horizonTargets</th><th class=\"cv-col--output\" scope=\"col\">pointHorizonVisibility</th></tr></thead><tbody><tr><td data-provenance=\"readback\">45</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">19</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td data-provenance=\"readback\">—</td><td data-provenance=\"readback\">52</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td colspan=\"3\">… 42 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input dem, horizonObservers, horizonTargets · blue: output pointHorizonVisibility</p><p class=\"cv-note\">cell size 120 m · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.021Z",
+    "runId": "run-597a7200",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-597a7200",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

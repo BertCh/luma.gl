@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-curvature",
+  "rung": "datum",
+  "datum": 2576,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-curvature",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2576. curvaturePlan: -0.0019200390670448542. values read back from the GPU run. terrain-curvature: 3 quantities.",
+  "description": "Receipt of grid cells 2576. curvaturePlan: -0.0019200390670448542. values read back from the GPU run. terrain-curvature: 3 quantities.",
+  "llms": "Receipt of grid cells 2576\n\n- curvaturePlan: -0.0019200390670448542\n- terrain-curvature: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "curvaturePlan",
+    "value": "-0.0019200390670448542"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2576</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-curvature\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-curvature</th></tr><tr data-provenance=\"readback\"><td>terrain-curvature</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-curvature-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1567.5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-curvature</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-curvature-snapshots-curvatureProfile-0\" title=\"profile curvature (1/m, convex positive)\">curvatureProfile</button></td><td>0.003950947895646095</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-curvature</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-curvature-snapshots-curvaturePlan-0\" title=\"plan curvature (1/m, convex positive)\">curvaturePlan</button></td><td>-0.0019200390670448542</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-curvature-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-curvature-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-curvature-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2511\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2511: 1552.800048828125</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2511</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2512\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2512: 1525.300048828125</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2512</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2513\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2513: 1497</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2513</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2575\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2575: 1574.199951171875</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2575</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2576\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2576: 1567.5</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2576</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2577\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2577: 1548.699951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2577</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2639\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2639: 1534.0999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2639</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2640\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2640: 1550.699951171875</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2640</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2641\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2641: 1568.4000244140625</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2641</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-curvature",
+        "dem",
+        "1567.5",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-curvature",
+        "curvatureProfile",
+        "0.003950947895646095",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-curvature",
+        "curvaturePlan",
+        "-0.0019200390670448542",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:09.112Z",
+    "runId": "run-adf898c3",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-adf898c3",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2576
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

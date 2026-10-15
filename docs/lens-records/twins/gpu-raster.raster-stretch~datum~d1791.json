@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-stretch",
+  "rung": "datum",
+  "datum": 1791,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-stretch",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1791. stretchedNir: 1. values read back from the GPU run. raster-stretch: 3 quantities.",
+  "description": "Receipt of grid cells 1791. stretchedNir: 1. values read back from the GPU run. raster-stretch: 3 quantities.",
+  "llms": "Receipt of grid cells 1791\n\n- stretchedNir: 1\n- raster-stretch: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "stretchedNir",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1791</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-stretch\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-stretch</th></tr><tr data-provenance=\"readback\"><td>raster-stretch</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-stretch-snapshots-landscapeElevation-0\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1074.9000244140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-stretch</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-stretch-snapshots-stretchNirAfter-0\" title=\"NIR after reflectance (DN x 0.0001; DN 0 becomes NaN)\">stretchNirAfter</button></td><td>0.4147999882698059</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-stretch</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-stretch-snapshots-stretchedNir-0\" title=\"min-max stretched NIR (0–1)\">stretchedNir</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-raster-stretch-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-raster-stretch-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-raster-stretch-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1726\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1726: 1075.0999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1726</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1727\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1727: 1075</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1727</text></g><g><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"metadata\" fill=\"url(#lens-gpu-raster-raster-stretch-datum-neighbourhood-0-hatched)\" stroke=\"currentColor\" stroke-dasharray=\"3 2\"></rect><title>outside raster (edge truncated)</title></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1790\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1790: 1074.800048828125</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1790</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1791\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1791: 1074.9000244140625</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1791</text></g><g><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"metadata\" fill=\"url(#lens-gpu-raster-raster-stretch-datum-neighbourhood-0-hatched)\" stroke=\"currentColor\" stroke-dasharray=\"3 2\"></rect><title>outside raster (edge truncated)</title></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1854\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1854: 1074.4000244140625</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1854</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1855\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1855: 1074.5</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1855</text></g><g><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"metadata\" fill=\"url(#lens-gpu-raster-raster-stretch-datum-neighbourhood-0-hatched)\" stroke=\"currentColor\" stroke-dasharray=\"3 2\"></rect><title>outside raster (edge truncated)</title></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-stretch",
+        "landscapeElevation",
+        "1074.9000244140625",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-stretch",
+        "stretchNirAfter",
+        "0.4147999882698059",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-stretch",
+        "stretchedNir",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.332Z",
+    "runId": "run-f9c55159",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-f9c55159",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1791
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

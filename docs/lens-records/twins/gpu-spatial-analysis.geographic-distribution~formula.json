@@ -1,0 +1,160 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geographic-distribution",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geographic-distribution",
+  "viewId": "formula-card",
+  "caption": "Formula M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h…",
+  "description": "Formula M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h…",
+  "llms": "Formula M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h + rho)) with c = sqrt(2) for the arcgis convention and 1 for standard; k = standardDeviations. Planar coordinates only; rows with a non-finite position or a non-positive weight are excluded.\n\n- bound symbols: 12/12\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "12/12"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>geographic-distribution</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{meanCenters}{M}&amp;=\\frac{\\sum_i w_i p_i}{\\term{total}{W}},\n&amp;\\term{standardDistances}{SD}&amp;=\\term{multiplier}{k}\\sqrt{\\term{varianceX}{S_{xx}}+\\term{varianceY}{S_{yy}}}\\\\\n\\term{halfSum}{h}&amp;=\\tfrac{1}{2}(S_{xx}+S_{yy}),\n&amp;\\term{halfDifference}{d}&amp;=\\tfrac{1}{2}(S_{xx}-S_{yy}),\n&amp;\\term{radius}{\\rho}&amp;=\\sqrt{d^2+\\term{covariance}{S_{xy}}^2}\\\\\n\\term{ellipses}{(\\sigma_x,\\sigma_y)}&amp;=\\term{scale}{k\\,c}\\left(\\sqrt{h-\\rho},\\ \\sqrt{h+\\rho}\\right)\n\\end{aligned}</pre><p class=\"lens-ascii\">M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h + rho)) with c = sqrt(2) for the arcgis convention and 1 for standard; k = standardDeviations. Planar coordinates only; rows with a non-finite position or a non-positive weight are excluded.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-publish\" data-value=\"meanCenters\">meanCenters · output · meanCentersOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-mean\" data-value=\"total\">weight sum · intermediate · total</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"standardDistances\">standardDistances · output · standardDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"multiplier\">multiplier · parameter · multiplier</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"varianceX\">varianceX · intermediate · varianceX</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"varianceY\">varianceY · intermediate · varianceY</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"covariance\">covariance · intermediate · covariance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"halfSum\">halfSum · intermediate · halfSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"halfDifference\">halfDifference · intermediate · halfDifference</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"radius\">radius · intermediate · radius</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"ellipses\">ellipses · output · ellipses</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.geographic-distribution-compiled:geographic-distribution-spread\" data-value=\"scale\">scale · parameter · scale</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "meanCenters",
+        "output",
+        "meanCentersOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight sum",
+        "intermediate",
+        "total",
+        "—",
+        "metadata"
+      ],
+      [
+        "standardDistances",
+        "output",
+        "standardDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "multiplier",
+        "parameter",
+        "multiplier",
+        "—",
+        "metadata"
+      ],
+      [
+        "varianceX",
+        "intermediate",
+        "varianceX",
+        "—",
+        "metadata"
+      ],
+      [
+        "varianceY",
+        "intermediate",
+        "varianceY",
+        "—",
+        "metadata"
+      ],
+      [
+        "covariance",
+        "intermediate",
+        "covariance",
+        "—",
+        "metadata"
+      ],
+      [
+        "halfSum",
+        "intermediate",
+        "halfSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "halfDifference",
+        "intermediate",
+        "halfDifference",
+        "—",
+        "metadata"
+      ],
+      [
+        "radius",
+        "intermediate",
+        "radius",
+        "—",
+        "metadata"
+      ],
+      [
+        "ellipses",
+        "output",
+        "ellipses",
+        "—",
+        "metadata"
+      ],
+      [
+        "scale",
+        "parameter",
+        "scale",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{meanCenters}{M}&=\\frac{\\sum_i w_i p_i}{\\term{total}{W}},\n&\\term{standardDistances}{SD}&=\\term{multiplier}{k}\\sqrt{\\term{varianceX}{S_{xx}}+\\term{varianceY}{S_{yy}}}\\\\\n\\term{halfSum}{h}&=\\tfrac{1}{2}(S_{xx}+S_{yy}),\n&\\term{halfDifference}{d}&=\\tfrac{1}{2}(S_{xx}-S_{yy}),\n&\\term{radius}{\\rho}&=\\sqrt{d^2+\\term{covariance}{S_{xy}}^2}\\\\\n\\term{ellipses}{(\\sigma_x,\\sigma_y)}&=\\term{scale}{k\\,c}\\left(\\sqrt{h-\\rho},\\ \\sqrt{h+\\rho}\\right)\n\\end{aligned}",
+    "ascii": "M = sum w p / W; Sxx, Syy, Sxy = weighted second moments about M divided by W (not W - 1); SD = k sqrt(Sxx + Syy); h = (Sxx + Syy)/2; d = (Sxx - Syy)/2; rho = sqrt(d^2 + Sxy^2); ellipse semi-axes (sigmaX, sigmaY) = k c (sqrt(h - rho), sqrt(h + rho)) with c = sqrt(2) for the arcgis convention and 1 for standard; k = standardDeviations. Planar coordinates only; rows with a non-finite position or a non-positive weight are excluded.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.373Z",
+    "runId": "run-614b7679",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-614b7679",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

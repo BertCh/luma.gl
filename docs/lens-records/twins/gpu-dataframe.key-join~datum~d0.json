@@ -1,0 +1,97 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.key-join",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.key-join",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Observation 0. rightKeys: 46. values read back from the GPU run. key-join: 6 quantities.",
+  "description": "Receipt of Observation 0. rightKeys: 46. values read back from the GPU run. key-join: 6 quantities.",
+  "llms": "Receipt of Observation 0\n\n- rightKeys: 46\n- key-join: 6 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rightKeys",
+    "value": "46"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Observation 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"key-join\"><tr><th scope=\"rowgroup\" colspan=\"5\">key-join</th></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-leftKeys-0\" title=\"Tract id of each iNaturalist observation.\">leftKeys</button></td><td>46</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-rightRows-0\" title=\"Smallest matching right row; 0xffffffff when unmatched.\">rightRows</button></td><td>46</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-matchCounts-0\">matchCounts</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-matched-0\">matched</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-joinedPoverty-0\" title=\"Gathered poverty of the matching tract; NaN when unmatched.\">joinedPoverty</button></td><td>9.699999809265137</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>key-join</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-dataframe-key-join-snapshots-rightRows-0-right-key\" title=\"Key of the right row each observation matched (tractKeys[rightRows[i]]); NaN if none.\">rightKeys</button></td><td>46</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "key-join",
+        "leftKeys",
+        "46",
+        "0",
+        "readback"
+      ],
+      [
+        "key-join",
+        "rightRows",
+        "46",
+        "0",
+        "readback"
+      ],
+      [
+        "key-join",
+        "matchCounts",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "key-join",
+        "matched",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "key-join",
+        "joinedPoverty",
+        "9.699999809265137",
+        "0",
+        "readback"
+      ],
+      [
+        "key-join",
+        "rightKeys",
+        "46",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:16:19.528Z",
+    "runId": "run-15982a6f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-15982a6f",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

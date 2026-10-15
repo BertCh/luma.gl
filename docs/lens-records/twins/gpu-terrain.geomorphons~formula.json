@@ -1,0 +1,153 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.geomorphons",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.geomorphons",
+  "viewId": "formula-card",
+  "caption": "Formula For each of 8 directions i (NE, N, NW, W, SW, S, SE, E) walk k = skipRadius+1.. while k*step < 0.99999*searchRadius*cellSizeY and stay inside the raster, ignoring invalid samples; step is the ground size of one step. Height h_k = zFactor*(z_…",
+  "description": "Formula For each of 8 directions i (NE, N, NW, W, SW, S, SE, E) walk k = skipRadius+1.. while k*step < 0.99999*searchRadius*cellSizeY and stay inside the raster, ignoring invalid samples; step is the ground size of one step. Height h_k = zFactor*(z_…",
+  "llms": "Formula For each of 8 directions i (NE, N, NW, W, SW, S, SE, E) walk k = skipRadius+1.. while k*step < 0.99999*searchRadius*cellSizeY and stay inside the raster, ignoring invalid samples; step is the ground size of one step. Height h_k = zFactor*(z_k - z_centre). Zenith = sample maximising h_k/k (height Delta_Z at count k_Z); nadir = sample minimising h_k/k (Delta_N at k_N). With tau = tan(flatThresholdDegrees) a side is over the threshold when |Delta| > tau * k * step (the flat distance, when set and smaller, replaces k*step). anglev1: digit 0 unless one side is over; then digit +1 if |Delta_Z|/k_Z > |Delta_N|/k_N, -1 if smaller, 0 on an exact tie (anglev2 variants resolve ties to +1 or by distance). A direction with an invalid first neighbour or no valid sample has digit 0. m = number of -1 digits, p = number of +1 digits; form = FORM_TABLE[9m + p]: 1 flat, 2 peak, 3 ridge, 4 shoulder, 5 spur, 6 slope, 7 hollow, 8 footslope, 9 valley, 10 pit. Invalid cells and cells within skipRadius+1 of the border get 0.\n\n- bound symbols: 11/11\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "11/11"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.geomorphons.ternary-pattern</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{digit}{d_i} = \\begin{cases} 0 &amp; \\max\\!\\left(\\left|\\term{zenithHeight}{\\Delta_Z}\\right| - \\term{tangent}{\\tau}\\,\\term{zenithCount}{k_Z}\\,\\term{step}{s},\\ \\left|\\term{nadirHeight}{\\Delta_N}\\right| - \\tau\\,\\term{nadirCount}{k_N}\\,s\\right) \\le 0 \\\\ \\operatorname{sgn}\\!\\left(\\frac{|\\Delta_Z|}{k_Z} - \\frac{|\\Delta_N|}{k_N}\\right) &amp; \\text{otherwise} \\end{cases},\\quad \\term{form}{F} = \\term{formTable}{T}\\left[\\,9\\,\\term{minusCount}{m} + \\term{plusCount}{p}\\,\\right]</pre><p class=\"lens-ascii\">For each of 8 directions i (NE, N, NW, W, SW, S, SE, E) walk k = skipRadius+1.. while k*step &lt; 0.99999*searchRadius*cellSizeY and stay inside the raster, ignoring invalid samples; step is the ground size of one step. Height h_k = zFactor*(z_k - z_centre). Zenith = sample maximising h_k/k (height Delta_Z at count k_Z); nadir = sample minimising h_k/k (Delta_N at k_N). With tau = tan(flatThresholdDegrees) a side is over the threshold when |Delta| &gt; tau * k * step (the flat distance, when set and smaller, replaces k*step). anglev1: digit 0 unless one side is over; then digit +1 if |Delta_Z|/k_Z &gt; |Delta_N|/k_N, -1 if smaller, 0 on an exact tie (anglev2 variants resolve ties to +1 or by distance). A direction with an invalid first neighbour or no valid sample has digit 0. m = number of -1 digits, p = number of +1 digits; form = FORM_TABLE[9m + p]: 1 flat, 2 peak, 3 ridge, 4 shoulder, 5 spur, 6 slope, 7 hollow, 8 footslope, 9 valley, 10 pit. Invalid cells and cells within skipRadius+1 of the border get 0.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"digit\">direction digit · intermediate · digit</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"zenithHeight\">zenith height · intermediate · zenithHeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"nadirHeight\">nadir height · intermediate · nadirHeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"zenithCount\">zenith steps · intermediate · zenithCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"nadirCount\">nadir steps · intermediate · nadirCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"tangent\">tan(flat threshold) · parameter · tangent</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"step\">ground step · intermediate · step</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"minusCount\">minus digits · intermediate · minusCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"plusCount\">plus digits · intermediate · plusCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"formTable\">landform table · constant · FORM_TABLE</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-geomorphons-compiled:geomorphons-classify\" data-value=\"form\">landform code · output · outputForm</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "direction digit",
+        "intermediate",
+        "digit",
+        "—",
+        "metadata"
+      ],
+      [
+        "zenith height",
+        "intermediate",
+        "zenithHeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "nadir height",
+        "intermediate",
+        "nadirHeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "zenith steps",
+        "intermediate",
+        "zenithCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "nadir steps",
+        "intermediate",
+        "nadirCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "tan(flat threshold)",
+        "parameter",
+        "tangent",
+        "—",
+        "metadata"
+      ],
+      [
+        "ground step",
+        "intermediate",
+        "step",
+        "—",
+        "metadata"
+      ],
+      [
+        "minus digits",
+        "intermediate",
+        "minusCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "plus digits",
+        "intermediate",
+        "plusCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "landform table",
+        "constant",
+        "FORM_TABLE",
+        "—",
+        "metadata"
+      ],
+      [
+        "landform code",
+        "output",
+        "outputForm",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{digit}{d_i} = \\begin{cases} 0 & \\max\\!\\left(\\left|\\term{zenithHeight}{\\Delta_Z}\\right| - \\term{tangent}{\\tau}\\,\\term{zenithCount}{k_Z}\\,\\term{step}{s},\\ \\left|\\term{nadirHeight}{\\Delta_N}\\right| - \\tau\\,\\term{nadirCount}{k_N}\\,s\\right) \\le 0 \\\\ \\operatorname{sgn}\\!\\left(\\frac{|\\Delta_Z|}{k_Z} - \\frac{|\\Delta_N|}{k_N}\\right) & \\text{otherwise} \\end{cases},\\quad \\term{form}{F} = \\term{formTable}{T}\\left[\\,9\\,\\term{minusCount}{m} + \\term{plusCount}{p}\\,\\right]",
+    "ascii": "For each of 8 directions i (NE, N, NW, W, SW, S, SE, E) walk k = skipRadius+1.. while k*step < 0.99999*searchRadius*cellSizeY and stay inside the raster, ignoring invalid samples; step is the ground size of one step. Height h_k = zFactor*(z_k - z_centre). Zenith = sample maximising h_k/k (height Delta_Z at count k_Z); nadir = sample minimising h_k/k (Delta_N at k_N). With tau = tan(flatThresholdDegrees) a side is over the threshold when |Delta| > tau * k * step (the flat distance, when set and smaller, replaces k*step). anglev1: digit 0 unless one side is over; then digit +1 if |Delta_Z|/k_Z > |Delta_N|/k_N, -1 if smaller, 0 on an exact tie (anglev2 variants resolve ties to +1 or by distance). A direction with an invalid first neighbour or no valid sample has digit 0. m = number of -1 digits, p = number of +1 digits; form = FORM_TABLE[9m + p]: 1 flat, 2 peak, 3 ridge, 4 shoulder, 5 spur, 6 slope, 7 hollow, 8 footslope, 9 valley, 10 pit. Invalid cells and cells within skipRadius+1 of the border get 0.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.961Z",
+    "runId": "run-90b4abc1",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-90b4abc1",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

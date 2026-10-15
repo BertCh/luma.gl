@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.zonal-statistics",
+  "rung": "datum",
+  "datum": 420,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.zonal-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Chicago tract 420. values: 308. values read back from the GPU run. zonal-statistics: 2 quantities.",
+  "description": "Receipt of Chicago tract 420. values: 308. values read back from the GPU run. zonal-statistics: 2 quantities.",
+  "llms": "Receipt of Chicago tract 420\n\n- values: 308\n- zonal-statistics: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "values",
+    "value": "308"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Chicago tract 420</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"zonal-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">zonal-statistics</th></tr><tr data-provenance=\"readback\"><td>zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.zonal-statistics-snapshots-pointFeatureRows-0\" title=\"Community-area row of each tract (nominal)\">pointFeatureRows</button></td><td>39</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>zonal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.zonal-statistics-snapshots-values-0\" title=\"People below 150% of the poverty line (count)\">values</button></td><td>308</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "zonal-statistics",
+        "pointFeatureRows",
+        "39",
+        "0",
+        "readback"
+      ],
+      [
+        "zonal-statistics",
+        "values",
+        "308",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.710Z",
+    "runId": "run-99bac098",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-99bac098",
+    "rung": "datum",
+    "bindings": {
+      "entity": 420
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

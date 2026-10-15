@@ -1,0 +1,112 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.bounds-filter",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.bounds-filter",
+  "viewId": "formula-card",
+  "caption": "Formula Within mode: finite bounds AND fMin.x >= boxMin.x AND fMax.x <= boxMax.x AND fMin.y >= boxMin.y AND fMax.y <= boxMax.y. All comparisons are inclusive, directly in f32. bound symbols: 6/6. structure metadata only.",
+  "description": "Formula Within mode: finite bounds AND fMin.x >= boxMin.x AND fMax.x <= boxMax.x AND fMin.y >= boxMin.y AND fMax.y <= boxMax.y. All comparisons are inclusive, directly in f32. bound symbols: 6/6. structure metadata only.",
+  "llms": "Formula Within mode: finite bounds AND fMin.x >= boxMin.x AND fMax.x <= boxMax.x AND fMin.y >= boxMin.y AND fMax.y <= boxMax.y. All comparisons are inclusive, directly in f32.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.bounds-filter</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{selected}{s}=\\mathbf{1}[\\term{finite}{\\mathrm{finite}(F)}\\land\\term{minimum}{F_{\\min,x}}\\ge\\term{boxMin}{B_{\\min,x}}\\land\\term{maximum}{F_{\\max,x}}\\le\\term{boxMax}{B_{\\max,x}}\\land\\term{minimum}{F_{\\min,y}}\\ge\\term{boxMin}{B_{\\min,y}}\\land\\term{maximum}{F_{\\max,y}}\\le\\term{boxMax}{B_{\\max,y}}]</pre><p class=\"lens-ascii\">Within mode: finite bounds AND fMin.x &gt;= boxMin.x AND fMax.x &lt;= boxMax.x AND fMin.y &gt;= boxMin.y AND fMax.y &lt;= boxMax.y. All comparisons are inclusive, directly in f32.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"selected\">mask · output · maskOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"finite\">finite bounds · intermediate · finite</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"minimum\">feature minimum · input · fMin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"maximum\">feature maximum · input · fMax</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"boxMin\">box minimum · parameter · boxMin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\" data-value=\"boxMax\">box maximum · parameter · boxMax</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-bounds-filter-compiled:bounds-filter-mask\">bounds-filter-mask</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mask",
+        "output",
+        "maskOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "finite bounds",
+        "intermediate",
+        "finite",
+        "—",
+        "metadata"
+      ],
+      [
+        "feature minimum",
+        "input",
+        "fMin",
+        "—",
+        "metadata"
+      ],
+      [
+        "feature maximum",
+        "input",
+        "fMax",
+        "—",
+        "metadata"
+      ],
+      [
+        "box minimum",
+        "parameter",
+        "boxMin",
+        "—",
+        "metadata"
+      ],
+      [
+        "box maximum",
+        "parameter",
+        "boxMax",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{selected}{s}=\\mathbf{1}[\\term{finite}{\\mathrm{finite}(F)}\\land\\term{minimum}{F_{\\min,x}}\\ge\\term{boxMin}{B_{\\min,x}}\\land\\term{maximum}{F_{\\max,x}}\\le\\term{boxMax}{B_{\\max,x}}\\land\\term{minimum}{F_{\\min,y}}\\ge\\term{boxMin}{B_{\\min,y}}\\land\\term{maximum}{F_{\\max,y}}\\le\\term{boxMax}{B_{\\max,y}}]",
+    "ascii": "Within mode: finite bounds AND fMin.x >= boxMin.x AND fMax.x <= boxMax.x AND fMin.y >= boxMin.y AND fMax.y <= boxMax.y. All comparisons are inclusive, directly in f32.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.728Z",
+    "runId": "run-a8ca5511",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a8ca5511",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

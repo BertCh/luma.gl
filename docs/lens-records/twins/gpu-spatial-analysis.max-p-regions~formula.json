@@ -1,0 +1,75 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.max-p-regions",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.max-p-regions",
+  "viewId": "formula-card",
+  "caption": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest wi…",
+  "description": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest wi…",
+  "llms": "Formula Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>max-p-objective</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\text{maximize } p\\quad&amp;\\text{subject to}\\quad \\term{regionTotal}{\\sum_{i\\in r}e_i}\\ge\\term{threshold}{T}\\text{ for every region }r\\\\\n\\term{objective}{W}&amp;=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2\n\\end{aligned}</pre><p class=\"lens-ascii\">Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i &gt;= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-pack-extensive\" data-value=\"regionTotal\">regionTotal · intermediate · extensive</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-pack-extensive\" data-value=\"threshold\">threshold · parameter · threshold</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.max-p-regions-compiled:max-p-regions-publish\" data-value=\"objective\">objective · output · withinSquares</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "regionTotal",
+        "intermediate",
+        "extensive",
+        "—",
+        "metadata"
+      ],
+      [
+        "threshold",
+        "parameter",
+        "threshold",
+        "—",
+        "metadata"
+      ],
+      [
+        "objective",
+        "output",
+        "withinSquares",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\text{maximize } p\\quad&\\text{subject to}\\quad \\term{regionTotal}{\\sum_{i\\in r}e_i}\\ge\\term{threshold}{T}\\text{ for every region }r\\\\\n\\term{objective}{W}&=\\sum_{r}\\sum_{i\\in r}\\lVert x_i-\\bar{x}_r\\rVert^2\n\\end{aligned}",
+    "ascii": "Objective, not the procedure: maximize the region count p such that every contiguous region r keeps sum e_i >= T (e extensive, such as population). Among starts the fewest under-threshold regions win, then the largest p, then the smallest within-region sum of squares W = sum over r of sum over i in r of |x_i - mean_r|^2 (standardized units unless standardize is false), then the lowest start index. Regions grow one tract per round, so p is a heuristic maximum, not a proof.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:54.545Z",
+    "runId": "run-e7cad20a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e7cad20a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

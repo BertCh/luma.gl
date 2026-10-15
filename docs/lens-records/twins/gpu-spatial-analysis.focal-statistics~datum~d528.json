@@ -1,0 +1,81 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.focal-statistics",
+  "rung": "datum",
+  "datum": 528,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.focal-statistics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of 120 m cell, rows from north 528. windowCounts: 29. values read back from the GPU run. focal-statistics: 4 quantities.",
+  "description": "Receipt of 120 m cell, rows from north 528. windowCounts: 29. values read back from the GPU run. focal-statistics: 4 quantities.",
+  "llms": "Receipt of 120 m cell, rows from north 528\n\n- windowCounts: 29\n- focal-statistics: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "windowCounts",
+    "value": "29"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 120 m cell, rows from north 528</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"focal-statistics\"><tr><th scope=\"rowgroup\" colspan=\"5\">focal-statistics</th></tr><tr data-provenance=\"readback\"><td>focal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.focal-statistics-snapshots-elevation-0\" title=\"Elevation of the 120 m cell (m)\">elevation</button></td><td>1123.300048828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>focal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.focal-statistics-snapshots-mean-0\" title=\"Mean elevation of the circular window, radius 3 cells (m)\">mean</button></td><td>1117.8966064453125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>focal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.focal-statistics-snapshots-standardDeviation-0\" title=\"Population deviation of the window (m)\">standardDeviation</button></td><td>21.02766227722168</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>focal-statistics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis.focal-statistics-snapshots-windowCounts-0\" title=\"Valid cells in the window; fewer at the raster edge\">windowCounts</button></td><td>29</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "focal-statistics",
+        "elevation",
+        "1123.300048828125",
+        "0",
+        "readback"
+      ],
+      [
+        "focal-statistics",
+        "mean",
+        "1117.8966064453125",
+        "0",
+        "readback"
+      ],
+      [
+        "focal-statistics",
+        "standardDeviation",
+        "21.02766227722168",
+        "0",
+        "readback"
+      ],
+      [
+        "focal-statistics",
+        "windowCounts",
+        "29",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.242Z",
+    "runId": "run-948eca64",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-948eca64",
+    "rung": "datum",
+    "bindings": {
+      "entity": 528
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

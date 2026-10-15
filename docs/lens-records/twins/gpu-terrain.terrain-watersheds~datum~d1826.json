@@ -1,0 +1,87 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-watersheds",
+  "rung": "datum",
+  "datum": 1826,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-watersheds",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1826. watershedLabels: 1919. values read back from the GPU run. terrain-watersheds: 3 quantities.",
+  "description": "Receipt of grid cells 1826. watershedLabels: 1919. values read back from the GPU run. terrain-watersheds: 3 quantities.",
+  "llms": "Receipt of grid cells 1826\n\n- watershedLabels: 1919\n- terrain-watersheds: 3 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "watershedLabels",
+    "value": "1919"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1826</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-watersheds\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-watersheds</th></tr><tr data-provenance=\"readback\"><td>terrain-watersheds</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-watersheds-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1091.199951171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-watersheds</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-watersheds-snapshots-flowDirections-0\" title=\"D8 flow direction (ESRI code)\">flowDirections</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-watersheds</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-watersheds-snapshots-watershedLabels-0\" title=\"basin label (terminal cell index)\">watershedLabels</button></td><td>1919</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-watersheds-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-watersheds-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-watersheds-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1761\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1761: 1092.5999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1761</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1762\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1762: 1093.9000244140625</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1762</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1763\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1763: 1103.300048828125</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1763</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1825\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1825: 1094</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1825</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1826\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1826: 1091.199951171875</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1826</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1827\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1827: 1092.800048828125</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1827</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1889\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1889: 1095.0999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1889</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1890\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1890: 1091.0999755859375</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1890</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1891\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1891: 1089</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1891</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-watersheds",
+        "dem",
+        "1091.199951171875",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-watersheds",
+        "flowDirections",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-watersheds",
+        "watershedLabels",
+        "1919",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:58.671Z",
+    "runId": "run-42ca41fc",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-42ca41fc",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1826
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

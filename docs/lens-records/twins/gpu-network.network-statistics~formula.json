@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-statistics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-network.network-statistics",
+  "viewId": "formula-card",
+  "caption": "Formula localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0,…",
+  "description": "Formula localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0,…",
+  "llms": "Formula localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0, else min(1 + floor(log2 d), BIN_COUNT - 1)). Each workgroup then adds its non-empty bins to the summary words, so integer addition makes the histogram independent of thread order. The in-degree and total-degree histograms use the same rule.\n\n- bound symbols: 3/3\n- compute passes were not coalesced as in production\n- lens twin: transients summary retained instead of aliased\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-network.statistics.degree-histogram</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]\\leftarrow\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]+1</pre><p class=\"lens-ascii\">localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0, else min(1 + floor(log2 d), BIN_COUNT - 1)). Each workgroup then adds its non-empty bins to the summary words, so integer addition makes the histogram independent of thread order. The in-degree and total-degree histograms use the same rule.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-statistics-compiled:network-statistics-degrees\" data-value=\"localHistogram\">workgroup histogram · intermediate · localHistogram</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-statistics-compiled:network-statistics-degrees\" data-value=\"getBin\">degree bin · intermediate · getBin</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-statistics-compiled:network-statistics-degrees\" data-value=\"outValue\">live out-degree · input · outValue</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-network.network-statistics-compiled:network-statistics-degrees\">network-statistics-degrees</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "workgroup histogram",
+        "intermediate",
+        "localHistogram",
+        "—",
+        "metadata"
+      ],
+      [
+        "degree bin",
+        "intermediate",
+        "getBin",
+        "—",
+        "metadata"
+      ],
+      [
+        "live out-degree",
+        "input",
+        "outValue",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]\\leftarrow\\term{localHistogram}{H}[\\term{getBin}{b}(\\term{outValue}{d})]+1",
+    "ascii": "localHistogram[getBin(outValue)] += 1 (atomic) for every live node, where outValue is its live out-degree and getBin(d) = min(floor(d / binWidth), BIN_COUNT - 1) for the linear rule (the last bin saturates; log2 binning uses bin 0 for d = 0, else min(1 + floor(log2 d), BIN_COUNT - 1)). Each workgroup then adds its non-empty bins to the summary words, so integer addition makes the histogram independent of thread order. The in-degree and total-degree histograms use the same rule.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.803Z",
+    "runId": "run-8be88404",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients summary retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-8be88404",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

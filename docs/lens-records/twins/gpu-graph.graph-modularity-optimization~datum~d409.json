@@ -1,0 +1,141 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-graph.graph-modularity-optimization",
+  "rung": "datum",
+  "datum": 409,
+  "size": "full",
+  "scenarioId": "gpu-graph.graph-modularity-optimization",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of station 409. modularity-optimization-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 2 quantities.",
+  "description": "Receipt of station 409. modularity-optimization-stations: 5.109869956970215, 52.08945083618164. values read back from the GPU run. topology: 2 quantities.",
+  "llms": "Receipt of station 409\n\n- modularity-optimization-stations: 5.109869956970215, 52.08945083618164\n- topology: 2 quantities\n- iteration: 8 quantities\n- publication: 1 quantities\n- compute passes were not coalesced as in production\n- 5679 observation taps inserted\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "modularity-optimization-stations",
+    "value": "5.109869956970215, 52.08945083618164"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of station 409</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"topology\"><tr><th scope=\"rowgroup\" colspan=\"5\">topology</th></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"station-positions\">station-positions</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>topology</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-seed\">modularity-seed</button></td><td>0</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"iteration\"><tr><th scope=\"rowgroup\" colspan=\"5\">iteration</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-0\">modularity-optimization</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-1\">modularity-optimization</button></td><td>0</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-2\">modularity-optimization</button></td><td>0</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-4\">modularity-optimization</button></td><td>0</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-8\">modularity-optimization</button></td><td>0</td><td>8</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-16\">modularity-optimization</button></td><td>0</td><td>16</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-32\">modularity-optimization</button></td><td>94</td><td>32</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>iteration</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-63\">modularity-optimization</button></td><td>94</td><td>63</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"publication\"><tr><th scope=\"rowgroup\" colspan=\"5\">publication</th></tr><tr data-provenance=\"readback\"><td>publication</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"modularity-optimization-stations\">modularity-optimization-stations</button></td><td>5.109869956970215, 52.08945083618164</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "topology",
+        "station-positions",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ],
+      [
+        "topology",
+        "modularity-seed",
+        "0",
+        "—",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "1",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "2",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "4",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "8",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "0",
+        "16",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "94",
+        "32",
+        "readback"
+      ],
+      [
+        "iteration",
+        "modularity-optimization",
+        "94",
+        "63",
+        "readback"
+      ],
+      [
+        "publication",
+        "modularity-optimization-stations",
+        "5.109869956970215, 52.08945083618164",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:03.531Z",
+    "runId": "run-5ed699e9",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "5679 observation taps inserted",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-5ed699e9",
+    "rung": "datum",
+    "bindings": {
+      "entity": 409
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

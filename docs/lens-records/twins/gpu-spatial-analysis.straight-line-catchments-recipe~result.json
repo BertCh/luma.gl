@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.straight-line-catchments-recipe",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const catchments = addStraightLineCatchmentsRecipe(graph, {\n  spatialContext,\n  grid,\n  parameters: parameters.importToGraph(graph),\n  facilities: {kind: 'points', positions: facilities},\n  values: observationCounts,\n  outputs: {allocation, distances, statistics}\n});\n// allocation colours each cell by its nearest facility; sums totals observations per catchment",
+    "language": "ts",
+    "lineCount": 9
+  },
+  "scenarioId": "gpu-spatial-analysis.straight-line-catchments-recipe",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means. rows: 150. values read back from the GPU run. input facilities: 150 points.",
+  "description": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means. rows: 150. values read back from the GPU run. input facilities: 150 points.",
+  "llms": "Result of gpu-spatial-analysis.straight-line-catchments-recipe: facilities, observationCounts → means\n\n- rows: 150\n- input facilities: 150 points\n- input observationCounts: 2236 cells\n- Planar coordinates (m); uniform scale.\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- cell size 250 m\n- cell size 250 m\n- cell size 250 m\n- 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "150"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th class=\"cv-col--output\" scope=\"col\">cellCounts</th><th class=\"cv-col--output\" scope=\"col\">valueCounts</th><th class=\"cv-col--output\" scope=\"col\">sums</th><th class=\"cv-col--output\" scope=\"col\">means</th></tr></thead><tbody><tr><td class=\"cv-col--output\" data-provenance=\"readback\">9</td><td class=\"cv-col--output\" data-provenance=\"readback\">9</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">16</td><td class=\"cv-col--output\" data-provenance=\"readback\">46</td><td class=\"cv-col--output\" data-provenance=\"readback\">2.88</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">9</td><td class=\"cv-col--output\" data-provenance=\"readback\">9</td><td class=\"cv-col--output\" data-provenance=\"readback\">39</td><td class=\"cv-col--output\" data-provenance=\"readback\">4.33</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">3</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.333</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">4</td><td class=\"cv-col--output\" data-provenance=\"readback\">1</td></tr><tr><td class=\"cv-col--output\" data-provenance=\"readback\">53</td><td class=\"cv-col--output\" data-provenance=\"readback\">53</td><td class=\"cv-col--output\" data-provenance=\"readback\">50</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.943</td></tr><tr><td colspan=\"4\">… 144 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input facilities, observationCounts · blue: output allocation, distances, resultFacilities, cellCounts, valueCounts, sums, means</p><p class=\"cv-note\">150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · cell size 250 m · cell size 250 m · cell size 250 m · 150 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.716Z",
+    "runId": "run-165b7a1f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-165b7a1f",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

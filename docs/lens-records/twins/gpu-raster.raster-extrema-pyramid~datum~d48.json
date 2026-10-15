@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-extrema-pyramid",
+  "rung": "datum",
+  "datum": 48,
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-extrema-pyramid",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of level-1 blocks 48. pyramidMaximumLevel1: 1785.699951171875. values read back from the GPU run. raster-extrema-pyramid: 2 quantities.",
+  "description": "Receipt of level-1 blocks 48. pyramidMaximumLevel1: 1785.699951171875. values read back from the GPU run. raster-extrema-pyramid: 2 quantities.",
+  "llms": "Receipt of level-1 blocks 48\n\n- pyramidMaximumLevel1: 1785.699951171875\n- raster-extrema-pyramid: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "pyramidMaximumLevel1",
+    "value": "1785.699951171875"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of level-1 blocks 48</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"raster-extrema-pyramid\"><tr><th scope=\"rowgroup\" colspan=\"5\">raster-extrema-pyramid</th></tr><tr data-provenance=\"readback\"><td>raster-extrema-pyramid</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-extrema-pyramid-snapshots-pyramidMinimumLevel1-0\" title=\"lowest elevation of each 8 × 8 block (m)\">pyramidMinimumLevel1</button></td><td>1457.300048828125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>raster-extrema-pyramid</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-raster-extrema-pyramid-snapshots-pyramidMaximumLevel1-0\" title=\"highest elevation of each 8 × 8 block (m)\">pyramidMaximumLevel1</button></td><td>1785.699951171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "raster-extrema-pyramid",
+        "pyramidMinimumLevel1",
+        "1457.300048828125",
+        "0",
+        "readback"
+      ],
+      [
+        "raster-extrema-pyramid",
+        "pyramidMaximumLevel1",
+        "1785.699951171875",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:28:21.217Z",
+    "runId": "run-c67034c5",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c67034c5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 48
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

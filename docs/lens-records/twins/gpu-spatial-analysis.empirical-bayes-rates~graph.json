@@ -1,0 +1,53 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.empirical-bayes-rates",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.empirical-bayes-rates",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates. nodes: 5. structure metadata only. 5 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates. nodes: 5. structure metadata only. 5 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis.empirical-bayes-rates\n\n- nodes: 5\n- 5 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"320\" style=\"grid-column:1;grid-row:1 / span 5\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-empirical-bayes-rates-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-empirical-bayes-rates-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-empirical-bayes-rates-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 81.33333333333334 24, 81.33333333333334 88, 110 88\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:empirical-bayes-rates-partials-a → node:empirical-bayes-rates-totals-a: raw ×1; empirical-bayes-rates-partials-a</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:empirical-bayes-rates-totals-a → node:empirical-bayes-rates-partials-b: raw ×1; empirical-bayes-rates-totals-a</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 70.66666666666667 88, 70.66666666666667 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:empirical-bayes-rates-totals-a → node:empirical-bayes-rates-summary: raw ×1; empirical-bayes-rates-totals-a</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 152 C 81.33333333333334 152, 81.33333333333334 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:empirical-bayes-rates-partials-b → node:empirical-bayes-rates-summary: raw ×1; empirical-bayes-rates-partials-b</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 216 C 81.33333333333334 216, 81.33333333333334 280, 110 280\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:empirical-bayes-rates-summary → node:empirical-bayes-rates-rates: raw ×1; summary</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:empirical-bayes-rates-partials-a\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"empirical-bayes-rates-partials-a\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">empirical-bayes-rates-partials-a</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=1024</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:empirical-bayes-rates-totals-a\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"empirical-bayes-rates-totals-a\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">empirical-bayes-rates-totals-a</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=3 · maximumInvocationCount=768</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:empirical-bayes-rates-partials-b\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"empirical-bayes-rates-partials-b\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">empirical-bayes-rates-partials-b</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=1024</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:empirical-bayes-rates-summary\" data-tier=\"subject\" style=\"grid-column:2;grid-row:4;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"empirical-bayes-rates-summary\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">empirical-bayes-rates-summary</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=256</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:empirical-bayes-rates-rates\" data-tier=\"subject\" style=\"grid-column:2;grid-row:5;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"empirical-bayes-rates-rates\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">empirical-bayes-rates-rates</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=4 · maximumInvocationCount=791</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:empirical-bayes-rates-rates\" aria-label=\"Inspect empirical-bayes-rates-rates\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 320
+  },
+  "verdicts": [
+    {
+      "guardId": "eb-reference-rate",
+      "label": "EB reference rate",
+      "blocks": [
+        "eb-reference"
+      ],
+      "status": "pass",
+      "reason": "pooled μ = ΣO/ΣP"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "pass",
+      "reason": "intensive variable or explicit denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:26.165Z",
+    "runId": "run-db2a5a10",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-db2a5a10",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -11,6 +11,10 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Reveal relationships with GPUGraphForceLayout
 
+Move graph vertices with repulsion, edge springs and gravity, writing render-ready two-dimensional positions.
+
+::lens{scenario=gpu-graph.graph-force-layout rung=result caption="Compare the 485 stations at their projected start and after 100 force iterations."}
+
 **Question: How can I position connected entities so the structure of their relationships becomes
 visible?**
 
@@ -26,25 +30,22 @@ degree, connected components, and PageRank, which answer numerical questions abo
 layout answers where an application can draw that vertex. Your application still owns its
 renderer, colors, labels, and interaction design.
 
-```ts
-import {GPUGraphForceLayout} from '@luma.gl/gpgpu/gpu-graph';
-
-const layout = new GPUGraphForceLayout({
-  topology,
-  positions: nodePositions,
-  velocities: nodeVelocities,
-  pinned: pinnedVertices,
-  reset: resetRequested,
-  seed: 42,
-  iterationsPerFrame: 4,
-  repulsion: 1,
-  attraction: 0.1,
-  gravity: 0.01,
-  damping: 0.9,
-  maxVelocity: 1,
-  timeStep: 1
-});
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-force-layout'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` | Required | Existing topology; directed graphs require reverse adjacency. |
+| `positions` | `GPUVector<'float32x2'>` | Required | Caller-owned packed positions with `Buffer.STORAGE` and `Buffer.VERTEX` usage. |
+| `velocities` | `GPUVector<'float32x2'>` | Required | Caller-owned packed velocities, one row per vertex. |
+| `pinned` | `GPUVector<'uint32'>` | Omitted | Optional vertex mask; nonzero rows keep their position. |
+| `reset` | `GPUVector<'uint32'>` | Omitted | Optional scalar requesting seeded initialization; the GPU consumes it. |
+| `seed` | `number` | `0` | Unsigned seed for deterministic initialization. |
+| `iterationsPerFrame` | `number` | `4` | Synchronized force and integration steps per encode. |
+| `repulsion` | `number` | `1` | Nonnegative strength of all-vertex repulsion. |
+| `attraction` | `number` | `0.1` | Nonnegative strength of edge attraction. |
+| `gravity` | `number` | `0.01` | Nonnegative attraction toward the origin. |
+| `damping` | `number` | `0.9` | Velocity-retention factor between zero and one. |
+| `maxVelocity` | `number` | `1` | Positive maximum velocity magnitude. |
+| `timeStep` | `number` | `1` | Positive integration time step. |
 
 `positions` and `velocities` are distinct, caller-owned, packed `GPUVector<'float32x2'>` values
 with one row per vertex. The physical position buffer must have both `Buffer.STORAGE` and
@@ -85,7 +86,21 @@ it for very large networks, already meaningful geographic coordinates, or applic
 weighted springs. This implementation does not approximate pairwise interactions and does not
 claim to implement ForceAtlas2 or Barnes–Hut.
 
+#### How it computes
+
+{/* lens:GPUGraphForceLayout */}
+
+::lens{scenario=gpu-graph.graph-force-layout rung=kernel caption="Inspect the force and integration kernels run each iteration."}
+::lens{scenario=gpu-graph.graph-force-layout rung=graph caption="Follow topology construction into 100 repeated force and integration passes."}
+::lens{scenario=gpu-graph.graph-force-layout rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, pulled by 15 neighbors and pushed by 484 stations."}
+::lens{scenario=gpu-graph.graph-force-layout rung=formula caption="Follow the force sum and velocity update to the WGSL buffers that hold them."}
+::lens{scenario=gpu-graph.graph-force-layout rung=iterations caption="Compare eight recorded layout frames from the first iteration through the 100th."}
+
 ## Approximate distant forces with GPUGraphSpatialForceLayout
+
+Move graph vertices with exact near-cell repulsion and grid-approximated far-cell repulsion, writing render-ready positions.
+
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=result caption="Compare station positions before and after the grid-approximated layout; far cells act as single masses."}
 
 **Question: How can I make a larger relationship map easier to explore when exact repulsion spends
 too much time comparing every individual vertex?**
@@ -103,42 +118,35 @@ force must be reproducible, the network is small enough that index construction 
 it saves, vertices are too concentrated to benefit from grouping, or meaningful fixed coordinates
 should not be replaced by a force-directed arrangement.
 
-```ts
-import {
-  GPUGraphForceLayout,
-  GPUGraphSpatialForceLayout
-} from '@luma.gl/gpgpu/gpu-graph';
-
-const layout = new GPUGraphForceLayout({
-  topology,
-  positions: nodePositions,
-  velocities: nodeVelocities,
-  pinned: pinnedVertices,
-  reset: resetRequested,
-  iterationsPerFrame: 4
-});
-
-const spatialLayout = new GPUGraphSpatialForceLayout({
-  layout,
-  gridSize: [32, 32],
-  bounds: [-4, -4, 4, 4],
-  theta: 0.6,
-  nearCellRadius: 1,
-  cellOffsets: spatialCellOffsets,
-  vertexIds: spatialVertexIds,
-  cellCenters: spatialCellCenters,
-  count: indexedVertexCount,
-  overflow: spatialIndexOverflow
-});
-
-spatialLayout.addToGraph(workflow);
-```
-
-Add either `layout` or `spatialLayout` to a workflow, not both: the spatial contributor advances
+Add either the base `GPUGraphForceLayout` or this contributor to a workflow, not both: it advances
 the same base positions and velocities itself. Existing directed and undirected spring behavior,
 deterministic resets, pinned vertices, velocity limits, progressive warm starts, and directly
 renderable position buffers remain intact. Directed attraction still requires reverse adjacency;
 existing edge-weight columns remain intentionally unused by the unweighted spring model.
+
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-spatial-force-layout'` | Prefix for generated command-graph nodes and graph-owned state. |
+| `layout` | `GPUGraphForceLayout` | Required | Existing force layout whose positions, velocities and spring settings are advanced. |
+| `gridSize` | `[number, number]` | Required | Positive column and row counts of the uniform grid. |
+| `bounds` | `[number, number, number, number]` | Required | Minimum x, minimum y, maximum x and maximum y of the spatial domain. |
+| `theta` | `number` | `0.6` | Far-cell opening criterion; zero disables approximation. |
+| `nearCellRadius` | `number` | `1` | Exact Chebyshev-neighborhood radius, in grid cells. |
+| `cellOffsets` | `GPUVector<'uint32'>` | Required | Caller-owned exclusive cell offsets with one trailing total row. |
+| `vertexIds` | `GPUVector<'uint32'>` | Required | Caller-owned vertex identifiers grouped by grid cell. |
+| `cellCenters` | `GPUVector<'float32x2'>` | Required | Caller-owned center of mass for every grid cell. |
+| `count` | `GPUVector<'uint32'>` | Required | Caller-owned scalar receiving the number of indexed vertices. |
+| `overflow` | `GPUVector<'uint32'>` | Required | Caller-owned scalar flagging insufficient `vertexIds` capacity. |
+
+#### How it computes
+
+{/* lens:GPUGraphSpatialForceLayout */}
+
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=kernel caption="Inspect the cell-center, repulsion, attraction and integration kernels run each iteration."}
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=graph caption="Follow topology construction into 64 iterations of grid index, cell-center and force passes."}
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, repelled by nearby vertices and distant cell centers."}
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=formula caption="Follow the near-field and far-field repulsion sums to the WGSL buffers that hold them."}
+::lens{scenario=gpu-graph.graph-spatial-force-layout rung=iterations caption="Compare eight recorded layout frames from the first iteration through the last."}
 
 ### Accuracy and spatial controls
 
@@ -329,7 +337,7 @@ const layout = new GPUGraphForceLayout({
   reset: resetRequested,
   iterationsPerFrame: 4
 });
-new GPUGraphSpatialForceLayout({
+const spatialLayout = new GPUGraphSpatialForceLayout({
   layout,
   gridSize: [32, 32],
   bounds: [-4, -4, 4, 4],
@@ -340,7 +348,8 @@ new GPUGraphSpatialForceLayout({
   cellCenters: spatialCellCenters,
   count: indexedVertexCount,
   overflow: spatialIndexOverflow
-}).addToGraph(workflow);
+});
+spatialLayout.addToGraph(workflow);
 
 const compiled = workflow.compile();
 const encoder = device.createCommandEncoder({id: 'analyze-network'});

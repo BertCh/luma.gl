@@ -7,6 +7,12 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Multiplies an 8 × 8 elevation block by a forward-difference matrix to give east-west elevation steps.
+
+::lens{scenario=gpu-core.mat-mul rung=result caption="Row 7 climbs +198 m between columns 6 and 7, the largest step; the last column is 0."}
+
+The figure reads `A × B = C`: `A` is the 8 × 8 elevation block at tile rows and columns 24–31, `B` has `B[j][j] = -1` and `B[j + 1][j] = 1`, and `C[r][c] = A[r][c + 1] - A[r][c]` is the east-west step in metres per cell. `C` is classed on the sequential palette: the GPU Core pack declares no diverging variable kind with midpoint 0 for it, so the sign of a step is read from the value, not the hue.
+
 <GPUOperationContract operation="gpu-matmul" />
 
 Matrix multiplication combines two matrices by taking dot products between rows of `A` and columns of `B`:
@@ -32,6 +38,18 @@ C = [1*5+2*7   1*6+2*8] = [19 22]
 ```
 
 The operation is often called **GEMM** (general matrix-matrix multiplication) in numerical libraries. GEMM is foundational because many dense numerical, scientific and ML workloads reduce to large amounts of matrix multiplication.
+
+#### How it computes
+
+{/* lens:GPUMatMul */}
+
+::lens{scenario=gpu-core.mat-mul rung=kernel caption="Inspect 16 × 16 tiles of A and B staged in workgroup memory."}
+
+::lens{scenario=gpu-core.mat-mul rung=graph caption="Trace the single tiled product node reading A and B and writing C."}
+
+::lens{scenario=gpu-core.mat-mul rung=datum caption="Follow one output cell of C to the row of A and column of B it combines."}
+
+::lens{scenario=gpu-core.mat-mul rung=formula caption="Read C[r][c] as the dot product of row r of A and column c of B."}
 
 ## Why tiling matters on a GPU
 

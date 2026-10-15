@@ -1,0 +1,119 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-rollup",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-rollup",
+  "viewId": "formula-card",
+  "caption": "Formula For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes…",
+  "description": "Formula For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes…",
+  "llms": "Formula For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution; capacity drops largest parent keys and source overflow propagates.\n\n- bound symbols: 3/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-rollup</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{counts}{n_p}=\\sum_{\\term{child}{c}\\in\\term{members}{C_p}}\\term{childCounts}{n_c}\\pmod{2^{32}},\\qquad \\term{sums}{S_p}=\\sum_{\\term{child}{c}\\in\\term{members}{C_p}}\\term{childSums}{S_c}\\pmod{2^{64}}</pre><p class=\"lens-ascii\">For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution; capacity drops largest parent keys and source overflow propagates.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-rollup-compiled:source-aggregation-cells\" data-value=\"counts\">counts · output · countsOut</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"sums\">sums · output · unknown — wgsl sums not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-rollup-compiled:cell-rollup-accumulate-sums\" data-value=\"childCounts\">childCounts · input · childCounts</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"childSums\">childSums · input · unknown — wgsl childSums not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-rollup-compiled:source-aggregation-offsets\" data-value=\"members\">Source rows mapped to parent p · intermediate · rowCells</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"child\">child · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "counts",
+        "output",
+        "countsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "sums",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "childCounts",
+        "input",
+        "childCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "childSums",
+        "input",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Source rows mapped to parent p",
+        "intermediate",
+        "rowCells",
+        "—",
+        "metadata"
+      ],
+      [
+        "child",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{counts}{n_p}=\\sum_{\\term{child}{c}\\in\\term{members}{C_p}}\\term{childCounts}{n_c}\\pmod{2^{32}},\\qquad \\term{sums}{S_p}=\\sum_{\\term{child}{c}\\in\\term{members}{C_p}}\\term{childSums}{S_c}\\pmod{2^{64}}",
+    "ascii": "For each retained parent p, C[p] is the source table rows assigned to p by truncated keys: counts[p] = sum(c in C[p]) childCounts[c] modulo 2^32; sums[p] = sum(c in C[p]) childSums[c] modulo 2^64. No re-quantization occurs; sumValues decodes the signed sum with the existing sumScale. Minimums/maximums reduce the matching source extremes. Source rows must be at sourceResolution; capacity drops largest parent keys and source overflow propagates.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "conservation",
+      "label": "Conservation",
+      "blocks": [
+        "aggregate-total"
+      ],
+      "status": "pass",
+      "reason": "sum conserved"
+    },
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "fail",
+      "reason": "extensive choropleths need a denominator"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:44.892Z",
+    "runId": "run-37451edb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-37451edb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

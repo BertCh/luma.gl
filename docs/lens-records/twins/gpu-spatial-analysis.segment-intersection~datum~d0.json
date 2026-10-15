@@ -1,0 +1,94 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segment-intersection",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.segment-intersection",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of segment pair 0. rightIds: 4. values read back from the GPU run. segment-intersection: 4 quantities.",
+  "description": "Receipt of segment pair 0. rightIds: 4. values read back from the GPU run. segment-intersection: 4 quantities.",
+  "llms": "Receipt of segment pair 0\n\n- rightIds: 4\n- segment-intersection: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rightIds",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of segment pair 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"segment-intersection\"><tr><th scope=\"rowgroup\" colspan=\"5\">segment-intersection</th></tr><tr data-provenance=\"readback\"><td>segment-intersection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-intersection-snapshots-intersections-0\" title=\"intersection point per pair; rows past the pair count stay NaN (uploaded as NaN)\">intersections</button></td><td>4373.58740234375, -3208.85302734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segment-intersection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-intersection-snapshots-kinds-0\" title=\"1 proper, 2 touch, 3 collinear touch, 4 overlap, 5 uncertain; rows past the pair count are unspecified\">kinds</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segment-intersection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-intersection-snapshots-leftIds-0\">leftIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>segment-intersection</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-segment-intersection-snapshots-rightIds-0\">rightIds</button></td><td>4</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "segment-intersection",
+        "intersections",
+        "4373.58740234375, -3208.85302734375",
+        "0",
+        "readback"
+      ],
+      [
+        "segment-intersection",
+        "kinds",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "segment-intersection",
+        "leftIds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "segment-intersection",
+        "rightIds",
+        "4",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.203Z",
+    "runId": "run-4f15e273",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-4f15e273",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

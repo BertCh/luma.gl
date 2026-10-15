@@ -1,0 +1,48 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.lattice-weights",
+  "rung": "datum",
+  "datum": 528,
+  "view": "neighbourhood-view",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.lattice-weights",
+  "viewId": "neighbourhood-view",
+  "caption": "Neighbourhood connectivity. islands: 0. derived values. core 528; row sum 8.",
+  "description": "Neighbourhood connectivity. islands: 0. derived values. core 528; row sum 8.",
+  "llms": "Neighbourhood connectivity\n\n- islands: 0\n- core 528; row sum 8\n- 0 islands, hatched\n\nProvenance: derived values.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "islands",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-neighbourhood-view\"><svg viewBox=\"0 0 640 180\" role=\"img\" aria-label=\"Rows by number of neighbours\" style=\"width:100%;height:auto;max-width:720px\"><defs><pattern id=\"lens-gpu-spatial-analysis-lattice-weights-datum-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"24\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"1\" data-islands=\"0\"><title>0 neighbours: 0 rows</title></rect><text x=\"24\" y=\"164\" class=\"cv-label\">0</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"89.77777777777777\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>1 neighbours: 0 rows</title></rect><text x=\"89.77777777777777\" y=\"164\" class=\"cv-label\">1</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"155.55555555555554\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>2 neighbours: 0 rows</title></rect><text x=\"155.55555555555554\" y=\"164\" class=\"cv-label\">2</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"221.33333333333331\" y=\"143.46666666666667\" width=\"62.77777777777777\" height=\"0.5333333333333333\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>3 neighbours: 4 rows</title></rect><text x=\"221.33333333333331\" y=\"164\" class=\"cv-label\">3</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"287.1111111111111\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>4 neighbours: 0 rows</title></rect><text x=\"287.1111111111111\" y=\"164\" class=\"cv-label\">4</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"352.88888888888886\" y=\"128\" width=\"62.77777777777777\" height=\"16\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>5 neighbours: 120 rows</title></rect><text x=\"352.88888888888886\" y=\"164\" class=\"cv-label\">5</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"418.66666666666663\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>6 neighbours: 0 rows</title></rect><text x=\"418.66666666666663\" y=\"164\" class=\"cv-label\">6</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"484.4444444444444\" y=\"144\" width=\"62.77777777777777\" height=\"0\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>7 neighbours: 0 rows</title></rect><text x=\"484.4444444444444\" y=\"164\" class=\"cv-label\">7</text></g><g><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched)\" stroke=\"currentColor\" data-provenance=\"derived\" x=\"550.2222222222222\" y=\"24\" width=\"62.77777777777777\" height=\"120\" style=\"fill:url(#lens-gpu-spatial-analysis-lattice-weights-datum-hatched);stroke:currentColor\" opacity=\"0.55\"><title>8 neighbours: 900 rows</title></rect><text x=\"550.2222222222222\" y=\"164\" class=\"cv-label\">8</text></g></svg><p class=\"lens-caption\">0 islands, hatched; core 528 has 8 neighbours.</p><span class=\"lens-verdict lens-verdict--pass\" role=\"note\" title=\"0 islands, hatched\">✓ Islands disclosed</span><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span><p>Islands: none</p><div><p>Core 528; row sum 8</p><ul><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"495\">495: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"496\">496: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"497\">497: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"527\">527: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"529\">529: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"559\">559: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"560\">560: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li><li><button data-action=\"pick\" data-axis=\"entity\" data-key=\"561\">561: weight 1</button><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></li></ul></div><p>Edge truncation: none (overflow flag 0)</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "0 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.610Z",
+    "runId": "run-9a0f06c8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9a0f06c8",
+    "rung": "datum",
+    "bindings": {
+      "entity": 528
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

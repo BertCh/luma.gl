@@ -8,6 +8,10 @@ import {GPUSortExample} from '@site/src/examples';
 
 ## Overview
 
+Stably ranks 1,024 stations by rainfall, descending, carrying station indices with the keys.
+
+::lens{scenario=gpu-core.sort rung=result caption="Output rank 0 holds the wettest station at 310.1 mm; ranks descend from there."}
+
 `GPUSort` adds one stable, out-of-place key/value ordering to a `GPUCommandGraph`.
 `GPUBatchSort` applies the same ordering independently to aligned GPU vector chunks, preserving
 streaming and record-batch boundaries without implicitly packing them.
@@ -16,6 +20,16 @@ many small, independent domains that already share packed parent buffers into at
 dispatches. None of these APIs submits commands or reads results back to the CPU.
 
 <GPUOperationContract operation="gpu-sort" />
+
+#### How it computes
+
+{/* lens:GPUSort */}
+
+::lens{scenario=gpu-core.sort rung=kernel caption="Inspect the 256-lane radix kernels that count digits and scatter rainfall keys."}
+
+::lens{scenario=gpu-core.sort rung=graph caption="Trace 3 four-bit radix digit passes from unsorted rainfall to ranked stations."}
+
+::lens{scenario=gpu-core.sort rung=datum caption="Follow the wettest station from its input slot to rank 0."}
 
 ## Concepts
 

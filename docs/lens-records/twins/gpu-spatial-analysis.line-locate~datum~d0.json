@@ -1,0 +1,118 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-locate",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.line-locate",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of place 0. locatedPlaces: 3696.408203125, 10259.4462890625. values read back from the GPU run. line-locate: 7 quantities.",
+  "description": "Receipt of place 0. locatedPlaces: 3696.408203125, 10259.4462890625. values read back from the GPU run. line-locate: 7 quantities.",
+  "llms": "Receipt of place 0\n\n- locatedPlaces: 3696.408203125, 10259.4462890625\n- line-locate: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "locatedPlaces",
+    "value": "3696.408203125, 10259.4462890625"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of place 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"line-locate\"><tr><th scope=\"rowgroup\" colspan=\"5\">line-locate</th></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-places-0\" title=\"first 40 Overture places in dataset order\">places</button></td><td>3696.409912109375, 10259.349609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-lineIndices-0\" title=\"GPU nearest road index; 0xffffffff means unmatched\">lineIndices</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-measures-0\" title=\"GPU nearest-road measure in m used as the event measure\">measures</button></td><td>87.94116973876953</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-distances-0\" title=\"distance from original place to nearest road in m; -1 means unmatched\">distances</button></td><td>0.09684500843286514</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-footPoints-0\" title=\"nearest-road foot point in UTM 16N m\">footPoints</button></td><td>3696.408203125, 10259.4462890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-statuses-0\" title=\"event status code (unitless): 0 valid, 1 clamped, 2 invalid\">statuses</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>line-locate</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-line-locate-snapshots-locatedPlaces-0\">locatedPlaces</button></td><td>3696.408203125, 10259.4462890625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "line-locate",
+        "places",
+        "3696.409912109375, 10259.349609375",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "lineIndices",
+        "91",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "measures",
+        "87.94116973876953",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "distances",
+        "0.09684500843286514",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "footPoints",
+        "3696.408203125, 10259.4462890625",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "statuses",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "line-locate",
+        "locatedPlaces",
+        "3696.408203125, 10259.4462890625",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.493Z",
+    "runId": "run-e3865fa2",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-e3865fa2",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

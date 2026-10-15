@@ -1,0 +1,51 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geometry-validity",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPUGeometryValidity({\n    spatialContext,\n    polygons: parks,\n    orientation: 'ignore', // winding is a convention, not a validity rule\n    intersectionCapacity: 4096,\n    output: {mask, status: {overflow, intersectionCount}}\n  })\n);\n// mask: 0 for a valid park, otherwise GPU_GEOMETRY_VALIDITY_BIT flags",
+    "language": "ts",
+    "lineCount": 10
+  },
+  "scenarioId": "gpu-spatial-analysis.geometry-validity",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.geometry-validity: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → intersectionCount. rows: 1. values read back from the GPU run. input parksVertices: 2862 rows.",
+  "description": "Result of gpu-spatial-analysis.geometry-validity: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → intersectionCount. rows: 1. values read back from the GPU run. input parksVertices: 2862 rows.",
+  "llms": "Result of gpu-spatial-analysis.geometry-validity: parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks → intersectionCount\n\n- rows: 1\n- input parksVertices: 2862 rows\n- input parksFeatureOffsets: 103 rows\n- input parksPolygonOffsets: 103 rows\n- input parksRingOffsets: 103 rows\n- input parksDisplayOffsets: 103 rows\n- input parks: 102 polygons\n- Planar coordinates (m); uniform scale.\n- 1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">parksVertices</th><th scope=\"col\">parksFeatureOffsets</th><th scope=\"col\">parksPolygonOffsets</th><th scope=\"col\">parksRingOffsets</th><th scope=\"col\">parksDisplayOffsets</th><th class=\"cv-col--output\" scope=\"col\">mask</th><th class=\"cv-col--output\" scope=\"col\">overflow</th><th class=\"cv-col--output\" scope=\"col\">intersectionCount</th></tr></thead><tbody><tr><td data-provenance=\"readback\">3620</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">3630</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">331</td><td data-provenance=\"readback\">332</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">3660</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">348</td><td data-provenance=\"readback\">350</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">3700</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">361</td><td data-provenance=\"readback\">364</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">3760</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">370</td><td data-provenance=\"readback\">374</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td data-provenance=\"readback\">3820</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">377</td><td data-provenance=\"readback\">382</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td><td class=\"cv-col--output\" data-provenance=\"readback\">—</td></tr><tr><td colspan=\"8\">… 2856 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input parksVertices, parksFeatureOffsets, parksPolygonOffsets, parksRingOffsets, parksDisplayOffsets, parks · blue: output resultParks, mask, overflow, intersectionCount</p><p class=\"cv-note\">1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 1533 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.788Z",
+    "runId": "run-a3387c91",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-a3387c91",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.local-frame-projection",
+  "rung": "kernel",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.local-frame-projection",
+  "viewId": "table",
+  "disabled": {
+    "reason": "no compute node with a recorded dispatch shape and workgroup size"
+  },
+  "caption": "kernel unavailable: no compute node with a recorded dispatch shape and workgroup size. Typed tables of record gpu-spatial-analysis.local-frame-projection. nodes: 1. values read back from the GPU run. gpu-spatial-analysis-local-frame-projection: 1 ro…",
+  "description": "kernel unavailable: no compute node with a recorded dispatch shape and workgroup size. Typed tables of record gpu-spatial-analysis.local-frame-projection. nodes: 1. values read back from the GPU run. gpu-spatial-analysis-local-frame-projection: 1 ro…",
+  "llms": "Typed tables of record gpu-spatial-analysis.local-frame-projection\n\n- nodes: 1\n- gpu-spatial-analysis-local-frame-projection: 1 rows\n- resources: 5 rows\n- captures: 4 rows\n- decisions: 0 rows\n- choices: 8 rows\n- metrics: 0 rows\n- edges: 0 rows\n- formulas: 1 rows\n- sources: 0 rows\n- axes: 1 rows\n- key spaces: 1 rows\n- relations: 0 rows\n- kernel unavailable: no compute node with a recorded dispatch shape and workgroup size\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-table\"><div data-section=\"graph:gpu-spatial-analysis-local-frame-projection-compiled\"><table><caption>gpu-spatial-analysis-local-frame-projection</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">namespace</th><th scope=\"col\">kind</th><th scope=\"col\">op</th><th scope=\"col\">reads</th><th scope=\"col\">writes</th><th scope=\"col\">loop</th><th scope=\"col\">dispatch</th><th scope=\"col\">formula</th><th scope=\"col\">source</th><th scope=\"col\">bindings</th></tr></thead><tbody><tr><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>compute</td><td>GPULocalFrameProjection</td><td>positions, gpu-local-frame-projection-projection-plan</td><td>projectedRoads, validity</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div><div data-section=\"resources\"><table><caption>resources</caption><thead><tr><th scope=\"col\">graph</th><th scope=\"col\">id</th><th scope=\"col\">kind</th><th scope=\"col\">bytes</th><th scope=\"col\">ownership</th><th scope=\"col\">allocation</th><th scope=\"col\">firstNode</th><th scope=\"col\">lastNode</th><th scope=\"col\">retained</th></tr></thead><tbody><tr><td>gpu-spatial-analysis-local-frame-projection-compiled</td><td>positions</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">4104</td><td>imported</td><td>—</td><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>—</td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-compiled</td><td>lineOffsets</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">896</td><td>imported</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-compiled</td><td>projectedRoads</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">4104</td><td>transient</td><td>transient-buffer-0</td><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>true</td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-compiled</td><td>validity</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">2052</td><td>transient</td><td>transient-buffer-1</td><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>true</td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-compiled</td><td>gpu-local-frame-projection-projection-plan</td><td>buffer</td><td class=\"lens-table-number\" style=\"text-align: right\">304</td><td>imported</td><td>—</td><td>gpu-local-frame-projection</td><td>gpu-local-frame-projection</td><td>—</td></tr></tbody></table></div><div data-section=\"captures\"><table><caption>captures</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">name</th><th scope=\"col\">keySpace</th><th scope=\"col\">iteration</th><th scope=\"col\">elementType</th><th scope=\"col\">count</th><th scope=\"col\">min</th><th scope=\"col\">max</th><th scope=\"col\">NaN count</th><th scope=\"col\">Inf count</th><th scope=\"col\">provenance</th></tr></thead><tbody><tr><td>gpu-spatial-analysis-local-frame-projection-snapshots-roads-0</td><td>roads</td><td>vertex</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>f32</td><td class=\"lens-table-number\" style=\"text-align: right\">1026</td><td class=\"lens-table-number\" style=\"text-align: right\">-87.67999267578125</td><td class=\"lens-table-number\" style=\"text-align: right\">41.913944244384766</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-snapshots-lineOffsets-0</td><td>lineOffsets</td><td>—</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">224</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">513</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-snapshots-validity-0</td><td>validity</td><td>vertex</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>u32</td><td class=\"lens-table-number\" style=\"text-align: right\">513</td><td class=\"lens-table-number\" style=\"text-align: right\">1</td><td class=\"lens-table-number\" style=\"text-align: right\">1</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr><tr><td>gpu-spatial-analysis-local-frame-projection-snapshots-projectedRoads-0</td><td>projectedRoads</td><td>vertex</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td>f32</td><td class=\"lens-table-number\" style=\"text-align: right\">1026</td><td class=\"lens-table-number\" style=\"text-align: right\">-737.7139892578125</td><td class=\"lens-table-number\" style=\"text-align: right\">737.7108764648438</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td class=\"lens-table-number\" style=\"text-align: right\">0</td><td><span class=\"lens-provenance\" data-provenance=\"readback\" data-texture=\"solid\" style=\"border-bottom: 3px solid currentColor\"><span style=\"background: Canvas; color: CanvasText\">GPU readback</span></span></td></tr></tbody></table></div><div data-section=\"decisions\"><table><caption>decisions</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"choices\"><table><caption>choices</caption><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">name</th><th scope=\"col\">value</th><th scope=\"col\">alternatives</th></tr></thead><tbody><tr><td>representation</td><td>frame</td><td>azimuthal-equidistant, origin -87.67107772827148, 41.90854454040527, EPSG:4326</td><td>—</td></tr><tr><td>representation</td><td>bounds</td><td>-87.68099267578125, 41.902144836425784, -87.66116278076171, 41.91494424438476</td><td>—</td></tr><tr><td>representation</td><td>tolerance</td><td>0.01</td><td>—</td></tr><tr><td>presentation</td><td>coordinateModel</td><td>geographic</td><td>—</td></tr><tr><td>presentation</td><td>crs</td><td>EPSG:4326</td><td>—</td></tr><tr><td>presentation</td><td>outputCoordinateModel</td><td>projected</td><td>—</td></tr><tr><td>presentation</td><td>outputCrs</td><td>azimuthal-equidistant local frame at -87.67107772827148, 41.90854454040527</td><td>—</td></tr><tr><td>presentation</td><td>outputUnit</td><td>m</td><td>—</td></tr></tbody></table></div><div data-section=\"metrics\"><table><caption>metrics</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"edges\"><table><caption>edges</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"formulas\"><table><caption>formulas</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">derivation</th><th scope=\"col\">tex</th><th scope=\"col\">ascii</th><th scope=\"col\">symbols</th></tr></thead><tbody><tr><td>s3.local-frame-projection</td><td>curated</td><td>\\term{projected}{p}=\\term{origin}{o}+\\sum_{\\term{index}{i}+\\term{index}{j}\\le3}\\term{coefficients}{c_{ij}}\\term{normalized}{u}^{\\term{index}{i}}\\term{normalized}{v}^{\\term{index}{j}}</td><td>For a valid selected patch, p = destinationOrigin + sum(i+j&lt;=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shader uses Horner evaluation (double-single for precise inputs); invalid or out-of-bounds rows output zero and validity 0.</td><td>{&quot;id&quot;:&quot;projected&quot;,&quot;role&quot;:&quot;output&quot;,&quot;binding&quot;:&quot;wgsl:projected&quot;}, {&quot;id&quot;:&quot;origin&quot;,&quot;role&quot;:&quot;parameter&quot;,&quot;label&quot;:&quot;Patch destination offset in frame meters&quot;,&quot;binding&quot;:&quot;wgsl:destinationOffset&quot;}, {&quot;id&quot;:&quot;coefficients&quot;,&quot;role&quot;:&quot;parameter&quot;,&quot;binding&quot;:&quot;wgsl:projectionPlans&quot;}, {&quot;id&quot;:&quot;normalized&quot;,&quot;role&quot;:&quot;input&quot;,&quot;binding&quot;:&quot;wgsl:normalized&quot;}, {&quot;id&quot;:&quot;index&quot;,&quot;role&quot;:&quot;index&quot;}</td></tr></tbody></table></div><div data-section=\"sources\"><table><caption>sources</caption><thead><tr></tr></thead><tbody></tbody></table></div><div data-section=\"axes\"><table><caption>axes</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">kind</th><th scope=\"col\">keySpace</th><th scope=\"col\">size</th></tr></thead><tbody><tr><td>vertex</td><td>vertex</td><td>data</td><td>vertex</td><td class=\"lens-table-number\" style=\"text-align: right\">513</td></tr></tbody></table></div><div data-section=\"key-spaces\"><table><caption>key spaces</caption><thead><tr><th scope=\"col\">id</th><th scope=\"col\">label</th><th scope=\"col\">size</th><th scope=\"col\">indexSpace</th></tr></thead><tbody><tr><td>vertex</td><td>vertex</td><td class=\"lens-table-number\" style=\"text-align: right\">513</td><td>1d</td></tr></tbody></table></div><div data-section=\"relations\"><table><caption>relations</caption><thead><tr></tr></thead><tbody></tbody></table></div></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "id",
+      "name",
+      "keySpace",
+      "iteration",
+      "elementType",
+      "count",
+      "min",
+      "max",
+      "NaN count",
+      "Inf count",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "gpu-spatial-analysis-local-frame-projection-snapshots-roads-0",
+        "roads",
+        "vertex",
+        "0",
+        "f32",
+        "1026",
+        "-87.67999267578125",
+        "41.913944244384766",
+        "0",
+        "0",
+        "GPU readback"
+      ],
+      [
+        "gpu-spatial-analysis-local-frame-projection-snapshots-lineOffsets-0",
+        "lineOffsets",
+        "—",
+        "0",
+        "u32",
+        "224",
+        "0",
+        "513",
+        "0",
+        "0",
+        "GPU readback"
+      ],
+      [
+        "gpu-spatial-analysis-local-frame-projection-snapshots-validity-0",
+        "validity",
+        "vertex",
+        "0",
+        "u32",
+        "513",
+        "1",
+        "1",
+        "0",
+        "0",
+        "GPU readback"
+      ],
+      [
+        "gpu-spatial-analysis-local-frame-projection-snapshots-projectedRoads-0",
+        "projectedRoads",
+        "vertex",
+        "0",
+        "f32",
+        "1026",
+        "-737.7139892578125",
+        "737.7108764648438",
+        "0",
+        "0",
+        "GPU readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{projected}{p}=\\term{origin}{o}+\\sum_{\\term{index}{i}+\\term{index}{j}\\le3}\\term{coefficients}{c_{ij}}\\term{normalized}{u}^{\\term{index}{i}}\\term{normalized}{v}^{\\term{index}{j}}",
+    "ascii": "For a valid selected patch, p = destinationOrigin + sum(i+j<=3) c[i,j]*u^i*v^j, with nonnegative i,j and normalized source coordinates (u,v). The CPU adaptively fits the frame projection to tolerance; lower degrees are zero-padded. The shader uses Horner evaluation (double-single for precise inputs); invalid or out-of-bounds rows output zero and validity 0.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "fail",
+      "reason": "metric glyphs need projected coordinates or a geodesic metric"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.784Z",
+    "runId": "run-440b0a1c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-440b0a1c",
+    "rung": "kernel",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

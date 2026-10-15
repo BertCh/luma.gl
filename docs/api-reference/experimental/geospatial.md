@@ -93,19 +93,19 @@ separate from its inputs, and view byte offsets must be naturally aligned to the
   - **Status.** Every GPU-written status word sits in the `status` member of the bag that owns it:
     `output.status.overflow`, `output.status.converged`, and `output.status.code` for model fits.
   - **Grid.** Raster and terrain contributors take `grid: GPURasterMetadata`, and their packers read
-    the cell size from it (see [GPU Terrain conventions](./gpu-terrain.md#conventions)).
+    the cell size from it (see [GPU Terrain conventions](./gpu-terrain/concepts.md#conventions)).
   - **Network.** Network contributors take `topology: GPUNetworkTopology` (`offsets`, `neighbors`,
     `weights`, optional `nodePositions`). Its CSR part can be passed as `GPUSpatialWeights` (see
-    [GPU Network conventions](./gpu-network.md#conventions)).
+    [GPU Network conventions](./gpu-network/concepts.md#conventions)).
   - **Polygons.** Polygons use the four-level `GPUPolygonGeometryPort`: `kind: 'polygons'`,
     `positions`, `featureOffsets`, `polygonOffsets` and `ringOffsets`. Contributors with a single
     geometry take the same fields flat, without `kind` (`GPUPolygonGeometryFields`). See
-    [Shared ports](./gpu-spatial-analysis.md#shared-ports-status-and-planning).
+    [Shared ports](./gpu-spatial-analysis/concepts.md#shared-ports-status-and-planning).
 - **Geospatial specifics.** The pairwise kernels take flat data views, so their polygon offsets
   use the port's field names without `kind`. The `polygon` of `GPUPointSpatialQuery` is a single
   query region (`positions`, `ringOffsets`), not a feature table. `GPUPointSpatialQuery` publishes a
   `GPUCompactOutput` (`ids`, `status.count`, `status.overflow`). Compile and run these kernels as
-  shown in [Running contributors](./gpu-spatial-analysis.md#running-contributors).
+  shown in [Running contributors](./gpu-spatial-analysis/concepts.md#running-contributors).
 
 ## `GPUSinusoidalProjection`
 

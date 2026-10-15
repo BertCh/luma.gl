@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-weights-traces",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-weights-traces",
+  "viewId": "formula-card",
+  "caption": "Formula s = max_i sum_j |w_ij| (largest absolute row sum; 1 for row-standardised W). c_q = tr((W/s)^q) = sum_i e_i'(W/s)^q e_i from one unit-vector chain per row (exact mode; stochastic mode averages Rademacher probes z'(W/s)^q z). m_q = 1'(W/s)^q 1…",
+  "description": "Formula s = max_i sum_j |w_ij| (largest absolute row sum; 1 for row-standardised W). c_q = tr((W/s)^q) = sum_i e_i'(W/s)^q e_i from one unit-vector chain per row (exact mode; stochastic mode averages Rademacher probes z'(W/s)^q z). m_q = 1'(W/s)^q 1…",
+  "llms": "Formula s = max_i sum_j |w_ij| (largest absolute row sum; 1 for row-standardised W). c_q = tr((W/s)^q) = sum_i e_i'(W/s)^q e_i from one unit-vector chain per row (exact mode; stochastic mode averages Rademacher probes z'(W/s)^q z). m_q = 1'(W/s)^q 1 from one chain started at the ones vector. Series downstream run in rho*s.\n\n- bound symbols: 3/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-weights-traces</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{infinityNorm}{s}&amp;=\\max_i\\sum_j|w_{ij}|\\\\\n\\term{powerTraces}{c_q}&amp;=\\operatorname{tr}\\!\\big((W/s)^q\\big)=\\sum_i e_i^\\top (W/s)^q e_i\\\\\n\\term{powerSums}{m_q}&amp;=\\mathbf 1^\\top (W/s)^q\\,\\mathbf 1\n\\end{aligned}</pre><p class=\"lens-ascii\">s = max_i sum_j |w_ij| (largest absolute row sum; 1 for row-standardised W). c_q = tr((W/s)^q) = sum_i e_i&#39;(W/s)^q e_i from one unit-vector chain per row (exact mode; stochastic mode averages Rademacher probes z&#39;(W/s)^q z). m_q = 1&#39;(W/s)^q 1 from one chain started at the ones vector. Series downstream run in rho*s.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-traces-compiled:spatial-weights-traces-norm-merge\" data-value=\"infinityNorm\">infinityNorm · output · infinityNorm</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-traces-compiled:spatial-weights-traces-final-merge\" data-value=\"powerTraces\">powerTraces · output · powerTraces</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-weights-traces-compiled:spatial-weights-traces-sums-merge\" data-value=\"powerSums\">powerSums · output · powerSums</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "infinityNorm",
+        "output",
+        "infinityNorm",
+        "—",
+        "metadata"
+      ],
+      [
+        "powerTraces",
+        "output",
+        "powerTraces",
+        "—",
+        "metadata"
+      ],
+      [
+        "powerSums",
+        "output",
+        "powerSums",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{infinityNorm}{s}&=\\max_i\\sum_j|w_{ij}|\\\\\n\\term{powerTraces}{c_q}&=\\operatorname{tr}\\!\\big((W/s)^q\\big)=\\sum_i e_i^\\top (W/s)^q e_i\\\\\n\\term{powerSums}{m_q}&=\\mathbf 1^\\top (W/s)^q\\,\\mathbf 1\n\\end{aligned}",
+    "ascii": "s = max_i sum_j |w_ij| (largest absolute row sum; 1 for row-standardised W). c_q = tr((W/s)^q) = sum_i e_i'(W/s)^q e_i from one unit-vector chain per row (exact mode; stochastic mode averages Rademacher probes z'(W/s)^q z). m_q = 1'(W/s)^q 1 from one chain started at the ones vector. Series downstream run in rho*s.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.757Z",
+    "runId": "run-29719a14",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-29719a14",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

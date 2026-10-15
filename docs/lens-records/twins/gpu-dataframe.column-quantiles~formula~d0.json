@@ -1,0 +1,121 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.column-quantiles",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.column-quantiles",
+  "viewId": "formula-card",
+  "caption": "Formula r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow. quantiles: 14.1. values read back from the GPU run.",
+  "description": "Formula r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow. quantiles: 14.1. values read back from the GPU run.",
+  "llms": "Formula r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow.\n\n- quantiles: 14.1\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "quantiles",
+    "value": "14.1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUColumnQuantiles</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{rank}{r}=\\operatorname{R}(\\operatorname{R}(\\term{validCount}{n}-1)\\term{probability}{p}),\\quad \\term{fraction}{t}=\\operatorname{R}(\\term{rank}{r}-\\lfloor\\term{rank}{r}\\rfloor),\\quad \\term{quantiles}{Q}=\\operatorname{R}(\\term{lower}{x_{\\lfloor r\\rfloor}}+\\operatorname{R}(\\term{fraction}{t}\\operatorname{R}(\\term{upper}{x_{\\min(\\lfloor r\\rfloor+1,n-1)}}-\\term{lower}{x_{\\lfloor r\\rfloor}})))</pre><p class=\"lens-ascii\">r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{rank}{r}=\\operatorname{R}(\\operatorname{R}(\\term{validCount}{788}-1)\\term{probability}{\\left(0.25\\right)}),\\quad \\term{fraction}{t}=\\operatorname{R}(\\term{rank}{r}-\\lfloor\\term{rank}{r}\\rfloor),\\quad \\term{quantiles}{14.1}=\\operatorname{R}(\\term{lower}{x_{\\lfloor r\\rfloor}}+\\operatorname{R}(\\term{fraction}{t}\\operatorname{R}(\\term{upper}{x_{\\min(\\lfloor r\\rfloor+1,n-1)}}-\\term{lower}{x_{\\lfloor r\\rfloor}})))</pre><p class=\"lens-ascii\">r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-finish\" data-value=\"quantiles\">quantiles · output · quantilesOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-finish\" data-value=\"validCount\">validCount · output · validCountOut<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-histogram-0\" data-value=\"probability\">probability · parameter · p<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-select-0\" data-value=\"rank\">rank · intermediate · h</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-histogram-0\" data-value=\"fraction\">fraction · intermediate · fraction</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-histogram-0\" data-value=\"lower\">lower · intermediate · low</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.column-quantiles-compiled:column-quantiles-histogram-0\" data-value=\"upper\">upper · intermediate · high</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "quantiles",
+        "output",
+        "quantilesOut",
+        "14.100000381469727",
+        "readback"
+      ],
+      [
+        "validCount",
+        "output",
+        "validCountOut",
+        "788",
+        "readback"
+      ],
+      [
+        "probability",
+        "parameter",
+        "p",
+        "0.25",
+        "readback"
+      ],
+      [
+        "rank",
+        "intermediate",
+        "h",
+        "—",
+        "metadata"
+      ],
+      [
+        "fraction",
+        "intermediate",
+        "fraction",
+        "—",
+        "metadata"
+      ],
+      [
+        "lower",
+        "intermediate",
+        "low",
+        "—",
+        "metadata"
+      ],
+      [
+        "upper",
+        "intermediate",
+        "high",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{rank}{r}=\\operatorname{R}(\\operatorname{R}(\\term{validCount}{n}-1)\\term{probability}{p}),\\quad \\term{fraction}{t}=\\operatorname{R}(\\term{rank}{r}-\\lfloor\\term{rank}{r}\\rfloor),\\quad \\term{quantiles}{Q}=\\operatorname{R}(\\term{lower}{x_{\\lfloor r\\rfloor}}+\\operatorname{R}(\\term{fraction}{t}\\operatorname{R}(\\term{upper}{x_{\\min(\\lfloor r\\rfloor+1,n-1)}}-\\term{lower}{x_{\\lfloor r\\rfloor}})))",
+    "ascii": "r=fround(fround(n-1)*p); t=fround(r-floor(r)); Q=fround(low+fround(t*fround(high-low))) on finite unmasked rows; convex fallback on difference overflow.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.777Z",
+    "runId": "run-18961656",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-18961656",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

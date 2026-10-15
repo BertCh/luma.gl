@@ -1,0 +1,118 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.shape-descriptors",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.shape-descriptors",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of park 0. sliver: 0. values read back from the GPU run. shape-descriptors: 7 quantities.",
+  "description": "Receipt of park 0. sliver: 0. values read back from the GPU run. shape-descriptors: 7 quantities.",
+  "llms": "Receipt of park 0\n\n- sliver: 0\n- shape-descriptors: 7 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sliver",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of park 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"shape-descriptors\"><tr><th scope=\"rowgroup\" colspan=\"5\">shape-descriptors</th></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-areas-0\" title=\"park area in m²\">areas</button></td><td>88551.2734375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-perimeters-0\" title=\"park perimeter in m\">perimeters</button></td><td>1661.015869140625</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-polsbyPopper-0\" title=\"Polsby-Popper compactness 4πA/P², 1 for a circle (ratio)\">polsbyPopper</button></td><td>0.4033268392086029</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-elongation-0\" title=\"elongation 1 - √(λ2/λ1) from second moments, 0 for a circle (ratio)\">elongation</button></td><td>0.2261059284210205</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-orientation-0\" title=\"major axis angle in radians, counter-clockwise from +x\">orientation</button></td><td>1.4454808235168457</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-convexity-0\" title=\"area over convex hull area (ratio)\">convexity</button></td><td>0.7460256814956665</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shape-descriptors</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shape-descriptors-snapshots-sliver-0\" title=\"1 when Polsby-Popper is below the 0.05 threshold, else 0\">sliver</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "shape-descriptors",
+        "areas",
+        "88551.2734375",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "perimeters",
+        "1661.015869140625",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "polsbyPopper",
+        "0.4033268392086029",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "elongation",
+        "0.2261059284210205",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "orientation",
+        "1.4454808235168457",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "convexity",
+        "0.7460256814956665",
+        "0",
+        "readback"
+      ],
+      [
+        "shape-descriptors",
+        "sliver",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.258Z",
+    "runId": "run-b3a53ce8",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-b3a53ce8",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

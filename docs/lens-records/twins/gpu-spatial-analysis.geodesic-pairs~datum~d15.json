@@ -1,0 +1,89 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.geodesic-pairs",
+  "rung": "datum",
+  "datum": 15,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.geodesic-pairs",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of route from ORD 15. midpoints: -49.00360107421875, 55.67177963256836. values read back from the GPU run. geodesic-pairs: 5 quantities.",
+  "description": "Receipt of route from ORD 15. midpoints: -49.00360107421875, 55.67177963256836. values read back from the GPU run. geodesic-pairs: 5 quantities.",
+  "llms": "Receipt of route from ORD 15\n\n- midpoints: -49.00360107421875, 55.67177963256836\n- geodesic-pairs: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "midpoints",
+    "value": "-49.00360107421875, 55.67177963256836"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of route from ORD 15</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"geodesic-pairs\"><tr><th scope=\"rowgroup\" colspan=\"5\">geodesic-pairs</th></tr><tr data-provenance=\"readback\"><td>geodesic-pairs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-pairs-snapshots-targets-0\" title=\"40 destination airports of the busiest routes touching ORD\">targets</button></td><td>-0.4619410037994385, 51.47060012817383</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-pairs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-pairs-snapshots-distances-0\" title=\"WGS84 geodesic distance in m; capped Vincenty inverse (16 iterations), spherical fallback when not converged\">distances</button></td><td>6361433.5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-pairs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-pairs-snapshots-initialBearings-0\" title=\"initial bearing at ORD in degrees clockwise from north, in (-180, 180]\">initialBearings</button></td><td>47.882286071777344</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-pairs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-pairs-snapshots-converged-0\" title=\"1 when Vincenty converged; 0 for near-antipodal pairs (sphere fallback)\">converged</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>geodesic-pairs</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-geodesic-pairs-snapshots-midpoints-0\" title=\"spherical great-circle midpoint of each route (not the WGS84 geodesic midpoint)\">midpoints</button></td><td>-49.00360107421875, 55.67177963256836</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "geodesic-pairs",
+        "targets",
+        "-0.4619410037994385, 51.47060012817383",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-pairs",
+        "distances",
+        "6361433.5",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-pairs",
+        "initialBearings",
+        "47.882286071777344",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-pairs",
+        "converged",
+        "1",
+        "0",
+        "readback"
+      ],
+      [
+        "geodesic-pairs",
+        "midpoints",
+        "-49.00360107421875, 55.67177963256836",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:45.910Z",
+    "runId": "run-1687b8a6",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1687b8a6",
+    "rung": "datum",
+    "bindings": {
+      "entity": 15
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

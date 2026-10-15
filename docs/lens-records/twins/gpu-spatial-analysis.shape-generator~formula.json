@@ -1,0 +1,128 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.shape-generator",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.shape-generator",
+  "viewId": "formula-card",
+  "caption": "Formula Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2…",
+  "description": "Formula Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2…",
+  "llms": "Formula Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2(sin(beta)*sin(delta)*cos(phi),cos(delta)-sin(phi)*sin(phi2)),180/pi*phi2). Circles sample negative full-turn bearings, sectors sample their clockwise sweep with center spokes, and ellipses derive d and beta from rotated scaled axes (optionally using the arc-length table). This is the destination core for finite centers; invalid centers emit NaN.\n\n- bound symbols: 5/8\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.shape-generator</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\\term{latitude-out}{\\phi&#39;}&amp;=\\arcsin\\!\\left(\\operatorname{clamp}\\left(\\sin\\term{latitude}{\\phi}\\cos\\term{angle}{\\delta}+\\cos\\term{latitude}{\\phi}\\sin\\term{angle}{\\delta}\\cos\\term{bearing}{\\beta},-1,1\\right)\\right),\\quad\\term{angle}{\\delta}=\\term{distance}{d}/\\term{radius}{R}\\\\\\term{output}{p&#39;}&amp;=\\begin{cases}\\term{center}{c}+\\term{distance}{d}(\\sin\\term{bearing}{\\beta},\\cos\\term{bearing}{\\beta})&amp;\\text{planar}\\\\\\left(\\term{center}{c_x}+\\dfrac{180}{\\pi}\\operatorname{atan2}\\left(\\sin\\term{bearing}{\\beta}\\sin\\term{angle}{\\delta}\\cos\\term{latitude}{\\phi},\\cos\\term{angle}{\\delta}-\\sin\\term{latitude}{\\phi}\\sin\\term{latitude-out}{\\phi&#39;}\\right),\\dfrac{180}{\\pi}\\term{latitude-out}{\\phi&#39;}\\right)&amp;\\text{longitude/latitude}\\end{cases}\\end{aligned}</pre><p class=\"lens-ascii\">Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2(sin(beta)*sin(delta)*cos(phi),cos(delta)-sin(phi)*sin(phi2)),180/pi*phi2). Circles sample negative full-turn bearings, sectors sample their clockwise sweep with center spokes, and ellipses derive d and beta from rotated scaled axes (optionally using the arc-length table). This is the destination core for finite centers; invalid centers emit NaN.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"latitude-out\">Destination latitude in radians · intermediate · unknown — wgsl latitude2 not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"latitude\">Center latitude in radians · intermediate · unknown — wgsl latitude not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"angle\">Angular distance · intermediate · unknown — wgsl angularDistance not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-generator-compiled:shape-generator-vertices\" data-value=\"bearing\">Sampled bearing in radians · intermediate · bearing</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-generator-compiled:shape-generator-vertices\" data-value=\"distance\">Sampled scaled radius or ellipse offset length · intermediate · distance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-generator-compiled:shape-generator-vertices\" data-value=\"radius\">Context sphere radius · constant · EARTH_RADIUS</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-generator-compiled:shape-generator-vertices\" data-value=\"output\">Generated ring vertex · output · positionsOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-shape-generator-compiled:shape-generator-vertices\" data-value=\"center\">Shape center in position units or degrees · input · center</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "Destination latitude in radians",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Center latitude in radians",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Angular distance",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "Sampled bearing in radians",
+        "intermediate",
+        "bearing",
+        "—",
+        "metadata"
+      ],
+      [
+        "Sampled scaled radius or ellipse offset length",
+        "intermediate",
+        "distance",
+        "—",
+        "metadata"
+      ],
+      [
+        "Context sphere radius",
+        "constant",
+        "EARTH_RADIUS",
+        "—",
+        "metadata"
+      ],
+      [
+        "Generated ring vertex",
+        "output",
+        "positionsOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "Shape center in position units or degrees",
+        "input",
+        "center",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\\term{latitude-out}{\\phi'}&=\\arcsin\\!\\left(\\operatorname{clamp}\\left(\\sin\\term{latitude}{\\phi}\\cos\\term{angle}{\\delta}+\\cos\\term{latitude}{\\phi}\\sin\\term{angle}{\\delta}\\cos\\term{bearing}{\\beta},-1,1\\right)\\right),\\quad\\term{angle}{\\delta}=\\term{distance}{d}/\\term{radius}{R}\\\\\\term{output}{p'}&=\\begin{cases}\\term{center}{c}+\\term{distance}{d}(\\sin\\term{bearing}{\\beta},\\cos\\term{bearing}{\\beta})&\\text{planar}\\\\\\left(\\term{center}{c_x}+\\dfrac{180}{\\pi}\\operatorname{atan2}\\left(\\sin\\term{bearing}{\\beta}\\sin\\term{angle}{\\delta}\\cos\\term{latitude}{\\phi},\\cos\\term{angle}{\\delta}-\\sin\\term{latitude}{\\phi}\\sin\\term{latitude-out}{\\phi'}\\right),\\dfrac{180}{\\pi}\\term{latitude-out}{\\phi'}\\right)&\\text{longitude/latitude}\\end{cases}\\end{aligned}",
+    "ascii": "Given the sampled distance d and clockwise-from-north bearing beta, planar p=c+d*(sin(beta),cos(beta)). On a sphere, phi=pi*c.y/180, delta=d/R, phi2=asin(clamp(sin(phi)*cos(delta)+cos(phi)*sin(delta)*cos(beta),-1,1)), and p=(c.x+180/pi*atan2(sin(beta)*sin(delta)*cos(phi),cos(delta)-sin(phi)*sin(phi2)),180/pi*phi2). Circles sample negative full-turn bearings, sectors sample their clockwise sweep with center spokes, and ellipses derive d and beta from rotated scaled axes (optionally using the arc-length table). This is the destination core for finite centers; invalid centers emit NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:19:52.524Z",
+    "runId": "run-3f6492da",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3f6492da",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

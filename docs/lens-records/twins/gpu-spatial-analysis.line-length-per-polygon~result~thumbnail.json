@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.line-length-per-polygon",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.line-length-per-polygon",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.line-length-per-polygon: roads, areas → areasByR…",
+  "description": "Result of gpu-spatial-analysis.line-length-per-polygon: roads, areas → areasByRoadLength. polygons: 3. values read back from the GPU run. input roads: 448 lines.",
+  "llms": "Result of gpu-spatial-analysis.line-length-per-polygon: roads, areas → areasByRoadLength\n\n- polygons: 3\n- input roads: 448 lines\n- input areas: 3 polygons\n- Planar coordinates (m); uniform scale.\n- 1100 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 735 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 735 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-642.75,7588.89990234375],[8572.990234375,12910.3701171875]]\" role=\"img\" aria-label=\"Result: areasByRoadLength\"><defs><pattern id=\"lens-gpu-spatial-analysis-line-length-per-polygon-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-line-length-per-polygon-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-line-length-per-polygon-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#c6dbef\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M137.67,12.98 L140.36,24.13 L141.63,34.3 L145.54,42.95 L152.2,43.9 L122.68,50.37 L96.6,42.38 L81.76,25.88 L107.71,12.44 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-5\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#083d7f\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M76.8,20.09 L94.11,37.69 L65.02,44.74 L18.92,45 L28.81,13.02 L65.72,8.1 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\"></path><path class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-3\" data-role=\"output\" stroke-width=\"0.3\" fill=\"#4a98c9\" stroke=\"#ffffff\" fill-opacity=\"1\" d=\"M105.38,66.23 L122.89,81.93 L103.18,88.96 L58.8,83.41 L46.05,44.73 L93.54,43.51 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:08.227Z",
+    "runId": "run-08419a6a",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-08419a6a",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

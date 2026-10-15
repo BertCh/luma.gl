@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.fleet-dwell-zone-events-recipe",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.fleet-dwell-zone-events-recipe",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwe…",
+  "description": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwellAnchorages. polygons: 13. values read back from the GPU run. input anchorages: 13 polygons.",
+  "llms": "Result of gpu-spatial-analysis.fleet-dwell-zone-events-recipe: anchorages → dwellAnchorages\n\n- polygons: 13\n- input anchorages: 13 polygons\n- Planar coordinates (m); uniform scale.\n- 771 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 88 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- transients fleet-dwell-zone-events-event-overflow allocated with COPY_SRC for observation\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "13"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[8202.58984375,7061.5],[15286.7001953125,16980.05078125]]\" role=\"img\" aria-label=\"Result: dwellAnchorages\"><defs><pattern id=\"lens-gpu-spatial-analysis-fleet-dwell-zone-events-recipe-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-fleet-dwell-zone-events-recipe-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-fleet-dwell-zone-events-recipe-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"context\"><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M92.07,44 L71.57,41.9\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M72.67,78.72 L89.38,45.16\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M94.15,48.52 L53.06,61.42\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M62.84,59.87 L89.97,41.35\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M97.88,20.63 L74.71,22.97\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M100.19,21.43 L82.85,64.14\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M94.87,31.31 L94.72,30.52\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M69.52,24.96 L69.66,24.78\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path><path class=\"cv-mark cv-mark--context cv-line\" data-role=\"context\" stroke-width=\"0.44999999999999996\" fill=\"none\" stroke=\"#d4d4d0\" aria-hidden=\"true\" d=\"M69.51,27.16 L75.41,17.4\" fill-rule=\"evenodd\" data-provenance=\"readback\"></path></g><g data-role=\"output\"></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:32:19.968Z",
+    "runId": "run-8d7044ce",
+    "observerEffects": [
+      "transients fleet-dwell-zone-events-event-overflow allocated with COPY_SRC for observation"
+    ]
+  },
+  "state": {
+    "runId": "run-8d7044ce",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

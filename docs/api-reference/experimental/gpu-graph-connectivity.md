@@ -11,6 +11,10 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Find disconnected groups with GPUGraphConnectedComponents
 
+Label each vertex with the lowest vertex identifier in its weakly connected component, ignoring edge direction.
+
+::lens{scenario=gpu-graph.graph-connected-components rung=result caption="Check that all 485 stations share one component, rooted at the highlighted 's-Hertogenbosch."}
+
 **Question: Which vertices belong to the same connected island if edge direction is ignored?**
 
 `GPUGraphConnectedComponents` identifies vertices connected by any path when edge direction is
@@ -22,16 +26,13 @@ even though Cy has no outgoing transfer. An unrelated transfer `Dee -> Eli` form
 group. Choose weak components when group membership matters, not the distance from a selected
 account or the direction in which influence flows.
 
-```ts
-import {GPUGraphConnectedComponents} from '@luma.gl/gpgpu/gpu-graph';
-
-const components = new GPUGraphConnectedComponents({
-  topology,
-  output: componentIds,
-  iterations: 32,
-  converged: componentsConverged
-});
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-connected-components'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` or `GPUGraphTopologyView` | Required | Existing forward adjacency; reverse adjacency is not required. |
+| `output` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Required | Caller-owned packed component label, one row per vertex. |
+| `iterations` | `number` | `32` | Bounded number of compiled hooking and pointer-jumping iterations. |
+| `converged` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Omitted | Optional scalar that is one only when the final iteration reaches a fixed point. |
 
 Once propagation converges, every vertex in a weakly connected component receives that group's
 lowest stable vertex identifier; an isolated vertex labels itself. Directed edges connect both
@@ -42,7 +43,21 @@ one only when the final iteration reaches a fixed point; zero means convergence 
 or the required adjacency overflowed. A connected component answers whether entities connect at
 all; it does not claim to discover densely connected communities within one connected network.
 
+#### How it computes
+
+{/* lens:GPUGraphConnectedComponents */}
+
+::lens{scenario=gpu-graph.graph-connected-components rung=kernel caption="Inspect the initialization, hooking and pointer-jumping kernels run each iteration."}
+::lens{scenario=gpu-graph.graph-connected-components rung=graph caption="Follow topology construction into repeated hook and jump passes."}
+::lens{scenario=gpu-graph.graph-connected-components rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, with 15 neighbors and component label zero."}
+::lens{scenario=gpu-graph.graph-connected-components rung=formula caption="Follow the hooking and pointer-jumping update to the WGSL buffers that hold it."}
+::lens{scenario=gpu-graph.graph-connected-components rung=iterations caption="Compare recorded label frames: 108 labels after round one, four after round three, one after round five."}
+
 ## Discover densely connected communities with GPUGraphLabelPropagation
+
+Assign each vertex the label most common among itself and its neighbors, repeating for a bounded number of rounds.
+
+::lens{scenario=gpu-graph.graph-label-propagation rung=result caption="Compare 108 communities across 485 stations; the largest holds 29 stations."}
 
 **Question: Which vertices form closely connected communities inside a network that is otherwise
 connected?**
@@ -60,16 +75,13 @@ connected component, while label propagation can still give each team a differen
 Use weak components to find disconnected islands; use community labels to inspect local structure
 within an island.
 
-```ts
-import {GPUGraphLabelPropagation} from '@luma.gl/gpgpu/gpu-graph';
-
-const communities = new GPUGraphLabelPropagation({
-  topology,
-  output: communityIds,
-  iterations: 32,
-  converged: communitiesConverged
-});
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-label-propagation'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` or `GPUGraphTopologyView` | Required | Existing weak-neighborhood adjacency; directed graphs require reverse CSR. |
+| `output` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Required | Caller-owned packed community label, one row per vertex. |
+| `iterations` | `number` | `32` | Bounded number of synchronous majority-vote rounds, from one through 1,024. |
+| `converged` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Omitted | Optional scalar that is one only when the final round changes no labels. |
 
 Every vertex begins with its stable vertex identifier as its label. Each synchronous round reads
 the preceding round's complete label snapshot and selects the most frequent label among one self
@@ -99,7 +111,20 @@ neighborhood; a high-degree hub can therefore be disproportionately expensive. T
 label-propagation heuristic is not Louvain or Leiden, does not optimize modularity, and does not
 guarantee objectively correct communities or a particular clustering quality.
 
+#### How it computes
+
+{/* lens:GPUGraphLabelPropagation */}
+
+::lens{scenario=gpu-graph.graph-label-propagation rung=kernel caption="Inspect the initialization, vote and publish kernels run each round."}
+::lens{scenario=gpu-graph.graph-label-propagation rung=graph caption="Follow topology construction into 16 rounds of vote and publish passes."}
+::lens{scenario=gpu-graph.graph-label-propagation rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, with 15 neighbors in a 26-station community."}
+::lens{scenario=gpu-graph.graph-label-propagation rung=formula caption="Follow the majority vote to the WGSL buffers that count it."}
+
 ## Improve weighted community partitions with GPUGraphModularityOptimization
+
+Move vertices between communities, one best move per round, to raise weighted modularity.
+
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=result caption="Compare 107 communities scoring modularity 0.675 after 64 rounds, up from 0.657 for 108."}
 
 **Question: Which actual community reassignment improves a network's measurable partition quality,
 rather than merely winning a neighborhood vote?**
@@ -118,25 +143,21 @@ groups from unweighted neighborhood votes without optimizing their quality;
 modularity objective improves. Start from separate communities when discovering structure, or
 provide `initialCommunities` to refine labels supplied by a heuristic, application, or prior
 analysis. The caller receives both the improved labels and the score of that exact final
-partition.
+partition. Pass `initialCommunities: proposedCommunityIds` to refine a caller-owned proposal
+without overwriting its labels.
 
-```ts
-import {GPUGraphModularityOptimization} from '@luma.gl/gpgpu/gpu-graph';
-
-const optimizedCommunities = new GPUGraphModularityOptimization({
-  topology,
-  output: improvedCommunityIds,
-  modularity: optimizedModularity,
-  initialCommunities: proposedCommunityIds,
-  resolution: 1,
-  iterations: 32,
-  minimumGain: 0,
-  converged: optimizationConverged,
-  valid: optimizationValid
-});
-
-optimizedCommunities.addToGraph(workflow);
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-modularity-optimization'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` | Required | Existing adjacency; directed optimization requires reverse adjacency. |
+| `output` | `GPUVector<'uint32'>` | Required | Caller-owned community identifier, one row per vertex. |
+| `modularity` | `GPUVector<'float32'>` | Required | Caller-owned scalar receiving the final weighted modularity. |
+| `initialCommunities` | `GPUVector<'uint32'>` | Omitted | Optional starting partition; otherwise every vertex starts in its own community. |
+| `resolution` | `number` | `1` | Nonnegative modularity resolution parameter. |
+| `iterations` | `number` | `32` | Maximum accepted local moves, from zero through 1,024. |
+| `minimumGain` | `number` | `0` | Gain that a move must strictly exceed to be accepted. |
+| `converged` | `GPUVector<'uint32'>` | Omitted | Optional scalar that is one when the final round found no improving move. |
+| `valid` | `GPUVector<'uint32'>` | Omitted | Optional scalar that is one when topology, partition and score are valid. |
 
 `output` is a caller-owned, packed `GPUVector<'uint32'>` with exactly one community identifier per
 vertex. The optional `initialCommunities` is a separate caller-owned, packed `uint32` vector with
@@ -202,7 +223,21 @@ This is **single-level Louvain-style local moving**, not the complete multilevel
 Louvain algorithm, Leiden refinement, community coarsening, hierarchical aggregation, a global
 optimality guarantee, or a seventh Graphalytics workload.
 
+#### How it computes
+
+{/* lens:GPUGraphModularityOptimization */}
+
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=kernel caption="Inspect the candidate aggregation, winner selection and move kernels run each round."}
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=graph caption="Follow topology construction into 64 rounds of candidate scoring and one applied move."}
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, with 15 neighbors, moved into an eight-station community."}
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=formula caption="Follow the modularity gain of one move to the WGSL buffers that hold its terms."}
+::lens{scenario=gpu-graph.graph-modularity-optimization rung=iterations caption="Compare eight recorded partitions: 108 communities at the start, 107 from round three."}
+
 ## Evaluate community quality with GPUGraphModularity
+
+Score a caller-owned vertex partition by how much edge weight stays inside its communities.
+
+::lens{scenario=gpu-graph.graph-modularity rung=result caption="Check that the 108-community partition of 485 stations scores modularity 0.657."}
 
 **Question: Does an existing community grouping keep more relationship weight inside its groups
 than a degree-matched random network would predict?**
@@ -219,21 +254,17 @@ groups than the corresponding degree-preserving random baseline predicts; a scor
 suggests little advantage over that baseline. A negative score means the partition keeps less
 internal weight than expected. Scores depend on the graph and resolution parameter: they are not
 universal quality percentages or proof that one partition is objectively correct.
+Pass `communities: communityIds` to score an existing partition without changing its labels.
 
-```ts
-import {GPUGraphModularity} from '@luma.gl/gpgpu/gpu-graph';
-
-const partitionQuality = new GPUGraphModularity({
-  graph,
-  communities: communityIds,
-  output: modularityScore,
-  resolution: 1,
-  communityContributions,
-  valid: modularityValid
-});
-
-partitionQuality.addToGraph(workflow);
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-modularity'` | Prefix for generated command-graph nodes and imported resources. |
+| `graph` | `GPUGraph` | Required | Original directed or undirected edge columns, read without building CSR. |
+| `communities` | `GPUVector<'uint32'>` | Required | Caller-owned community label below `vertexCount`, one row per vertex. |
+| `output` | `GPUVector<'float32'>` | Required | Caller-owned scalar receiving the modularity score. |
+| `resolution` | `number` | `1` | Nonnegative modularity resolution parameter. |
+| `communityContributions` | `GPUVector<'float32'>` | Omitted | Optional per-label contribution to the score, indexed by community label. |
+| `valid` | `GPUVector<'uint32'>` | Omitted | Optional scalar that is one only when labels, weights and total weight are valid. |
 
 `communities` is a caller-owned, packed `GPUVector<'uint32'>` containing exactly one stable
 community identifier per vertex. Every label must be in the range from zero through
@@ -268,6 +299,15 @@ execution orders or devices. Work is bounded by `O(V + E)`, with `O(V)` graph-ow
 volume scratch and bounded reduction storage. This contributor measures a supplied partition; it
 is **not** Louvain, Leiden, automatic community optimization, hierarchical coarsening, or a
 guarantee that label propagation converged.
+
+#### How it computes
+
+{/* lens:GPUGraphModularity */}
+
+::lens{scenario=gpu-graph.graph-modularity rung=kernel caption="Inspect the edge accumulation, contribution and reduction kernels that produce the score."}
+::lens{scenario=gpu-graph.graph-modularity rung=graph caption="Follow topology construction into community accumulation, contributions and the sum reduction."}
+::lens{scenario=gpu-graph.graph-modularity rung=datum datum=26 caption="Inspect Amsterdam Centraal, station 26, in a 27-station community contributing 0.053."}
+::lens{scenario=gpu-graph.graph-modularity rung=formula caption="Follow the per-community contribution to the WGSL buffers that hold its terms."}
 
 ## Related pages
 

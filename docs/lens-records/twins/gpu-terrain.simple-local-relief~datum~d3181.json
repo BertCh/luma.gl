@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.simple-local-relief",
+  "rung": "datum",
+  "datum": 3181,
+  "size": "full",
+  "scenarioId": "gpu-terrain.simple-local-relief",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 3181. simpleLocalRelief: 182.32249450683594. values read back from the GPU run. simple-local-relief: 2 quantities.",
+  "description": "Receipt of grid cells 3181. simpleLocalRelief: 182.32249450683594. values read back from the GPU run. simple-local-relief: 2 quantities.",
+  "llms": "Receipt of grid cells 3181\n\n- simpleLocalRelief: 182.32249450683594\n- simple-local-relief: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "simpleLocalRelief",
+    "value": "182.32249450683594"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 3181</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"simple-local-relief\"><tr><th scope=\"rowgroup\" colspan=\"5\">simple-local-relief</th></tr><tr data-provenance=\"readback\"><td>simple-local-relief</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-simple-local-relief-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1651</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>simple-local-relief</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-simple-local-relief-snapshots-simpleLocalRelief-0\" title=\"local relief (m above the 17 × 17 cell window mean)\">simpleLocalRelief</button></td><td>182.32249450683594</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-simple-local-relief-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-simple-local-relief-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-simple-local-relief-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3116\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3116: 1615.300048828125</title><text x=\"6\" y=\"25\" fill=\"currentColor\">3116</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3117\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3117: 1630.800048828125</title><text x=\"76\" y=\"25\" fill=\"currentColor\">3117</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3118\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3118: 1631.4000244140625</title><text x=\"146\" y=\"25\" fill=\"currentColor\">3118</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3180\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3180: 1626.4000244140625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">3180</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3181\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3181: 1651</title><text x=\"76\" y=\"95\" fill=\"currentColor\">3181</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3182\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3182: 1636</title><text x=\"146\" y=\"95\" fill=\"currentColor\">3182</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3244\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3244: 1592.800048828125</title><text x=\"6\" y=\"165\" fill=\"currentColor\">3244</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3245\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3245: 1620.300048828125</title><text x=\"76\" y=\"165\" fill=\"currentColor\">3245</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"3246\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>3246: 1616.800048828125</title><text x=\"146\" y=\"165\" fill=\"currentColor\">3246</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "simple-local-relief",
+        "dem",
+        "1651",
+        "0",
+        "readback"
+      ],
+      [
+        "simple-local-relief",
+        "simpleLocalRelief",
+        "182.32249450683594",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.736Z",
+    "runId": "run-d8b0d765",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d8b0d765",
+    "rung": "datum",
+    "bindings": {
+      "entity": 3181
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

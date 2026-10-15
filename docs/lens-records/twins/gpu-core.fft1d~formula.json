@@ -1,0 +1,69 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.fft1d",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-core.fft1d",
+  "viewId": "formula-card",
+  "caption": "Formula Y[k]=a*sum(x[j]*exp(s*2*pi*i*j*k/N)); forward s=-1,a=1; inverse s=+1,a=1/N applied once on the final pass, independently per batch. Complex vec2f input/output. bound symbols: 2/2. structure metadata only.",
+  "description": "Formula Y[k]=a*sum(x[j]*exp(s*2*pi*i*j*k/N)); forward s=-1,a=1; inverse s=+1,a=1/N applied once on the final pass, independently per batch. Complex vec2f input/output. bound symbols: 2/2. structure metadata only.",
+  "llms": "Formula Y[k]=a*sum(x[j]*exp(s*2*pi*i*j*k/N)); forward s=-1,a=1; inverse s=+1,a=1/N applied once on the final pass, independently per batch. Complex vec2f input/output.\n\n- bound symbols: 2/2\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-core.fft1d</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{y}{Y_k}=a\\sum_{j=0}^{N-1}\\term{x}{x_j}e^{s2\\pi\\mathrm{i}jk/N},\\quad(s,a)=(-1,1)\\ \\text{forward};\\ (+1,1/N)\\ \\text{inverse}</pre><p class=\"lens-ascii\">Y[k]=a*sum(x[j]*exp(s*2*pi*i*j*k/N)); forward s=-1,a=1; inverse s=+1,a=1/N applied once on the final pass, independently per batch. Complex vec2f input/output.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-bit-reversal-6\" data-value=\"x\">x · input · inputValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-bit-reversal-6\" data-value=\"y\">y · output · outputValues</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-bit-reversal-6\">bit-reversal</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-1\">butterfly</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-2\">butterfly</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-3\">butterfly</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-4\">butterfly</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-5\">butterfly</button><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-core-fft1d-compiled:profile-spectrum-butterfly-6\">butterfly</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "x",
+        "input",
+        "inputValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "y",
+        "output",
+        "outputValues",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{y}{Y_k}=a\\sum_{j=0}^{N-1}\\term{x}{x_j}e^{s2\\pi\\mathrm{i}jk/N},\\quad(s,a)=(-1,1)\\ \\text{forward};\\ (+1,1/N)\\ \\text{inverse}",
+    "ascii": "Y[k]=a*sum(x[j]*exp(s*2*pi*i*j*k/N)); forward s=-1,a=1; inverse s=+1,a=1/N applied once on the final pass, independently per batch. Complex vec2f input/output.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.134Z",
+    "runId": "run-47116137",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-47116137",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

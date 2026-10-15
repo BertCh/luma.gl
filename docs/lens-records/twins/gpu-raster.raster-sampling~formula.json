@@ -1,0 +1,85 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-sampling",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-sampling",
+  "viewId": "formula-card",
+  "caption": "Formula Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for eith…",
+  "description": "Formula Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for eith…",
+  "llms": "Formula Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for either row direction; fx = u - floor(u), fy = v - floor(v); z = sum of the four surrounding centres weighted (1-|i-fx|)(1-|j-fy|), indices clamped to the edge cell. A centre takes part only when both its weights are nonzero, so a point on a cell centre returns that cell. Outside the closed extent or NaN position gives NaN. Under strict a nodata (NaN, sentinel or validity 0) participating centre gives NaN; renormalize divides the valid weights by their sum. nearest returns cell floor(u + 0.5), floor(v + 0.5) clamped to the raster (the cell containing the point; the maxX and maxY edge belong to the last cell); bicubic is Catmull-Rom over 4x4 and falls back to the bilinear rule next to nodata.\n\n- bound symbols: 4/4\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-sampling.bilinear</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{value}{z}=\\sum_{i,j\\in\\{0,1\\}}\\bigl(1-|i-f_x|\\bigr)\\bigl(1-|j-f_y|\\bigr)\\,\\term{raster}{r}_{\\lfloor u\\rfloor+i,\\ \\lfloor v\\rfloor+j},\\quad (u,v)=\\left(\\frac{\\term{position}{p_x}-x_{\\min}}{\\term{cellSize}{\\Delta_x}}-\\tfrac12,\\ \\frac{p_y-y_0}{\\Delta_y}-\\tfrac12\\right)</pre><p class=\"lens-ascii\">Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for either row direction; fx = u - floor(u), fy = v - floor(v); z = sum of the four surrounding centres weighted (1-|i-fx|)(1-|j-fy|), indices clamped to the edge cell. A centre takes part only when both its weights are nonzero, so a point on a cell centre returns that cell. Outside the closed extent or NaN position gives NaN. Under strict a nodata (NaN, sentinel or validity 0) participating centre gives NaN; renormalize divides the valid weights by their sum. nearest returns cell floor(u + 0.5), floor(v + 0.5) clamped to the raster (the cell containing the point; the maxX and maxY edge belong to the last cell); bicubic is Catmull-Rom over 4x4 and falls back to the bilinear rule next to nodata.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sampling-compiled:raster-sampling-sample\" data-value=\"value\">sampled value · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sampling-compiled:raster-sampling-sample\" data-value=\"raster\">raster · input · raster</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sampling-compiled:raster-sampling-sample\" data-value=\"position\">point · input · positions</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-sampling-compiled:raster-sampling-sample\" data-value=\"cellSize\">cell size · parameter · params</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "sampled value",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "raster",
+        "input",
+        "raster",
+        "—",
+        "metadata"
+      ],
+      [
+        "point",
+        "input",
+        "positions",
+        "—",
+        "metadata"
+      ],
+      [
+        "cell size",
+        "parameter",
+        "params",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{value}{z}=\\sum_{i,j\\in\\{0,1\\}}\\bigl(1-|i-f_x|\\bigr)\\bigl(1-|j-f_y|\\bigr)\\,\\term{raster}{r}_{\\lfloor u\\rfloor+i,\\ \\lfloor v\\rfloor+j},\\quad (u,v)=\\left(\\frac{\\term{position}{p_x}-x_{\\min}}{\\term{cellSize}{\\Delta_x}}-\\tfrac12,\\ \\frac{p_y-y_0}{\\Delta_y}-\\tfrac12\\right)",
+    "ascii": "Bilinear (the default method): u = (px - minX) / cellWidth - 0.5, v = (py - y0) / rowStep - 0.5 with y0 the y of the outer edge of row 0 and rowStep the signed row step (negative for north-up grids), so integer u, v are cell centres for either row direction; fx = u - floor(u), fy = v - floor(v); z = sum of the four surrounding centres weighted (1-|i-fx|)(1-|j-fy|), indices clamped to the edge cell. A centre takes part only when both its weights are nonzero, so a point on a cell centre returns that cell. Outside the closed extent or NaN position gives NaN. Under strict a nodata (NaN, sentinel or validity 0) participating centre gives NaN; renormalize divides the valid weights by their sum. nearest returns cell floor(u + 0.5), floor(v + 0.5) clamped to the raster (the cell containing the point; the maxX and maxY edge belong to the last cell); bicubic is Catmull-Rom over 4x4 and falls back to the bilinear rule next to nodata.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:39:46.659Z",
+    "runId": "run-9152d5ec",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9152d5ec",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

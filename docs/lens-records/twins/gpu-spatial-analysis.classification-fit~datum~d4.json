@@ -1,0 +1,92 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.classification-fit",
+  "rung": "datum",
+  "datum": 4,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.classification-fit",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.90724182128906. values read back from the GPU run. classification-fit: 4 quantities.",
+  "description": "Receipt of class (last row: all counties) 4. squaredDeviations: 72.90724182128906. values read back from the GPU run. classification-fit: 4 quantities.",
+  "llms": "Receipt of class (last row: all counties) 4\n\n- squaredDeviations: 72.90724182128906\n- classification-fit: 4 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "squaredDeviations",
+    "value": "72.90724182128906"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of class (last row: all counties) 4</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"classification-fit\"><tr><th scope=\"rowgroup\" colspan=\"5\">classification-fit</th></tr><tr data-provenance=\"readback\"><td>classification-fit</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-counts-0\">counts</button></td><td>91</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>classification-fit</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-medians-0\">medians</button></td><td>5.400000095367432</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>classification-fit</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-absoluteDeviations-0\">absoluteDeviations</button></td><td>58.399993896484375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>classification-fit</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-classification-fit-snapshots-squaredDeviations-0\">squaredDeviations</button></td><td>72.90724182128906</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "classification-fit",
+        "counts",
+        "91",
+        "0",
+        "readback"
+      ],
+      [
+        "classification-fit",
+        "medians",
+        "5.400000095367432",
+        "0",
+        "readback"
+      ],
+      [
+        "classification-fit",
+        "absoluteDeviations",
+        "58.399993896484375",
+        "0",
+        "readback"
+      ],
+      [
+        "classification-fit",
+        "squaredDeviations",
+        "72.90724182128906",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.182Z",
+    "runId": "run-c8c4c189",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c8c4c189",
+    "rung": "datum",
+    "bindings": {
+      "entity": 4
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

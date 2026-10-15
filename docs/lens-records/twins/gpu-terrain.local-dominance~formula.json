@@ -1,0 +1,101 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.local-dominance",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.local-dominance",
+  "viewId": "formula-card",
+  "caption": "Formula Baked offsets (distance d, angle a): d = minimumRadius + radiusIncrement*k, a = angularResolution*j, row shift round(sin a * d), column shift round(cos a * d), rounding half to even, samples edge-clamped at (row - rowShift, column - columnSh…",
+  "description": "Formula Baked offsets (distance d, angle a): d = minimumRadius + radiusIncrement*k, a = angularResolution*j, row shift round(sin a * d), column shift round(cos a * d), rounding half to even, samples edge-clamped at (row - rowShift, column - columnSh…",
+  "llms": "Formula Baked offsets (distance d, angle a): d = minimumRadius + radiusIncrement*k, a = angularResolution*j, row shift round(sin a * d), column shift round(cos a * d), rounding half to even, samples edge-clamped at (row - rowShift, column - columnShift). rise = verticalExaggeration*(z_c - z_s) + observerHeight; offsets with rise > 0 (an invalid sample gives NaN, which never passes) add rise * (2d + radiusIncrement)/d. D = sum / (observerHeight * N) with N = sum over offsets of (2d + radiusIncrement)/d, so a flat surface scores 1. Invalid samples stay in N; an invalid centre gives NaN. Pixel units: no cell size.\n\n- bound symbols: 6/6\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.local-dominance.rise-sum</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{dominance}{D} = \\frac{1}{\\term{observerHeight}{h}\\;\\term{normalization}{\\mathcal{N}}}\\sum_{s}\\term{factor}{f_s}\\,\\max\\!\\left(0,\\ \\term{rise}{\\rho_s}\\right),\\quad \\rho_s = \\term{exaggeration}{v}\\left(z_c - z_s\\right) + h</pre><p class=\"lens-ascii\">Baked offsets (distance d, angle a): d = minimumRadius + radiusIncrement*k, a = angularResolution*j, row shift round(sin a * d), column shift round(cos a * d), rounding half to even, samples edge-clamped at (row - rowShift, column - columnShift). rise = verticalExaggeration*(z_c - z_s) + observerHeight; offsets with rise &gt; 0 (an invalid sample gives NaN, which never passes) add rise * (2d + radiusIncrement)/d. D = sum / (observerHeight * N) with N = sum over offsets of (2d + radiusIncrement)/d, so a flat surface scores 1. Invalid samples stay in N; an invalid centre gives NaN. Pixel units: no cell size.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"dominance\">D · output · dominance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"observerHeight\">h · parameter · observerHeight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"normalization\">N · constant · NORMALIZATION</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"factor\">ring weight · constant · FACTORS</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"rise\">rise · intermediate · rise</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-local-dominance-compiled:local-dominance-sample\" data-value=\"exaggeration\">v · parameter · verticalExaggeration</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "D",
+        "output",
+        "dominance",
+        "—",
+        "metadata"
+      ],
+      [
+        "h",
+        "parameter",
+        "observerHeight",
+        "—",
+        "metadata"
+      ],
+      [
+        "N",
+        "constant",
+        "NORMALIZATION",
+        "—",
+        "metadata"
+      ],
+      [
+        "ring weight",
+        "constant",
+        "FACTORS",
+        "—",
+        "metadata"
+      ],
+      [
+        "rise",
+        "intermediate",
+        "rise",
+        "—",
+        "metadata"
+      ],
+      [
+        "v",
+        "parameter",
+        "verticalExaggeration",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{dominance}{D} = \\frac{1}{\\term{observerHeight}{h}\\;\\term{normalization}{\\mathcal{N}}}\\sum_{s}\\term{factor}{f_s}\\,\\max\\!\\left(0,\\ \\term{rise}{\\rho_s}\\right),\\quad \\rho_s = \\term{exaggeration}{v}\\left(z_c - z_s\\right) + h",
+    "ascii": "Baked offsets (distance d, angle a): d = minimumRadius + radiusIncrement*k, a = angularResolution*j, row shift round(sin a * d), column shift round(cos a * d), rounding half to even, samples edge-clamped at (row - rowShift, column - columnShift). rise = verticalExaggeration*(z_c - z_s) + observerHeight; offsets with rise > 0 (an invalid sample gives NaN, which never passes) add rise * (2d + radiusIncrement)/d. D = sum / (observerHeight * N) with N = sum over offsets of (2d + radiusIncrement)/d, so a flat surface scores 1. Invalid samples stay in N; an invalid centre gives NaN. Pixel units: no cell size.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.973Z",
+    "runId": "run-ac4dcf76",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-ac4dcf76",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

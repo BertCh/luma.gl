@@ -1,0 +1,65 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-sort-query",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-sort-query",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Rank in batch 0. sortedPoverty150Pct: 76.0999984741211. values read back from the GPU run. result: 2 quantities.",
+  "description": "Receipt of Rank in batch 0. sortedPoverty150Pct: 76.0999984741211. values read back from the GPU run. result: 2 quantities.",
+  "llms": "Receipt of Rank in batch 0\n\n- sortedPoverty150Pct: 76.0999984741211\n- result: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "sortedPoverty150Pct",
+    "value": "76.0999984741211"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Rank in batch 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"rowIndices\" title=\"Source row of each rank: the published prefix of rowIndices.\">rowIndices</button></td><td>732</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"sortedPoverty150Pct\" title=\"poverty150Pct at rowIndices: an exact gather of two readbacks.\">sortedPoverty150Pct</button></td><td>76.0999984741211</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "rowIndices",
+        "732",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "sortedPoverty150Pct",
+        "76.0999984741211",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.506Z",
+    "runId": "run-fbf5193c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-fbf5193c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

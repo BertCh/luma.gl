@@ -11,6 +11,10 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Find durable network backbones with GPUGraphCoreNumber
 
+Refine distinct-neighbor degrees by H-index in synchronized rounds, publishing each vertex's k-core number.
+
+::lens{scenario=gpu-graph.graph-core-number rung=result caption="Compare core numbers across 485 stations; 18 stations reach core three."}
+
 **Question: Which vertices stay connected to a mutually supportive group after peripheral
 relationships disappear?**
 
@@ -27,19 +31,14 @@ interdependent service groups, or the stable center of a citation network. Choos
 for immediate popularity, local clustering for connections among one vertex's neighbors, community
 labels for a proposed group assignment, and core numbers for repeated structural support.
 
-```ts
-import {GPUGraphCoreNumber} from '@luma.gl/gpgpu/gpu-graph';
-
-const cores = new GPUGraphCoreNumber({
-  topology,
-  output: coreNumbers,
-  iterations: 32,
-  converged: coresConverged,
-  degeneracy: maximumCoreNumber
-});
-
-cores.addToGraph(workflow);
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-core-number'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` or `GPUGraphTopologyView` | Required | Existing compressed adjacency; directed weak neighborhoods require reverse CSR. |
+| `output` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Required | Caller-owned unsigned core-number row per vertex. |
+| `iterations` | `number` | `32` | Maximum synchronized refinement rounds, from zero through 1,024. |
+| `converged` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Omitted | Optional scalar reporting whether the core numbers reached a fixed point. |
+| `degeneracy` | `GPUVector<'uint32'>` or `GraphDataView<'uint32'>` | Omitted | Optional scalar receiving the maximum currently published core number. |
 
 `output` is a caller-owned, packed `GPUVector<'uint32'>` with exactly one row per vertex. The
 optional one-row `converged` output becomes one only when the final synchronized refinement proves
@@ -69,7 +68,21 @@ and distinct weak degree `d`, unsorted CSR deduplication and H-index selection r
 optional bounded reduction workspace when reporting degeneracy; large hubs or insufficient round
 budgets require explicit measurement rather than assumed convergence.
 
+#### How it computes
+
+{/* lens:GPUGraphCoreNumber */}
+
+::lens{scenario=gpu-graph.graph-core-number rung=kernel caption="Inspect the initialization, H-index refinement, publish and convergence kernels run each round."}
+::lens{scenario=gpu-graph.graph-core-number rung=graph caption="Follow topology construction into 12 rounds of refine, publish and convergence passes."}
+::lens{scenario=gpu-graph.graph-core-number rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, with its 15 neighbors and core number three."}
+::lens{scenario=gpu-graph.graph-core-number rung=formula caption="Follow the H-index refinement to the WGSL buffers that hold it."}
+::lens{scenario=gpu-graph.graph-core-number rung=iterations caption="Compare six recorded core-number frames through the final round; no intermediate states are interpolated."}
+
 ## Measure neighborhood density with GPUGraphLocalClusteringCoefficient
+
+Count closed neighbor pairs per vertex, publishing Graphalytics clustering coefficients and optional triangle counts.
+
+::lens{scenario=gpu-graph.graph-local-clustering-coefficient rung=result caption="Compare clustering across 485 stations; 115 stations have at least one closed neighbor pair."}
 
 **Question: Do this vertex's neighbors actually connect to one another, or do they only share the
 same central contact?**
@@ -85,17 +98,13 @@ relationships *among those neighbors* matter, and label propagation when you nee
 identifier describing a larger connected region. The coefficient describes each vertex's immediate
 surroundings; it does not assign community membership or optimize a global clustering objective.
 
-```ts
-import {GPUGraphLocalClusteringCoefficient} from '@luma.gl/gpgpu/gpu-graph';
-
-const localClustering = new GPUGraphLocalClusteringCoefficient({
-  topology,
-  output: clusteringCoefficients,
-  triangles: incidentTriangleCounts
-});
-
-localClustering.addToGraph(workflow);
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-local-clustering-coefficient'` | Prefix for generated command-graph node and imported-resource identifiers. |
+| `topology` | `GPUGraphTopology` | Required | Existing GPU adjacency; directed weak neighborhoods require reverse CSR. |
+| `output` | `GPUVector<'float32'>` | Required | Caller-owned floating-point clustering coefficient per vertex. |
+| `triangles` | `GPUVector<'uint32'>` | Omitted | Optional per-vertex triangle count or directed neighbor-edge closure count. |
+| `algorithm` | `'auto'`, `'direct'` or `'canonical'` | `'auto'` | Direct suits sparse low-degree graphs; canonical suits dense or duplicate-heavy graphs. |
 
 `output` is a caller-owned, packed `GPUVector<'float32'>` with exactly one row per vertex. The
 optional `triangles` result is a separate, caller-owned, packed `GPUVector<'uint32'>` with one
@@ -125,7 +134,20 @@ high-degree hubs can therefore be substantially more expensive than degree or tr
 not a claim of constant-time triangle counting, weighted clustering, or global community
 detection.
 
+#### How it computes
+
+{/* lens:GPUGraphLocalClusteringCoefficient */}
+
+::lens{scenario=gpu-graph.graph-local-clustering-coefficient rung=kernel caption="Inspect the direct kernel that checks every neighbor pair of each vertex for a closing edge."}
+::lens{scenario=gpu-graph.graph-local-clustering-coefficient rung=graph caption="Follow topology construction into the single clustering pass over its CSR."}
+::lens{scenario=gpu-graph.graph-local-clustering-coefficient rung=datum datum=26 caption="Inspect Amsterdam Centraal, station 26, with 13 neighbors and a coefficient of 0.115."}
+::lens{scenario=gpu-graph.graph-local-clustering-coefficient rung=formula caption="Follow the closure count and its normalization to the WGSL buffers that hold them."}
+
 ## Rank incoming influence with GPUGraphPageRank
+
+Rank graph vertices by incoming influence, redistributing dangling mass and normalizing scores after each bounded iteration.
+
+::lens{scenario=gpu-graph.graph-page-rank rung=result caption="Compare incoming influence across 485 stations; the highlighted station has the highest final rank."}
 
 **Question: Which vertices receive influence from other important vertices?**
 
@@ -137,22 +159,19 @@ Use PageRank when raw degree is not enough: prioritize influential accounts, ran
 documents, identify widely depended-on services, or choose salient vertices for application-owned
 visualization. The metric is unweighted even when the source topology retains edge-weight columns.
 
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-page-rank'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` or `GPUGraphTopologyView` | Required | Existing GPU topology; directed graphs require reverse adjacency. |
+| `output` | `GPUVector<'float32'>` or `GraphDataView<'float32'>` | Required | Caller-owned packed score column, one row per vertex. |
+| `damping` | `number` | `0.85` | Probability of following an outgoing edge rather than teleporting, between zero and one. |
+| `iterations` | `number` | `40` | Bounded number of compiled, normalized iterations; integer from 1 through 1024. |
+| `residual` | `GPUVector<'float32'>` or `GraphDataView<'float32'>` | Omitted | Optional caller-owned scalar receiving the final iteration's absolute rank change. |
+
 In a directed graph, `paper A -> paper B` contributes influence from A to B. A paper cited by one
 highly influential source can outrank a paper cited by several obscure sources. Degree would count
 those citations without asking how influential their sources are; PageRank propagates that
 additional context through the surrounding network.
-
-```ts
-import {GPUGraphPageRank} from '@luma.gl/gpgpu/gpu-graph';
-
-const importance = new GPUGraphPageRank({
-  topology,
-  output: importanceScores,
-  damping: 0.85,
-  iterations: 40,
-  residual: finalRankChange
-});
-```
 
 Directed graphs require reverse CSR so each vertex can gather incoming influence; undirected graphs
 reuse their symmetric forward adjacency. Every fixed iteration redistributes probability from
@@ -171,6 +190,19 @@ signal, not an automatic convergence threshold, early-termination mechanism, or 
 fixed budget reached the stationary distribution. Reductions use subgroup additions when the
 max-feature device exposes both required WebGPU capabilities, with a portable workgroup fallback.
 Both paths use ordinary `float32` arithmetic, not floating-point atomics or native GPU `float64`.
+
+Overflow in either required adjacency publishes zero scores and zero residual. Invalid normalization
+totals also fail closed to zero. Parallel edges retain their multiplicity in this unweighted update.
+
+#### How it computes
+
+{/* lens:GPUGraphPageRank */}
+
+::lens{scenario=gpu-graph.graph-page-rank rung=kernel caption="Inspect the incoming gather, dangling-mass reduction, and normalization kernels."}
+::lens{scenario=gpu-graph.graph-page-rank rung=graph caption="Follow topology construction into 40 repeated gather, reduction, and normalization rounds."}
+::lens{scenario=gpu-graph.graph-page-rank rung=datum datum=409 caption="Inspect Utrecht Centraal, station 409, alongside its CSR neighborhood and final score."}
+::lens{scenario=gpu-graph.graph-page-rank rung=formula caption="Follow dangling-mass redistribution and the normalization denominator to their WGSL bindings."}
+::lens{scenario=gpu-graph.graph-page-rank rung=iterations caption="Compare eight recorded score frames through the final round; no intermediate states are interpolated."}
 
 ## Related pages
 

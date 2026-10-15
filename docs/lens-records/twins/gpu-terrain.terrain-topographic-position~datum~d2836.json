@@ -1,0 +1,67 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-topographic-position",
+  "rung": "datum",
+  "datum": 2836,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-topographic-position",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2836. topographicPositionIndex: 131.36318969726562. values read back from the GPU run. terrain-topographic-position: 2 quantities.",
+  "description": "Receipt of grid cells 2836. topographicPositionIndex: 131.36318969726562. values read back from the GPU run. terrain-topographic-position: 2 quantities.",
+  "llms": "Receipt of grid cells 2836\n\n- topographicPositionIndex: 131.36318969726562\n- terrain-topographic-position: 2 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "topographicPositionIndex",
+    "value": "131.36318969726562"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2836</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-topographic-position\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-topographic-position</th></tr><tr data-provenance=\"readback\"><td>terrain-topographic-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-topographic-position-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1569</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-topographic-position</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-topographic-position-snapshots-topographicPositionIndex-0\" title=\"topographic position index (m above the neighbourhood mean, centre excluded)\">topographicPositionIndex</button></td><td>131.36318969726562</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-topographic-position-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-topographic-position-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-topographic-position-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2771\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2771: 1574.699951171875</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2771</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2772\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2772: 1529.5</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2772</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2773\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2773: 1489.4000244140625</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2773</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2835\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2835: 1572.0999755859375</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2835</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2836\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2836: 1569</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2836</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2837\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2837: 1531.699951171875</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2837</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2899\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2899: 1533.5999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2899</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2900\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2900: 1541</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2900</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2901\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#08306b\"></rect><title>2901: 1538.5</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2901</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-topographic-position",
+        "dem",
+        "1569",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-topographic-position",
+        "topographicPositionIndex",
+        "131.36318969726562",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:43.865Z",
+    "runId": "run-c5e17cc9",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c5e17cc9",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2836
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

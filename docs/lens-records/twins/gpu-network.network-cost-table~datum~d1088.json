@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-cost-table",
+  "rung": "datum",
+  "datum": 1088,
+  "size": "full",
+  "scenarioId": "gpu-network.network-cost-table",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of network node 1088. tableRowEnd: 21373. values read back from the GPU run. network-cost-table: 3 quantities.",
+  "description": "Receipt of network node 1088. tableRowEnd: 21373. values read back from the GPU run. network-cost-table: 3 quantities.",
+  "llms": "Receipt of network node 1088\n\n- tableRowEnd: 21373\n- network-cost-table: 3 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "tableRowEnd",
+    "value": "21373"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of network node 1088</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"network-cost-table\"><tr><th scope=\"rowgroup\" colspan=\"5\">network-cost-table</th></tr><tr data-provenance=\"readback\"><td>network-cost-table</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"road-context\" title=\"context: uploaded road graph (offsets, neighbors and node positions read back)\">road-context</button></td><td>-87.63471221923828, 41.88323974609375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-cost-table</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"tableRowStart\" title=\"first table entry of each row (the GPU row offsets without the final total)\">tableRowStart</button></td><td>21357</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>network-cost-table</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"tableRowEnd\" title=\"one past the last table entry of each row (the GPU row offsets without the first)\">tableRowEnd</button></td><td>21373</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><span class=\"lens-unknown\">unknown — relation values not captured</span><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "network-cost-table",
+        "road-context",
+        "-87.63471221923828, 41.88323974609375",
+        "0",
+        "readback"
+      ],
+      [
+        "network-cost-table",
+        "tableRowStart",
+        "21357",
+        "0",
+        "readback"
+      ],
+      [
+        "network-cost-table",
+        "tableRowEnd",
+        "21373",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:44:26.743Z",
+    "runId": "run-c20a823a",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients tableOffsets, tableTargets, tableCosts, overflow, requiredCount, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-c20a823a",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1088
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

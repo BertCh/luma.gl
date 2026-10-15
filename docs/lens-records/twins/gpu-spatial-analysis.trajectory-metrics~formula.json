@@ -1,0 +1,112 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-metrics",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-metrics",
+  "viewId": "formula-card",
+  "caption": "Formula Track length L=sum of step distances d[i]; average speed=L/T for positive track duration T, otherwise 0. Steps stay within track offsets; distances are Euclidean or great-circle in context units. Time differences are computed before f32 conv…",
+  "description": "Formula Track length L=sum of step distances d[i]; average speed=L/T for positive track duration T, otherwise 0. Steps stay within track offsets; distances are Euclidean or great-circle in context units. Time differences are computed before f32 conv…",
+  "llms": "Formula Track length L=sum of step distances d[i]; average speed=L/T for positive track duration T, otherwise 0. Steps stay within track offsets; distances are Euclidean or great-circle in context units. Time differences are computed before f32 conversion (Int64 or double-single where supplied). Stop extraction is a separate slow-run scan and compaction.\n\n- bound symbols: 5/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.trajectory-metrics</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{length}{L}=\\sum_{\\term{index}{i}\\in\\term{steps}{S}}\\term{distances}{d_i},\\qquad \\term{average}{\\bar v}=\\begin{cases}\\term{length}{L}/\\term{duration}{T}&amp;\\term{duration}{T}&gt;0\\\\0&amp;\\text{otherwise}\\end{cases}</pre><p class=\"lens-ascii\">Track length L=sum of step distances d[i]; average speed=L/T for positive track duration T, otherwise 0. Steps stay within track offsets; distances are Euclidean or great-circle in context units. Time differences are computed before f32 conversion (Int64 or double-single where supplied). Stop extraction is a separate slow-run scan and compaction.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-metrics-compiled:trajectory-metrics-track-finalize\" data-value=\"length\">length · output · trackLengths</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-metrics-compiled:trajectory-metrics-track-finalize\" data-value=\"average\">average · output · averageSpeeds</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-metrics-compiled:trajectory-metrics-steps\" data-value=\"distances\">distances · input · stepDistances</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-metrics-compiled:trajectory-metrics-track-finalize\" data-value=\"duration\">duration · input · trackDuration</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-trajectory-metrics-compiled:trajectory-metrics-steps\" data-value=\"steps\">steps · input · trackOffsets</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "length",
+        "output",
+        "trackLengths",
+        "—",
+        "metadata"
+      ],
+      [
+        "average",
+        "output",
+        "averageSpeeds",
+        "—",
+        "metadata"
+      ],
+      [
+        "distances",
+        "input",
+        "stepDistances",
+        "—",
+        "metadata"
+      ],
+      [
+        "duration",
+        "input",
+        "trackDuration",
+        "—",
+        "metadata"
+      ],
+      [
+        "steps",
+        "input",
+        "trackOffsets",
+        "—",
+        "metadata"
+      ],
+      [
+        "index",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{length}{L}=\\sum_{\\term{index}{i}\\in\\term{steps}{S}}\\term{distances}{d_i},\\qquad \\term{average}{\\bar v}=\\begin{cases}\\term{length}{L}/\\term{duration}{T}&\\term{duration}{T}>0\\\\0&\\text{otherwise}\\end{cases}",
+    "ascii": "Track length L=sum of step distances d[i]; average speed=L/T for positive track duration T, otherwise 0. Steps stay within track offsets; distances are Euclidean or great-circle in context units. Time differences are computed before f32 conversion (Int64 or double-single where supplied). Stop extraction is a separate slow-run scan and compaction.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.118Z",
+    "runId": "run-7b8d1398",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7b8d1398",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

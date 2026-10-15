@@ -1,0 +1,86 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.time-window-filter",
+  "rung": "formula",
+  "datum": 513,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.time-window-filter",
+  "viewId": "formula-card",
+  "caption": "Formula keep=1[start <= t <= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask. outputMask: 1. values read back from the GPU run.",
+  "description": "Formula keep=1[start <= t <= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask. outputMask: 1. values read back from the GPU run.",
+  "llms": "Formula keep=1[start <= t <= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.\n\n- outputMask: 1\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "outputMask",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUTimeWindowFilter</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{outputMask}{\\mathrm{keep}}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{t}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div><div class=\"lens-worked-example\"><h4>Entity 513</h4><div><pre class=\"lens-tex\">\\term{outputMask}{1}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{\\left(13085845\\right)}\\leq\\term{end}{e}]</pre><p class=\"lens-ascii\">keep=1[start &lt;= t &lt;= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"outputMask\">outputMask · output · outputMask<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"start\">start · parameter · windowStartHigh</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"timestamps\">timestamps · input · startHigh<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.time-window-filter-compiled:time-window-filter-classify\" data-value=\"end\">end · parameter · windowEndHigh</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "outputMask",
+        "output",
+        "outputMask",
+        "1",
+        "readback"
+      ],
+      [
+        "start",
+        "parameter",
+        "windowStartHigh",
+        "—",
+        "metadata"
+      ],
+      [
+        "timestamps",
+        "input",
+        "startHigh",
+        "13085845",
+        "readback"
+      ],
+      [
+        "end",
+        "parameter",
+        "windowEndHigh",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "readback",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{outputMask}{\\mathrm{keep}}=\\mathbf{1}[\\term{start}{s}\\leq\\term{timestamps}{t}\\leq\\term{end}{e}]",
+    "ascii": "keep=1[start <= t <= end]; reversed windows and NaN timestamps reject; additionalPredicates intersect the mask.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:52:42.110Z",
+    "runId": "run-de5db08c",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-de5db08c",
+    "rung": "formula",
+    "bindings": {
+      "entity": 513
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

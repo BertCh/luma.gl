@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-metrics",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-metrics",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of vessel track 0. trackStopCounts: 2. values read back from the GPU run. trajectory-metrics: 5 quantities.",
+  "description": "Receipt of vessel track 0. trackStopCounts: 2. values read back from the GPU run. trajectory-metrics: 5 quantities.",
+  "llms": "Receipt of vessel track 0\n\n- trackStopCounts: 2\n- trajectory-metrics: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "trackStopCounts",
+    "value": "2"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of vessel track 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"trajectory-metrics\"><tr><th scope=\"rowgroup\" colspan=\"5\">trajectory-metrics</th></tr><tr data-provenance=\"readback\"><td>trajectory-metrics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-metrics-snapshots-trackLengths-0\" title=\"track length in m\">trackLengths</button></td><td>12097.845703125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-metrics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-metrics-snapshots-trackDurations-0\" title=\"track duration in s\">trackDurations</button></td><td>5552</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-metrics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-metrics-snapshots-averageSpeeds-0\" title=\"average speed in m/s (length over duration)\">averageSpeeds</button></td><td>2.179006814956665</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-metrics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-metrics-snapshots-maximumSpeeds-0\" title=\"maximum step speed in m/s\">maximumSpeeds</button></td><td>4.905632019042969</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-metrics</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-metrics-snapshots-trackStopCounts-0\" title=\"stops per track (unclamped)\">trackStopCounts</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-core.segmented-reduction</h4><div><pre class=\"lens-tex\">\\term{y}{y_s}=\\operatorname{op}_{\\term{offsets}{o_s}\\le j&lt;o_{s+1}}\\term{x}{x_j},\\quad\\operatorname{op}\\in\\{\\operatorname{sum},\\operatorname{min},\\operatorname{max}\\}</pre><p class=\"lens-ascii\">y[s]=sum|min|max of x[offsets[s]..offsets[s+1]-1], empty=0; no mask or nonfinite filter. Min/max fold from type extrema (finite f32 extrema); integer sums wrap at 32 bits.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "trajectory-metrics",
+        "trackLengths",
+        "12097.845703125",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-metrics",
+        "trackDurations",
+        "5552",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-metrics",
+        "averageSpeeds",
+        "2.179006814956665",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-metrics",
+        "maximumSpeeds",
+        "4.905632019042969",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-metrics",
+        "trackStopCounts",
+        "2",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.118Z",
+    "runId": "run-7b8d1398",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-7b8d1398",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

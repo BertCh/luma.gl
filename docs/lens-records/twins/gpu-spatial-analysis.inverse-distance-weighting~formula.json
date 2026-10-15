@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.inverse-distance-weighting",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.inverse-distance-weighting",
+  "viewId": "formula-card",
+  "caption": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact…",
+  "description": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact…",
+  "llms": "Formula z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.inverse-distance-weighting</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}</pre><p class=\"lens-ascii\">z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"result\">predicted rainfall · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"sample\">station rainfall · input · sampleValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"distance\">distance to cell centre · intermediate · distanceSquared</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"power\">distance power · parameter · power</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\" data-value=\"neighbors\">nearest samples within radius · intermediate · nearRows</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-inverse-distance-weighting-compiled:inverse-distance-weighting-gather\">inverse-distance-weighting-gather</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "predicted rainfall",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "station rainfall",
+        "input",
+        "sampleValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance to cell centre",
+        "intermediate",
+        "distanceSquared",
+        "—",
+        "metadata"
+      ],
+      [
+        "distance power",
+        "parameter",
+        "power",
+        "—",
+        "metadata"
+      ],
+      [
+        "nearest samples within radius",
+        "intermediate",
+        "nearRows",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{result}{\\hat z(u)}=\\frac{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{sample}{z_i}\\,\\term{distance}{d_i}^{-\\term{power}{p}}}{\\sum_{i\\in\\term{neighbors}{N(u)}}\\term{distance}{d_i}^{-\\term{power}{p}}}",
+    "ascii": "z(u) = sum(z_i / d_i^p) / sum(1 / d_i^p), taper=none. N contains up to k nearest unmasked non-NaN samples within inclusive radius R and index bounds, ordered by (distance², row). An exact hit returns the smallest-row sample; without an exact hit, fewer than max(minimumNeighborCount, 1) contributors gives NaN. Log-space accumulation rescales weights without changing the normalized mean.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.011Z",
+    "runId": "run-849303e9",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-849303e9",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

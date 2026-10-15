@@ -1,0 +1,77 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.raster-arithmetic",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.raster-arithmetic",
+  "viewId": "formula-card",
+  "caption": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check pre…",
+  "description": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check pre…",
+  "llms": "Formula Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.\n\n- bound symbols: 3/3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.raster-arithmetic.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{result}{\\Delta N}=10^{-4}\\term{after}{N_{\\mathrm{after,DN}}}-10^{-4}\\term{before}{N_{\\mathrm{before,DN}}}\\quad(\\text{both raw values valid; otherwise NaN})</pre><p class=\"lens-ascii\">Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"result\">difference · output · valuesOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"after\">after DN · input · aRaw</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-raster-arithmetic-compiled:raster-arithmetic-evaluate\" data-value=\"before\">before DN · input · bRaw</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "difference",
+        "output",
+        "valuesOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "after DN",
+        "input",
+        "aRaw",
+        "—",
+        "metadata"
+      ],
+      [
+        "before DN",
+        "input",
+        "bRaw",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{result}{\\Delta N}=10^{-4}\\term{after}{N_{\\mathrm{after,DN}}}-10^{-4}\\term{before}{N_{\\mathrm{before,DN}}}\\quad(\\text{both raw values valid; otherwise NaN})",
+    "ascii": "Subtract mode in this run: a = nirAfterDN*0.0001+0; b = nirBeforeDN*0.0001+0; result = min(max(a-b,-Infinity),+Infinity); either raw operand NaN or equal to noDataValue (0 here), or a NaN arithmetic result, yields NaN. The sentinel check precedes scaling.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:04.263Z",
+    "runId": "run-8c7810d9",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-8c7810d9",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

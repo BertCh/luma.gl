@@ -1,0 +1,99 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-level-selection",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-level-selection",
+  "viewId": "formula-card",
+  "caption": "Formula ell = min(activeLevel[0], levelCounts.length - 1); status.count = levelCounts[ell]; firstRow = levelFirstRows[ell] (zero offsets by default). Optional drawArguments[1] = status.count and drawArguments[3] = firstRow; the other draw words are…",
+  "description": "Formula ell = min(activeLevel[0], levelCounts.length - 1); status.count = levelCounts[ell]; firstRow = levelFirstRows[ell] (zero offsets by default). Optional drawArguments[1] = status.count and drawArguments[3] = firstRow; the other draw words are…",
+  "llms": "Formula ell = min(activeLevel[0], levelCounts.length - 1); status.count = levelCounts[ell]; firstRow = levelFirstRows[ell] (zero offsets by default). Optional drawArguments[1] = status.count and drawArguments[3] = firstRow; the other draw words are untouched.\n\n- bound symbols: 6/6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/6"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.cell-level-selection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{level}{\\ell}=\\min(\\term{active}{a},|\\term{counts}{N}|-1),\\qquad \\term{count}{n}=\\term{counts}{N}[\\term{level}{\\ell}],\\quad \\term{first}{f}=\\term{firstRows}{F}[\\term{level}{\\ell}]</pre><p class=\"lens-ascii\">ell = min(activeLevel[0], levelCounts.length - 1); status.count = levelCounts[ell]; firstRow = levelFirstRows[ell] (zero offsets by default). Optional drawArguments[1] = status.count and drawArguments[3] = firstRow; the other draw words are untouched.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:boundaries-geometry-geometry\" data-value=\"level\">level · intermediate · level</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:cell-level-selection-select\" data-value=\"active\">active · input · activeLevel</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:setup-pyramid-level-counts\" data-value=\"counts\">counts · input · levelCounts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:setup-pyramid-level-0-publish\" data-value=\"count\">count · output · countOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:cell-level-selection-select\" data-value=\"first\">first · output · firstRowOut</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-cell-level-selection-compiled:cell-level-selection-select\" data-value=\"firstRows\">levelFirstRows · parameter · LEVEL_FIRST_ROWS</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "level",
+        "intermediate",
+        "level",
+        "—",
+        "metadata"
+      ],
+      [
+        "active",
+        "input",
+        "activeLevel",
+        "—",
+        "metadata"
+      ],
+      [
+        "counts",
+        "input",
+        "levelCounts",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "output",
+        "countOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "first",
+        "output",
+        "firstRowOut",
+        "—",
+        "metadata"
+      ],
+      [
+        "levelFirstRows",
+        "parameter",
+        "LEVEL_FIRST_ROWS",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{level}{\\ell}=\\min(\\term{active}{a},|\\term{counts}{N}|-1),\\qquad \\term{count}{n}=\\term{counts}{N}[\\term{level}{\\ell}],\\quad \\term{first}{f}=\\term{firstRows}{F}[\\term{level}{\\ell}]",
+    "ascii": "ell = min(activeLevel[0], levelCounts.length - 1); status.count = levelCounts[ell]; firstRow = levelFirstRows[ell] (zero offsets by default). Optional drawArguments[1] = status.count and drawArguments[3] = firstRow; the other draw words are untouched.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:44.835Z",
+    "runId": "run-6bc3c822",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-6bc3c822",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

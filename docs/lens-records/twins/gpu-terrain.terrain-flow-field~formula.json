@@ -1,0 +1,105 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-flow-field",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-flow-field",
+  "viewId": "formula-card",
+  "caption": "Formula g = exaggeration * ((z[c+1] - z[c-1]) / (dx * (c1 - c0)), (z[r+1] - z[r-1]) / dy) with one-sided differences at the border and the row spacing summed from the D8 distances; v = w - (w . g) g / (1 + g . g); w = (windX, windY) in the raster fr…",
+  "description": "Formula g = exaggeration * ((z[c+1] - z[c-1]) / (dx * (c1 - c0)), (z[r+1] - z[r-1]) / dy) with one-sided differences at the border and the row spacing summed from the D8 distances; v = w - (w . g) g / (1 + g . g); w = (windX, windY) in the raster fr…",
+  "llms": "Formula g = exaggeration * ((z[c+1] - z[c-1]) / (dx * (c1 - c0)), (z[r+1] - z[r-1]) / dy) with one-sided differences at the border and the row spacing summed from the D8 distances; v = w - (w . g) g / (1 + g . g); w = (windX, windY) in the raster frame, x along columns, y along rows (south); NaN for both components when the cell or one of its four gradient neighbours is invalid\n\n- bound symbols: 5/5\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.terrain-flow-field.tangent-projection</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{velocity}{\\mathbf{v}} = \\term{wind}{\\mathbf{w}} - \\term{deflection}{\\lambda}\\,\\term{gradient}{\\mathbf{g}},\\quad \\lambda = \\frac{\\mathbf{w}\\cdot\\mathbf{g}}{1 + \\lVert\\mathbf{g}\\rVert^2},\\quad \\mathbf{g} = \\term{exaggeration}{\\varepsilon}\\left(\\frac{z_{c+1} - z_{c-1}}{\\Delta x\\,(c_1 - c_0)},\\ \\frac{z_{r+1} - z_{r-1}}{\\Delta y}\\right)</pre><p class=\"lens-ascii\">g = exaggeration * ((z[c+1] - z[c-1]) / (dx * (c1 - c0)), (z[r+1] - z[r-1]) / dy) with one-sided differences at the border and the row spacing summed from the D8 distances; v = w - (w . g) g / (1 + g . g); w = (windX, windY) in the raster frame, x along columns, y along rows (south); NaN for both components when the cell or one of its four gradient neighbours is invalid</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-field-compiled:terrain-flow-field-deflect\" data-value=\"velocity\">v · output · velocity</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-field-compiled:terrain-flow-field-deflect\" data-value=\"wind\">w · parameter · wind</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-field-compiled:terrain-flow-field-deflect\" data-value=\"deflection\">λ · intermediate · deflection</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-field-compiled:terrain-flow-field-deflect\" data-value=\"gradient\">g · intermediate · gradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-terrain-flow-field-compiled:terrain-flow-field-deflect\" data-value=\"exaggeration\">ε · parameter · exaggeration</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "v",
+        "output",
+        "velocity",
+        "—",
+        "metadata"
+      ],
+      [
+        "w",
+        "parameter",
+        "wind",
+        "—",
+        "metadata"
+      ],
+      [
+        "λ",
+        "intermediate",
+        "deflection",
+        "—",
+        "metadata"
+      ],
+      [
+        "g",
+        "intermediate",
+        "gradient",
+        "—",
+        "metadata"
+      ],
+      [
+        "ε",
+        "parameter",
+        "exaggeration",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{velocity}{\\mathbf{v}} = \\term{wind}{\\mathbf{w}} - \\term{deflection}{\\lambda}\\,\\term{gradient}{\\mathbf{g}},\\quad \\lambda = \\frac{\\mathbf{w}\\cdot\\mathbf{g}}{1 + \\lVert\\mathbf{g}\\rVert^2},\\quad \\mathbf{g} = \\term{exaggeration}{\\varepsilon}\\left(\\frac{z_{c+1} - z_{c-1}}{\\Delta x\\,(c_1 - c_0)},\\ \\frac{z_{r+1} - z_{r-1}}{\\Delta y}\\right)",
+    "ascii": "g = exaggeration * ((z[c+1] - z[c-1]) / (dx * (c1 - c0)), (z[r+1] - z[r-1]) / dy) with one-sided differences at the border and the row spacing summed from the D8 distances; v = w - (w . g) g / (1 + g . g); w = (windX, windY) in the raster frame, x along columns, y along rows (south); NaN for both components when the cell or one of its four gradient neighbours is invalid",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:32:35.727Z",
+    "runId": "run-d85b714a",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-d85b714a",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

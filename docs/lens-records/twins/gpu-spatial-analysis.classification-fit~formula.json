@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.classification-fit",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.classification-fit",
+  "viewId": "formula-card",
+  "caption": "Formula GADF = 1 - ADCM / ADAM; ADCM = sum over classes c of sum over rows i in c of |x_i - median_c|; ADAM = sum over all counted rows of |x_i - median of all rows|. GADF = 1 when ADAM = 0. Only rows with a class below k, an unmasked flag and a fin…",
+  "description": "Formula GADF = 1 - ADCM / ADAM; ADCM = sum over classes c of sum over rows i in c of |x_i - median_c|; ADAM = sum over all counted rows of |x_i - median of all rows|. GADF = 1 when ADAM = 0. Only rows with a class below k, an unmasked flag and a fin…",
+  "llms": "Formula GADF = 1 - ADCM / ADAM; ADCM = sum over classes c of sum over rows i in c of |x_i - median_c|; ADAM = sum over all counted rows of |x_i - median of all rows|. GADF = 1 when ADAM = 0. Only rows with a class below k, an unmasked flag and a finite value are counted; medians are exact (mean of the two middle values).\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.classification-fit</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{gadf}{\\mathrm{GADF}} = 1 - \\frac{\\term{adcm}{\\mathrm{ADCM}}}{\\term{adam}{\\mathrm{ADAM}}}, \\quad \\mathrm{ADCM} = \\sum_{c}\\sum_{i \\in c} \\lvert \\term{value}{x_i} - \\term{classMedian}{m_c} \\rvert, \\quad \\mathrm{ADAM} = \\sum_{i} \\lvert x_i - m \\rvert</pre><p class=\"lens-ascii\">GADF = 1 - ADCM / ADAM; ADCM = sum over classes c of sum over rows i in c of |x_i - median_c|; ADAM = sum over all counted rows of |x_i - median of all rows|. GADF = 1 when ADAM = 0. Only rows with a class below k, an unmasked flag and a finite value are counted; medians are exact (mean of the two middle values).</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-classification-fit-compiled:classification-fit-summary\" data-value=\"gadf\">GADF · output · summary</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-classification-fit-compiled:classification-fit-summary\" data-value=\"adcm\">ADCM · intermediate · adcm</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-classification-fit-compiled:classification-fit-summary\" data-value=\"adam\">ADAM · intermediate · adam</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-classification-fit-compiled:class-breaks-extremes\" data-value=\"value\">x_i · input · values</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-classification-fit-compiled:class-breaks-finish\" data-value=\"classMedian\">m_c · intermediate · median</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "GADF",
+        "output",
+        "summary",
+        "—",
+        "metadata"
+      ],
+      [
+        "ADCM",
+        "intermediate",
+        "adcm",
+        "—",
+        "metadata"
+      ],
+      [
+        "ADAM",
+        "intermediate",
+        "adam",
+        "—",
+        "metadata"
+      ],
+      [
+        "x_i",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ],
+      [
+        "m_c",
+        "intermediate",
+        "median",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{gadf}{\\mathrm{GADF}} = 1 - \\frac{\\term{adcm}{\\mathrm{ADCM}}}{\\term{adam}{\\mathrm{ADAM}}}, \\quad \\mathrm{ADCM} = \\sum_{c}\\sum_{i \\in c} \\lvert \\term{value}{x_i} - \\term{classMedian}{m_c} \\rvert, \\quad \\mathrm{ADAM} = \\sum_{i} \\lvert x_i - m \\rvert",
+    "ascii": "GADF = 1 - ADCM / ADAM; ADCM = sum over classes c of sum over rows i in c of |x_i - median_c|; ADAM = sum over all counted rows of |x_i - median of all rows|. GADF = 1 when ADAM = 0. Only rows with a class below k, an unmasked flag and a finite value are counted; medians are exact (mean of the two middle values).",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "fail",
+      "reason": "classification needs significance inference"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.182Z",
+    "runId": "run-c8c4c189",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c8c4c189",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

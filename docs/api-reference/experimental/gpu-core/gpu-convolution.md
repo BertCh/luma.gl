@@ -9,6 +9,12 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Convolves a 64 × 64 Alps elevation tile with a four-neighbour Laplacian stencil to give curvature in metres.
+
+::lens{scenario=gpu-core.convolution rung=result caption="The sharpest interior hollow is +323.75 m at row 34, column 1; the outer ring reads zero-padded."}
+
+The figure reads `elevation → stencil → curvature` for the whole 64 × 64 tile. The stencil weights are `0 1 0 / 1 -4 1 / 0 1 0`, so each curvature value is the sum of a cell's four edge neighbours minus four times the cell, in metres. The scenario forces `strategy: 'direct'` and uses `boundary: 'zero'`: samples outside the tile count as 0 m, so the outer ring of 252 cells reads about −1,400 to −8,700 m and is not valid curvature. The picture uses the sequential palette.
+
 `GPUConvolution` adds a same-size, centered two-dimensional `float32` convolution to a
 `GPUCommandGraph`. It accepts GPU-resident input, kernel, and output views and records either
 direct spatial passes or a graph-native frequency-domain pipeline. Neither path compiles, submits,
@@ -18,6 +24,18 @@ The spectral path reuses the radix-2 planning and complex arithmetic factored ou
 Packing, two forward transforms, spectral multiplication, the inverse transform, and cropping are
 all explicit graph nodes. Their nine logical complex scratch fields are graph-owned transients, so
 the compiler can alias fields whose lifetimes do not overlap.
+
+#### How it computes
+
+{/* lens:GPUConvolution */}
+
+::lens{scenario=gpu-core.convolution rung=kernel caption="Inspect 256-lane workgroups each summing nine kernel taps for one output cell."}
+
+::lens{scenario=gpu-core.convolution rung=graph caption="Trace the single direct convolution node from elevation and stencil to curvature."}
+
+::lens{scenario=gpu-core.convolution rung=datum caption="Follow one tile cell from its elevation to its curvature."}
+
+::lens{scenario=gpu-core.convolution rung=formula caption="Read curvature as the stencil-weighted sum of a cell's four edge neighbours."}
 
 ## When to use
 

@@ -7,6 +7,12 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Multiplies an 8 × 8 elevation block by eight 1/8 weights to give each row's mean elevation.
+
+::lens{scenario=gpu-core.mat-vec rung=result caption="Row means rise southward from 1,939 m (row 0) to 2,253 m (row 7), the highlighted maximum."}
+
+The figure reads `A × x = y`: `A` is the 8 × 8 elevation block at tile rows and columns 24–31, `x` holds eight weights of 1/8, and `y[r]` is the mean elevation of block row `r`, in metres. The picture uses the sequential palette.
+
 <GPUOperationContract operation="gpu-matvec" />
 
 Matrix-vector multiplication applies a matrix `A` to a vector `x` to produce another vector `y`:
@@ -43,6 +49,18 @@ matrix row 1 ─┤
 ```
 
 Matrices often represent linear transformations, physical operators, graph-derived systems or discretized differential equations. Repeated `A*x` operations are central to iterative numerical methods.
+
+#### How it computes
+
+{/* lens:GPUMatVec */}
+
+::lens{scenario=gpu-core.mat-vec rung=kernel caption="Inspect eight of 256 lanes multiplying one row's cells before the workgroup sum."}
+
+::lens{scenario=gpu-core.mat-vec rung=graph caption="Trace the single row-sum node that reads A and x and writes y."}
+
+::lens{scenario=gpu-core.mat-vec rung=datum caption="Follow one block row from its eight cells to its mean."}
+
+::lens{scenario=gpu-core.mat-vec rung=formula caption="Read y[r] as the row-major dot product of row r with x."}
 
 ## Row-major storage
 

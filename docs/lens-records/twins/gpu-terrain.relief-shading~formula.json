@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.relief-shading",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-terrain.relief-shading",
+  "viewId": "formula-card",
+  "caption": "Formula g_e = zFactor * Gx / (8 dx); g_n = northSign * zFactor * Gy / (8 dy); n = normalize(-g_e, -g_n, 1); aspect = atan2(-g_e, -g_n); hillshade = sum(w_i * max(n . l_i, 0)) / sum(w_i) with w_i = sin^2(aspect - azimuth_i) (1 on flat cells) for aspe…",
+  "description": "Formula g_e = zFactor * Gx / (8 dx); g_n = northSign * zFactor * Gy / (8 dy); n = normalize(-g_e, -g_n, 1); aspect = atan2(-g_e, -g_n); hillshade = sum(w_i * max(n . l_i, 0)) / sum(w_i) with w_i = sin^2(aspect - azimuth_i) (1 on flat cells) for aspe…",
+  "llms": "Formula g_e = zFactor * Gx / (8 dx); g_n = northSign * zFactor * Gy / (8 dy); n = normalize(-g_e, -g_n, 1); aspect = atan2(-g_e, -g_n); hillshade = sum(w_i * max(n . l_i, 0)) / sum(w_i) with w_i = sin^2(aspect - azimuth_i) (1 on flat cells) for aspect weighting, the lights own weights for fixed; relief = clamp(exposure * (1 - eta + eta * hillshade), 0, 1) without sky-view, texture or curvature inputs; NaN where the 3x3 window is invalid\n\n- bound symbols: 6/8\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "6/8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-terrain.relief-shading.multidirectional</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{hillshade}{H} = \\frac{\\sum_i \\term{weight}{w_i}\\,\\max(\\mathbf n\\cdot\\mathbf l_i,\\,0)}{\\sum_i w_i},\\ \\ w_i = \\sin^2(\\term{aspect}{A} - \\alpha_i),\\ \\ \\mathbf n \\propto (-\\term{eastGradient}{g_e},\\,-\\term{northGradient}{g_n},\\,1),\\quad \\term{relief}{R} = \\operatorname{clip}\\!\\big(\\term{exposure}{\\varepsilon}\\,(1 - \\term{hillshadeStrength}{\\eta} + \\eta H),\\,0,\\,1\\big)</pre><p class=\"lens-ascii\">g_e = zFactor * Gx / (8 dx); g_n = northSign * zFactor * Gy / (8 dy); n = normalize(-g_e, -g_n, 1); aspect = atan2(-g_e, -g_n); hillshade = sum(w_i * max(n . l_i, 0)) / sum(w_i) with w_i = sin^2(aspect - azimuth_i) (1 on flat cells) for aspect weighting, the lights own weights for fixed; relief = clamp(exposure * (1 - eta + eta * hillshade), 0, 1) without sky-view, texture or curvature inputs; NaN where the 3x3 window is invalid</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-hillshade\" data-value=\"hillshade\">H · intermediate · hillshadeValues</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-hillshade\" data-value=\"weight\">w_i · intermediate · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-hillshade\" data-value=\"aspect\">A · intermediate · aspect</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-hillshade\" data-value=\"eastGradient\">g_e · intermediate · eastGradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-hillshade\" data-value=\"northGradient\">g_n · intermediate · northGradient</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-terrain-relief-shading-compiled:relief-shading-compose\" data-value=\"relief\">R · output · reliefValues</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"exposure\">ε · parameter · unknown — wgsl exposure not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"hillshadeStrength\">η · parameter · unknown — wgsl hillshadeStrength not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "H",
+        "intermediate",
+        "hillshadeValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "w_i",
+        "intermediate",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "A",
+        "intermediate",
+        "aspect",
+        "—",
+        "metadata"
+      ],
+      [
+        "g_e",
+        "intermediate",
+        "eastGradient",
+        "—",
+        "metadata"
+      ],
+      [
+        "g_n",
+        "intermediate",
+        "northGradient",
+        "—",
+        "metadata"
+      ],
+      [
+        "R",
+        "output",
+        "reliefValues",
+        "—",
+        "metadata"
+      ],
+      [
+        "ε",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "η",
+        "parameter",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{hillshade}{H} = \\frac{\\sum_i \\term{weight}{w_i}\\,\\max(\\mathbf n\\cdot\\mathbf l_i,\\,0)}{\\sum_i w_i},\\ \\ w_i = \\sin^2(\\term{aspect}{A} - \\alpha_i),\\ \\ \\mathbf n \\propto (-\\term{eastGradient}{g_e},\\,-\\term{northGradient}{g_n},\\,1),\\quad \\term{relief}{R} = \\operatorname{clip}\\!\\big(\\term{exposure}{\\varepsilon}\\,(1 - \\term{hillshadeStrength}{\\eta} + \\eta H),\\,0,\\,1\\big)",
+    "ascii": "g_e = zFactor * Gx / (8 dx); g_n = northSign * zFactor * Gy / (8 dy); n = normalize(-g_e, -g_n, 1); aspect = atan2(-g_e, -g_n); hillshade = sum(w_i * max(n . l_i, 0)) / sum(w_i) with w_i = sin^2(aspect - azimuth_i) (1 on flat cells) for aspect weighting, the lights own weights for fixed; relief = clamp(exposure * (1 - eta + eta * hillshade), 0, 1) without sky-view, texture or curvature inputs; NaN where the 3x3 window is invalid",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.636Z",
+    "runId": "run-722961d6",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-722961d6",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

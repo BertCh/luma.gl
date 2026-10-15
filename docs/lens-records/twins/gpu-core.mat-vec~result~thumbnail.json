@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.mat-vec",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-core.mat-vec",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs.",
+  "description": "Read captured inputs into recorded array outputs. rowMeans[7]: 2,253. values read back from the GPU run. 1 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- rowMeans[7]: 2,253\n- 1 output panels from the recorded run\n- elevation: captured cells at native resolution\n- weights: captured cells at native resolution\n- rowMeans: captured cells at native resolution\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rowMeans[7]",
+    "value": "2,253"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-core-mat-vec-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"elevation\"><image width=\"45.333333333333336\" height=\"45.333333333333336\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-area\" data-role=\"input\" stroke-width=\"1\" fill=\"#5f6672\" stroke=\"#5f6672\" fill-opacity=\"0.6599999999999999\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-vec-snapshots-elevation-0\" data-axis=\"entity\" data-key-space=\"block-cells\" x=\"6\" y=\"25.333333333333332\" data-token=\"tile\" data-raster-width=\"8\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAAD1BMVEUhcbXG2+/3+/9rrtYIMGuB7GTfAAAAU0lEQVR4AQFIALf/AAABAgICAgICAAABAgICAgIBAAABAgEBAQMAAAADAgEDAAQEAAAAAQEDAAQEAAQAAwEBAwAEAAQEAAMBAwAEAAQEBAMDAwMEDzMAgKCJS4EAAAAASUVORK5CYII=\"></image></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"weights\"><image width=\"10\" height=\"80\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-area\" data-role=\"input\" stroke-width=\"1\" fill=\"#5f6672\" stroke=\"#5f6672\" fill-opacity=\"0.33999999999999997\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-vec-snapshots-weights-0\" data-axis=\"entity\" data-key-space=\"block-columns\" x=\"73\" y=\"8\" data-token=\"tile\" data-raster-width=\"1\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAICAMAAAAPxGVzAAAAA1BMVEUIMGusT+JBAAAAG0lEQVR4AQEQAO//AAAAAAAAAAAAAAAAAAAAAAAQAAHAZx+0AAAAAElFTkSuQmCC\"></image></g><g class=\"cv-array-heatmap\" role=\"img\" aria-label=\"rowMeans\"><image width=\"10\" height=\"80\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.5\" fill=\"#c6dbef\" stroke=\"#ffffff\" fill-opacity=\"1\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-vec-snapshots-rowMeans-0\" data-axis=\"entity\" data-key-space=\"block-rows\" x=\"122.33333333333334\" y=\"8\" data-token=\"tile\" data-raster-width=\"1\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAICAMAAAAPxGVzAAAAD1BMVEX3+//G2+9rrtYhcbUIMGtSKc/4AAAAG0lEQVR4AQEQAO//AAAAAAABAAIAAgADAAQABABaABEZVG6yAAAAAElFTkSuQmCC\"></image><rect class=\"cv-mark cv-mark--highlight cv-line\" data-role=\"highlight\" stroke-width=\"2.5\" fill=\"none\" stroke=\"#d55e00\" data-provenance=\"readback\" data-capture=\"gpu-core-mat-vec-snapshots-rowMeans-0\" x=\"122.33333333333334\" y=\"78\" width=\"10\" height=\"10\" data-key=\"7\"></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:37:19.197Z",
+    "runId": "run-9204fc5b",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-9204fc5b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

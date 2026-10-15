@@ -1,0 +1,102 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.trajectory-encounters",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.trajectory-encounters",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of track pair 0. bucketCounts: 1. values read back from the GPU run. trajectory-encounters: 5 quantities.",
+  "description": "Receipt of track pair 0. bucketCounts: 1. values read back from the GPU run. trajectory-encounters: 5 quantities.",
+  "llms": "Receipt of track pair 0\n\n- bucketCounts: 1\n- trajectory-encounters: 5 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bucketCounts",
+    "value": "1"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of track pair 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"trajectory-encounters\"><tr><th scope=\"rowgroup\" colspan=\"5\">trajectory-encounters</th></tr><tr data-provenance=\"readback\"><td>trajectory-encounters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-encounters-snapshots-pairTracks-0\" title=\"lower track index of the pair; rows past the pair count are unused\">pairTracks</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-encounters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-encounters-snapshots-pairPartners-0\" title=\"higher track index of the pair; rows past the pair count are unused\">pairPartners</button></td><td>5</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-encounters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-encounters-snapshots-minimumDistances-0\" title=\"smallest clock-sample distance in m; rows past the pair count are unused\">minimumDistances</button></td><td>197.3523406982422</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-encounters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-encounters-snapshots-firstBuckets-0\" title=\"first 60 s bucket within 200 m; rows past the pair count are unused\">firstBuckets</button></td><td>2</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>trajectory-encounters</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-trajectory-encounters-snapshots-bucketCounts-0\" title=\"buckets within 200 m; rows past the pair count are unused\">bucketCounts</button></td><td>1</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "trajectory-encounters",
+        "pairTracks",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-encounters",
+        "pairPartners",
+        "5",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-encounters",
+        "minimumDistances",
+        "197.3523406982422",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-encounters",
+        "firstBuckets",
+        "2",
+        "0",
+        "readback"
+      ],
+      [
+        "trajectory-encounters",
+        "bucketCounts",
+        "1",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:45.035Z",
+    "runId": "run-9592eaeb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-9592eaeb",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

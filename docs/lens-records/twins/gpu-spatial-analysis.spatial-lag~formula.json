@@ -1,0 +1,95 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-lag",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-lag",
+  "viewId": "formula-card",
+  "caption": "Formula Without normalize: [Wx]_i = sum_j w_ij x_j over included neighbors in the value range; masked rows output zero. With normalize, divide by the included weight sum, returning zero when that sum is nonpositive. This example uses row weights and…",
+  "description": "Formula Without normalize: [Wx]_i = sum_j w_ij x_j over included neighbors in the value range; masked rows output zero. With normalize, divide by the included weight sum, returning zero when that sum is nonpositive. This example uses row weights and…",
+  "llms": "Formula Without normalize: [Wx]_i = sum_j w_ij x_j over included neighbors in the value range; masked rows output zero. With normalize, divide by the included weight sum, returning zero when that sum is nonpositive. This example uses row weights and normalize=false.\n\n- bound symbols: 2/3\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "2/3"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>spatial-lag</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{lag}{[Wx]_i}=\\sum_j\\term{weight}{w_{ij}}\\term{value}{x_j}</pre><p class=\"lens-ascii\">Without normalize: [Wx]_i = sum_j w_ij x_j over included neighbors in the value range; masked rows output zero. With normalize, divide by the included weight sum, returning zero when that sum is nonpositive. This example uses row weights and normalize=false.</p></div><div class=\"lens-symbols\"><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lag\">lag · output · unknown — wgsl output not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-compiled:spatial-lag-lag\" data-value=\"weight\">weight · input · weight</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.spatial-lag-compiled:contiguity-weights-vertex-sort-low-radix-digit-0-scatter\" data-value=\"value\">value · input · values</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "lag",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "weight",
+        "input",
+        "weight",
+        "—",
+        "metadata"
+      ],
+      [
+        "value",
+        "input",
+        "values",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{lag}{[Wx]_i}=\\sum_j\\term{weight}{w_{ij}}\\term{value}{x_j}",
+    "ascii": "Without normalize: [Wx]_i = sum_j w_ij x_j over included neighbors in the value range; masked rows output zero. With normalize, divide by the included weight sum, returning zero when that sum is nonpositive. This example uses row weights and normalize=false.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    },
+    {
+      "guardId": "islands-disclosed",
+      "label": "Islands disclosed",
+      "blocks": [
+        "neighbourhood-map"
+      ],
+      "status": "pass",
+      "reason": "1 islands, hatched"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:01:53.536Z",
+    "runId": "run-3402ffaf",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-3402ffaf",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

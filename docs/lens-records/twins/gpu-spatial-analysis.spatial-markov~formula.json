@@ -1,0 +1,111 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-markov",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.spatial-markov",
+  "viewId": "formula-card",
+  "caption": "Formula p_ab|c = n_abc / n_ac; n_abc = #{(t, i): class(t, i) = a, class(t + 1, i) = b, lag class of L(t, i) = c}; L(t, i) = sum_j w_ij y(t, j) / sum_j w_ij over the included neighbours (normalize = true). Lag classes use one set of breaks pooled ove…",
+  "description": "Formula p_ab|c = n_abc / n_ac; n_abc = #{(t, i): class(t, i) = a, class(t + 1, i) = b, lag class of L(t, i) = c}; L(t, i) = sum_j w_ij y(t, j) / sum_j w_ij over the included neighbours (normalize = true). Lag classes use one set of breaks pooled ove…",
+  "llms": "Formula p_ab|c = n_abc / n_ac; n_abc = #{(t, i): class(t, i) = a, class(t + 1, i) = b, lag class of L(t, i) = c}; L(t, i) = sum_j w_ij y(t, j) / sum_j w_ij over the included neighbours (normalize = true). Lag classes use one set of breaks pooled over all periods. p = 0 for a (c, a) state without transitions.\n\n- bound symbols: 3/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "3/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.spatial-markov</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ab\\mid c}} = \\frac{\\term{count}{n_{abc}}}{\\term{rowTotal}{n_{ac}}}, \\quad n_{abc} = \\#\\{(t, i) : x_{t,i} = a,\\ x_{t+1,i} = b,\\ \\term{lagClass}{\\mathrm{class}(L_{t,i})} = c\\}, \\quad \\term{lag}{L_{t,i}} = \\frac{\\sum_j w_{ij}\\, y_{t,j}}{\\sum_j w_{ij}}</pre><p class=\"lens-ascii\">p_ab|c = n_abc / n_ac; n_abc = #{(t, i): class(t, i) = a, class(t + 1, i) = b, lag class of L(t, i) = c}; L(t, i) = sum_j w_ij y(t, j) / sum_j w_ij over the included neighbours (normalize = true). Lag classes use one set of breaks pooled over all periods. p = 0 for a (c, a) state without transitions.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-markov-compiled:spatial-markov-transitions-normalize\" data-value=\"probability\">p_ab|c · output · probabilities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-markov-compiled:spatial-markov-transitions-clear\" data-value=\"count\">n_abc · intermediate · counts</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-spatial-markov-compiled:spatial-markov-transitions-normalize\" data-value=\"rowTotal\">n_ac · intermediate · rowTotals</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lagClass\">lag class · intermediate · unknown — wgsl lagClasses not found in this record</span><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"lag\">L · intermediate · unknown — wgsl lagValues not found in this record</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "p_ab|c",
+        "output",
+        "probabilities",
+        "—",
+        "metadata"
+      ],
+      [
+        "n_abc",
+        "intermediate",
+        "counts",
+        "—",
+        "metadata"
+      ],
+      [
+        "n_ac",
+        "intermediate",
+        "rowTotals",
+        "—",
+        "metadata"
+      ],
+      [
+        "lag class",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "L",
+        "intermediate",
+        "unknown",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{probability}{p_{ab\\mid c}} = \\frac{\\term{count}{n_{abc}}}{\\term{rowTotal}{n_{ac}}}, \\quad n_{abc} = \\#\\{(t, i) : x_{t,i} = a,\\ x_{t+1,i} = b,\\ \\term{lagClass}{\\mathrm{class}(L_{t,i})} = c\\}, \\quad \\term{lag}{L_{t,i}} = \\frac{\\sum_j w_{ij}\\, y_{t,j}}{\\sum_j w_{ij}}",
+    "ascii": "p_ab|c = n_abc / n_ac; n_abc = #{(t, i): class(t, i) = a, class(t + 1, i) = b, lag class of L(t, i) = c}; L(t, i) = sum_j w_ij y(t, j) / sum_j w_ij over the included neighbours (normalize = true). Lag classes use one set of breaks pooled over all periods. p = 0 for a (c, a) state without transitions.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "row-standardisation",
+      "label": "Row standardisation",
+      "blocks": [
+        "slope-equals-i"
+      ],
+      "status": "pass",
+      "reason": "row-standardised weights"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.451Z",
+    "runId": "run-d01cb976",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-d01cb976",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

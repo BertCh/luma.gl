@@ -1,0 +1,143 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.hot-spot-analysis",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.hot-spot-analysis",
+  "viewId": "formula-card",
+  "caption": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard devi…",
+  "description": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard devi…",
+  "llms": "Formula z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n < 2, S = 0, n S1_i <= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.\n\n- bound symbols: 9/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "9/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>hot-spot-gi-star</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\begin{aligned}\n\\term{zScores}{z_i}&amp;=\\frac{\\term{weightedSum}{\\sum_j w_{ij}c_j}}{\\sqrt{\\term{variance}{S^2}}\\sqrt{\\term{spread}{\\Delta_i}}},\n&amp;\\term{spread}{\\Delta_i}&amp;=\\frac{\\term{count}{n}\\,\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{count}{n}-1}\\\\\n\\term{weightSum}{W_i}&amp;=\\sum_j w_{ij}+\\term{selfWeight}{w_{ii}},\n&amp;\\term{squareSum}{S_{1i}}&amp;=\\sum_j w_{ij}^2+\\term{selfWeight}{w_{ii}}^2\\\\\n\\term{centered}{c_j}&amp;=x_j-\\bar{x},\n&amp;\\term{weightedSum}{\\sum_j w_{ij}c_j}&amp;=\\sum_{j\\ne i}w_{ij}c_j+\\term{selfWeight}{w_{ii}}c_i\n\\end{aligned}</pre><p class=\"lens-ascii\">z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n &lt; 2, S = 0, n S1_i &lt;= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"zScores\">zScores · output · zScores</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"weightedSum\">weightedSum · intermediate · weightedSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-moments-variance\" data-value=\"variance\">variance · intermediate · variance</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"spread\">spread · intermediate · spread</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:contiguity-weights-pair-counts\" data-value=\"count\">analysis rows · intermediate · count</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"squareSum\">squareSum · intermediate · squareSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"weightSum\">weightSum · intermediate · weightSum</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-neighbors\" data-value=\"selfWeight\">selfWeight · parameter · SELF_WEIGHT</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis.hot-spot-analysis-compiled:hot-spot-analysis-center\" data-value=\"centered\">centered · intermediate · centered</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "zScores",
+        "output",
+        "zScores",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightedSum",
+        "intermediate",
+        "weightedSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "variance",
+        "intermediate",
+        "variance",
+        "—",
+        "metadata"
+      ],
+      [
+        "spread",
+        "intermediate",
+        "spread",
+        "—",
+        "metadata"
+      ],
+      [
+        "analysis rows",
+        "intermediate",
+        "count",
+        "—",
+        "metadata"
+      ],
+      [
+        "squareSum",
+        "intermediate",
+        "squareSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "weightSum",
+        "intermediate",
+        "weightSum",
+        "—",
+        "metadata"
+      ],
+      [
+        "selfWeight",
+        "parameter",
+        "SELF_WEIGHT",
+        "—",
+        "metadata"
+      ],
+      [
+        "centered",
+        "intermediate",
+        "centered",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\begin{aligned}\n\\term{zScores}{z_i}&=\\frac{\\term{weightedSum}{\\sum_j w_{ij}c_j}}{\\sqrt{\\term{variance}{S^2}}\\sqrt{\\term{spread}{\\Delta_i}}},\n&\\term{spread}{\\Delta_i}&=\\frac{\\term{count}{n}\\,\\term{squareSum}{S_{1i}}-\\term{weightSum}{W_i}^2}{\\term{count}{n}-1}\\\\\n\\term{weightSum}{W_i}&=\\sum_j w_{ij}+\\term{selfWeight}{w_{ii}},\n&\\term{squareSum}{S_{1i}}&=\\sum_j w_{ij}^2+\\term{selfWeight}{w_{ii}}^2\\\\\n\\term{centered}{c_j}&=x_j-\\bar{x},\n&\\term{weightedSum}{\\sum_j w_{ij}c_j}&=\\sum_{j\\ne i}w_{ij}c_j+\\term{selfWeight}{w_{ii}}c_i\n\\end{aligned}",
+    "ascii": "z_i = sum_j w_ij c_j / (S sqrt(Delta_i)); Delta_i = (n S1_i - W_i^2)/(n-1); W_i = sum_j w_ij + w_ii; S1_i = sum_j w_ij^2 + w_ii^2; c_j = x_j - mean; j runs over active neighbors, w_ii = selfWeight (1 = Gi*). S is the population standard deviation of the n analysis rows. Row-standardized weights are re-divided by what remains of the row sum. With selfWeight = 0 (Gi) the mean and variance of the n-1 other rows replace X and S^2. NaN when n < 2, S = 0, n S1_i <= W_i^2 or fewer than minimumNeighbors neighbors. Two-sided normal p-value; bins use p (or the adjusted p) at 0.10, 0.05, 0.01.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "pass",
+      "reason": "correction: benjamini-hochberg"
+    },
+    {
+      "guardId": "classification-needs-inference",
+      "label": "Classification inference",
+      "blocks": [
+        "cluster-class"
+      ],
+      "status": "pass",
+      "reason": "significance available"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:38:36.547Z",
+    "runId": "run-5f9c064d",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5f9c064d",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

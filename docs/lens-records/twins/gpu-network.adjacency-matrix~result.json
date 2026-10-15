@@ -1,0 +1,41 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.adjacency-matrix",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const matrix = new GPUAdjacencyMatrix({\n  topology: roads,\n  directed: true,\n  order,\n  resolution: 8,\n  output: {\n    counts: createTransientView(graph, 'matrixCounts', 'uint32', 64),\n    maximumCount: createTransientView(graph, 'maximumCount', 'uint32', 1)\n  }\n});\ngraph.add(matrix);\nconst {counts, maximumCount} = matrix.props.output;",
+    "language": "ts",
+    "lineCount": 12
+  },
+  "scenarioId": "gpu-network.adjacency-matrix",
+  "viewId": "result-view",
+  "caption": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts. cells: 64. values read back from the GPU run. Planar coordinates (unit unknown); uniform scale.",
+  "description": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts. cells: 64. values read back from the GPU run. Planar coordinates (unit unknown); uniform scale.",
+  "llms": "Result of gpu-network.adjacency-matrix: no recorded inputs → matrixCounts\n\n- cells: 64\n- Planar coordinates (unit unknown); uniform scale.\n- cell size unknown\n- Raster pixel grid; origin not recorded\n- compute passes were not coalesced as in production\n- lens twin: transients order, matrixCounts, maximumCount retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "64"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><div><svg class=\"cv-figure\" width=\"640\" height=\"360\" viewBox=\"0 0 640 360\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[0,0],[8,8]]\" role=\"img\" aria-label=\"Result: matrixCounts\"><defs><pattern id=\"lens-gpu-network-adjacency-matrix-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-network-adjacency-matrix-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-network-adjacency-matrix-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><image width=\"312\" height=\"312\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-cell cv-v cv-seq-2\" data-role=\"output\" stroke-width=\"1\" fill=\"#8abfdd\" stroke=\"#ffffff\" x=\"164\" y=\"24\" data-provenance=\"readback\" data-raster-width=\"8\" data-raster-height=\"8\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAMAAADz0U65AAAADFBMVEUIPX8ca7CKv91KmMnv9mBhAAAAU0lEQVR4AQFIALf/AAABAgEDAgICAAEAAQIDAwICAAIBAAECAwIDAAECAQABAwICAAMDAgAAAAECAAIDAwMAAAABAAICAwIDAAABAAICAgICAQEADt0AZrKHaiIAAAAASUVORK5CYII=\"></image></g><g data-role=\"highlight\"><rect class=\"cv-mark cv-mark--highlight cv-cell\" data-role=\"highlight\" stroke-width=\"1\" fill=\"none\" stroke=\"#ffffff\" x=\"164\" y=\"24\" width=\"39\" height=\"39\" data-provenance=\"readback\"></rect><text class=\"cv-label cv-label--subject\" x=\"183.5\" y=\"16\" text-anchor=\"middle\">most edges</text></g></svg></div><p class=\"cv-legend\">matrixCounts: <span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-1\" width=\"12\" height=\"12\" fill=\"#c6dbef\"></rect></svg> 0–0</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-2\" width=\"12\" height=\"12\" fill=\"#8abfdd\"></rect></svg> 0–2</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-3\" width=\"12\" height=\"12\" fill=\"#4a98c9\"></rect></svg> 2–4</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-4\" width=\"12\" height=\"12\" fill=\"#1c6bb0\"></rect></svg> 4–67.8</span><span><svg class=\"cv-legend__swatch\" width=\"12\" height=\"12\" aria-hidden><rect class=\"cv-v cv-seq-5\" width=\"12\" height=\"12\" fill=\"#083d7f\"></rect></svg> 67.8–306</span></p><p class=\"cv-note\">Planar coordinates (unit unknown); uniform scale. · cell size unknown · Raster pixel grid; origin not recorded</p></section>",
+    "width": 640,
+    "height": 360
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:41:59.362Z",
+    "runId": "run-8c02d3d4",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients order, matrixCounts, maximumCount retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-8c02d3d4",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

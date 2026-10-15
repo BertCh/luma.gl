@@ -6,7 +6,27 @@ import {GPUOperationContract} from '@site/src/components/docs/gpu-operation-cont
 
 ## Overview
 
+Solves (I + 4L)x = b by conjugate gradient to diffusion-smooth a 16 × 16 elevation block.
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=result caption="Largest smoothing change: +197.8 m at row 8, column 6; final residual norm: 175 m."}
+
+`createGPUConjugateGradientProgram` is the unpreconditioned path. Here `b` is the 16 × 16 elevation block at tile rows and columns 24–39, `L` is the 5-point graph Laplacian with zero-flux (Neumann) boundaries, and `x` starts at 0. The loop is bounded at 12 iterations and stops once the squared residual is at most 35,000 m² (a residual norm of 187 m). The datum receipt selects `x[134]` (row 8, column 6): its five CSR coefficients, residual, and solution after each update, with the search direction and GPU scalar `alpha` used for that update. Receipt datum 0 denotes this one selected unknown. The residual series is read from the solver's own GPU scalars, and the record keeps both the intent graph and the compiled graph.
+
 Conjugate gradient (CG) solves sparse symmetric positive-definite systems `Ax = b`. Preconditioned conjugate gradient (PCG) applies an inexpensive approximation to `A^-1` so that the transformed problem converges in fewer iterations.
+
+#### How it computes
+
+{/* lens:createGPUConjugateGradientProgram */}
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=kernel caption="Inspect the SpMV dispatch and retained WGSL; dot-product kernels reduce into the GPU value arena."}
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=graph caption="Fold the 12 unrolled, gated iterations back into the CG loop."}
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=datum datum=0 caption="Follow x[134]: five matrix entries, residual, and each update using the captured alpha and search direction."}
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=iterations caption="Residual norm falls from 38,903 m to 175 m in 11 iterations; later iterations are gated off."}
+
+::lens{scenario=gpu-core.conjugate-gradient-program rung=formula caption="Read alpha and beta as ratios of GPU-resident dot products."}
 
 ## Why preconditioning matters
 

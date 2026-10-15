@@ -1,0 +1,176 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.cost-distance-path",
+  "rung": "datum",
+  "datum": 2930,
+  "size": "full",
+  "scenarioId": "gpu-raster.cost-distance-path",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 2930. costs: 2513.555419921875. values read back from the GPU run. mask-2: 8 quantities.",
+  "description": "Receipt of grid cells 2930. costs: 2513.555419921875. values read back from the GPU run. mask-2: 8 quantities.",
+  "llms": "Receipt of grid cells 2930\n\n- costs: 2513.555419921875\n- mask-2: 8 quantities\n- cost-distance: 6 quantities\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "costs",
+    "value": "2513.555419921875"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 2930</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"mask-2\"><tr><th scope=\"rowgroup\" colspan=\"5\">mask-2</th></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-347-round-6\" title=\"accumulated cost (friction × m)\">costs</button></td><td>2513.555419921875</td><td>6</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-landscapeElevation-347\" title=\"elevation context (m)\">landscapeElevation</button></td><td>1355.4000244140625</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costFriction-347\" title=\"friction (cost/m): tree 1, grassland 0.7, cropland 0.6, built-up 0.4, water impassable\">costFriction</button></td><td>1</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costSourceMask-347\" title=\"Greenville source (1 at column 37, row 29)\">costSourceMask</button></td><td>0</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costBackLinks-347\" title=\"D8 predecessor code\">costBackLinks</button></td><td>32</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-pathMask0-347\" title=\"path membership (1 on traced cells, 0 elsewhere)\">pathMask0</button></td><td>0</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-pathMask1-347\" title=\"path membership (1 on traced cells, 0 elsewhere)\">pathMask1</button></td><td>1</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>mask-2</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-pathMask2-347\" title=\"path membership (1 on traced cells, 0 elsewhere)\">pathMask2</button></td><td>0</td><td>347</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"cost-distance\"><tr><th scope=\"rowgroup\" colspan=\"5\">cost-distance</th></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-12-round-0\" title=\"accumulated cost (friction × m)\">costs</button></td><td>Infinity</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-13-round-1\" title=\"accumulated cost (friction × m)\">costs</button></td><td>Infinity</td><td>1</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-14-round-2\" title=\"accumulated cost (friction × m)\">costs</button></td><td>2600</td><td>2</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-15-round-3\" title=\"accumulated cost (friction × m)\">costs</button></td><td>2500</td><td>3</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-17-round-4\" title=\"accumulated cost (friction × m)\">costs</button></td><td>2500</td><td>4</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provisional=\"provisional\" data-provenance=\"readback\"><td>cost-distance</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-raster-cost-distance-path-snapshots-costs-18-round-5\" title=\"accumulated cost (friction × m)\">costs</button></td><td>2500</td><td>5</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-core.histogram</h4><div><pre class=\"lens-tex\">\\term{counts}{H_b}=\\sum_{i\\in S}\\mathbf1[\\operatorname{bin}(\\term{x}{x_i})=b],\\quad\\operatorname{bin}(v)=\\operatorname{min}(B-1,\\lfloor B(v-a)/(z-a)\\rfloor)</pre><p class=\"lens-ascii\">H[b]=count of finite, mask-selected values in bin b. Reject outside [a,z]. Uniform bins use floor(B*(v-a)/(z-a)), with z in B-1; a=z sends equal values to bin 0. Explicit strictly increasing finite edges use [e[b],e[b+1]), final bin includes last edge; invalid GPU edges yield zeros. Integer uniform binning uses exact multiply/divide floor; float uses f32 arithmetic.</p></div></div><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-raster-cost-distance-path-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-raster-cost-distance-path-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-raster-cost-distance-path-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2865\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#c6dbef\"></rect><title>2865: 2343.849853515625</title><text x=\"6\" y=\"25\" fill=\"currentColor\">2865</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2866\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2866: 2393.555419921875</title><text x=\"76\" y=\"25\" fill=\"currentColor\">2866</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2867\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2867: 2443.260986328125</title><text x=\"146\" y=\"25\" fill=\"currentColor\">2867</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2929\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2929: 2463.849853515625</title><text x=\"6\" y=\"95\" fill=\"currentColor\">2929</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2930\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2930: 2513.555419921875</title><text x=\"76\" y=\"95\" fill=\"currentColor\">2930</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2931\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2931: 2563.260986328125</title><text x=\"146\" y=\"95\" fill=\"currentColor\">2931</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2993\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2993: 2583.849609375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">2993</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2994\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2994: 2633.555419921875</title><text x=\"76\" y=\"165\" fill=\"currentColor\">2994</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"2995\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#6baed6\"></rect><title>2995: 2683.260986328125</title><text x=\"146\" y=\"165\" fill=\"currentColor\">2995</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "mask-2",
+        "costs",
+        "2513.555419921875",
+        "6",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "landscapeElevation",
+        "1355.4000244140625",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "costFriction",
+        "1",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "costSourceMask",
+        "0",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "costBackLinks",
+        "32",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "pathMask0",
+        "0",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "pathMask1",
+        "1",
+        "347",
+        "readback"
+      ],
+      [
+        "mask-2",
+        "pathMask2",
+        "0",
+        "347",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "Infinity",
+        "0",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "Infinity",
+        "1",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "2600",
+        "2",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "2500",
+        "3",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "2500",
+        "4",
+        "readback"
+      ],
+      [
+        "cost-distance",
+        "costs",
+        "2500",
+        "5",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:21:12.096Z",
+    "runId": "run-c7c8891b",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-c7c8891b",
+    "rung": "datum",
+    "bindings": {
+      "entity": 2930
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

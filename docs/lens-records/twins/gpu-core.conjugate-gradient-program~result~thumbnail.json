@@ -1,0 +1,37 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-core.conjugate-gradient-program",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-core.conjugate-gradient-program",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs.",
+  "description": "Read captured inputs into recorded array outputs. smoothed[134]: 2,313. values read back from the GPU run. 1 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- smoothed[134]: 2,313\n- 1 output panels from the recorded run\n- smoothed: captured cells at native resolution\n- elevation: captured cells at native resolution\n- compute passes were not coalesced as in production\n- lens twin: transients gpu-value-arena-buffer, smooth-r, smooth-p retained instead of aliased\n- transients smooth-r, smooth-p allocated with COPY_SRC for observation\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "smoothed[134]",
+    "value": "2,313"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-core-conjugate-gradient-program-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g><g class=\"cv-array-image-tile\" role=\"img\" aria-label=\"smoothed\"><image width=\"70\" height=\"70\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--output cv-area cv-v cv-seq-1\" data-role=\"output\" stroke-width=\"0.5\" fill=\"#c6dbef\" stroke=\"#ffffff\" fill-opacity=\"1\" data-provenance=\"readback\" data-capture=\"smooth-commands-snapshots-smoothed-320\" data-axis=\"entity\" data-key-space=\"block-cells\" x=\"6\" y=\"13\" data-token=\"tile\" data-raster-width=\"16\" data-raster-height=\"16\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAD1BMVEX3+//G2+9rrtYhcbUIMGtSKc/4AAABG0lEQVR4AQEQAe/+AAAAAAAAAAAAAAABAQECAgMAAAAAAAAAAAAAAAEBAgIDAwAAAAAAAAAAAAEBAQICAwMDAAAAAAAAAAABAQECAgMDAwMAAAAAAAAAAAEBAgIDAwMEBAAAAAAAAAABAQICAwMDBAQEAAEBAAAAAAEBAgIDAwMEBAQAAgEBAQEBAQECAgMDBAQEBAADAgIBAQEBAQICAwMDBAQEAAMDAwICAQEBAgICAwMEBAQAAwMDAwMCAgICAgICAwMDAwAEBAQEAwMDAgIBAgICAwMDAAQEBAQEBAMDAgIBAQICAgIABAQEBAQEBAMDAgEBAQEBAgAEBAQEBAQEBAMCAgEBAQEBAAQEBAQEBAQEAwICAgEBAQHVSAH/8IO1mwAAAABJRU5ErkJggg==\"></image><rect class=\"cv-mark cv-mark--highlight cv-line\" data-role=\"highlight\" stroke-width=\"2.5\" fill=\"none\" stroke=\"#d55e00\" data-provenance=\"readback\" data-capture=\"smooth-commands-snapshots-smoothed-320\" x=\"32.25\" y=\"48\" width=\"4.375\" height=\"4.375\" data-key=\"134\"></rect></g><g class=\"cv-array-image-tile\" role=\"img\" aria-label=\"elevation\"><image width=\"70\" height=\"70\" preserveAspectRatio=\"none\" image-rendering=\"pixelated\" class=\"cv-mark cv-mark--input cv-area\" data-role=\"input\" stroke-width=\"1\" fill=\"#5f6672\" stroke=\"#5f6672\" fill-opacity=\"0.33999999999999997\" data-provenance=\"readback\" data-capture=\"smooth-commands-snapshots-elevation-320\" data-axis=\"entity\" data-key-space=\"block-cells\" x=\"80\" y=\"13\" data-token=\"tile\" data-raster-width=\"16\" data-raster-height=\"16\" data-sampling=\"mean\" href=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAD1BMVEXG2+/3+/9rrtYhcbUIMGtwqB+XAAABG0lEQVR4AQEQAe/+AAABAQEBAQEBAQEBAAACAgIAAAEBAQEBAQEBAQAAAgICAwAAAQEBAQEBAAACAgICAwMDAAABAQEBAQACAgICAwMDAwMAAAEBAQEBAAICAwMDAwMDBAAAAAEBAQEAAgIDAwMDAwMEAAICAQEBAQECAgMDAwQDBAQAAwIAAQEBAQICAwMDBAQEBAADAwIAAQEBAAICAwMEBAQEAAMDAwIAAAAAAAACAwQEBAQABAMDAwICAgIAAAACAwQEBAAEAwMDAwQDAgAAAAICAgMCAAQEBAQEBAMCAAAAAAAAAgIABAQEBAQEBAMCAAAAAAAAAgAEBAQEBAQEBAMCAAAAAAAAAAQEBAQEBAQEAwICAgICAADzLgIDxxvBxAAAAABJRU5ErkJggg==\"></image></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:37:09.694Z",
+    "runId": "run-23805b54",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients gpu-value-arena-buffer, smooth-r, smooth-p retained instead of aliased",
+      "transients smooth-r, smooth-p allocated with COPY_SRC for observation"
+    ]
+  },
+  "state": {
+    "runId": "run-23805b54",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

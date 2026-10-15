@@ -1,0 +1,65 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-cover",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.cell-cover",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of covering cell 0. cells: 2302672895, 142763597. values read back from the GPU run. boundaries-offsets: 2 quantities.",
+  "description": "Receipt of covering cell 0. cells: 2302672895, 142763597. values read back from the GPU run. boundaries-offsets: 2 quantities.",
+  "llms": "Receipt of covering cell 0\n\n- cells: 2302672895, 142763597\n- boundaries-offsets: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "cells",
+    "value": "2302672895, 142763597"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of covering cell 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"boundaries-offsets\"><tr><th scope=\"rowgroup\" colspan=\"5\">boundaries-offsets</th></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-cover-snapshots-featureIds-0\" title=\"area (feature row) that each covering cell belongs to\">featureIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>boundaries-offsets</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-cell-cover-snapshots-cells-0\" title=\"H3 cell key (resolution 8) as (low, high) uint32 words; rows past the count are empty\">cells</button></td><td>2302672895, 142763597</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "boundaries-offsets",
+        "featureIds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "boundaries-offsets",
+        "cells",
+        "2302672895, 142763597",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:30:04.482Z",
+    "runId": "run-5f81e818",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-5f81e818",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

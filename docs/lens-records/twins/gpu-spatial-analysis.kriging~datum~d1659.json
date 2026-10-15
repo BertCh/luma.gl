@@ -1,0 +1,78 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.kriging",
+  "rung": "datum",
+  "datum": 1659,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.kriging",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of 10 km cell 1659. variance: 648.52783203125. values read back from the GPU run. kriging: 2 quantities.",
+  "description": "Receipt of 10 km cell 1659. variance: 648.52783203125. values read back from the GPU run. kriging: 2 quantities.",
+  "llms": "Receipt of 10 km cell 1659\n\n- variance: 648.52783203125\n- kriging: 2 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "variance",
+    "value": "648.52783203125"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of 10 km cell 1659</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"kriging\"><tr><th scope=\"rowgroup\" colspan=\"5\">kriging</th></tr><tr data-provenance=\"readback\"><td>kriging</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-kriging-snapshots-rainfall-0\">rainfall</button></td><td>121.83624267578125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>kriging</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-kriging-snapshots-variance-0\" title=\"ordinary kriging variance in mm²\">variance</button></td><td>648.52783203125</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><div class=\"lens-receipt-formula\"><h4>gpu-spatial-analysis.kriging</h4><div><pre class=\"lens-tex\">\\begin{bmatrix}\\term{matrix}{\\bar\\Gamma}&amp;1\\\\1^T&amp;0\\end{bmatrix}\\begin{bmatrix}\\term{weights}{w}\\\\\\term{multiplier}{\\mu}\\end{bmatrix}=\\begin{bmatrix}\\term{target}{\\bar\\gamma_u}\\\\1\\end{bmatrix},\\quad \\term{prediction}{\\hat z}=\\term{base}{z_0}+\\sum_i\\term{weights}{w_i}(\\term{values}{\\bar z_i}-\\term{base}{z_0}),\\quad \\term{variance}{648.528}=(\\term{nugget}{a}+\\term{sill}{s})\\max(0,\\term{multiplier}{\\mu}+\\sum_i\\term{weights}{w_i}\\term{target}{\\bar\\gamma_{iu}})</pre><p class=\"lens-ascii\">[GammaBar 1; 1^T 0] [w; mu] = [gammaBar(target); 1]. gammaBar(0)=0; gammaBar(h)=(nugget+sill*shape(h/range))/(nugget+sill). Spherical shape(t)=1.5t-0.5t³ for t&lt;1, else 1. Prediction=z0+sum(w_i*(meanValue_i-z0)); variance=(nugget+sill)*max(0,mu+sum(w_i*gammaBar_i)). Up to k nearest rows inside the radius, then duplicate positions coalesced; an exact hit returns their mean with zero variance. Too few distinct neighbors or rejected pivots/variance produce NaN; only normalized variance &gt;= -1e-4 is clamped.</p></div></div><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "kriging",
+        "rainfall",
+        "121.83624267578125",
+        "0",
+        "readback"
+      ],
+      [
+        "kriging",
+        "variance",
+        "648.52783203125",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:06.289Z",
+    "runId": "run-86170ed5",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-86170ed5",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1659
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

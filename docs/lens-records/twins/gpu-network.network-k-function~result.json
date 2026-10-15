@@ -1,0 +1,41 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.network-k-function",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "const kFunction = new GPUNetworkKFunction({\n  spatialContext: {coordinateSpace: 'longitude-latitude', metric: 'great-circle'},\n  topology: roads,\n  positions: crashPositions,\n  maximumDistance,\n  maximumSnapDistance,\n  networkLength: input.networkLength,\n  parameters: input.parameters,\n  bandCount: 8,\n  simulationCount: input.simulationCount,\n  rowsPerBlock: 256,\n  maximumIterations: 24,\n  output: {\n    kValues: createTransientView(graph, 'kValues', 'float32', patternBandCount),\n    pairCounts: createTransientView(graph, 'pairCounts', 'uint32', patternBandCount),\n    envelope: createTransientView(graph, 'envelope', 'float32', 24),\n    snappedEventCount: createTransientView(graph, 'snappedEventCount', 'uint32', 1),\n    status: {converged: createTransientView(graph, 'converged', 'uint32', 1)}\n  }\n});\ngraph.add(kFunction);\nconst {envelope} = kFunction.props.output;\nconst {kValues, pairCounts, snappedEventCount} = kFunction.props.output;",
+    "language": "ts",
+    "lineCount": 23
+  },
+  "scenarioId": "gpu-network.network-k-function",
+  "viewId": "result-view",
+  "caption": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum. rows: 8. values read back from the GPU run. input crashPositions: 64 points.",
+  "description": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum. rows: 8. values read back from the GPU run. input crashPositions: 64 points.",
+  "llms": "Result of gpu-network.network-k-function: crashPositions, bandThreshold → envelope-maximum\n\n- rows: 8\n- input crashPositions: 64 points\n- input bandThreshold: 8 rows\n- Simple equirectangular projection (x scaled by cos 41.88°); not equal-area.\n- 64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- compute passes were not coalesced as in production\n- lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "8"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">bandThreshold</th><th class=\"cv-col--output\" scope=\"col\">pairCounts</th><th class=\"cv-col--output\" scope=\"col\">kValues</th><th class=\"cv-col--output\" scope=\"col\">envelope-minimum</th><th class=\"cv-col--output\" scope=\"col\">envelope-mean</th><th class=\"cv-col--output\" scope=\"col\">envelope-maximum</th></tr></thead><tbody><tr><td data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td><td class=\"cv-col--output\" data-provenance=\"readback\">0</td></tr><tr><td data-provenance=\"readback\">143</td><td class=\"cv-col--output\" data-provenance=\"readback\">8</td><td class=\"cv-col--output\" data-provenance=\"readback\">1010</td><td class=\"cv-col--output\" data-provenance=\"readback\">253</td><td class=\"cv-col--output\" data-provenance=\"readback\">613</td><td class=\"cv-col--output\" data-provenance=\"readback\">1140</td></tr><tr><td data-provenance=\"readback\">286</td><td class=\"cv-col--output\" data-provenance=\"readback\">22</td><td class=\"cv-col--output\" data-provenance=\"readback\">2790</td><td class=\"cv-col--output\" data-provenance=\"readback\">1520</td><td class=\"cv-col--output\" data-provenance=\"readback\">2320</td><td class=\"cv-col--output\" data-provenance=\"readback\">3170</td></tr><tr><td data-provenance=\"readback\">429</td><td class=\"cv-col--output\" data-provenance=\"readback\">42</td><td class=\"cv-col--output\" data-provenance=\"readback\">5320</td><td class=\"cv-col--output\" data-provenance=\"readback\">3550</td><td class=\"cv-col--output\" data-provenance=\"readback\">5110</td><td class=\"cv-col--output\" data-provenance=\"readback\">6460</td></tr><tr><td data-provenance=\"readback\">571</td><td class=\"cv-col--output\" data-provenance=\"readback\">98</td><td class=\"cv-col--output\" data-provenance=\"readback\">12400</td><td class=\"cv-col--output\" data-provenance=\"readback\">6710</td><td class=\"cv-col--output\" data-provenance=\"readback\">9150</td><td class=\"cv-col--output\" data-provenance=\"readback\">11500</td></tr><tr><td data-provenance=\"readback\">714</td><td class=\"cv-col--output\" data-provenance=\"readback\">132</td><td class=\"cv-col--output\" data-provenance=\"readback\">16700</td><td class=\"cv-col--output\" data-provenance=\"readback\">11000</td><td class=\"cv-col--output\" data-provenance=\"readback\">14000</td><td class=\"cv-col--output\" data-provenance=\"readback\">17100</td></tr><tr><td colspan=\"6\">… 2 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input crashPositions, bandThreshold · blue: output pairCounts, kValues, envelope-minimum, envelope-mean, envelope-maximum</p><p class=\"cv-note\">64 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T12:29:06.860Z",
+    "runId": "run-9a9fc58c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients kValues, pairCounts, envelope, snappedEventCount, converged retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-9a9fc58c",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

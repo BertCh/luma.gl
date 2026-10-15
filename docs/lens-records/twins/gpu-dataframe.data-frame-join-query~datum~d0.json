@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.data-frame-join-query",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.data-frame-join-query",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of Joined pair 0. rightPoverty150Pct: 9.699999809265137. values read back from the GPU run. result: 3 quantities.",
+  "description": "Receipt of Joined pair 0. rightPoverty150Pct: 9.699999809265137. values read back from the GPU run. result: 3 quantities.",
+  "llms": "Receipt of Joined pair 0\n\n- rightPoverty150Pct: 9.699999809265137\n- result: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rightPoverty150Pct",
+    "value": "9.699999809265137"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of Joined pair 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"result\"><tr><th scope=\"rowgroup\" colspan=\"5\">result</th></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"rowIndices\" title=\"Left (observation) row of each pair.\">rowIndices</button></td><td>0</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"rightRowIndices\" title=\"Right (tract) row of each pair.\">rightRowIndices</button></td><td>46</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>result</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"rightPoverty150Pct\" title=\"poverty150Pct at rightRowIndices: an exact gather of two readbacks.\">rightPoverty150Pct</button></td><td>9.699999809265137</td><td>—</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "result",
+        "rowIndices",
+        "0",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "rightRowIndices",
+        "46",
+        "—",
+        "readback"
+      ],
+      [
+        "result",
+        "rightPoverty150Pct",
+        "9.699999809265137",
+        "—",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:29:47.438Z",
+    "runId": "run-6e30970f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-6e30970f",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

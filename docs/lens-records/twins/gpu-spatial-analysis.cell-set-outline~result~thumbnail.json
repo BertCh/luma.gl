@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.cell-set-outline",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.cell-set-outline",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.cell-set-outline: cellBoundaries → ringPositions.",
+  "description": "Result of gpu-spatial-analysis.cell-set-outline: cellBoundaries → ringPositions. polygons: 32. values read back from the GPU run. input cellBoundaries: 512 polygons.",
+  "llms": "Result of gpu-spatial-analysis.cell-set-outline: cellBoundaries → ringPositions\n\n- polygons: 32\n- input cellBoundaries: 512 polygons\n- Simple equirectangular projection (x scaled by cos 20.99°); not equal-area.\n- 3072 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 544 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "polygons",
+    "value": "32"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" preserveAspectRatio=\"xMidYMid meet\" data-extent=\"[[-87.7505874633789,0],[0,41.98050308227539]]\" role=\"img\" aria-label=\"Result: ringPositions\"><defs><pattern id=\"lens-gpu-spatial-analysis-cell-set-outline-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"3\" height=\"3\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-cell-set-outline-result-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-cell-set-outline-result-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g data-role=\"output\"><path class=\"cv-mark cv-mark--output cv-area\" data-role=\"output\" stroke-width=\"0.8999999999999999\" fill=\"#0072b2\" stroke=\"#0072b2\" fill-opacity=\"0.22\" d=\"M6.2,10.17 L6.14,10.1 L6.04,10.1 L6.01,10.19 L6.02,10.3 L6.11,10.3 L6.23,10.32 L6.21,10.24 L6.21,10.2 Z\" fill-rule=\"evenodd\" data-provenance=\"readback\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\"></path></g><g data-role=\"highlight\"></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:32:52.365Z",
+    "runId": "run-972bf84b",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-972bf84b",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

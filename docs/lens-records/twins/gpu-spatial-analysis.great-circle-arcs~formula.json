@@ -1,0 +1,123 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.great-circle-arcs",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.great-circle-arcs",
+  "viewId": "formula-card",
+  "caption": "Formula p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied…",
+  "description": "Formula p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied…",
+  "llms": "Formula p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied exactly, with target longitude unwrapped from a; coincident arcs use the kernel fallback.\n\n- bound symbols: 7/9\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "7/9"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>s3.great-circle-arcs</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{position}{p_k}=\\term{interpolate}{I_{\\mathrm{sphere}}}(\\term{source}{a},\\term{target}{b},\\term{angle}{\\theta},\\term{index}{k}/\\term{segments}{n}),\\quad \\term{measure}{m_k}=\\term{radius}{R}\\term{angle}{\\theta}\\term{index}{k}/\\term{segments}{n}</pre><p class=\"lens-ascii\">p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied exactly, with target longitude unwrapped from a; coincident arcs use the kernel fallback.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-emit\" data-value=\"position\">position · output · outputPositions</button><span class=\"lens-symbol-chip lens-symbol-chip--unknown\" data-value=\"measure\">measure · output · unknown — wgsl outputMeasures not found in this record</span><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-emit\" data-value=\"source\">source · input · source</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-emit\" data-value=\"target\">Target with continuous longitude · input · destination</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-count\" data-value=\"angle\">angle · intermediate · angle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-count\" data-value=\"segments\">segments · intermediate · segments</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-count\" data-value=\"interpolate\">interpolate · intermediate · geodesicInterpolate</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-great-circle-arcs-compiled:great-circle-arcs-count\" data-value=\"radius\">radius · parameter · RADIUS</button><span class=\"lens-symbol-chip lens-symbol-chip--unbound\" data-value=\"index\">index · index · unbound — no binding declared</span></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "position",
+        "output",
+        "outputPositions",
+        "—",
+        "metadata"
+      ],
+      [
+        "measure",
+        "output",
+        "unknown",
+        "—",
+        "metadata"
+      ],
+      [
+        "source",
+        "input",
+        "source",
+        "—",
+        "metadata"
+      ],
+      [
+        "Target with continuous longitude",
+        "input",
+        "destination",
+        "—",
+        "metadata"
+      ],
+      [
+        "angle",
+        "intermediate",
+        "angle",
+        "—",
+        "metadata"
+      ],
+      [
+        "segments",
+        "intermediate",
+        "segments",
+        "—",
+        "metadata"
+      ],
+      [
+        "interpolate",
+        "intermediate",
+        "geodesicInterpolate",
+        "—",
+        "metadata"
+      ],
+      [
+        "radius",
+        "parameter",
+        "RADIUS",
+        "—",
+        "metadata"
+      ],
+      [
+        "index",
+        "index",
+        "unbound",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{position}{p_k}=\\term{interpolate}{I_{\\mathrm{sphere}}}(\\term{source}{a},\\term{target}{b},\\term{angle}{\\theta},\\term{index}{k}/\\term{segments}{n}),\\quad \\term{measure}{m_k}=\\term{radius}{R}\\term{angle}{\\theta}\\term{index}{k}/\\term{segments}{n}",
+    "ascii": "p[k] = sphericalInterpolate(a, b, theta, k/n); m[k] = R*theta*k/n, k=0..n. theta is the Vincenty-form spherical central angle. n is the capped maximum of the requested length subdivision and minimumSegments (at least 1). Endpoints are copied exactly, with target longitude unwrapped from a; coincident arcs use the kernel fallback.",
+    "derivation": "curated"
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:36:45.976Z",
+    "runId": "run-dbacf017",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-dbacf017",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

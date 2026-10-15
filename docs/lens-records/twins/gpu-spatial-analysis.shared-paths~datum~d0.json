@@ -1,0 +1,73 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.shared-paths",
+  "rung": "datum",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.shared-paths",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of run 0. forward: 0. values read back from the GPU run. shared-paths: 3 quantities.",
+  "description": "Receipt of run 0. forward: 0. values read back from the GPU run. shared-paths: 3 quantities.",
+  "llms": "Receipt of run 0\n\n- forward: 0\n- shared-paths: 3 quantities\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "forward",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of run 0</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"shared-paths\"><tr><th scope=\"rowgroup\" colspan=\"5\">shared-paths</th></tr><tr data-provenance=\"readback\"><td>shared-paths</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-leftLineIds-0\" title=\"left boundary index (0 is West Town); unused slots are 0xffffffff\">leftLineIds</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shared-paths</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-rightLineIds-0\" title=\"right boundary index in the other 16 areas; unused slots are 0xffffffff\">rightLineIds</button></td><td>12</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>shared-paths</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-spatial-analysis-shared-paths-snapshots-forward-0\" title=\"relative direction code (unitless): 1 same, 0 opposite; only count runs are valid\">forward</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "shared-paths",
+        "leftLineIds",
+        "0",
+        "0",
+        "readback"
+      ],
+      [
+        "shared-paths",
+        "rightLineIds",
+        "12",
+        "0",
+        "readback"
+      ],
+      [
+        "shared-paths",
+        "forward",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.334Z",
+    "runId": "run-74a98bd4",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-74a98bd4",
+    "rung": "datum",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

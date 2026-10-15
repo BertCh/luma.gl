@@ -1,0 +1,148 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.point-pattern-indices",
+  "rung": "formula",
+  "datum": 0,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.point-pattern-indices",
+  "viewId": "formula-card",
+  "caption": "Formula Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A. ratio: 0.2461. values read back from the GPU run.",
+  "description": "Formula Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A. ratio: 0.2461. values read back from the GPU run.",
+  "llms": "Formula Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A.\n\n- ratio: 0.2461\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "ratio",
+    "value": "0.2461"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUPointPatternIndices</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{expected}{e}=0.5\\sqrt{\\term{area}{A}/\\term{count}{n}}+(0.0514+0.041/\\sqrt{\\term{count}{n}})\\term{perimeter}{P}/\\term{count}{n},\\quad \\term{ratio}{R}=\\frac{\\term{observed}{\\operatorname{mean}(d_{\\rm NN})}}{\\term{expected}{e}},\\quad \\term{chiSquare}{\\chi^2}=\\sum_{\\text{positive-area quadrats}}\\frac{(\\term{quadratCounts}{c_q}-\\term{quadratExpected}{e_q})^2}{\\term{quadratExpected}{e_q}}</pre><p class=\"lens-ascii\">Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A.</p></div><div class=\"lens-worked-example\"><h4>Entity 0</h4><div><pre class=\"lens-tex\">\\term{expected}{\\left(497.322\\right)}=0.5\\sqrt{\\term{area}{A}/\\term{count}{n}}+(0.0514+0.041/\\sqrt{\\term{count}{n}})\\term{perimeter}{P}/\\term{count}{n},\\quad \\term{ratio}{0.246116}=\\frac{\\term{observed}{\\left(122.399\\right)}}{\\term{expected}{\\left(497.322\\right)}},\\quad \\term{chiSquare}{7735.09}=\\sum_{\\text{positive-area quadrats}}\\frac{(\\term{quadratCounts}{0}-\\term{quadratExpected}{e_q})^2}{\\term{quadratExpected}{e_q}}</pre><p class=\"lens-ascii\">Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-clark-evans\" data-value=\"expected\">expected · intermediate · expected<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-clark-evans\" data-value=\"area\">area · intermediate · area</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-quadrat-statistics\" data-value=\"count\">count · intermediate · n</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-clark-evans\" data-value=\"perimeter\">perimeter · intermediate · perimeter</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-quadrat-statistics\" data-value=\"ratio\">ratio · output · ratio<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-clark-evans\" data-value=\"observed\">observed · intermediate · observed<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-quadrat-statistics\" data-value=\"chiSquare\">chiSquare · output · chiSquare<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-quadrat-counts\" data-value=\"quadratCounts\">quadratCounts · output · quadratCounts<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.point-pattern-indices-compiled:point-pattern-indices-clark-evans\" data-value=\"quadratExpected\">quadratExpected · intermediate · expected</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "expected",
+        "intermediate",
+        "expected",
+        "497.3224182128906",
+        "readback"
+      ],
+      [
+        "area",
+        "intermediate",
+        "area",
+        "—",
+        "metadata"
+      ],
+      [
+        "count",
+        "intermediate",
+        "n",
+        "—",
+        "metadata"
+      ],
+      [
+        "perimeter",
+        "intermediate",
+        "perimeter",
+        "—",
+        "metadata"
+      ],
+      [
+        "ratio",
+        "output",
+        "ratio",
+        "0.24611641466617584",
+        "readback"
+      ],
+      [
+        "observed",
+        "intermediate",
+        "observed",
+        "122.39920806884766",
+        "readback"
+      ],
+      [
+        "chiSquare",
+        "output",
+        "chiSquare",
+        "7735.09423828125",
+        "readback"
+      ],
+      [
+        "quadratCounts",
+        "output",
+        "quadratCounts",
+        "0",
+        "readback"
+      ],
+      [
+        "quadratExpected",
+        "intermediate",
+        "expected",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{expected}{e}=0.5\\sqrt{\\term{area}{A}/\\term{count}{n}}+(0.0514+0.041/\\sqrt{\\term{count}{n}})\\term{perimeter}{P}/\\term{count}{n},\\quad \\term{ratio}{R}=\\frac{\\term{observed}{\\operatorname{mean}(d_{\\rm NN})}}{\\term{expected}{e}},\\quad \\term{chiSquare}{\\chi^2}=\\sum_{\\text{positive-area quadrats}}\\frac{(\\term{quadratCounts}{c_q}-\\term{quadratExpected}{e_q})^2}{\\term{quadratExpected}{e_q}}",
+    "ascii": "Donnelly: R=meanNN/(0.5*sqrt(A/n)+(0.0514+0.041/sqrt(n))*P/n); quadrat chiSquare=sum((c_q-e_q)^2/e_q), e_q=n*a_q/A.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    },
+    {
+      "guardId": "uncorrected-p",
+      "label": "P correction",
+      "blocks": [
+        "significance-class"
+      ],
+      "status": "fail",
+      "reason": "uncorrected p-values"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.833Z",
+    "runId": "run-8298752f",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-8298752f",
+    "rung": "formula",
+    "bindings": {
+      "entity": 0
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

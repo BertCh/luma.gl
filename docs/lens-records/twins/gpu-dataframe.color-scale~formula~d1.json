@@ -1,0 +1,129 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-dataframe.color-scale",
+  "rung": "formula",
+  "datum": 1,
+  "size": "full",
+  "scenarioId": "gpu-dataframe.color-scale",
+  "viewId": "formula-card",
+  "caption": "Formula threshold: class=min(number of inner domain edges <= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up. classIndices: 4. values read back from the GPU run.",
+  "description": "Formula threshold: class=min(number of inner domain edges <= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up. classIndices: 4. values read back from the GPU run.",
+  "llms": "Formula threshold: class=min(number of inner domain edges <= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.\n\n- classIndices: 4\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "classIndices",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-dataframe:GPUColorScale</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{classIndices}{c}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{x}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{C}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{c}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div><div class=\"lens-worked-example\"><h4>Entity 1</h4><div><pre class=\"lens-tex\">\\term{classIndices}{4}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{\\left(43\\right)}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{4286528776}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{4}]</pre><p class=\"lens-ascii\">threshold: class=min(number of inner domain edges &lt;= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.</p></div></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"classIndices\">classIndices · output · classes<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-colorize\" data-value=\"colors\">colors · output · colors<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"edge\">edge · index · middle</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"domainCount\">domainCount · parameter · domainCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"paletteCount\">paletteCount · parameter · paletteCount</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"domain\">domain · input · domain</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"values\">values · input · values<span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-dataframe.color-scale-compiled:color-scale-classify\" data-value=\"palette\">palette · input · palette</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "classIndices",
+        "output",
+        "classes",
+        "4",
+        "readback"
+      ],
+      [
+        "colors",
+        "output",
+        "colors",
+        "4286528776",
+        "readback"
+      ],
+      [
+        "edge",
+        "index",
+        "middle",
+        "—",
+        "metadata"
+      ],
+      [
+        "domainCount",
+        "parameter",
+        "domainCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "paletteCount",
+        "parameter",
+        "paletteCount",
+        "—",
+        "metadata"
+      ],
+      [
+        "domain",
+        "input",
+        "domain",
+        "—",
+        "metadata"
+      ],
+      [
+        "values",
+        "input",
+        "values",
+        "43",
+        "readback"
+      ],
+      [
+        "palette",
+        "input",
+        "palette",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "readback",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{classIndices}{c}=\\min\\left(\\sum_{\\term{edge}{i}=1}^{\\term{domainCount}{D}-2}\\mathbf{1}[\\term{domain}{e_i}\\leq\\term{values}{x}],\\term{paletteCount}{P}-1\\right),\\quad \\term{colors}{C}=\\term{palette}{\\mathrm{palette}}[\\term{classIndices}{c}]",
+    "ascii": "threshold: class=min(number of inner domain edges <= value, paletteCount-1); color=palette[class]; continuous linear interpolation blends RGBA channels half-up.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "count-vs-rate",
+      "label": "Count versus rate",
+      "blocks": [
+        "choropleth"
+      ],
+      "status": "unknown",
+      "reason": "missing or invalid mappedVariableExtent"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:02.740Z",
+    "runId": "run-45d42653",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-45d42653",
+    "rung": "formula",
+    "bindings": {
+      "entity": 1
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.huff-trade-areas",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.huff-trade-areas",
+  "viewId": "formula-card",
+  "caption": "Formula p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij. bound symbols: 5/5. structure metadata o…",
+  "description": "Formula p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij. bound symbols: 5/5. structure metadata o…",
+  "llms": "Formula p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij.\n\n- bound symbols: 5/5\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "5/5"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-spatial-analysis.huff-trade-areas</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{probability}{p_{ij}}=\\frac{\\term{attractiveness}{A_j}^{\\term{exponent}{\\alpha}}\\,\\term{weight}{w_{ij}}}{\\term{denominator}{\\sum_k A_k^{\\alpha}\\,w_{ik}}}</pre><p class=\"lens-ascii\">p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:huff-trade-areas-probabilities\" data-value=\"probability\">p_ij · output · probabilities</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:huff-trade-areas-trade-area\" data-value=\"attractiveness\">A_j · input · attractiveness</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:huff-trade-areas-trade-area\" data-value=\"exponent\">alpha · parameter · exponent</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:parks-of-tract-weights\" data-value=\"weight\">w_ij · parameter · weights</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:huff-trade-areas-trade-area\" data-value=\"denominator\">row total · intermediate · denominators</button></div><div class=\"lens-kernels\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-spatial-analysis-huff-trade-areas-compiled:huff-trade-areas-trade-area\">huff-trade-areas-trade-area</button></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "p_ij",
+        "output",
+        "probabilities",
+        "—",
+        "metadata"
+      ],
+      [
+        "A_j",
+        "input",
+        "attractiveness",
+        "—",
+        "metadata"
+      ],
+      [
+        "alpha",
+        "parameter",
+        "exponent",
+        "—",
+        "metadata"
+      ],
+      [
+        "w_ij",
+        "parameter",
+        "weights",
+        "—",
+        "metadata"
+      ],
+      [
+        "row total",
+        "intermediate",
+        "denominators",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{probability}{p_{ij}}=\\frac{\\term{attractiveness}{A_j}^{\\term{exponent}{\\alpha}}\\,\\term{weight}{w_{ij}}}{\\term{denominator}{\\sum_k A_k^{\\alpha}\\,w_{ik}}}",
+    "ascii": "p_ij = A_j^alpha w_ij / sum_k A_k^alpha w_ik over the facility row of demand i; zero attractiveness gives 0 and a row with denominator 0 gives 0. The decay and cut-off are carried by the weights w_ij.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:05.979Z",
+    "runId": "run-16b69eeb",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-16b69eeb",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.study-window-preparation",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-spatial-analysis.study-window-preparation",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of gpu-spatial-analysis-study-window-preparation. nodes: 78. structure metadata only. 1 visible units vs budget 24.",
+  "description": "compiled command graph of gpu-spatial-analysis-study-window-preparation. nodes: 78. structure metadata only. 1 visible units vs budget 24.",
+  "llms": "compiled command graph of gpu-spatial-analysis-study-window-preparation\n\n- nodes: 78\n- 1 visible units vs budget 24\n- 78 hidden nodes\n- Edges by kind: raw 131, war 13, waw 6\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "78"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"64\" style=\"grid-column:1;grid-row:1 / span 1\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-spatial-analysis-study-window-preparation-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-spatial-analysis-study-window-preparation-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-spatial-analysis-study-window-preparation-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs></svg><div class=\"lens-graph-unit lens-graph-unit--group\" data-unit=\"group:study-window\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"group:study-window\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:1px solid currentColor\">study-window</button><button type=\"button\" data-action=\"toggle\" data-axis=\"node\" data-key=\"group:study-window\" aria-label=\"Expand study-window\">+</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">study-window-ring-terms: commandCount=1 · study-window-ring-terms: maximumWorkgroupCount=11 · study-window-ring-terms: maximumInvocationCount=2613</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"group:study-window\" aria-label=\"Inspect study-window\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 64
+  },
+  "verdicts": [
+    {
+      "guardId": "coordinate-model",
+      "label": "Coordinate model",
+      "blocks": [
+        "metric-distance",
+        "metric-buffer",
+        "support-ring"
+      ],
+      "status": "pass",
+      "reason": "projected coordinates"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.799Z",
+    "runId": "run-f2deea30",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-f2deea30",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

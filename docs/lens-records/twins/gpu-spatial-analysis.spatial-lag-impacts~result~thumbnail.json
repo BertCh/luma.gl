@@ -1,0 +1,33 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.spatial-lag-impacts",
+  "rung": "result",
+  "size": "thumbnail",
+  "scenarioId": "gpu-spatial-analysis.spatial-lag-impacts",
+  "viewId": "gpu-core-array-result",
+  "caption": "Read captured inputs into recorded array outputs.",
+  "description": "Read captured inputs into recorded array outputs. max direct: 0.1615. values read back from the GPU run. 3 output panels from the recorded run.",
+  "llms": "Read captured inputs into recorded array outputs\n\n- max direct: 0.1615\n- 3 output panels from the recorded run\n- direct: 3 captured values (3 shown)\n- indirect: 3 captured values (3 shown)\n- total: 3 captured values (3 shown)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "max direct",
+    "value": "0.1615"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-gpu-core-array-result\"><svg class=\"cv-figure\" width=\"160\" height=\"96\" viewBox=\"0 0 160 96\" role=\"img\" aria-label=\"Recorded array inputs and outputs\"><defs><pattern id=\"lens-gpu-spatial-analysis-spatial-lag-impacts-result-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><g></g><g data-panel=\"direct\"><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-direct-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"predictor\" x=\"7\" y=\"8\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>direct[0] = 0.1615</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-direct-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\" data-key-space=\"predictor\" x=\"56.333333333333336\" y=\"8\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>direct[1] = -0.01275</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-direct-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\" data-key-space=\"predictor\" x=\"105.66666666666667\" y=\"8\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>direct[2] = -0.008551</title></rect></g><g data-panel=\"indirect\"><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-indirect-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"predictor\" x=\"7\" y=\"34.66666666666667\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>indirect[0] = 0.2556</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-indirect-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\" data-key-space=\"predictor\" x=\"56.333333333333336\" y=\"34.66666666666667\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>indirect[1] = -0.02017</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-indirect-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\" data-key-space=\"predictor\" x=\"105.66666666666667\" y=\"34.66666666666667\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>indirect[2] = -0.01353</title></rect></g><g data-panel=\"total\"><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-total-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"0\" data-key-space=\"predictor\" x=\"7\" y=\"61.333333333333336\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>total[0] = 0.4172</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-total-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"1\" data-key-space=\"predictor\" x=\"56.333333333333336\" y=\"61.333333333333336\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>total[1] = -0.03291</title></rect><rect class=\"cv-mark cv-mark--output cv-cell\" data-role=\"output\" stroke-width=\"1\" fill=\"#0072b2\" stroke=\"#ffffff\" data-provenance=\"readback\" data-capture=\"gpu-spatial-analysis.spatial-lag-impacts-snapshots-total-0\" data-action=\"pick\" data-axis=\"entity\" data-key=\"2\" data-key-space=\"predictor\" x=\"105.66666666666667\" y=\"61.333333333333336\" width=\"47.333333333333336\" height=\"20\" data-token=\"value\"><title>total[2] = -0.02208</title></rect></g></svg></section>",
+    "width": 160,
+    "height": 96
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:25:20.260Z",
+    "runId": "run-c6a95dbe",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-c6a95dbe",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

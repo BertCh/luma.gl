@@ -1,0 +1,35 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.solar-shadow-mask",
+  "rung": "graph",
+  "size": "full",
+  "scenarioId": "gpu-terrain.solar-shadow-mask",
+  "viewId": "command-graph-view",
+  "caption": "compiled command graph of GPUSolarShadowMask on the Dixie Fire DEM. nodes: 4. structure metadata only. 4 visible units vs budget 24.",
+  "description": "compiled command graph of GPUSolarShadowMask on the Dixie Fire DEM. nodes: 4. structure metadata only. 4 visible units vs budget 24.",
+  "llms": "compiled command graph of GPUSolarShadowMask on the Dixie Fire DEM\n\n- nodes: 4\n- 4 visible units vs budget 24\n- 0 hidden nodes\n- Edges by kind: raw 3\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "nodes",
+    "value": "4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-command-graph-view\" data-level=\"execution\"><div class=\"lens-graph-toolbar\"><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"algorithm\" aria-pressed=\"true\">algorithm</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"pass-resource\" aria-pressed=\"false\">pass-resource</button><button type=\"button\" data-action=\"toggle\" data-axis=\"preset\" data-value=\"memory-aliasing\" aria-pressed=\"false\">memory-aliasing</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"logical\" aria-pressed=\"false\" disabled title=\"No logical graph is recorded\">logical</button><button type=\"button\" data-action=\"toggle\" data-axis=\"form\" data-value=\"compiled\" aria-pressed=\"true\">compiled</button></div><p class=\"lens-caption\">Compiled schedule on apple (retrospective).</p><div class=\"lens-graph-algorithm\" style=\"display:grid;grid-template-columns:120px minmax(0,1fr)\"><svg width=\"120\" height=\"256\" style=\"grid-column:1;grid-row:1 / span 4\" role=\"img\" aria-label=\"Dependencies in graph node order\"><defs><pattern id=\"lens-gpu-terrain-solar-shadow-mask-graph-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-solar-shadow-mask-graph-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-solar-shadow-mask-graph-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 24 C 70.66666666666667 24, 70.66666666666667 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-horizon-elevation → node:terrain-horizon-horizon-march-0: raw ×1; terrain-horizon-elevation-values</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 88 C 81.33333333333334 88, 81.33333333333334 152, 110 152\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-horizon-sector-ranges → node:terrain-horizon-horizon-march-0: raw ×1; terrain-horizon-sector-range-words</title></path><path data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" d=\"M 110 152 C 81.33333333333334 152, 81.33333333333334 216, 110 216\" opacity=\"1\" stroke-width=\"1\" data-kind=\"raw\" data-count=\"1\"><title>node:terrain-horizon-horizon-march-0 → node:solar-shadow-mask-shadow: raw ×1; terrainHorizon</title></path></svg><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-horizon-elevation\" data-tier=\"subject\" style=\"grid-column:2;grid-row:1;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-horizon-elevation\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-horizon-elevation</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\"></span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-horizon-sector-ranges\" data-tier=\"subject\" style=\"grid-column:2;grid-row:2;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-horizon-sector-ranges\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-horizon-sector-ranges</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=1 · maximumInvocationCount=1</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:terrain-horizon-horizon-march-0\" data-tier=\"subject\" style=\"grid-column:2;grid-row:3;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"terrain-horizon-horizon-march-0\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">terrain-horizon-horizon-march-0</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=16 · maximumInvocationCount=4096</span></div><div class=\"lens-graph-unit lens-graph-unit--node\" data-unit=\"node:solar-shadow-mask-shadow\" data-tier=\"subject\" style=\"grid-column:2;grid-row:4;height:64px;opacity:1\"><button type=\"button\" data-action=\"bind\" data-axis=\"node\" data-key=\"solar-shadow-mask-shadow\" data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\" style=\"color:currentColor;background:transparent;border:0\">solar-shadow-mask-shadow</button><span data-provenance=\"metadata\" fill=\"none\" stroke=\"currentColor\">commandCount=1 · maximumWorkgroupCount=16 · maximumInvocationCount=4096</span><button type=\"button\" data-action=\"pin-inspector\" data-key=\"node:solar-shadow-mask-shadow\" aria-label=\"Inspect solar-shadow-mask-shadow\">inspect</button></div></div></section>",
+    "width": 120,
+    "height": 256
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:31:32.736Z",
+    "runId": "run-84340cb2",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-84340cb2",
+    "rung": "graph",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

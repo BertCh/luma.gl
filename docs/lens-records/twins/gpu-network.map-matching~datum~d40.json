@@ -1,0 +1,76 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-network.map-matching",
+  "rung": "datum",
+  "datum": 40,
+  "size": "full",
+  "scenarioId": "gpu-network.map-matching",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of GPS fix 40. matchBreaks: 0. values read back from the GPU run. assignment: 2 quantities.",
+  "description": "Receipt of GPS fix 40. matchBreaks: 0. values read back from the GPU run. assignment: 2 quantities.",
+  "llms": "Receipt of GPS fix 40\n\n- matchBreaks: 0\n- assignment: 2 quantities\n- summary: 1 quantities\n- compute passes were not coalesced as in production\n- lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "matchBreaks",
+    "value": "0"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of GPS fix 40</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"assignment\"><tr><th scope=\"rowgroup\" colspan=\"5\">assignment</th></tr><tr data-provenance=\"readback\"><td>assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"matchedEdges\" title=\"directed road edge matched to each fix (no data: unmatched)\">matchedEdges</button></td><td>418</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>assignment</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"matchSnapDistances\" title=\"distance from each fix to its matched edge in metres (-1: unmatched)\">matchSnapDistances</button></td><td>25.049802780151367</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody><tbody data-stage=\"summary\"><tr><th scope=\"rowgroup\" colspan=\"5\">summary</th></tr><tr data-provenance=\"readback\"><td>summary</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"matchBreaks\" title=\"break flag per fix: 0 none, 1 ordinary break, 2 budget break (GPU output)\">matchBreaks</button></td><td>0</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><p>no neighbourhood declared by the domain pack</p><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "assignment",
+        "matchedEdges",
+        "418",
+        "0",
+        "readback"
+      ],
+      [
+        "assignment",
+        "matchSnapDistances",
+        "25.049802780151367",
+        "0",
+        "readback"
+      ],
+      [
+        "summary",
+        "matchBreaks",
+        "0",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:44:52.863Z",
+    "runId": "run-5f1d0b6c",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: transients matchedEdges, snappedPositions, matchSnapDistances, matchBreaks, matchedCount, matchOverflow retained instead of aliased"
+    ]
+  },
+  "state": {
+    "runId": "run-5f1d0b6c",
+    "rung": "datum",
+    "bindings": {
+      "entity": 40
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

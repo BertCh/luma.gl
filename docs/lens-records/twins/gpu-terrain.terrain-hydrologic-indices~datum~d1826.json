@@ -1,0 +1,119 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-terrain.terrain-hydrologic-indices",
+  "rung": "datum",
+  "datum": 1826,
+  "size": "full",
+  "scenarioId": "gpu-terrain.terrain-hydrologic-indices",
+  "viewId": "datum-receipt",
+  "caption": "Receipt of grid cells 1826. streamPowerIndex: 1706.49365234375. values read back from the GPU run. terrain-hydrologic-indices: 7 quantities.",
+  "description": "Receipt of grid cells 1826. streamPowerIndex: 1706.49365234375. values read back from the GPU run. terrain-hydrologic-indices: 7 quantities.",
+  "llms": "Receipt of grid cells 1826\n\n- streamPowerIndex: 1706.49365234375\n- terrain-hydrologic-indices: 7 quantities\n- lens twin: docs-sized data\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "streamPowerIndex",
+    "value": "1706.49365234375"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-datum-receipt\"><h3>Receipt of grid cells 1826</h3><table class=\"lens-receipt\"><thead><tr><th scope=\"col\">stage</th><th scope=\"col\">quantity</th><th scope=\"col\">value</th><th scope=\"col\">iteration</th><th scope=\"col\">provenance</th></tr></thead><tbody data-stage=\"terrain-hydrologic-indices\"><tr><th scope=\"rowgroup\" colspan=\"5\">terrain-hydrologic-indices</th></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-dem-0\" title=\"elevation (m)\">dem</button></td><td>1091.199951171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-flowFilledElevation-0\" title=\"filled elevation (m)\">flowFilledElevation</button></td><td>1091.199951171875</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-flowAccumulation-0\" title=\"upstream area (m²)\">flowAccumulation</button></td><td>15796800</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-indicesSlope-0\" title=\"tan β after the minimum-slope clamp (m/m)\">indicesSlope</button></td><td>0.012963336892426014</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-specificCatchmentArea-0\" title=\"specific catchment area a (m)\">specificCatchmentArea</button></td><td>131640</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-wetnessIndex-0\" title=\"topographic wetness index ln(a / tan β)\">wetnessIndex</button></td><td>16.133455276489258</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr><tr data-provenance=\"readback\"><td>terrain-hydrologic-indices</td><td><button type=\"button\" data-action=\"bind\" data-axis=\"buffer\" data-key=\"gpu-terrain-terrain-hydrologic-indices-snapshots-streamPowerIndex-0\" title=\"stream power index a · tan β (m)\">streamPowerIndex</button></td><td>1706.49365234375</td><td>0</td><td><span class=\"lens-provenance lens-provenance--readback\" title=\"Values read back from GPU execution.\">GPU readback</span></td></tr></tbody></table><svg class=\"lens-neighbourhood lens-stencil-3x3\" width=\"230\" height=\"230\" viewBox=\"0 0 230 230\" role=\"img\" aria-label=\"stencil-3x3 neighbourhood\"><defs><pattern id=\"lens-gpu-terrain-terrain-hydrologic-indices-datum-neighbourhood-0-hatched\" patternUnits=\"userSpaceOnUse\" width=\"6\" height=\"6\" patternTransform=\"rotate(45)\"><line x1=\"0\" y1=\"0\" x2=\"0\" y2=\"6\" stroke=\"#595959\" stroke-width=\"1\"></line></pattern></defs><defs><filter id=\"lens-gpu-terrain-terrain-hydrologic-indices-datum-neighbourhood-0-provisional\"><feGaussianBlur stdDeviation=\"1.2\"></feGaussianBlur></filter><filter id=\"lens-gpu-terrain-terrain-hydrologic-indices-datum-neighbourhood-0-unconverged\"><feGaussianBlur stdDeviation=\"2.4\"></feGaussianBlur></filter></defs><g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1761\"><rect x=\"1\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1761: 1092.5999755859375</title><text x=\"6\" y=\"25\" fill=\"currentColor\">1761</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1762\"><rect x=\"71\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1762: 1093.9000244140625</title><text x=\"76\" y=\"25\" fill=\"currentColor\">1762</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1763\"><rect x=\"141\" y=\"1\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1763: 1103.300048828125</title><text x=\"146\" y=\"25\" fill=\"currentColor\">1763</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1825\"><rect x=\"1\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1825: 1094</title><text x=\"6\" y=\"95\" fill=\"currentColor\">1825</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1826\"><rect x=\"71\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1826: 1091.199951171875</title><text x=\"76\" y=\"95\" fill=\"currentColor\">1826</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1827\"><rect x=\"141\" y=\"71\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1827: 1092.800048828125</title><text x=\"146\" y=\"95\" fill=\"currentColor\">1827</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1889\"><rect x=\"1\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1889: 1095.0999755859375</title><text x=\"6\" y=\"165\" fill=\"currentColor\">1889</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1890\"><rect x=\"71\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1890: 1091.0999755859375</title><text x=\"76\" y=\"165\" fill=\"currentColor\">1890</text></g><g data-action=\"pick\" data-axis=\"entity\" data-key=\"1891\"><rect x=\"141\" y=\"141\" width=\"68\" height=\"68\" data-provenance=\"readback\" fill=\"#f7fbff\"></rect><title>1891: 1089</title><text x=\"146\" y=\"165\" fill=\"currentColor\">1891</text></g></g></svg><p>apple</p></section>",
+    "width": 230,
+    "height": 230
+  },
+  "receipt": {
+    "columns": [
+      "stage",
+      "quantity",
+      "value",
+      "iteration",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "terrain-hydrologic-indices",
+        "dem",
+        "1091.199951171875",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "flowFilledElevation",
+        "1091.199951171875",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "flowAccumulation",
+        "15796800",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "indicesSlope",
+        "0.012963336892426014",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "specificCatchmentArea",
+        "131640",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "wetnessIndex",
+        "16.133455276489258",
+        "0",
+        "readback"
+      ],
+      [
+        "terrain-hydrologic-indices",
+        "streamPowerIndex",
+        "1706.49365234375",
+        "0",
+        "readback"
+      ]
+    ],
+    "provenance": [
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback",
+      "readback"
+    ]
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:18:57.926Z",
+    "runId": "run-0a8bd878",
+    "observerEffects": [
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-0a8bd878",
+    "rung": "datum",
+    "bindings": {
+      "entity": 1826
+    },
+    "clauses": [],
+    "params": {}
+  }
+}

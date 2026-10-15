@@ -1,0 +1,108 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-raster.cost-distance",
+  "rung": "formula",
+  "size": "full",
+  "scenarioId": "gpu-raster.cost-distance",
+  "viewId": "formula-card",
+  "caption": "Formula C(c) <- min(C(c), min over passable D8 neighbors n of C(n) + length(n,c)*(f(n)+f(c))/2), accepting candidates <= costLimit; sources start at 0, others +Infinity; axial length 120 m, diagonal sqrt(2)*120 m here; invalid, NaN, infinite or nega…",
+  "description": "Formula C(c) <- min(C(c), min over passable D8 neighbors n of C(n) + length(n,c)*(f(n)+f(c))/2), accepting candidates <= costLimit; sources start at 0, others +Infinity; axial length 120 m, diagonal sqrt(2)*120 m here; invalid, NaN, infinite or nega…",
+  "llms": "Formula C(c) <- min(C(c), min over passable D8 neighbors n of C(n) + length(n,c)*(f(n)+f(c))/2), accepting candidates <= costLimit; sources start at 0, others +Infinity; axial length 120 m, diagonal sqrt(2)*120 m here; invalid, NaN, infinite or negative friction is impassable; diagonal corner cutting allowed; at the fixpoint costs are least accumulated costs, unreached/barriers +Infinity; if capped before convergence every passable cost becomes NaN.\n\n- bound symbols: 4/4\n- compute passes were not coalesced as in production\n- lens twin: docs-sized data\n\nProvenance: structure metadata only.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "bound symbols",
+    "value": "4/4"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-formula-card\"><header><h3>gpu-raster.cost-distance.rule</h3><span class=\"lens-provenance lens-provenance--derived\" data-provenance=\"derived\">curated formula</span></header><div><pre class=\"lens-tex\">\\term{cost}{C(c)}=\\min\\!\\left(C(c),\\min_{n\\in N_8(c)} C(n)+\\term{edge}{e(n,c)}\\right),\\quad e(n,c)=\\term{distance}{\\ell(n,c)}\\frac{\\term{friction}{f(n)+f(c)}}{2}</pre><p class=\"lens-ascii\">C(c) &lt;- min(C(c), min over passable D8 neighbors n of C(n) + length(n,c)*(f(n)+f(c))/2), accepting candidates &lt;= costLimit; sources start at 0, others +Infinity; axial length 120 m, diagonal sqrt(2)*120 m here; invalid, NaN, infinite or negative friction is impassable; diagonal corner cutting allowed; at the fixpoint costs are least accumulated costs, unreached/barriers +Infinity; if capped before convergence every passable cost becomes NaN.</p></div><div class=\"lens-symbols\"><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-cost-distance-compiled:cost-distance-initialize\" data-value=\"cost\">C · output · costs</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-cost-distance-compiled:cost-distance-friction-prepare\" data-value=\"friction\">f · input · auxiliary</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-cost-distance-compiled:cost-distance-relax-0\" data-value=\"edge\">e · intermediate · getEdgeCost</button><button type=\"button\" class=\"lens-symbol-chip lens-symbol-chip--bound\" data-action=\"bind\" data-axis=\"node\" data-key=\"gpu-raster-cost-distance-compiled:cost-distance-seed\" data-value=\"distance\">length · intermediate · getD8Distance</button></div><div class=\"lens-kernels\"></div><p>apple</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "receipt": {
+    "columns": [
+      "symbol",
+      "role",
+      "binding",
+      "value",
+      "provenance"
+    ],
+    "rows": [
+      [
+        "C",
+        "output",
+        "costs",
+        "—",
+        "metadata"
+      ],
+      [
+        "f",
+        "input",
+        "auxiliary",
+        "—",
+        "metadata"
+      ],
+      [
+        "e",
+        "intermediate",
+        "getEdgeCost",
+        "—",
+        "metadata"
+      ],
+      [
+        "length",
+        "intermediate",
+        "getD8Distance",
+        "—",
+        "metadata"
+      ]
+    ],
+    "provenance": [
+      "metadata",
+      "metadata",
+      "metadata",
+      "metadata"
+    ]
+  },
+  "formula": {
+    "tex": "\\term{cost}{C(c)}=\\min\\!\\left(C(c),\\min_{n\\in N_8(c)} C(n)+\\term{edge}{e(n,c)}\\right),\\quad e(n,c)=\\term{distance}{\\ell(n,c)}\\frac{\\term{friction}{f(n)+f(c)}}{2}",
+    "ascii": "C(c) <- min(C(c), min over passable D8 neighbors n of C(n) + length(n,c)*(f(n)+f(c))/2), accepting candidates <= costLimit; sources start at 0, others +Infinity; axial length 120 m, diagonal sqrt(2)*120 m here; invalid, NaN, infinite or negative friction is impassable; diagonal corner cutting allowed; at the fixpoint costs are least accumulated costs, unreached/barriers +Infinity; if capped before convergence every passable cost becomes NaN.",
+    "derivation": "curated"
+  },
+  "verdicts": [
+    {
+      "guardId": "metric-cell-size",
+      "label": "Metric cell size",
+      "blocks": [
+        "metric-derivative",
+        "metric-distance"
+      ],
+      "status": "pass",
+      "reason": "uniform metric cells"
+    },
+    {
+      "guardId": "convergence",
+      "label": "Converged",
+      "blocks": [
+        "final-value",
+        "wavefront"
+      ],
+      "status": "pass",
+      "reason": "every gated loop reached its fixpoint"
+    }
+  ],
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T01:21:11.987Z",
+    "runId": "run-a9706665",
+    "observerEffects": [
+      "compute passes were not coalesced as in production",
+      "lens twin: docs-sized data"
+    ]
+  },
+  "state": {
+    "runId": "run-a9706665",
+    "rung": "formula",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}

@@ -11,6 +11,10 @@ import {ExperimentalDocsTabs} from '@site/src/components/docs/experimental-docs-
 
 ## Follow unweighted paths with GPUGraphBreadthFirstSearch
 
+Expand outward from seed vertices, publishing shortest hop counts and lowest-identifier parents for every reachable vertex.
+
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=result caption="Follow hop distance from Utrecht Centraal; all 485 stations are reachable within 15 hops."}
+
 **Question: Which entities can I reach within a chosen number of hops, and what shortest path gets
 me there?**
 
@@ -23,20 +27,18 @@ counterparties of those counterparties. Choose breadth-first search over degree 
 depends on indirect relationships; choose it over connected components when distance, direction,
 or a particular starting vertex matters.
 
-```ts
-import {GPUGraphBreadthFirstSearch} from '@luma.gl/gpgpu/gpu-graph';
-
-const search = new GPUGraphBreadthFirstSearch({
-  topology,
-  seeds: selectedVertexIds,
-  distances: hopDistances,
-  predecessors: pathParents,
-  mask: neighborhoodMask,
-  direction: 'both',
-  maxDepth: 6,
-  activeDepth
-});
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-breadth-first-search'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` | Required | Existing GPU adjacency and its explicit overflow status. |
+| `seeds` | `GPUVector<'uint32'>` | Required | Stable source vertex identifiers, preserving every seed chunk. |
+| `distances` | `GPUVector<'uint32'>` | Required | Caller-owned unsigned hop-distance row for every vertex. |
+| `predecessors` | `GPUVector<'uint32'>` | Required | Caller-owned unsigned predecessor row for every vertex. |
+| `mask` | `GPUVector<'uint32'>` | Omitted | Optional vertex-aligned zero or one reachability mask. |
+| `seedCount` | `GPUVector<'uint32'>` | Omitted | Optional scalar limiting the number of active seed rows. |
+| `maxDepth` | `number` | `1` | Compiled maximum hop count, from zero through 1,024. |
+| `activeDepth` | `GPUVector<'uint32'>` | Omitted | Optional scalar dynamically limiting the compiled hop count. |
+| `direction` | `'outgoing'`, `'incoming'` or `'both'` | `'outgoing'` | Edge orientation followed; incoming and both need reverse adjacency on directed graphs. |
 
 `outgoing` follows source-to-target relationships; `incoming` follows their reverse; `both` combines
 them. Directed incoming and bidirectional searches require reverse adjacency. `maxDepth` bounds the
@@ -49,7 +51,21 @@ equal-length parent ties select the numerically lowest stable vertex identifier.
 ignored, duplicate seeds are harmless, and the optional mask publishes zero or one per vertex.
 This is an unweighted shortest-path operation, not a weighted route or travel-time solver.
 
+#### How it computes
+
+{/* lens:GPUGraphBreadthFirstSearch */}
+
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=kernel caption="Inspect the seed, frontier-expansion and frontier-dispatch kernels run at each depth."}
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=graph caption="Follow topology construction into 16 gated depths of expansion and compact frontier dispatch."}
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=datum datum=26 caption="Inspect Amsterdam Centraal, station 26, one hop from the source, with its CSR neighborhood."}
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=formula caption="Follow the min-distance update and lowest-parent rule to the WGSL buffers that hold them."}
+::lens{scenario=gpu-graph.graph-breadth-first-search rung=iterations caption="Compare six recorded distance frames through depth 15; unreached stations are shown as no data."}
+
 ## Find least-cost routes with GPUGraphSingleSourceShortestPath
+
+Relax nonnegative edge weights from one source in bounded synchronized rounds, publishing least-cost distances and parents.
+
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=result caption="Follow travel time in seconds from Utrecht Centraal; the farthest station takes 9,300 seconds."}
 
 **Question: Which route from my starting vertex costs the least when each connection has its own
 travel time, distance, latency, or other nonnegative price?**
@@ -66,22 +82,17 @@ and only the number of hops matters; choose weighted shortest paths when the act
 weights can change which route wins. This operation computes routes from **one** selected source;
 it does not implement all-pairs routing, negative-weight paths, or A* geographic search.
 
-```ts
-import {GPUGraphSingleSourceShortestPath} from '@luma.gl/gpgpu/gpu-graph';
-
-const shortestPaths = new GPUGraphSingleSourceShortestPath({
-  topology,
-  sourceVertex: selectedVertex,
-  distances: routeCosts,
-  predecessors: routeParents,
-  direction: 'outgoing',
-  maxIterations: 64,
-  converged: shortestPathsConverged,
-  invalidWeightCount
-});
-
-shortestPaths.addToGraph(workflow);
-```
+| Prop | Type | Default | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | `'gpu-graph-single-source-shortest-path'` | Prefix for generated command-graph nodes and imported resources. |
+| `topology` | `GPUGraphTopology` | Required | Existing GPU adjacency and its explicit overflow status. |
+| `sourceVertex` | `number` | Required | Stable source vertex identifier; zero is also accepted for an empty graph. |
+| `distances` | `GPUVector<'float32'>` | Required | Caller-owned floating-point distance row for every vertex. |
+| `predecessors` | `GPUVector<'uint32'>` | Required | Caller-owned unsigned predecessor row for every vertex. |
+| `maxIterations` | `number` | `min(max(vertexCount - 1, 0), 1024)` | Maximum compiled relaxation rounds, from zero through 1,024. |
+| `direction` | `'outgoing'`, `'incoming'` or `'both'` | `'outgoing'` | Edge orientation followed; incoming and both need reverse adjacency on directed graphs. |
+| `converged` | `GPUVector<'uint32'>` | Omitted | Optional scalar reporting whether all shortest distances are final. |
+| `invalidWeightCount` | `GPUVector<'uint32'>` | Omitted | Optional scalar receiving invalid, valid-endpoint source-edge weights. |
 
 `distances` is a caller-owned, packed `GPUVector<'float32'>` with exactly one row per vertex;
 `predecessors` is a separate, caller-owned, packed `GPUVector<'uint32'>` with the same row count.
@@ -116,6 +127,16 @@ existing vertex; an empty graph permits the value zero and has no distance rows.
 may publish partially relaxed routes without proving shortest-path completion; there is no
 automatic early termination or implicit CPU synchronization. With `K` compiled relaxation rounds,
 work is bounded by `O(K × (V + E))`, with `O(V)` graph-owned scratch.
+
+#### How it computes
+
+{/* lens:GPUGraphSingleSourceShortestPath */}
+
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=kernel caption="Inspect the snapshot, relaxation, predecessor and convergence kernels run each round."}
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=graph caption="Follow topology construction into 24 relaxation rounds, each snapshotting before it relaxes."}
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=datum datum=26 caption="Inspect Amsterdam Centraal, station 26, 1,560 seconds from the source, with its neighborhood."}
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=formula caption="Follow the synchronized relaxation and parent rule to the WGSL buffers that hold them."}
+::lens{scenario=gpu-graph.graph-single-source-shortest-path rung=iterations caption="Compare seven recorded distance frames through the final round; no intermediate states are interpolated."}
 
 ## Related pages
 

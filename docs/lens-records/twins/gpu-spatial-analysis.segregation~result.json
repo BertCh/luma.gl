@@ -1,0 +1,38 @@
+{
+  "schema": "luma.lens-twin/1",
+  "scenario": "gpu-spatial-analysis.segregation",
+  "rung": "result",
+  "size": "full",
+  "example": {
+    "code": "graph.add(\n  new GPUSegregation({\n    groupCount,\n    groupCounts,\n    scales: [null], // aspatial: each tract is its own environment\n    output: {indices, localTheil, localEntropy}\n  })\n);\n// indices: entropy H, dissimilarity D and per-group indices; localTheil sums to H",
+    "language": "ts",
+    "lineCount": 9
+  },
+  "scenarioId": "gpu-spatial-analysis.segregation",
+  "viewId": "result-view",
+  "caption": "Result of gpu-spatial-analysis.segregation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, groupCounts → indices. rows: 43. values read back from the GPU run. input tractsVertices: 4646 r…",
+  "description": "Result of gpu-spatial-analysis.segregation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, groupCounts → indices. rows: 43. values read back from the GPU run. input tractsVertices: 4646 r…",
+  "llms": "Result of gpu-spatial-analysis.segregation: tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, groupCounts → indices\n\n- rows: 43\n- input tractsVertices: 4646 rows\n- input tractsFeatureOffsets: 200 rows\n- input tractsPolygonOffsets: 200 rows\n- input tractsRingOffsets: 200 rows\n- input tractsDisplayOffsets: 200 rows\n- input tracts: 199 polygons\n- input groupCounts: 995 rows\n- Planar coordinates (m); uniform scale.\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n- 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)\n\nProvenance: values read back from the GPU run.\nAdapter: apple (unknown).",
+  "keyNumber": {
+    "label": "rows",
+    "value": "43"
+  },
+  "figure": {
+    "html": "<section class=\"lens-view lens-result-view\"><table class=\"cv-table\"><thead><tr><th scope=\"col\">tractsVertices</th><th scope=\"col\">tractsFeatureOffsets</th><th scope=\"col\">tractsPolygonOffsets</th><th scope=\"col\">tractsRingOffsets</th><th scope=\"col\">tractsDisplayOffsets</th><th scope=\"col\">groupCounts</th><th class=\"cv-col--output\" scope=\"col\">localTheil</th><th class=\"cv-col--output\" scope=\"col\">localEntropy</th><th class=\"cv-col--output\" scope=\"col\">indices</th></tr></thead><tbody><tr><td data-provenance=\"readback\">1500</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">0</td><td data-provenance=\"readback\">1762</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.00012</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.27</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.139</td></tr><tr><td data-provenance=\"readback\">1560</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">1</td><td data-provenance=\"readback\">11</td><td data-provenance=\"readback\">12</td><td data-provenance=\"readback\">1347</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.00189</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.45</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.361</td></tr><tr><td data-provenance=\"readback\">1970</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">2</td><td data-provenance=\"readback\">22</td><td data-provenance=\"readback\">24</td><td data-provenance=\"readback\">920</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000725</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.47</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.24</td></tr><tr><td data-provenance=\"readback\">1990</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">3</td><td data-provenance=\"readback\">33</td><td data-provenance=\"readback\">36</td><td data-provenance=\"readback\">94</td><td class=\"cv-col--output\" data-provenance=\"readback\">-0.000133</td><td class=\"cv-col--output\" data-provenance=\"readback\">1.26</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.35</td></tr><tr><td data-provenance=\"readback\">2120</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">4</td><td data-provenance=\"readback\">47</td><td data-provenance=\"readback\">51</td><td data-provenance=\"readback\">161</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.00172</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.899</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.463</td></tr><tr><td data-provenance=\"readback\">1800</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">5</td><td data-provenance=\"readback\">68</td><td data-provenance=\"readback\">73</td><td data-provenance=\"readback\">1557</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.0012</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.968</td><td class=\"cv-col--output\" data-provenance=\"readback\">0.368</td></tr><tr><td colspan=\"9\">… 4640 more rows</td></tr></tbody></table><p class=\"cv-legend\">grey: input tractsVertices, tractsFeatureOffsets, tractsPolygonOffsets, tractsRingOffsets, tractsDisplayOffsets, tracts, groupCounts · blue: output resultTracts, localTheil, localEntropy, indices</p><p class=\"cv-note\">2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames) · 2522 source vertices/points; stride decimation to the figure budget (400 vertices, 64 in thumbnails, shared across panels and frames)</p></section>",
+    "width": 640,
+    "height": 0
+  },
+  "provenance": {
+    "adapter": "apple (unknown)",
+    "date": "2026-10-15T00:48:08.234Z",
+    "runId": "run-1f078a31",
+    "observerEffects": []
+  },
+  "state": {
+    "runId": "run-1f078a31",
+    "rung": "result",
+    "bindings": {},
+    "clauses": [],
+    "params": {}
+  }
+}
