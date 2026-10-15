@@ -7,10 +7,14 @@
  * keyword as an identifier (`let target`, `fn filter(...)`, a parameter named `from`). WGSL
  * compilation errors for these appear only at runtime, in the browser.
  *
- * Usage: `node scripts/check-wgsl-identifiers.mjs [dir ...]` (default `src`). Exit code 1 on hits.
+ * Also rejects constant non-finite f32 bitcasts, including standalone kernel body snippets.
+ * Usage: `node scripts/check-wgsl-identifiers.mjs [dir ...]`. Defaults to all module sources and
+ * showcase sources, independent of the working directory. Exit code 1 on hits.
  */
 import {readdirSync, readFileSync, statSync} from 'node:fs';
-import {join, relative} from 'node:path';
+import {dirname, join, relative, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import typescript from 'typescript';
 
 // Keywords and reserved words of the WGSL specification (section "Keyword Summary" and
 // "Reserved Words").
@@ -30,119 +34,245 @@ template this thread_local throw trait try type typedef typeid typename typeof u
 unsafe unsized use using varying virtual volatile wgsl where with writeonly yield`;
 // `flat` is an @interpolate keyword, not a reserved word, but it has broken builders' shaders.
 const FORBIDDEN = new Set(`${KEYWORDS} ${RESERVED} flat`.split(/\s+/));
-const roots = process.argv.slice(2).length ? process.argv.slice(2) : ['src'];
-const hits = [];
-let scannedTemplates = 0;
-
-function walk(directory) {
-  for (const entry of readdirSync(directory)) {
-    const path = join(directory, entry);
-    const stats = statSync(path);
-    if (stats.isDirectory()) {
-      if (entry !== 'node_modules') walk(path);
-    } else if (/\.(ts|tsx|wgsl)$/.test(entry) && !entry.endsWith('.d.ts')) {
-      scan(path);
-    }
-  }
+const scriptPath = fileURLToPath(import.meta.url);
+const showcaseDirectory = resolve(dirname(scriptPath), '..');
+const modulesDirectory = resolve(showcaseDirectory, '../../../modules');
+/** Shared by the CLI and the repository's node test gate. */
+export function getSourceRoots() {
+  return [
+    join(showcaseDirectory, 'src'),
+    ...readdirSync(modulesDirectory)
+      .map(name => join(modulesDirectory, name, 'src'))
+      .filter(path => statSync(path, {throwIfNoEntry: false})?.isDirectory())
+  ];
 }
 
-/** Yields `{text, startLine}` for each backtick template literal (without `${}` bodies). */
+export function scanDirectories(roots = getSourceRoots()) {
+  const hits = [];
+  let scannedTemplates = 0;
+  function walk(directory) {
+    for (const entry of readdirSync(directory, {withFileTypes: true})) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules') walk(path);
+      } else if (/\.(?:[cm]?[jt]sx?|wgsl)$/.test(entry.name) && !entry.name.endsWith('.d.ts')) {
+        const result = scanSource(readFileSync(path, 'utf8'), path);
+        hits.push(...result.hits);
+        scannedTemplates += result.scannedTemplates;
+      }
+    }
+  }
+  for (const root of roots) walk(root);
+  return {hits, scannedTemplates};
+}
+
+/** Extract literal portions, preserving lines and visiting nested template expressions too. */
 function* templates(source) {
-  let line = 1;
-  for (let index = 0; index < source.length; index++) {
-    const character = source[index];
-    if (character === '\n') line++;
-    else if (character === '/' && source[index + 1] === '/') {
-      while (index < source.length && source[index] !== '\n') index++;
-      line++;
-    } else if (character === '/' && source[index + 1] === '*') {
-      const end = source.indexOf('*/', index + 2);
-      const stop = end < 0 ? source.length : end + 2;
-      for (let k = index; k < stop; k++) if (source[k] === '\n') line++;
-      index = stop - 1;
-    } else if (character === "'" || character === '"') {
-      index++;
-      while (index < source.length && source[index] !== character && source[index] !== '\n') {
-        if (source[index] === '\\') index++;
-        index++;
+  const sourceFile = typescript.createSourceFile(
+    'source.ts',
+    source,
+    typescript.ScriptTarget.Latest
+  );
+  function* visit(node) {
+    if (typescript.isNoSubstitutionTemplateLiteral(node) || typescript.isTemplateExpression(node)) {
+      const start = node.getStart(sourceFile);
+      let text = source.slice(start + 1, node.end - 1);
+      if (typescript.isTemplateExpression(node)) {
+        // Mask from each opening ${ through its closing }, retaining line offsets.
+        const characters = text.split('');
+        let literal = node.head;
+        for (const span of node.templateSpans) {
+          for (let index = literal.end - 2; index <= span.literal.pos; index++) {
+            if (characters[index - start - 1] !== '\n') characters[index - start - 1] = ' ';
+          }
+          literal = span.literal;
+        }
+        text = characters.join('');
       }
-    } else if (character === '`') {
-      const startLine = line;
-      let text = '';
-      let depth = 0;
-      index++;
-      for (; index < source.length; index++) {
-        const next = source[index];
-        if (next === '\n') line++;
-        if (depth === 0 && next === '`') break;
-        if (next === '\\') {
-          index++;
-          continue;
-        }
-        if (next === '$' && source[index + 1] === '{') {
-          depth++;
-          index++;
-          text += '0';
-          continue;
-        }
-        if (depth > 0) {
-          if (next === '{') depth++;
-          else if (next === '}') depth--;
-          continue;
-        }
-        text += next;
-      }
-      yield {text, startLine};
+      yield {
+        text,
+        startLine: sourceFile.getLineAndCharacterOfPosition(start).line + 1,
+        tagged: /(?:\/\*\s*wgsl\s*\*\/|\bwgsl)\s*$/.test(source.slice(0, start))
+      };
     }
+    const children = [];
+    typescript.forEachChild(node, child => {
+      children.push(child);
+    });
+    for (const child of children) yield* visit(child);
   }
+  yield* visit(sourceFile);
 }
 
-function scan(path) {
-  const source = readFileSync(path, 'utf8');
-  for (const {text, startLine} of templates(source)) {
-    scannedTemplates++;
-    if (!/\b(fn|@compute|@vertex|@fragment|var<|struct)\b|@group/.test(text)) continue;
-    let inStruct = false;
-    text.split('\n').forEach((lineText, offset) => {
-      const code = lineText.replace(/\/\/.*$/, '');
-      const report = (name, kind) => {
-        if (FORBIDDEN.has(name)) {
-          hits.push({file: relative(process.cwd(), path), line: startLine + offset, name, kind, code: code.trim()});
-        }
-      };
-      for (const match of code.matchAll(/\b(?:let|var(?:<[^>]*>)?|const|override)\s+([A-Za-z_]\w*)/g)) {
-        report(match[1], 'declaration');
-      }
-      for (const match of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*\(([^)]*)\)?/g)) {
-        report(match[1], 'function name');
-        for (const parameter of match[2].matchAll(/(?:^|,)\s*(?:@\w+(?:\([^)]*\))?\s*)*([A-Za-z_]\w*)\s*:/g)) {
-          report(parameter[1], 'parameter');
-        }
-      }
-      if (/\bstruct\s+\w+\s*\{/.test(code)) inStruct = true;
-      if (inStruct) {
-        for (const member of code.matchAll(/(?:^|[{,])\s*(?:@\w+(?:\([^)]*\))?\s*)*([A-Za-z_]\w*)\s*:/g)) {
-          report(member[1], 'struct member');
-        }
-        if (code.includes('}')) inStruct = false;
-      }
+/** Remove WGSL comments, including nested block comments, without shifting diagnostics. */
+function stripComments(source) {
+  const characters = source.split('');
+  let depth = 0;
+  let lineComment = false;
+  for (let index = 0; index < source.length; index++) {
+    const pair = source.slice(index, index + 2);
+    if (source[index] === '\n') lineComment = false;
+    if (!lineComment && pair === '/*') {
+      depth++;
+      characters[index++] = ' ';
+      characters[index] = ' ';
+    } else if (!lineComment && depth > 0 && pair === '*/') {
+      depth--;
+      characters[index++] = ' ';
+      characters[index] = ' ';
+    } else {
+      if (depth === 0 && pair === '//') lineComment = true;
+      if ((depth > 0 || lineComment) && source[index] !== '\n') characters[index] = ' ';
+    }
+  }
+  return characters.join('');
+}
+
+/**
+ * Deliberately a source heuristic, not a WGSL evaluator: reject non-finite bit patterns in
+ * constant-only bitcast operands (scalar or vector). Resolve simple const aliases and quoted
+ * template alternatives, but leave let/var, parameters and buffer loads as runtime operands.
+ * Scan raw source so interpolations, quoted fragments and bodies without `fn` are checked too.
+ */
+export function findNonFiniteBitcasts(source) {
+  const code = stripComments(source);
+  const constants = new Map(
+    [...code.matchAll(/\bconst\s+(\w+)(?:\s*:\s*(?:u32|i32))?\s*=\s*([^;\n`]+);/g)].map(match => [
+      match[1],
+      match[2].replace(/^(['"])(.*)\1$/, '$2')
+    ])
+  );
+  const expandConstants = expression => {
+    for (let depth = 0; depth < 8; depth++) {
+      const expanded = expression.replace(/\b[A-Za-z_]\w*\b/g, name => constants.get(name) ?? name);
+      if (expanded === expression) break;
+      expression = expanded;
+    }
+    return expression;
+  };
+  // Bounded nesting keeps this regex small; enough for vector constructors and bitwise expressions.
+  let operand = '[^()]';
+  for (let depth = 0; depth < 4; depth++) operand = `(?:[^()]|\\(${operand}*\\))`;
+  const bitcasts = new RegExp(
+    `bitcast\\s*<\\s*(?:f32|vec[234](?:f|\\s*<\\s*f32\\s*>))\\s*>\\s*\\((${operand}*)\\)`,
+    'g'
+  );
+  const matches = [];
+  for (const match of code.matchAll(bitcasts)) {
+    const expression = expandConstants(
+      match[1].replace(/\$\{([^{}]*)\}/g, (_match, interpolation) => {
+        const alternatives = [...interpolation.matchAll(/['"]([^'"]+)['"]/g)];
+        return alternatives.length
+          ? alternatives.map(alternative => alternative[1]).join(',')
+          : expandConstants(interpolation);
+      })
+    );
+    const withoutNumbers = expression
+      .replace(/\b(?:0x[\da-f]+|\d+)[ui]?\b/gi, '')
+      .replace(/\b(?:vec[234][ui]?|u32|i32|true|false|select)\b/g, '');
+    if (/[A-Za-z_$\[\]]/.test(withoutNumbers)) continue;
+    const hasNonFiniteBits = [...expression.matchAll(/\b(0x[\da-f]+|\d+)[ui]?\b/gi)].some(
+      literal => (Number(literal[1]) & 0x7f800000) === 0x7f800000
+    );
+    if (hasNonFiniteBits) matches.push({index: match.index, code: match[0]});
+  }
+  return matches;
+}
+
+/** Check WGSL declarations across lines; attributes may contain their own parentheses. */
+export function findReservedIdentifiers(source) {
+  const code = stripComments(source);
+  const hits = [];
+  const report = (match, kind, offset = 0) => {
+    if (FORBIDDEN.has(match[1])) hits.push({index: offset + match.index, name: match[1], kind});
+  };
+  for (const match of code.matchAll(
+    /\b(?:let|var(?:\s*<[^>]*>)?|const|override)\s+([A-Za-z_]\w*)/g
+  )) {
+    report(match, 'declaration');
+  }
+  for (const match of code.matchAll(/\bfn\s+([A-Za-z_]\w*)\s*\(/g)) {
+    report(match, 'function name');
+    const start = match.index + match[0].length;
+    let end = start;
+    let depth = 1;
+    while (end < code.length && depth > 0) {
+      if (code[end] === '(') depth++;
+      if (code[end] === ')') depth--;
+      end++;
+    }
+    for (const parameter of code.slice(start, end - 1).matchAll(/\b([A-Za-z_]\w*)\s*:/g)) {
+      report(parameter, 'parameter', start);
+    }
+  }
+  for (const match of code.matchAll(/\bstruct\s+[A-Za-z_]\w*\s*\{([^}]*)\}/g)) {
+    const start = match.index + match[0].indexOf('{') + 1;
+    for (const member of match[1].matchAll(/\b([A-Za-z_]\w*)\s*:/g)) {
+      report(member, 'struct member', start);
+    }
+  }
+  return hits;
+}
+
+export function scanSource(source, path = 'source.ts') {
+  const hits = [];
+  const file = relative(process.cwd(), path);
+  for (const match of findNonFiniteBitcasts(source)) {
+    hits.push({
+      file,
+      line: source.slice(0, match.index).split('\n').length,
+      name: 'non-finite bitcast',
+      kind: 'constant operand; use a runtime let/var bit pattern',
+      code: match.code.replace(/\s+/g, ' ')
     });
   }
-}
-
-for (const root of roots) walk(root);
-
-if (hits.length === 0) {
-  console.log('check-wgsl-identifiers: no reserved WGSL identifiers found (' + scannedTemplates + ' templates scanned).');
-} else {
-  const byFile = new Map();
-  for (const hit of hits) byFile.set(hit.file, [...(byFile.get(hit.file) ?? []), hit]);
-  for (const [file, fileHits] of byFile) {
-    console.log(file);
-    for (const hit of fileHits) {
-      console.log(`  ${hit.line}: "${hit.name}" (${hit.kind})  ${hit.code}`);
+  const snippets = path.endsWith('.wgsl') ? [{text: source, startLine: 1}] : templates(source);
+  let scannedTemplates = 0;
+  for (const {text, startLine, tagged} of snippets) {
+    scannedTemplates++;
+    // Exclude embedded JavaScript examples; include typed WGSL and tagged kernel bodies.
+    if (
+      !tagged &&
+      !path.endsWith('.wgsl') &&
+      !/\bfn\s|\bstruct\s|\bvar\s*<|@(?:group|compute|vertex|fragment)\b|:\s*(?:f32|u32|i32|vec[234]|mat[234])\b|\b(?:let|var|const)\s+\w+\s*=[^;]*\b\d+[ui]\b/.test(
+        stripComments(text)
+      )
+    )
+      continue;
+    for (const match of findReservedIdentifiers(text)) {
+      const offset = text.slice(0, match.index).split('\n').length - 1;
+      hits.push({
+        file,
+        line: startLine + offset,
+        name: match.name,
+        kind: match.kind,
+        code: text.split('\n')[offset].trim()
+      });
     }
   }
-  console.log(`\n${hits.length} reserved-word identifier(s) in ${byFile.size} file(s).`);
-  process.exitCode = 1;
+  return {hits, scannedTemplates};
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
+  const roots = process.argv.slice(2);
+  const {hits, scannedTemplates} = scanDirectories(roots.length ? roots : getSourceRoots());
+
+  if (hits.length === 0) {
+    console.log(
+      'check-wgsl-identifiers: no reserved WGSL identifiers or constant non-finite bitcasts found (' +
+        scannedTemplates +
+        ' templates scanned).'
+    );
+  } else {
+    const byFile = new Map();
+    for (const hit of hits) byFile.set(hit.file, [...(byFile.get(hit.file) ?? []), hit]);
+    for (const [file, fileHits] of byFile) {
+      console.log(file);
+      for (const hit of fileHits) {
+        console.log(`  ${hit.line}: "${hit.name}" (${hit.kind})  ${hit.code}`);
+      }
+    }
+    console.log(`\n${hits.length} WGSL source issue(s) in ${byFile.size} file(s).`);
+    process.exitCode = 1;
+  }
 }
