@@ -18,7 +18,19 @@ import {compareParity, EXACT} from '../parity-wp3-comparison';
 import {createParityResources} from '../parity-wp3-round2-resources';
 import {canonicalizeNoding, nodingFixtures} from './parity-wp3-noding-fixture';
 
-for (const fixture of nodingFixtures) {
+const nodingTrials = nodingFixtures.flatMap(fixture => [
+  fixture,
+  ...(fixture.case === 'snap-cells' ||
+  fixture.case === 'showcase-large-snap' ||
+  fixture.case === 'cross-overlap'
+    ? [1024, 16384, 65536, 524288].map(intersectionCapacity => ({
+        ...fixture,
+        case: `${fixture.case}/capacity-${intersectionCapacity}`,
+        intersectionCapacity
+      }))
+    : [])
+]);
+for (const fixture of nodingTrials) {
   for (const spatialSort of [false, true]) {
     it(`GPUNetworkNoding Shapely ${fixture.case}/sort=${spatialSort}`, async () => {
       const device = await getWebGPUTestDevice();

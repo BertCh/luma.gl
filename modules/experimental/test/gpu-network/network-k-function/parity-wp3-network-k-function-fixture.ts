@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import showcase12 from '../../oracles/fixtures/parity-wp3-network-k-function-showcase-12.json';
+import showcase24 from '../../oracles/fixtures/parity-wp3-network-k-function-showcase-24.json';
+import showcase48 from '../../oracles/fixtures/parity-wp3-network-k-function-showcase-48.json';
+import showcase96 from '../../oracles/fixtures/parity-wp3-network-k-function-showcase-96.json';
 import boundary from '../../oracles/fixtures/parity-wp3-network-k-function-boundary.json';
 import chicago from '../../oracles/fixtures/parity-wp3-network-k-function-chicago.json';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
@@ -34,6 +38,10 @@ export type KFixture = {
   distributionAlpha: number;
 };
 export const kFixtures = [boundary, chicago].map(fixture => decodeOracleFixture<KFixture>(fixture));
+
+export const showcaseKFixtures = [showcase12, showcase24, showcase48, showcase96].map(fixture =>
+  decodeOracleFixture<KFixture>(fixture)
+);
 
 /** Two-sample empirical CDF distance; includes both sides of every jump (ties included). */
 export function getDistributionDistance(

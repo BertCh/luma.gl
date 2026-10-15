@@ -17,8 +17,15 @@ import {
   getUnstableVertices
 } from './parity-wp3-graph-communities-fixture';
 
-for (const fixture of communityFixtures.filter(value => value.runs.length)) {
-  it(`GPUGraphLabelPropagation NetworkX quality and stability: ${fixture.case}`, async () => {
+const propagationTrials = communityFixtures
+  .filter(value => value.runs.length)
+  .flatMap(fixture =>
+    (fixture.exactPartition ? Array.from({length: 100}, (_, index) => index + 1) : [4, 32, 64]).map(
+      iterations => ({fixture, iterations})
+    )
+  );
+for (const {fixture, iterations} of propagationTrials) {
+  it(`GPUGraphLabelPropagation NetworkX quality and stability: ${fixture.case}/iterations-${iterations}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
     const partitions: number[][] = [];
@@ -54,7 +61,7 @@ for (const fixture of communityFixtures.filter(value => value.runs.length)) {
       topology.addToGraph(resources.graph);
       new GPUGraphLabelPropagation({
         topology,
-        iterations: 64,
+        iterations,
         output: resources.vector('labels', 'uint32', new Array(vertexCount).fill(0)),
         converged: resources.vector('converged', 'uint32', [0])
       }).addToGraph(resources.graph);
@@ -63,7 +70,10 @@ for (const fixture of communityFixtures.filter(value => value.runs.length)) {
         submitGraph(device, compiled, undefined);
         const labels = await resources.readUint('labels');
         const className = 'GPUGraphLabelPropagation';
-        const comparison = {...fixture, case: `${fixture.case}/permutation-${run.seed}`};
+        const comparison = {
+          ...fixture,
+          case: `${fixture.case}/iterations-${iterations}/permutation-${run.seed}`
+        };
         compareParity(
           className,
           comparison,
@@ -157,7 +167,8 @@ for (const fixture of communityFixtures.filter(value => value.runs.length)) {
             [run.score],
             fixture.tolerance
           );
-          compareParity(className, comparison, 'cliques converge', [converged], [1], EXACT);
+          if (iterations > 1)
+            compareParity(className, comparison, 'cliques converge', [converged], [1], EXACT);
         }
       } finally {
         compiled.destroy();

@@ -10,10 +10,19 @@ import {submitGraph} from '../../utils/gpu-contributor-test-utils';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {compareParity, EXACT} from '../parity-wp3-comparison';
 import {createParityResources} from '../parity-wp3-round2-resources';
-import {analysisFixtures} from './parity-wp3-network-analysis-fixture';
+import {analysisFixtures, showcaseNeighborhoods} from './parity-wp3-network-analysis-fixture';
 
-for (const fixture of analysisFixtures) {
-  for (const mode of ['forward', 'reverse', 'bounded'] as const) {
+for (const fixture of [
+  ...analysisFixtures,
+  {
+    ...analysisFixtures[0],
+    input: {...analysisFixtures[0].input, case: 'showcase'},
+    neighborhoods: showcaseNeighborhoods
+  }
+]) {
+  for (const mode of fixture.input.case === 'showcase'
+    ? (['forward', 'constant', 'default'] as const)
+    : (['forward', 'reverse', 'bounded'] as const)) {
     it(`external neighborhood ${fixture.input.case}/${mode}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
@@ -66,11 +75,22 @@ for (const fixture of analysisFixtures) {
             )
           },
           startNodes: starts.importToGraph(resources.graph),
-          startCount: startCount.importToGraph(resources.graph),
+          startCount:
+            mode === 'constant'
+              ? 1
+              : mode === 'default'
+                ? undefined
+                : startCount.importToGraph(resources.graph),
           hops: hops.importToGraph(resources.graph),
           maximumHops: first.maximumHops,
-          nodeIds: resources.input('original-node-ids', 'uint32', input.nodeIds),
-          edgeIds: resources.input('original-edge-ids', 'uint32', topology.edgeIds),
+          nodeIds:
+            input.case === 'showcase'
+              ? undefined
+              : resources.input('original-node-ids', 'uint32', input.nodeIds),
+          edgeIds:
+            input.case === 'showcase'
+              ? undefined
+              : resources.input('original-edge-ids', 'uint32', topology.edgeIds),
           output: {
             hopDistances: resources.output('hopDistances', 'uint32', input.nodeCount),
             nodeMask: resources.output('nodeMask', 'uint32', input.nodeCount),

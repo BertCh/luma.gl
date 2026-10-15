@@ -41,7 +41,8 @@ export const graphMetricsFixtures = [
 export function createMetricsTopology(
   resources: ReturnType<typeof createParityResources>,
   fixture: Pick<GraphMetricsFixture, 'nodeCount' | 'edges' | 'directed'>,
-  weighted = true
+  weighted = true,
+  capacity = 2 * fixture.edges.length
 ): GPUGraphTopology {
   const graph = new GPUGraph({
     vertexCount: fixture.nodeCount,
@@ -70,18 +71,10 @@ export function createMetricsTopology(
       'uint32',
       new Array(fixture.nodeCount + 1).fill(0)
     ),
-    neighbors: resources.vector(
-      `${name}-neighbors`,
-      'uint32',
-      new Array(2 * fixture.edges.length).fill(0)
-    ),
-    edgeIds: resources.vector(
-      `${name}-edgeIds`,
-      'uint32',
-      new Array(2 * fixture.edges.length).fill(0)
-    ),
+    neighbors: resources.vector(`${name}-neighbors`, 'uint32', new Array(capacity).fill(0)),
+    edgeIds: resources.vector(`${name}-edgeIds`, 'uint32', new Array(capacity).fill(0)),
     edgeWeights: weighted
-      ? resources.vector(`${name}-weights`, 'float32', new Array(2 * fixture.edges.length).fill(0))
+      ? resources.vector(`${name}-weights`, 'float32', new Array(capacity).fill(0))
       : undefined,
     count: resources.vector(`${name}-count`, 'uint32', [0]),
     overflow: resources.vector(`${name}-overflow`, 'uint32', [0])

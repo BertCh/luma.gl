@@ -14,7 +14,7 @@ import {mapEdgeId, mapNodeId, routingFixtures} from './parity-wp3-routing-fixtur
 
 for (const {input, cases} of routingFixtures) {
   for (const fixture of cases) {
-    for (const mode of ['complete', 'bounded', 'short'] as const) {
+    for (const mode of ['complete', 'bounded', 'short', 'showcase-nodes-only'] as const) {
       it(`GPUNetworkPathExtraction NetworkX ${fixture.case}/${mode}`, async () => {
         const device = await getWebGPUTestDevice();
         requireTestDevice(device);
@@ -31,7 +31,8 @@ for (const {input, cases} of routingFixtures) {
           length: 1,
           values: new Uint32Array([1])
         });
-        const maximumPathLength = mode === 'short' ? 2 : fixture.maximumPathLength;
+        const maximumPathLength =
+          mode === 'short' ? 2 : mode === 'showcase-nodes-only' ? 2048 : fixture.maximumPathLength;
         const nodeCapacity = mode === 'bounded' ? 3 : Math.max(1, fixture.paths.flat().length);
         const edgeCapacity = mode === 'bounded' ? 2 : Math.max(1, fixture.edgePaths.flat().length);
         const compact = (prefix: string, capacity: number) => ({
@@ -51,29 +52,35 @@ for (const {input, cases} of routingFixtures) {
             targetCount: targetCount.importToGraph(resources.graph),
             predecessorsComplete: complete.importToGraph(resources.graph),
             maximumPathLength,
-            nodeIds: resources.input(
-              'node-mapping',
-              'uint32',
-              Array.from({length: input.nodeCount}, (_, row) => mapNodeId(input, row))
-            ),
+            nodeIds:
+              mode === 'showcase-nodes-only'
+                ? undefined
+                : resources.input(
+                    'node-mapping',
+                    'uint32',
+                    Array.from({length: input.nodeCount}, (_, row) => mapNodeId(input, row))
+                  ),
             output: {
               ...compact('nodes', nodeCapacity),
               pathFound: resources.output('found', 'uint32', fixture.targets.length),
               pathCosts: resources.output('path-costs', 'float32', fixture.targets.length)
             },
-            edges: {
-              topology: {
-                offsets: resources.input('offsets', 'uint32', input.offsets),
-                neighbors: resources.input('neighbors', 'uint32', input.neighbors),
-                weights: resources.input('weights', 'float32', input.weights)
-              },
-              edgeIds: resources.input(
-                'edge-mapping',
-                'uint32',
-                input.neighbors.map((_, row) => mapEdgeId(input, row))
-              ),
-              output: compact('edges', edgeCapacity)
-            }
+            edges:
+              mode === 'showcase-nodes-only'
+                ? undefined
+                : {
+                    topology: {
+                      offsets: resources.input('offsets', 'uint32', input.offsets),
+                      neighbors: resources.input('neighbors', 'uint32', input.neighbors),
+                      weights: resources.input('weights', 'float32', input.weights)
+                    },
+                    edgeIds: resources.input(
+                      'edge-mapping',
+                      'uint32',
+                      input.neighbors.map((_, row) => mapEdgeId(input, row))
+                    ),
+                    output: compact('edges', edgeCapacity)
+                  }
           })
         );
         const compiled = resources.graph.compile();
@@ -124,9 +131,15 @@ for (const {input, cases} of routingFixtures) {
               EXACT
             );
             for (const [prefix, paths, capacity, mapping] of [
-              ['nodes', fixture.paths, nodeCapacity, (row: number) => mapNodeId(input, row)],
+              [
+                'nodes',
+                fixture.paths,
+                nodeCapacity,
+                (row: number) => (mode === 'showcase-nodes-only' ? row : mapNodeId(input, row))
+              ],
               ['edges', fixture.edgePaths, edgeCapacity, (row: number) => mapEdgeId(input, row)]
             ] as const) {
+              if (prefix === 'edges' && mode === 'showcase-nodes-only') continue;
               const selected = paths.map((path, row) => (found[row] ? path.map(mapping) : []));
               const values = selected.flat();
               const offsets = [0];

@@ -16,6 +16,12 @@ import {compareParity} from '../../oracles/parity-wp6-compare';
 import {ParityReductionHarness} from '../../oracles/parity-wp6-reduction-harness';
 import fixtureJson from '../../oracles/fixtures/parity-wp6-composite-score.json';
 
+import round8MinMax from '../../oracles/fixtures/parity-wp6-round8-composite-min-max.json';
+import round8ZScore from '../../oracles/fixtures/parity-wp6-round8-composite-z-score.json';
+import round8Rank from '../../oracles/fixtures/parity-wp6-round8-composite-rank.json';
+
+import round8Pca from '../../oracles/fixtures/parity-wp6-round8-composite-pca-selectors.json';
+
 type Scene = {
   name: string;
   indicators: number[];
@@ -27,7 +33,12 @@ type Scene = {
 };
 const fixture = decodeOracleFixture<{reference: string; cases: Scene[]}>(fixtureJson);
 
-for (const scene of fixture.cases) {
+for (const scene of [
+  ...fixture.cases,
+  ...[round8MinMax, round8ZScore, round8Rank, round8Pca].flatMap(
+    json => decodeOracleFixture<{cases: Scene[]}>(json).cases
+  )
+]) {
   it(`GPUCompositeScore sklearn/SciPy parity: ${scene.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
@@ -36,13 +47,15 @@ for (const scene of fixture.cases) {
       new GPUCompositeScore({
         indicators: harness.input('indicators', Float32Array.from(scene.indicators), 'float32'),
         indicatorCount: scene.indicatorCount,
-        mask: harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
+        mask: scene.name.startsWith('showcase')
+          ? undefined
+          : harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
         parameters: harness.input(
           'parameters',
           getGPUCompositeScoreParameterValues(scene.settings),
           'float32'
         ),
-        enableRank: scene.settings.scaler === 'rank',
+        enableRank: scene.name.startsWith('showcase') || scene.settings.scaler === 'rank',
         enablePrincipalComponent: scene.principal,
         output: {
           score: harness.output('score', scene.mask.length, 'float32'),

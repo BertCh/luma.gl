@@ -20,8 +20,11 @@ import {
 } from '../../oracles/parity-wp6-reduction-harness';
 import fixtureJson from '../../oracles/fixtures/parity-wp6-temporal-reduction.json';
 
+import round8Json from '../../oracles/fixtures/parity-wp6-round8-temporal.json';
+
 type Scene = {
   name: string;
+  omitMask?: boolean;
   mode: 'float' | 'word';
   source: boolean;
   cellCount: number;
@@ -37,7 +40,8 @@ type Scene = {
 };
 const fixture = decodeOracleFixture<{reference: string; cases: Scene[]}>(fixtureJson);
 
-for (const scene of fixture.cases) {
+const round8 = decodeOracleFixture<{cases: Scene[]}>(round8Json).cases;
+for (const scene of [...fixture.cases, ...round8]) {
   for (const sorted of scene.source ? [false, true] : [false]) {
     it(`GPUTemporalReduction pandas parity: ${scene.name}/sorted=${sorted}`, async () => {
       const device = await getWebGPUTestDevice();
@@ -71,6 +75,7 @@ for (const scene of fixture.cases) {
               getGPUTemporalReductionParameterValues(Number(scene.origin), Number(scene.width)),
               'float32'
             );
+      const parameterBuffer = harness.buffers[harness.buffers.length - 1];
       const length = scene.cellCount * scene.bucketCount;
       harness.graph.add(
         new GPUTemporalReduction({
@@ -78,11 +83,13 @@ for (const scene of fixture.cases) {
           timestamps,
           parameters,
           values: harness.input('values', Float32Array.from(values), 'float32'),
-          mask: harness.input(
-            'mask',
-            source ? new Uint32Array(values.length).fill(1) : Uint32Array.from(scene.mask),
-            'uint32'
-          ),
+          mask: scene.omitMask
+            ? undefined
+            : harness.input(
+                'mask',
+                source ? new Uint32Array(values.length).fill(1) : Uint32Array.from(scene.mask),
+                'uint32'
+              ),
           cellCount: scene.cellCount,
           bucketCount: scene.bucketCount,
           sorted,
@@ -106,32 +113,49 @@ for (const scene of fixture.cases) {
       let compiled: ReturnType<typeof harness.graph.compile> | undefined;
       try {
         compiled = harness.graph.compile();
-        submitGraph(device, compiled, undefined);
-        const actual = await harness.read();
-        const compare = (metric: string, observed: number[], expected: number[]) =>
-          compareParity(
-            'GPUTemporalReduction',
-            `${scene.name}/sorted=${sorted}`,
-            fixture.reference,
-            values.length,
-            metric,
-            observed,
-            expected,
-            true
+        // Round-8 cases share inputs/topology. Re-bin, then restore, on one compiled graph.
+        const compatible = round8.filter(candidate => candidate.bucketCount === scene.bucketCount);
+        const runs = round8.includes(scene)
+          ? [scene, compatible[(compatible.indexOf(scene) + 1) % compatible.length], scene]
+          : [scene];
+        for (const run of runs) {
+          parameterBuffer.write(
+            scene.mode === 'word'
+              ? getGPUTemporalReductionWordParameterValues(BigInt(run.origin), BigInt(run.width))
+              : getGPUTemporalReductionParameterValues(Number(run.origin), Number(run.width))
           );
-        for (const field of ['counts', 'minimums', 'maximums', 'first', 'last']) {
-          // Selection outputs retain input f32 bits. Normalize JSON/module decimal decoding to
-          // that representation; this keeps E exact (one f32 ULP still fails), with no tolerance.
-          const expected =
-            field === 'counts' ? scene.expected[field] : scene.expected[field].map(Math.fround);
-          compare(field, actual[field], expected);
+          submitGraph(device, compiled, undefined);
+          const actual = await harness.read();
+          const compare = (metric: string, observed: number[], expected: number[]) =>
+            compareParity(
+              'GPUTemporalReduction',
+              `${scene.name}/run=${run.name}/sorted=${sorted}`,
+              fixture.reference,
+              values.length,
+              metric,
+              observed,
+              expected,
+              true
+            );
+          for (const field of ['counts', 'minimums', 'maximums', 'first', 'last']) {
+            // Selection outputs retain input f32 bits. Normalize JSON/module decimal decoding to
+            // that representation; this keeps E exact (one f32 ULP still fails), with no tolerance.
+            const expected =
+              field === 'counts' ? run.expected[field] : run.expected[field].map(Math.fround);
+            compare(field, actual[field], expected);
+            compare(
+              `${field}.negativeZero`,
+              actual[field].map(value => Number(Object.is(value, -0))),
+              expected.map(value => Number(Object.is(value, -0)))
+            );
+          }
+          compare(
+            'status',
+            [...actual['count'], ...actual['overflow'], ...actual['requiredCount']],
+            run.expected['status']
+          );
+          compare('ids', actual['ids'].slice(0, actual['count'][0]), run.expected['ids']);
         }
-        compare(
-          'status',
-          [...actual['count'], ...actual['overflow'], ...actual['requiredCount']],
-          scene.expected['status']
-        );
-        compare('ids', actual['ids'].slice(0, actual['count'][0]), scene.expected['ids']);
       } finally {
         compiled?.destroy();
         harness.destroy();

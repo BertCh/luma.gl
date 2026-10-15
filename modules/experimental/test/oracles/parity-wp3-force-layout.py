@@ -60,13 +60,15 @@ def evaluate(positions, edges, parameters, matrix, includeGeometry=True):
                 rootMeanSquareGradient=float(numpy.sqrt(numpy.mean(numpy.sum(gradient**2,axis=1)))))
 
 
-def generate(output,name,nodeCount,edges,source):
+def generate(output,name,nodeCount,edges,source,parameterOverrides=None):
     graph=networkx.MultiGraph()
     graph.add_nodes_from(range(nodeCount))
     graph.add_edges_from((first,second) for first,second,_ in edges)
     adjacency=networkx.to_scipy_sparse_array(graph,weight=None,dtype=float)
     matrix=laplacian(adjacency)
     parameters={key:float(numpy.float32(value)) for key,value in dict(repulsion=0.2,attraction=0.1,gravity=0.02,damping=0.85,timeStep=0.05,maxVelocity=2).items()}
+    if parameterOverrides:
+        parameters.update({key:float(numpy.float32(value)) for key,value in parameterOverrides.items()})
     if name=='equilibrium':
         parameters.update(repulsion=2,attraction=0.5,gravity=0)
     runs=[]

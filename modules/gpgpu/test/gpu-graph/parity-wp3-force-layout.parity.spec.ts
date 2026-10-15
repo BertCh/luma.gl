@@ -56,7 +56,17 @@ function reportQuality(
   );
 }
 
-for (const fixture of layoutFixtures) {
+const exactLayoutTrials = layoutFixtures.flatMap(fixture =>
+  fixture.case === 'showcase'
+    ? [1, 2, 4, 8].map(iterationsPerFrame => ({
+        ...fixture,
+        case: `showcase-steps-${iterationsPerFrame}`,
+        iterationsPerFrame,
+        frames: 256 / iterationsPerFrame
+      }))
+    : [fixture]
+);
+for (const fixture of exactLayoutTrials) {
   for (const run of fixture.runs) {
     it(`external layout quality ${fixture.case}/seed-${run.seed}`, async () => {
       const device = await getWebGPUTestDevice();

@@ -4,9 +4,13 @@
 
 import {expect, it} from 'vitest';
 import {compareParity, EXACT} from '../parity-wp3-comparison';
-import {getDistributionDistance, kFixtures} from './parity-wp3-network-k-function-fixture';
+import {
+  getDistributionDistance,
+  kFixtures,
+  showcaseKFixtures
+} from './parity-wp3-network-k-function-fixture';
 
-for (const fixture of kFixtures) {
+for (const fixture of [...kFixtures, ...showcaseKFixtures]) {
   it(`WP3 K fixture integrity only, no GPU execution: ${fixture.case}`, () => {
     expect(fixture.versions['spaghetti']).toBeTruthy();
     const className = 'GPUNetworkKFunction/CPU-fixture-integrity-only';

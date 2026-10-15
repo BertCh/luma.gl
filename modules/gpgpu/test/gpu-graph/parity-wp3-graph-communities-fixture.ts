@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import showcase from '../../../experimental/test/oracles/fixtures/parity-wp3-graph-communities-showcase.json';
 import undirected from '../../../experimental/test/oracles/fixtures/parity-wp3-graph-communities-undirected.json';
 import directed from '../../../experimental/test/oracles/fixtures/parity-wp3-graph-communities-directed.json';
 import cliques from '../../../experimental/test/oracles/fixtures/parity-wp3-graph-communities-cliques.json';
@@ -28,7 +29,7 @@ export type CommunityFixture = {
   runs: {seed: number; labels: number[]; permutation: number[]; score: number}[];
   tolerance: {absolute: number; relative: number};
 };
-export const communityFixtures = [undirected, directed, cliques, openflights].map(value =>
+export const communityFixtures = [undirected, directed, cliques, openflights, showcase].map(value =>
   decodeOracleFixture<CommunityFixture>(value)
 );
 

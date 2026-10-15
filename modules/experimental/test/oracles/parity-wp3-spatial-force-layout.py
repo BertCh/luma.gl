@@ -35,9 +35,15 @@ spec.loader.exec_module(energy)
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--output-dir',type=Path,default=HERE/'fixtures')
-    output=parser.parse_args().output_dir
+    parser.add_argument('--names',nargs='+',default=['equilibrium','synthetic','openflights-seed-3','openflights-seed-17','openflights-seed-41'])
+    parser.add_argument('--grid-size',type=int,default=32)
+    parser.add_argument('--bound',type=float,default=32)
+    arguments=parser.parse_args()
+    output=arguments.output_dir
+    gridSize=arguments.grid_size
+    bound=arguments.bound
     output.mkdir(parents=True,exist_ok=True)
-    for name in ['equilibrium','synthetic','openflights-seed-3','openflights-seed-17','openflights-seed-41']:
+    for name in arguments.names:
         source=json.loads((HERE/f'fixtures/parity-wp3-force-layout-{name}.json').read_text())
         graph=networkx.MultiGraph()
         graph.add_nodes_from(range(source['nodeCount']))
@@ -62,24 +68,27 @@ def main():
             spring=networkx.spring_layout(graph,pos=dict(enumerate(initial)),fixed=pinned,seed=run['seed'],
                 iterations=256,weight=None,scale=None,method='force',threshold=1e-7)
             # SciPy rectangular-bin statistics provide an independent index reference.
-            binned=stats.binned_statistic_2d(initial[:,0],initial[:,1],None,statistic='count',bins=32,
-                range=[[-32,32],[-32,32]],expand_binnumbers=True)
+            binned=stats.binned_statistic_2d(initial[:,0],initial[:,1],None,statistic='count',bins=gridSize,
+                range=[[-bound,bound],[-bound,bound]],expand_binnumbers=True)
             counts=binned.statistic.T.reshape(-1).astype(int)
             centers=[]
             for axis in range(2):
-                sums=stats.binned_statistic_2d(initial[:,0],initial[:,1],initial[:,axis],statistic='sum',bins=32,
-                    range=[[-32,32],[-32,32]]).statistic.T.reshape(-1)
+                sums=stats.binned_statistic_2d(initial[:,0],initial[:,1],initial[:,axis],statistic='sum',bins=gridSize,
+                    range=[[-bound,bound],[-bound,bound]]).statistic.T.reshape(-1)
                 centers.append(numpy.divide(sums,counts,out=numpy.zeros_like(sums),where=counts>0))
-            cells=(binned.binnumber[1]-1)*32+binned.binnumber[0]-1
+            cells=(binned.binnumber[1]-1)*gridSize+binned.binnumber[0]-1
             gridReference=dict(offsets=numpy.r_[0,numpy.cumsum(counts)].tolist(),
                 vertexIds=numpy.argsort(cells,kind='stable').tolist(),centers=numpy.array(centers).T.reshape(-1).tolist())
             runs.append(dict(seed=run['seed'],gridReference=gridReference,initial=evaluate(initial),optimized=evaluate(expand(optimized.x)),
                 networkx=evaluate(numpy.array([spring[node] for node in graph],dtype=float)),
                 optimizer=dict(success=bool(optimized.success),message=str(optimized.message),iterations=int(optimized.nit))))
         value={**source,'case':'pinned-'+name,'runs':runs,'pinned':[int(node in pinned) for node in graph],
-            'gridSize':[32,32],'bounds':[-32,-32,32,32],
+            'gridSize':[gridSize,gridSize],'bounds':[-bound,-bound,bound,bound],
             'reference':'networkx.spring_layout(fixed); scipy.optimize.minimize with fixed anchors; composite Noack energy',
             'conventions':__doc__,'generator':Path(__file__).name,'versions':energy.VERSIONS}
+        if name == 'showcase':
+            # 32*1*.045 plus initial |coordinate|<4 remains inside [-6,6].
+            value['frames']=1
         path=output/f'parity-wp3-spatial-force-layout-{name}.json'
         path.write_text(json.dumps(value,separators=(',',':'),allow_nan=False)+'\n')
         assert path.stat().st_size<=1_500_000

@@ -5,6 +5,8 @@
 /// <reference types="vite/client" />
 
 import type {LayoutFixture} from './parity-wp3-force-layout-fixture';
+import showcase from '../../../experimental/test/oracles/fixtures/parity-wp3-spatial-force-layout-showcase.json?raw';
+import unpinnedShowcase from '../../../experimental/test/oracles/fixtures/parity-wp3-spatial-force-layout-showcase-unpinned.json?raw';
 import equilibrium from '../../../experimental/test/oracles/fixtures/parity-wp3-spatial-force-layout-equilibrium.json?raw';
 import synthetic from '../../../experimental/test/oracles/fixtures/parity-wp3-spatial-force-layout-synthetic.json?raw';
 import flights3 from '../../../experimental/test/oracles/fixtures/parity-wp3-spatial-force-layout-openflights-seed-3.json?raw';
@@ -24,7 +26,9 @@ export const spatialFixtures: SpatialFixture[] = [
   synthetic,
   flights3,
   flights17,
-  flights41
+  flights41,
+  showcase,
+  unpinnedShowcase
 ].map(value => JSON.parse(value));
 
 /** GPUGridIndex preserves identity but explicitly leaves within-cell order unspecified. */

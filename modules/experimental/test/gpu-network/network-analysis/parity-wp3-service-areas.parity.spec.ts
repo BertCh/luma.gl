@@ -12,8 +12,10 @@ import {createParityResources} from '../parity-wp3-round2-resources';
 import {getPredecessorViolations, serviceFixtures} from './parity-wp3-service-areas-fixture';
 
 for (const {input, cases} of serviceFixtures) {
-  for (const fixture of cases) {
-    it(`GPUNetworkServiceAreas NetworkX ${fixture.case}`, async () => {
+  for (const {fixture, showcase} of cases.flatMap(fixture =>
+    [false, true].map(showcase => ({fixture, showcase}))
+  )) {
+    it(`GPUNetworkServiceAreas NetworkX ${fixture.case}/showcase-${showcase}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
       const resources = createParityResources(device);
@@ -28,9 +30,9 @@ for (const {input, cases} of serviceFixtures) {
           facilities: resources.input('facilities', 'uint32', input.facilities),
           facilityCosts: resources.input('initial-costs', 'float32', input.initialCosts),
           costLimit: resources.input('limit', 'float32', [fixture.budget]),
-          maximumIterations: 128,
-          maximumLabelIterations: 128,
-          maximumTieIterations: 32,
+          maximumIterations: showcase ? 64 : 128,
+          maximumLabelIterations: showcase ? undefined : 128,
+          maximumTieIterations: showcase ? undefined : 32,
           output: {
             assignments: resources.output('assignments', 'uint32', input.nodeCount),
             costs: resources.output('costs', 'float32', input.nodeCount),
@@ -44,10 +46,11 @@ for (const {input, cases} of serviceFixtures) {
       const compiled = graph.compile();
       try {
         submitGraph(device, compiled, undefined);
+        const comparison = {...fixture, case: `${fixture.case}/showcase-${showcase}`};
         const className = 'GPUNetworkServiceAreas';
         compareParity(
           className,
-          fixture,
+          comparison,
           'convergence',
           await resources.readUint('converged'),
           [1],
@@ -55,7 +58,7 @@ for (const {input, cases} of serviceFixtures) {
         );
         compareParity(
           className,
-          fixture,
+          comparison,
           'every node cost and infinite mask',
           await resources.readFloat('costs'),
           fixture.costs,
@@ -63,7 +66,7 @@ for (const {input, cases} of serviceFixtures) {
         );
         compareParity(
           className,
-          fixture,
+          comparison,
           'every winning facility row',
           await resources.readUint('assignments'),
           fixture.assignments,
@@ -71,7 +74,7 @@ for (const {input, cases} of serviceFixtures) {
         );
         compareParity(
           className,
-          fixture,
+          comparison,
           'facility node counts',
           await resources.readUint('counts'),
           fixture.counts,
@@ -79,7 +82,7 @@ for (const {input, cases} of serviceFixtures) {
         );
         compareParity(
           className,
-          fixture,
+          comparison,
           'facility cost sums',
           await resources.readFloat('sums'),
           fixture.sums,
@@ -87,7 +90,7 @@ for (const {input, cases} of serviceFixtures) {
         );
         compareParity(
           className,
-          fixture,
+          comparison,
           'every predecessor allowed and reaches assigned facility',
           getPredecessorViolations(input, fixture, await resources.readUint('predecessors')),
           new Array(input.nodeCount).fill(0),

@@ -19,8 +19,12 @@ import {ParityReductionHarness} from '../../oracles/parity-wp6-reduction-harness
 import fixtureJson from '../../oracles/fixtures/parity-wp6-column-profile.json';
 import offsetFixtureJson from '../../oracles/fixtures/parity-wp6-offset-profiles.json';
 
+import round8Json from '../../oracles/fixtures/parity-wp6-round8-profiles.json';
+
 type Scene = {
   name: string;
+  statisticsOnly?: boolean;
+  parameterRuns?: {name: string; domains: [number, number][]; expected: Record<string, number[]>}[];
   columns: {
     values: number[];
     kind?: 'category';
@@ -37,7 +41,11 @@ const fixture = decodeOracleFixture<{reference: string; cases: Scene[]}>(fixture
 
 const offsetFixture = decodeOracleFixture<{cases: Scene[]}>(offsetFixtureJson);
 
-for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
+for (const scene of [
+  ...fixture.cases,
+  ...offsetFixture.cases,
+  ...decodeOracleFixture<{cases: Scene[]}>(round8Json).cases
+]) {
   it(`GPUColumnProfile independent pandas/HLL parity: ${scene.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);
@@ -53,15 +61,21 @@ for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
             }
           : {values: harness.input(`column-${index}`, Float32Array.from(column.values), 'float32')}
     );
-    harness.graph.add(
-      new GPUColumnProfile({
-        columns,
-        mask: harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
-        parameters: harness.input(
+    const parameterView = scene.statisticsOnly
+      ? undefined
+      : harness.input(
           'parameters',
           getGPUColumnProfileParameterValues(scene.columns.map(column => column.domain)),
           'float32'
-        ),
+        );
+    const parameterBuffer = parameterView ? harness.buffers[harness.buffers.length - 1] : undefined;
+    harness.graph.add(
+      new GPUColumnProfile({
+        columns,
+        mask: scene.statisticsOnly
+          ? undefined
+          : harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
+        parameters: parameterView,
         histogramBinCount: scene.bins,
         hyperLogLogPrecision: scene.precision,
         topCategoryCount: scene.topCount,
@@ -71,32 +85,47 @@ for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
             columnCount * GPU_COLUMN_PROFILE_STATISTIC_COUNT,
             'float32'
           ),
-          counts: harness.output('counts', columnCount * 2, 'uint32'),
-          histograms: harness.output('histograms', columnCount * scene.bins, 'uint32'),
-          hyperLogLogRegisters: harness.output(
-            'registers',
-            columnCount * 2 ** scene.precision,
-            'uint32'
-          ),
-          topCategories: harness.output('topCategories', columnCount * scene.topCount, 'uint32'),
-          topCategoryCounts: harness.output(
-            'topCategoryCounts',
-            columnCount * scene.topCount,
-            'uint32'
-          )
+          ...(scene.statisticsOnly
+            ? {}
+            : {
+                counts: harness.output('counts', columnCount * 2, 'uint32'),
+                histograms: harness.output('histograms', columnCount * scene.bins, 'uint32'),
+                hyperLogLogRegisters: harness.output(
+                  'registers',
+                  columnCount * 2 ** scene.precision,
+                  'uint32'
+                ),
+                topCategories: harness.output(
+                  'topCategories',
+                  columnCount * scene.topCount,
+                  'uint32'
+                ),
+                topCategoryCounts: harness.output(
+                  'topCategoryCounts',
+                  columnCount * scene.topCount,
+                  'uint32'
+                )
+              })
         }
       })
     );
     let compiled: ReturnType<typeof harness.graph.compile> | undefined;
     try {
       compiled = harness.graph.compile();
-      for (let encoding = 0; encoding < 2; encoding++) {
+      const initial = {
+        name: 'initial',
+        domains: scene.columns.map(column => column.domain),
+        expected: scene.expected
+      };
+      const runs = [initial, ...(scene.parameterRuns ?? []), initial];
+      for (const run of runs) {
+        parameterBuffer?.write(getGPUColumnProfileParameterValues(run.domains));
         submitGraph(device, compiled, undefined);
         const actual = await harness.read();
         const compare = (metric: string, observed: number[], expected: number[], exact = false) =>
           compareParity(
             'GPUColumnProfile',
-            `${scene.name}/encoding=${encoding}`,
+            `${scene.name}/domain=${run.name}`,
             fixture.reference,
             scene.mask.length,
             metric,
@@ -111,7 +140,8 @@ for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
           'topCategories',
           'topCategoryCounts'
         ]) {
-          compare(field, actual[field], scene.expected[field], true);
+          if (scene.statisticsOnly) continue;
+          compare(field, actual[field], run.expected[field], true);
         }
         for (const [field, offset] of Object.entries(GPU_COLUMN_PROFILE_STATISTIC)) {
           const select = (values: number[]) =>
@@ -121,7 +151,7 @@ for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
           const exact = ['count', 'nullCount', 'minimum', 'maximum', 'overflowCount'].includes(
             field
           );
-          const expected = select(scene.expected['statistics']);
+          const expected = select(run.expected['statistics']);
           compare(
             `statistics.${field}`,
             select(actual['statistics']),
@@ -141,7 +171,7 @@ for (const scene of [...fixture.cases, ...offsetFixture.cases]) {
         compare(
           'extrema.negativeZero',
           zeroSigns(extrema(actual['statistics'])),
-          zeroSigns(extrema(scene.expected['statistics'])),
+          zeroSigns(extrema(run.expected['statistics'])),
           true
         );
       }

@@ -7,11 +7,19 @@ import {getWebGPUTestDevice} from '@luma.gl/test-utils';
 import {it} from 'vitest';
 import {GPUSpatialCorrelogram} from '../../../src/gpu-dataframe/pair-statistics/gpu-spatial-correlogram';
 import {getGPUSpatialCorrelogramParameterValues} from '../../../src/gpu-dataframe/pair-statistics/spatial-correlogram-parameters';
-import {createPairStatisticsHarness} from './pair-statistics-harness';
+import {
+  createPairStatisticsHarness,
+  createPairStatisticsWindowHarness,
+  type HarnessViews
+} from './pair-statistics-harness';
 import {requireTestDevice} from '../../utils/require-test-device';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 import {compareParity} from '../../oracles/parity-wp6-compare';
 import fixtureJSON from '../../oracles/fixtures/parity-wp6-correlogram.json';
+
+import round8Json from '../../oracles/fixtures/parity-wp6-round8-correlogram.json';
+
+import type {GPUStudyWindowPreparation} from '../../../src/gpu-spatial-analysis/study-window/gpu-study-window-preparation';
 
 type Column =
   | 'moransI'
@@ -26,6 +34,7 @@ type Column =
 const fixture = decodeOracleFixture<{
   cases: {
     name: string;
+    window?: {positions: number[]; ringOffsets: number[]; polygonOffsets: number[]};
     positions: number[];
     values: number[];
     mask: number[];
@@ -40,29 +49,30 @@ const fixture = decodeOracleFixture<{
   }[];
 }>(fixtureJSON);
 
-for (const scene of fixture.cases) {
+for (const scene of [...fixture.cases, ...decodeOracleFixture<typeof fixture>(round8Json).cases]) {
   for (const bandMode of ['annulus', 'cumulative'] as const) {
     it(`GPUSpatialCorrelogram esda parity: ${scene.name}/${bandMode}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
-      const harness = createPairStatisticsHarness(device, {
+      const props = {
         positions: new Float32Array(scene.positions),
         values: new Float32Array(scene.values),
         mask: new Uint32Array(scene.mask),
         parameterLength: 8,
         outputs: {
-          moransI: {format: 'float32', length: scene.bandCount},
-          expectedI: {format: 'float32', length: scene.bandCount},
-          varianceI: {format: 'float32', length: scene.bandCount},
-          zScores: {format: 'float32', length: scene.bandCount},
-          pValues: {format: 'float32', length: scene.bandCount},
-          pairCounts: {format: 'uint32', length: scene.bandCount},
-          peakBands: {format: 'uint32', length: 2},
-          statistics: {format: 'float32', length: 5},
-          overflow: {format: 'uint32', length: 1}
+          moransI: {format: 'float32' as const, length: scene.bandCount},
+          expectedI: {format: 'float32' as const, length: scene.bandCount},
+          varianceI: {format: 'float32' as const, length: scene.bandCount},
+          zScores: {format: 'float32' as const, length: scene.bandCount},
+          pValues: {format: 'float32' as const, length: scene.bandCount},
+          pairCounts: {format: 'uint32' as const, length: scene.bandCount},
+          peakBands: {format: 'uint32' as const, length: 2},
+          statistics: {format: 'float32' as const, length: 5},
+          overflow: {format: 'uint32' as const, length: 1}
         },
-        createContributor: views =>
+        createContributor: (views: HarnessViews<Column>, studyWindow?: GPUStudyWindowPreparation) =>
           new GPUSpatialCorrelogram({
+            studyWindow,
             positions: views.positions,
             values: views.values!,
             mask: views.mask,
@@ -82,12 +92,22 @@ for (const scene of fixture.cases) {
               status: {overflow: views.outputs.overflow as GraphDataView<'uint32'>}
             }
           })
-      });
+      };
+      const harness = scene.window
+        ? createPairStatisticsWindowHarness(device, {
+            ...props,
+            window: {
+              positions: Float64Array.from(scene.window.positions),
+              ringOffsets: Uint32Array.from(scene.window.ringOffsets),
+              polygonOffsets: Uint32Array.from(scene.window.polygonOffsets)
+            }
+          })
+        : createPairStatisticsHarness(device, props);
       try {
         for (const run of scene.runs.filter(candidate => candidate.bandMode === bandMode)) {
           const result = await harness.run(
             getGPUSpatialCorrelogramParameterValues({
-              bounds: scene.bounds,
+              bounds: scene.window ? 'study-window' : scene.bounds,
               maximumDistance: scene.maximumDistance,
               varianceAssumption: run.varianceAssumption
             })

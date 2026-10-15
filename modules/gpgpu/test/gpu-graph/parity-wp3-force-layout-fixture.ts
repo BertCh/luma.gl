@@ -5,6 +5,7 @@
 /// <reference types="vite/client" />
 
 import {decodeOracleFixture} from '../../../experimental/test/oracles/oracle-fixture';
+import showcase from '../../../experimental/test/oracles/fixtures/parity-wp3-force-layout-showcase.json?raw';
 import equilibrium from '../../../experimental/test/oracles/fixtures/parity-wp3-force-layout-equilibrium.json?raw';
 import synthetic from '../../../experimental/test/oracles/fixtures/parity-wp3-force-layout-synthetic.json?raw';
 import flights3 from '../../../experimental/test/oracles/fixtures/parity-wp3-force-layout-openflights-seed-3.json?raw';
@@ -47,9 +48,14 @@ export type LayoutFixture = {
 };
 // Native JSON-module transforms can perturb f64 literals by one ulp (Vite 8 observed).
 // Parse source text to preserve the reference bits, especially exact f32 input coordinates.
-export const layoutFixtures = [equilibrium, synthetic, flights3, flights17, flights41].map(value =>
-  decodeOracleFixture<LayoutFixture>(JSON.parse(value))
-);
+export const layoutFixtures = [
+  equilibrium,
+  synthetic,
+  flights3,
+  flights17,
+  flights41,
+  showcase
+].map(value => decodeOracleFixture<LayoutFixture>(JSON.parse(value)));
 
 /** Composite scalar-energy definition and its derivative; checked against SciPy fixtures.
  * E = A/2 sum_edges d² + G/2 sum_vertices |x|² - R sum_pairs log(d).

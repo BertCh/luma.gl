@@ -119,19 +119,23 @@ def makeCase(name,coordinates,values,bounds,maximumDistance,bandCount=8,mask=Non
             runs.append({'bandMode':mode,'varianceAssumption':assumption,'expected':output})
     return {'name':name,'positions':coordinates.ravel(),'values':values,'mask':mask,'bounds':bounds,'maximumDistance':maximum,'bandCount':bandCount,'includedCount':count,'radiusScreenAttempts':attempt,'runs':runs}
 
-source=np.fromfile(DATA/'centroid.bin',dtype='<f4').reshape(-1,2)
-transformer=pyproj.Transformer.from_crs(4326,5070,always_xy=True)
-projected=np.column_stack(transformer.transform(source[:,0],source[:,1])).astype(np.float32).astype(float)
-values=np.fromfile(DATA/'places_diabetes_ageAdj.bin',dtype='<f4')
-bounds=[math.floor(projected[:,0].min())-16,math.floor(projected[:,1].min())-16,math.ceil(projected[:,0].max())+16,math.ceil(projected[:,1].max())+16]
-cases=[makeCase('us-counties-all-diabetes',projected,values,bounds,262144,screen=True)]
-points=[[0,0],[1,0],[2,0],[3,0],[0,3],[4,4],[8,8],[8,8],[np.nan,2],[2,2],[9,0],[0,8]]
-values=[1,4,2,7,8,2,9,11,2,np.nan,7,4]
-cases.append(makeCase('exact-boundaries-duplicates-islands-exclusions',points,values,[0,0,8,8],4,4,[1]*11+[0]))
-cases.append(makeCase('complete-graph',[[0,0],[1,0],[2,0],[3,0],[0,3]],[1,4,2,7,8],[0,0,4,4],8,1))
-cases.append(makeCase('constant',[[0,0],[1,0],[2,0],[3,0],[0,3]],[4]*5,[0,0,4,4],4,4))
-cases.append(makeCase('empty-selection',[[1,1],[3,3]],[2,3],[0,0,4,4],4,4,[0,0]))
-output=HERE/'fixtures/parity-wp6-correlogram.json'
-output.write_text(json.dumps(encode({'versions':VERSIONS,'sources':SOURCES,'conventions':__doc__,'cases':cases}),separators=(',',':'),allow_nan=False)+'\n')
-assert output.stat().st_size<=1500000
-print(output.name,output.stat().st_size, 'real radius',cases[0]['maximumDistance'],'screen attempts',cases[0]['radiusScreenAttempts'])
+def main():
+    source=np.fromfile(DATA/'centroid.bin',dtype='<f4').reshape(-1,2)
+    transformer=pyproj.Transformer.from_crs(4326,5070,always_xy=True)
+    projected=np.column_stack(transformer.transform(source[:,0],source[:,1])).astype(np.float32).astype(float)
+    values=np.fromfile(DATA/'places_diabetes_ageAdj.bin',dtype='<f4')
+    bounds=[math.floor(projected[:,0].min())-16,math.floor(projected[:,1].min())-16,math.ceil(projected[:,0].max())+16,math.ceil(projected[:,1].max())+16]
+    cases=[makeCase('us-counties-all-diabetes',projected,values,bounds,262144,screen=True)]
+    points=[[0,0],[1,0],[2,0],[3,0],[0,3],[4,4],[8,8],[8,8],[np.nan,2],[2,2],[9,0],[0,8]]
+    values=[1,4,2,7,8,2,9,11,2,np.nan,7,4]
+    cases.append(makeCase('exact-boundaries-duplicates-islands-exclusions',points,values,[0,0,8,8],4,4,[1]*11+[0]))
+    cases.append(makeCase('complete-graph',[[0,0],[1,0],[2,0],[3,0],[0,3]],[1,4,2,7,8],[0,0,4,4],8,1))
+    cases.append(makeCase('constant',[[0,0],[1,0],[2,0],[3,0],[0,3]],[4]*5,[0,0,4,4],4,4))
+    cases.append(makeCase('empty-selection',[[1,1],[3,3]],[2,3],[0,0,4,4],4,4,[0,0]))
+    output=HERE/'fixtures/parity-wp6-correlogram.json'
+    output.write_text(json.dumps(encode({'versions':VERSIONS,'sources':SOURCES,'conventions':__doc__,'cases':cases}),separators=(',',':'),allow_nan=False)+'\n')
+    assert output.stat().st_size<=1500000
+    print(output.name,output.stat().st_size, 'real radius',cases[0]['maximumDistance'],'screen attempts',cases[0]['radiusScreenAttempts'])
+
+if __name__ == '__main__':
+    main()

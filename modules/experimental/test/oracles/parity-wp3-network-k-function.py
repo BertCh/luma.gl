@@ -7,7 +7,8 @@ Native planar meters, float32 AEQD coordinates centered on downtown Chicago.
 Undirected unique endpoint chords (not OSM polyline/travel-time costs), both CSR
 orientations. Spaghetti snaps original f32 event positions independently. Its
 Euclidean arc lengths are rounded to f32 before routing and simulation; endpoint
-offsets remain Spaghetti's f64 geometric measurements. Radii are integer meters,
+offsets remain Spaghetti's f64 geometric measurements. Radii span zero to the
+maximum in equally spaced bands (including fractional metres in showcase cases),
 strict <, unordered pairs, no self pairs, n**2 normalization, no edge correction.
 Network length is the f32-rounded sum of unique f32 arc lengths; the reference
 retains its f64 sum and records both plus event intensity.
@@ -54,14 +55,14 @@ def encode(value):
     return value
 
 
-def generate(name, nodes, edges, points, maximumDistance, source, simulations):
+def generate(name, nodes, edges, points, maximumDistance, source, simulations, bandCount=9):
     lines = [shapely.LineString([nodes[first], nodes[second]]) for first, second in edges]
     network = spaghetti.Network(geopandas.GeoDataFrame(geometry=lines), vertex_sig=15, extractgraph=False)
     for edge in network.arc_lengths:
         network.arc_lengths[edge] = float(numpy.float32(network.arc_lengths[edge]))
     network.snapobservations(geopandas.GeoDataFrame(geometry=[shapely.Point(point) for point in points]), 'events')
     numpy.random.seed(20261015)
-    result = network.GlobalAutoK(network.pointpatterns['events'], nsteps=9, permutations=max(1, simulations), upperbound=maximumDistance)
+    result = network.GlobalAutoK(network.pointpatterns['events'], nsteps=bandCount, permutations=max(1, simulations), upperbound=maximumDistance)
     networkLength = sum(network.arc_lengths.values())
     # Export Spaghetti's actual topology and rounded weights, not a second graph builder.
     positions = [network.vertex_coords[index] for index in range(len(network.vertex_coords))]

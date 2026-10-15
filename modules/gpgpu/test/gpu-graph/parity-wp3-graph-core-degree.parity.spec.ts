@@ -11,16 +11,18 @@ import {compareParity, EXACT} from '../../../experimental/test/gpu-network/parit
 import {createParityResources} from '../../../experimental/test/gpu-network/parity-wp3-round2-resources';
 import {createMetricsTopology, graphMetricsFixtures} from './parity-wp3-graph-metrics-fixture';
 
-for (const fixture of graphMetricsFixtures) {
+for (const {fixture, iterations} of graphMetricsFixtures.flatMap(fixture =>
+  [32, fixture.coreIterations].map(iterations => ({fixture, iterations}))
+)) {
   for (const weighted of [false, true]) {
-    it(`NetworkX core/degree ${fixture.case}/weights-${weighted}`, async () => {
+    it(`NetworkX core/degree ${fixture.case}/iterations-${iterations}/weights-${weighted}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
       const resources = createParityResources(device);
       const topology = createMetricsTopology(resources, fixture, weighted);
       new GPUGraphCoreNumber({
         topology,
-        iterations: fixture.coreIterations,
+        iterations,
         output: resources.vector('cores', 'uint32', new Array(fixture.nodeCount).fill(0)),
         degeneracy: resources.vector('degeneracy', 'uint32', [0]),
         converged: resources.vector('converged', 'uint32', [0])
@@ -36,7 +38,10 @@ for (const fixture of graphMetricsFixtures) {
       const compiled = resources.graph.compile();
       try {
         submitGraph(device, compiled, undefined);
-        const comparison = {...fixture, case: `${fixture.case}/weights-${weighted}`};
+        const comparison = {
+          ...fixture,
+          case: `${fixture.case}/iterations-${iterations}/weights-${weighted}`
+        };
         for (const metric of ['cores', 'degeneracy', 'converged'] as const) {
           const expected =
             metric === 'cores' ? fixture.cores : [metric === 'degeneracy' ? fixture.degeneracy : 1];

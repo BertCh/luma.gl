@@ -21,6 +21,7 @@ import {requireTestDevice} from '../../utils/require-test-device';
 import {compareParity} from '../parity-wp3-comparison';
 import {
   ACCESSIBILITY_FIXTURES,
+  showcaseAccessibility,
   type AccessibilityInput,
   type AccessibilityCase,
   type OutputName
@@ -30,7 +31,8 @@ async function compareScoring(
   device: Device,
   fixture: AccessibilityInput,
   cases: AccessibilityCase[],
-  orientation: 'opportunity-rows' | 'origin-rows'
+  orientation: 'opportunity-rows' | 'origin-rows',
+  method: '2sfca' | '3sfca' | 'none' = '2sfca'
 ): Promise<void> {
   const graph = new GPUCommandGraph(device, {
     id: `parity-wp3-accessibility-${fixture.case}-${orientation}`
@@ -76,8 +78,9 @@ async function compareScoring(
         cumulative: output('cumulative', fixture.originCount),
         gravity: output('gravity', fixture.originCount),
         catchment:
-          orientation === 'opportunity-rows'
+          orientation === 'opportunity-rows' && method !== 'none'
             ? {
+                method,
                 demand: input('demand', Float32Array.from(fixture.demand)),
                 output: output('catchment', fixture.originCount),
                 ratios: output('ratios', facilityCount)
@@ -98,7 +101,7 @@ async function compareScoring(
           actual,
           reference.expected[name],
           reference.tolerances[name],
-          `${reference.case}/${orientation}`
+          `${reference.case}/${orientation}/${method}`
         );
       }
     }
@@ -119,4 +122,20 @@ for (const {input, cases} of ACCESSIBILITY_FIXTURES) {
       await compareScoring(device, input, cases, orientation);
     });
   }
+}
+
+for (const method of ['none', '2sfca', '3sfca'] as const) {
+  it(`GPUNetworkAccessibility showcase output/decay modes: ${method}`, async context => {
+    const device = await getWebGPUTestDevice();
+    requireTestDevice(device, context);
+    await compareScoring(
+      device,
+      showcaseAccessibility.input,
+      showcaseAccessibility.cases.filter(
+        fixture => fixture.method === (method === 'none' ? '2sfca' : method)
+      ),
+      'opportunity-rows',
+      method
+    );
+  });
 }

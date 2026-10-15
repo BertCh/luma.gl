@@ -22,6 +22,7 @@ import {
 import {requireTestDevice} from '../../utils/require-test-device';
 import {
   MATCH_FIXTURES,
+  showcaseMatchFixtures,
   EXACT,
   compareValues,
   type MatchFixture,
@@ -75,8 +76,8 @@ async function runMatching(device: Device, fixture: MatchFixture) {
           getGPUMapMatchingParameterValues(fixture.settings),
           'float32'
         ),
-        candidateCount: 8,
-        routeNodeBudget: 128,
+        candidateCount: fixture.candidateCount ?? 8,
+        routeNodeBudget: fixture.routeNodeBudget ?? 128,
         cellSize: fixture.cellSize,
         bounds: fixture.bounds,
         entryCapacity: fixture.entryCapacity,
@@ -122,7 +123,7 @@ async function runMatching(device: Device, fixture: MatchFixture) {
   }
 }
 
-for (const fixture of MATCH_FIXTURES) {
+for (const fixture of [...MATCH_FIXTURES, ...showcaseMatchFixtures]) {
   it(`GPUMapMatching independent HMM parity: ${fixture.case}`, async context => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device, context);

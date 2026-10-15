@@ -1,0 +1,86 @@
+{
+  "versions": {
+    "python": "3.14.8",
+    "numpy": "2.5.4",
+    "scipy": "1.16.3"
+  },
+  "generatorSha256": "1e7d5ec8b74047005db470ad8f3d71f491620f215863fab6f4547ebc7b3cb57d",
+  "conventions": "Round 10 diagnostic bounds, NOT acceptance tolerances or GPU parity claims.\n\nVisibility: Hamming distance is a metric, hence for any GPU output U and two\nreferences G,D, H(U,G)+H(U,D)>=H(G,D) and max(H(U,G),H(U,D))>=ceil(H(G,D)/2).\nThe positive lower bound proves simultaneous exact equality is impossible.\nIt is not an upper error budget; retain strict E assertions until sampler\ncontracts are aligned. Cumulative masks use the same metric on integer counts.\n\nCardinal horizon: h(d) is piecewise linear between DEM centres, so apparent\nslope t(d)=(h(d)-eye)/d-c*d has derivative -(intercept-eye)/d**2-c.\nA Lipschitz bound on angle in degrees is (180/pi)*max |t'(d)|, because atan\nis 1-Lipschitz. For two finite sample sets whose Hausdorff distance is delta,\ntheir maximum angles differ by at most L*delta. This derives a SAMPLING bound,\nnot float32 error. Distances of maximizing samples have no corresponding\nsmall bound without an angular separation condition: they can span the ray.\nReport the unconditioned ray-span bound; never use it as an acceptance tolerance.\nThe separate SciPy fixture evaluates the exact public sample set and keeps D\nfor angles and distances. This is explicitly composite component parity, not\nGRASS equality. No established external visibility tool exposes this dyadic\nsampler. interp1d supplies independently implemented linear interpolation:\nhttps://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.interp1d.html\nThe apparent-angle definition is documented at\nhttps://grass.osgeo.org/grass-stable/manuals/r.horizon.html .\n",
+  "cases": [
+    {
+      "name": "alps-dem-cardinal",
+      "elevationSha256": "26b63003d30ae5362817a458875e1538be25d8df28575dea38a1931a5ca2f3ee",
+      "cellSize": 6.63900899887085,
+      "minimumDistance": 6.63900899887085,
+      "maximumDistance": 106.2241439819336,
+      "observer": [
+        16,
+        16,
+        0
+      ],
+      "curvatureCoefficient": 7.848061528802386e-08,
+      "horizon": [
+        33.96496178534363,
+        35.93214401523703,
+        26.078054581010054,
+        0.0
+      ],
+      "distance": [
+        59.75,
+        106.0,
+        73.0,
+        0
+      ]
+    },
+    {
+      "name": "grand-canyon-dem-cardinal",
+      "elevationSha256": "b0e4559219c0191453b6c0ec2fe6db237c16a6b1949f4ecc278def8b44f0af3e",
+      "cellSize": 15.440108299255371,
+      "minimumDistance": 15.440108299255371,
+      "maximumDistance": 247.04173278808594,
+      "observer": [
+        16,
+        16,
+        0
+      ],
+      "curvatureCoefficient": 7.848061528802386e-08,
+      "horizon": [
+        3.6984561123293003,
+        0.0,
+        0.0,
+        5.506161963868056
+      ],
+      "distance": [
+        15.5,
+        0,
+        0,
+        15.5
+      ]
+    },
+    {
+      "name": "ridge-cardinal",
+      "elevationSha256": "d5ec2c0eb8151a269862e677061bd2ef7c04fc8ca141c2bee99ba950b014894b",
+      "cellSize": 8.0,
+      "minimumDistance": 8.0,
+      "maximumDistance": 128.0,
+      "observer": [
+        16,
+        16,
+        0
+      ],
+      "curvatureCoefficient": 7.848061528802386e-08,
+      "horizon": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "distance": [
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

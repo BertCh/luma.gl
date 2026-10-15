@@ -18,6 +18,8 @@ import {compareParity} from '../../oracles/parity-wp6-compare';
 import {ParityReductionHarness} from '../../oracles/parity-wp6-reduction-harness';
 import fixtureJson from '../../oracles/fixtures/parity-wp6-column-quantiles.json';
 
+import round8Json from '../../oracles/fixtures/parity-wp6-round8-quantiles.json';
+
 type Scene = {
   name: string;
   values: number[];
@@ -40,7 +42,10 @@ const methods: GPUColumnQuantileInterpolation[] = [
   'midpoint'
 ];
 
-for (const scene of fixture.cases) {
+for (const scene of [
+  ...fixture.cases,
+  ...decodeOracleFixture<{cases: Scene[]}>(round8Json).cases
+]) {
   it(`GPUColumnQuantiles NumPy parity: ${scene.name}`, async () => {
     const device = await getWebGPUTestDevice();
     requireTestDevice(device);

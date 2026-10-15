@@ -18,9 +18,29 @@ import {createMetricsTopology} from './parity-wp3-graph-metrics-fixture';
 import {evaluateLayout} from './parity-wp3-force-layout-fixture';
 import {canonicalizeGridIds, spatialFixtures} from './parity-wp3-spatial-force-layout-fixture';
 
-for (const fixture of spatialFixtures) {
+const spatialTrials = spatialFixtures.flatMap(fixture =>
+  fixture.case.endsWith('-showcase')
+    ? [1, 2, 4, 8].flatMap(iterationsPerFrame =>
+        Array.from({length: 16}, (_, index) => ({
+          fixture: {
+            ...fixture,
+            case: `${fixture.case}-steps-${iterationsPerFrame}-theta-${index / 10}`,
+            iterationsPerFrame,
+            frames: 32 / iterationsPerFrame
+          },
+          theta: index / 10,
+          showcase: true
+        }))
+      )
+    : [{fixture, theta: 0.6, showcase: false}]
+);
+for (const {fixture, theta, showcase} of spatialTrials) {
   for (const run of fixture.runs) {
-    for (const mode of ['gradient', 'exact', 'approximate'] as const) {
+    for (const mode of showcase
+      ? theta === 0
+        ? (['gradient', 'exact'] as const)
+        : (['approximate'] as const)
+      : (['gradient', 'exact', 'approximate'] as const)) {
       it(`external spatial force ${fixture.case}/${run.seed}/${mode}`, async () => {
         const device = await getWebGPUTestDevice();
         requireTestDevice(device);
@@ -66,7 +86,7 @@ for (const fixture of spatialFixtures) {
           layout,
           gridSize: fixture.gridSize,
           bounds: fixture.bounds,
-          theta: mode === 'approximate' ? 0.6 : 0,
+          theta: mode === 'approximate' ? theta : 0,
           nearCellRadius: 1,
           cellOffsets: resources.vector('cell-offsets', 'uint32', new Array(cellCount + 1).fill(0)),
           vertexIds: resources.vector('vertex-ids', 'uint32', new Array(fixture.nodeCount).fill(0)),

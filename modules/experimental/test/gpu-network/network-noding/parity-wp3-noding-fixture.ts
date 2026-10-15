@@ -4,6 +4,7 @@
 
 /// <reference types="vite/client" />
 
+import largeSnap from '../../oracles/fixtures/parity-wp3-noding-showcase-large-snap.json?raw';
 import overlap from '../../oracles/fixtures/parity-wp3-noding-cross-overlap.json?raw';
 import snap from '../../oracles/fixtures/parity-wp3-noding-snap-cells.json?raw';
 import loop from '../../oracles/fixtures/parity-wp3-noding-chicago-loop.json?raw';
@@ -35,7 +36,7 @@ export type NodingFixture = {
   geosHausdorff: number;
   boundingBoxPairCount: number;
 };
-export const nodingFixtures: NodingFixture[] = [overlap, snap, loop, west].map(value =>
+export const nodingFixtures: NodingFixture[] = [overlap, snap, loop, west, largeSnap].map(value =>
   JSON.parse(value)
 );
 

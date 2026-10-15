@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
+import showcase from '../../oracles/fixtures/parity-wp3-accessibility-showcase.json';
 import syntheticInput from '../../oracles/fixtures/parity-wp3-network-accessibility-synthetic-input.json';
 import syntheticZero from '../../oracles/fixtures/parity-wp3-network-accessibility-synthetic-zero.json';
 import syntheticBoundary from '../../oracles/fixtures/parity-wp3-network-accessibility-synthetic-boundary.json';
@@ -31,6 +32,7 @@ export type AccessibilityInput = {
 };
 export type OutputName = 'cumulative' | 'gravity' | 'catchment' | 'ratios';
 export type AccessibilityCase = {
+  method?: '2sfca' | '3sfca';
   case: string;
   reference: string;
   settings: GPUNetworkAccessibilitySettings;
@@ -60,3 +62,8 @@ export const ACCESSIBILITY_FIXTURES = [
     ].map(fixture => decodeOracleFixture<AccessibilityCase>(fixture))
   }
 ];
+
+export const showcaseAccessibility = decodeOracleFixture<{
+  input: AccessibilityInput;
+  cases: AccessibilityCase[];
+}>(showcase);

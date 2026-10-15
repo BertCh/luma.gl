@@ -4,6 +4,7 @@
 
 import {compareParity, type Tolerance} from '../parity-wp3-comparison';
 export {EXACT, type Tolerance} from '../parity-wp3-comparison';
+import showcaseJson from '../../oracles/fixtures/parity-wp3-map-matching-showcase.json';
 import syntheticJson from '../../oracles/fixtures/parity-wp3-map-matching-synthetic.json';
 import chicagoJson from '../../oracles/fixtures/parity-wp3-map-matching-chicago.json';
 import {decodeOracleFixture} from '../../oracles/oracle-fixture';
@@ -22,6 +23,8 @@ export type MatchFixture = {
   reference: string;
   versions: Record<string, string>;
   settings: GPUMapMatchingSettings;
+  candidateCount?: number;
+  routeNodeBudget?: number;
   cellSize: number;
   entryCapacity: number;
   bounds: {minimum: [number, number]; maximum: [number, number]};
@@ -53,6 +56,8 @@ export type MatchFixture = {
 export const MATCH_FIXTURES = [syntheticJson, chicagoJson].map(fixture =>
   decodeOracleFixture<MatchFixture>(fixture)
 );
+
+export const showcaseMatchFixtures = decodeOracleFixture<MatchFixture[]>(showcaseJson);
 
 export function compareValues(
   fixture: MatchFixture,

@@ -3,6 +3,7 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 /// <reference types="vite/client" />
+import {decodeOracleFixture} from '../../oracles/oracle-fixture';
 
 import fixture0input from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-input.json?raw';
 import fixture0reverse from '../../oracles/fixtures/parity-wp3-network-analysis-synthetic-directed-reverse.json?raw';
@@ -181,3 +182,7 @@ export const analysisFixtures: AnalysisFixture[] = [
     ].map(value => JSON.parse(value))
   }
 ];
+
+import showcaseNeighborhoodsJson from '../../oracles/fixtures/parity-wp3-neighborhood-showcase.json';
+export const showcaseNeighborhoods =
+  decodeOracleFixture<NeighborhoodCase[]>(showcaseNeighborhoodsJson);

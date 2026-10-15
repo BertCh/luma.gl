@@ -16,8 +16,13 @@ import {compareParity} from '../../oracles/parity-wp6-compare';
 import {ParityReductionHarness} from '../../oracles/parity-wp6-reduction-harness';
 import fixtureJson from '../../oracles/fixtures/parity-wp6-group-statistics.json';
 
+import round8Json from '../../oracles/fixtures/parity-wp6-round8-groups.json';
+
 type Scene = {
   name: string;
+  omitMask?: boolean;
+  statistics?: GPUGroupStatistic[][];
+  variances?: ('sample' | 'population')[];
   keys: number[];
   keyBits: 32 | 64;
   columns: number[][];
@@ -54,8 +59,11 @@ const statistics: GPUGroupStatistic[] = [
   'zScore'
 ];
 
-for (const scene of fixture.cases) {
-  for (const variance of ['sample', 'population'] as const) {
+for (const scene of [
+  ...fixture.cases,
+  ...decodeOracleFixture<{cases: Scene[]}>(round8Json).cases
+]) {
+  for (const variance of scene.variances ?? (['sample', 'population'] as const)) {
     it(`GPUGroupStatistics pandas/SciPy parity: ${scene.name}/${variance}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
@@ -64,11 +72,18 @@ for (const scene of fixture.cases) {
       const keyFormat = scene.keyBits === 64 ? 'uint32x2' : 'uint32';
       const expectedColumns = scene.expected.columns[variance];
       const columns = scene.columns.map((values, columnIndex) => {
-        const output: GPUGroupStatisticsColumnOutput = {
-          counts: harness.output(`${columnIndex}/counts`, scene.capacity, 'uint32'),
-          sums: harness.output(`${columnIndex}/sums`, scene.capacity, 'uint32x2'),
-          uniqueCounts: harness.output(`${columnIndex}/uniqueCounts`, scene.capacity, 'uint32')
-        };
+        const output: GPUGroupStatisticsColumnOutput = {};
+        const expected = expectedColumns[columnIndex];
+        if (expected.counts)
+          output.counts = harness.output(`${columnIndex}/counts`, scene.capacity, 'uint32');
+        if (expected.sums)
+          output.sums = harness.output(`${columnIndex}/sums`, scene.capacity, 'uint32x2');
+        if (expected.uniqueCounts)
+          output.uniqueCounts = harness.output(
+            `${columnIndex}/uniqueCounts`,
+            scene.capacity,
+            'uint32'
+          );
         for (const field of [
           'sumValues',
           'means',
@@ -83,6 +98,7 @@ for (const scene of fixture.cases) {
           'modes',
           'zScores'
         ] as const) {
+          if (!expected[field]) continue;
           const length =
             field === 'zScores'
               ? rows
@@ -93,19 +109,23 @@ for (const scene of fixture.cases) {
         }
         return {
           values: harness.input(`values-${columnIndex}`, Float32Array.from(values), 'float32'),
-          statistics,
+          statistics: scene.statistics?.[columnIndex] ?? statistics,
           output
         };
       });
       harness.graph.add(
         new GPUGroupStatistics({
           keys: harness.input('keys', Uint32Array.from(scene.keys), keyFormat),
-          mask: harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
+          mask: scene.omitMask
+            ? undefined
+            : harness.input('mask', Uint32Array.from(scene.mask), 'uint32'),
           columns,
           variance,
           sumScale: scene.sumScale,
           keyCount: scene.keyCount || undefined,
-          percentiles: harness.input('fractions', Float32Array.from(scene.fractions), 'float32'),
+          percentiles: columns.some(column => column.statistics.includes('percentiles'))
+            ? harness.input('fractions', Float32Array.from(scene.fractions), 'float32')
+            : undefined,
           output: {
             keys: harness.output('keys', scene.capacity, keyFormat),
             counts: harness.output('counts', scene.capacity, 'uint32'),

@@ -51,6 +51,7 @@ for (const fixture of nodingFixtures) {
         corrupted[field][0] += 1;
         expect(canonicalizeNoding(corrupted)).not.toEqual(expected);
       }
+      if (nodeCount === 1) continue;
       const rewired = {...permuted, toNodes: [...permuted.toNodes]};
       rewired.toNodes[0] = rewired.fromNodes[0];
       expect(() => {

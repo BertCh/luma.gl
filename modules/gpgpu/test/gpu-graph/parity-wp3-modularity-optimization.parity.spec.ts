@@ -21,8 +21,16 @@ import {
 } from './parity-wp3-modularity-optimization-fixture';
 
 for (const fixture of optimizationFixtures) {
-  for (const run of fixture.runs) {
-    const caseName = `${fixture.case}/${run.start}/resolution-${run.resolution}/seed-${run.seed}`;
+  const runs = [
+    ...fixture.runs.map(run => ({...run, minimumGain: 0})),
+    ...(fixture.nodeCount < 20
+      ? [0, 128, 256, 512, 1024].flatMap(iterations =>
+          [0, 0.0001, 0.001].map(minimumGain => ({...fixture.runs[0], iterations, minimumGain}))
+        )
+      : [])
+  ];
+  for (const run of runs) {
+    const caseName = `${fixture.case}/${run.start}/resolution-${run.resolution}/seed-${run.seed}/iterations-${run.iterations}/gain-${run.minimumGain}`;
     it(`GPUGraphModularityOptimization independent objective and quality: ${caseName}`, async () => {
       const device = await getWebGPUTestDevice();
       requireTestDevice(device);
@@ -80,7 +88,8 @@ for (const fixture of optimizationFixtures) {
         converged: resources.vector('converged', 'uint32', [0]),
         valid: resources.vector('valid', 'uint32', [0]),
         resolution: run.resolution,
-        iterations: run.iterations
+        iterations: run.iterations,
+        minimumGain: run.minimumGain
       }).addToGraph(resources.graph);
       const compiled = resources.graph.compile();
       try {
@@ -190,7 +199,7 @@ for (const fixture of optimizationFixtures) {
             className,
             comparison,
             'converged small partition has no improving single-vertex move',
-            [gain],
+            [Math.max(0, gain - run.minimumGain)],
             [0],
             {absolute: gainTolerance, relative: 0}
           );
