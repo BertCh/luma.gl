@@ -69,7 +69,16 @@ fn rhumbStretchedDelta(a: f32, b: f32) -> f32 {
     geodesicCosLatitude(a) * geodesicCosLatitude(b);
   // sin(b) - sin(a) = 2 cos(mean) sin(delta / 2), with the mean cosine from the exact colatitude.
   let sinDelta = 2.0 * rhumbMeanCosLatitude(a, b) * sinHalfDelta;
-  return atanh(clamp(sinDelta / denominator, -0.999999, 0.999999));
+  let argument = clamp(sinDelta / denominator, -0.999999, 0.999999);
+  // Native atanh can lower to log((1+x)/(1-x))/2, losing relative precision near zero.
+  // For |x| < 1/8, the odd series through x^7 has relative remainder bounded by
+  // x^8 / (9 * (1 - x^2)) < 6.8e-9, below one f32 rounding error.
+  if (abs(argument) < 0.125) {
+    let squaredArgument = argument * argument;
+    return argument * (1.0 + squaredArgument * (1.0 / 3.0 +
+      squaredArgument * (1.0 / 5.0 + squaredArgument / 7.0)));
+  }
+  return atanh(argument);
 }
 
 // dPhi / dPsi, with the east-west limit cos(latitude) when the latitudes (nearly) coincide.

@@ -181,7 +181,8 @@ export type GPURipleyDistanceFunctionsProps = {
  *   `maximumDistance` it enters the denominator with `d = maximumDistance` (a lower bound on its
  *   weight, so G is biased slightly high), otherwise it is exactly censored. The estimate is
  *   exact when every point has a neighbor within `maximumDistance`.
- * - `J(r) = (1 - G(r)) / (1 - F(r))`, NaN where either function is NaN or `F(r) >= 1`.
+ * - `J(r) = (1 - G(r)) / (1 - F(r))`, NaN where either function is undefined or F has
+ *   zero survival. Survival probabilities are evaluated directly to avoid cancellation at one.
  * - Undefined results (`n < 2` for G, `n < 1` for F, zero reference count, an empty border set)
  *   are quiet NaN.
  *
@@ -638,33 +639,45 @@ fn readObserved(reference: bool, slot: u32, channel: u32) -> f32 {
   return select(f32(readEvents(slot, channel)), f32(readReferences(slot, channel)), reference);
 }
 
+// Return CDF and survival together. Preserve exact empty/full probabilities even on devices
+// whose floating-point division uses an approximate reciprocal. J needs the surviving mass,
+// not a subtraction from an already rounded CDF.
+fn getDistribution(observed: f32, remaining: f32, slot: u32) -> vec2f {
+  let total = observed + remaining;
+  if (!(total > 0.0)) { return vec2f(getQuietNaN(slot)); }
+  if (observed == 0.0) { return vec2f(0.0, 1.0); }
+  if (remaining == 0.0) { return vec2f(1.0, 0.0); }
+  return vec2f(observed / total, remaining / total);
+}
+
 // Kaplan-Meier estimate of the distribution function at radius slot last, with hazards
 // binned on the radius grid (events before censoring within a slot), as spatstat does.
-fn getKaplanMeier(reference: bool, total: f32, last: u32) -> f32 {
+fn getKaplanMeier(reference: bool, total: f32, last: u32) -> vec2f {
   var survival = 1.0;
   var atRisk = total;
   for (var slot = 0u; slot <= last; slot++) {
     let observed = readObserved(reference, slot, 4u);
     if (atRisk >= 1.0 && observed > 0.0) {
-      survival = survival * (1.0 - observed / atRisk);
+      survival = survival * getDistribution(observed, atRisk - observed, last).y;
     }
     atRisk = atRisk - observed - readObserved(reference, slot, 5u);
   }
-  return 1.0 - survival;
+  return vec2f(1.0 - survival, survival);
 }
 
 // Hanisch estimate: weighted observed fraction up to last over the total observed weight.
-fn getHanisch(reference: bool, last: u32) -> f32 {
-  var numerator = 0.0;
-  var denominator = readWeight(reference, 0u, 7u);
+fn getHanisch(reference: bool, last: u32) -> vec2f {
+  var observed = 0.0;
+  var remaining = readWeight(reference, 0u, 7u);
   for (var slot = 0u; slot < RADIUS_COUNT; slot++) {
     let weight = readWeight(reference, slot, 6u);
-    denominator = denominator + weight;
     if (slot <= last) {
-      numerator = numerator + weight;
+      observed = observed + weight;
+    } else {
+      remaining = remaining + weight;
     }
   }
-  return select(getQuietNaN(last), numerator / denominator, denominator > 0.0);
+  return getDistribution(observed, remaining, last);
 }
 
 fn getEventPrefix(channel: u32, last: u32) -> u32 {
@@ -688,44 +701,50 @@ fn getReferencePrefix(channel: u32, last: u32) -> u32 {
   let border = mode == 1u;
   let maximumDistance = parameters[parametersOffset + 4u];
   let valid = isFiniteFloat(parameters[parametersOffset]) && isFiniteFloat(maximumDistance) && maximumDistance > 0.0;
-  var gValue = nan;
-  var fValue = nan;
+  var gDistribution = vec2f(nan);
+  var fDistribution = vec2f(nan);
   if (valid && n >= 2.0) {
     if (border) {
       let denominator = n - f32(getEventPrefix(3u, index));
       if (denominator >= 1.0) {
-        gValue = f32(getEventPrefix(1u, index) - getEventPrefix(2u, index)) / denominator;
+        let observed = f32(getEventPrefix(1u, index) - getEventPrefix(2u, index));
+        gDistribution = getDistribution(observed, denominator - observed, index);
       }
     } else {
-      gValue = f32(getEventPrefix(0u, index)) / n;
+      let observed = f32(getEventPrefix(0u, index));
+      gDistribution = getDistribution(observed, n - observed, index);
     }
     if (mode == 2u) {
-      gValue = getKaplanMeier(false, n, index);
+      gDistribution = getKaplanMeier(false, n, index);
     } else if (mode == 3u) {
-      gValue = getHanisch(false, index);
+      gDistribution = getHanisch(false, index);
     }
   }
   if (valid && n >= 1.0${studyWindow ? ' && REFERENCE_COUNT > 0.0' : ''}) {
     if (border) {
       let denominator = REFERENCE_COUNT - f32(getReferencePrefix(3u, index));
       if (denominator >= 1.0) {
-        fValue = f32(getReferencePrefix(1u, index) - getReferencePrefix(2u, index)) / denominator;
+        let observed = f32(getReferencePrefix(1u, index) - getReferencePrefix(2u, index));
+        fDistribution = getDistribution(observed, denominator - observed, index);
       }
     } else {
-      fValue = f32(getReferencePrefix(0u, index)) / REFERENCE_COUNT;
+      let observed = f32(getReferencePrefix(0u, index));
+      fDistribution = getDistribution(observed, REFERENCE_COUNT - observed, index);
     }
     if (mode == 2u) {
-      fValue = getKaplanMeier(true, REFERENCE_COUNT, index);
+      fDistribution = getKaplanMeier(true, REFERENCE_COUNT, index);
     } else if (mode == 3u) {
-      fValue = getHanisch(true, index);
+      fDistribution = getHanisch(true, index);
     }
   }
-  ${output.g ? 'g[gOffset + index] = gValue;' : ''}
-  ${output.f ? 'f[fOffset + index] = fValue;' : ''}
+  ${output.g ? 'g[gOffset + index] = gDistribution.x;' : ''}
+  ${output.f ? 'f[fOffset + index] = fDistribution.x;' : ''}
   ${
     output.j
-      ? `let survival = 1.0 - fValue;
-  j[jOffset + index] = select(nan, (1.0 - gValue) / survival, isFiniteFloat(gValue) && isFiniteFloat(fValue) && survival > 0.0);`
+      ? `j[jOffset + index] = nan;
+  if (isFiniteFloat(gDistribution.y) && isFiniteFloat(fDistribution.y) && fDistribution.y > 0.0) {
+    j[jOffset + index] = gDistribution.y / fDistribution.y;
+  }`
       : ''
   }
   ${output.radii ? 'radii[radiiOffset + index] = maximumDistance * f32(index + 1u) / f32(RADIUS_COUNT);' : ''}`

@@ -70,6 +70,27 @@ samples with an invalid corner. There is no azimuth input and no pixel-direction
 Row order comes from the affine, so these contributors have no `rowDirection` prop. Holding the
 ground cell constant along a ray preserves the monotone sample distances used by pyramid skipping.
 
+More precisely, for pixel-centre endpoints `o` and `p`, set
+`n = ceil(max(abs(p.x-o.x), abs(p.y-o.y)))`. Test only `o + (p-o)·k/n`,
+`k = 1, …, n−1`; neither endpoint is an occluder. Ground distance is
+`D = hypot((p.x-o.x)·cellX, (p.y-o.y)·cellY)` and sample distance is `D·k/n`.
+The eye is observer ground plus observer height (unless absolute height is selected).
+With zero tolerance, a target is hidden only when a sampled apparent slope strictly exceeds
+the target's apparent slope; equality is visible. Curvature lowers both intervening terrain
+and the target by `c·d²`, using each one's distance from the eye. Cumulative viewshed sums the
+visible codes from this same test; hidden, out-of-range and no-data observers contribute zero.
+
+This finite sampling convention can miss relief between samples, including the bilinear hump
+between diagonally adjacent cells, which have no interior sample. It differs from both
+[GRASS's angular sweep](https://grass.osgeo.org/grass-stable/manuals/r.viewshed.html) and
+[GDAL's Wang reference-plane propagation](https://gdal.org/en/stable/programs/gdal_viewshed.html).
+Matching heights, curvature and cell centres alone does not make their native 2D masks equal.
+For sampler-matched reference testing, resample the DEM along each ray and put sample `i` at
+height `i·(z(d_i)−eye−c·d_i²)/d_i` on a unit-spaced radial raster, with the target last and the
+observer at height zero. GDAL with observer/target offsets and curvature all zero then tests
+the identical slopes along one row. This preserves the discrete visibility test exactly;
+it does not establish equivalence to GDAL on the original 2D DEM.
+
 - **Tolerance band.** `GPUTerrainViewshed` takes an optional per-frame `toleranceParameters`
   (`[toleranceMeters, tolerancePerKilometer, targetIgnoreDistance, targetIgnoreFraction]`, all 0 by
   default, packed by `getGPUTerrainViewshedToleranceParameterValues`; `GPUTerrainLineOfSight` and
@@ -336,6 +357,11 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
   `[2^k, 2^(k+1))` the step is a power of two following mt-image's step rule
   `max(stepFactor·d, clamp(nearFactor·d, minimumStep, cellSize·cellSteps))`, from 20 m out to
   `maximumDistance`. Every distance is exact in float32.
+  Specifically, evaluate the step rule at the octave's lower endpoint `2^k`, round it down
+  to a power of two, and clamp its exponent to `[-8, k]`. Keep distances
+  `2^k + j·step` inside that octave and the requested inclusive distance range.
+  `minimumDistance` is in metres (default 20), not cells. Planar distances use both grid cell
+  sizes; the scalar `cellSize` option controls only this sampling density.
 - **Precision.** Precision follows mt-image:
   - the eye is held as an integer pixel plus a float32 fraction;
   - heights are taken relative to the eye as a hi/lo pair behind an `opaque()` guard, against
@@ -346,6 +372,15 @@ A 360° horizon profile from any number of observers, ported from mt-image's hor
 - **Traversal.** `traversal: 'pyramid'` (the default) skips min-max pyramid blocks whose
   conservative bound cannot raise the running maximum. Tangent and distance bits are identical to
   `'march'`. A shared `pyramid` can be passed as for the viewshed contributors.
+
+For point visibility with zero ignore distance/fraction, only lattice samples strictly before
+the target contribute to occlusion. The target itself is excluded even when it lies exactly
+on the lattice. With zero angular and elevation uncertainty, equality is visible. Observer
+height is added to bilinear observer ground in ground-relative mode; target height is always
+added to bilinear target ground. Curvature subtracts `c·d` from both apparent tangents.
+These denser samples can detect an obstruction that the three coarse sight-line contributors
+miss. Native GRASS/GDAL masks can therefore differ here too; the radial reference adapter
+above preserves this sample set as well, including its unequal distance intervals.
 
 `GPUPointHorizonVisibility` classifies targets `[column, row, height, observerIndex]` like
 mt-image's peak classifier:
@@ -1063,6 +1098,16 @@ validity outputs are named `outputValidity`.
   for its `rowDirection: 'north'` and, on anisotropic cells, turns the direction into a pixel slope
   with its own `cellSizeMode` and the ground cell of row `height / 2`. Use it when only one sun
   matters and a full horizon map is too large.
+  The sweep follows a Bresenham-style digital line family through cell centres, rather than
+  bilinearly sampling an arbitrary continuous azimuth. For native `r.sunmask -z` parity on
+  finite square metric grids, use cardinal azimuths, positive altitude, zero curvature,
+  `angularRadiusDegrees: 0`, and a radius covering the whole domain. The comparison then
+  reduces, away from exact grazing, to `max((z_i-z_0)/d_i) > tan(altitude)`.
+  The GPU hard step requires `altitude > horizonAngle`, so equality is shadowed;
+  GRASS requires terrain strictly above the solar ray, so mathematical equality is sunlit.
+  Exact grazing therefore needs a separately specified tie convention. The `-z` flag makes
+  GRASS include zero-elevation terrain. Other azimuths can use different digital lines;
+  this is a sampling difference, not a floating-point error allowance.
 - `GPUSolarIrradiance` integrates a sun path over a horizon map: `output.sunHours` (disk-visible
   hours) and `output.insolation` (Wh/m², direct normal irradiance times visibility times cos incidence, plus an
   optional diffuse term scaled by the sky-view factor). `getGPUSolarIrradianceSunTable` samples

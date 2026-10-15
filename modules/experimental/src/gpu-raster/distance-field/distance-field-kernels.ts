@@ -845,6 +845,11 @@ export function createDistanceFieldJumpFloodNodes<Parameters>(
     })
   ];
   const steps = getDistanceFieldJumpFloodSteps(grid, props.refinementIterationCount);
+  // A 1x1 grid without refinement is complete after GPU initialization. Do not emit
+  // an empty WGSL array or allocate a zero-length step binding.
+  if (steps.length === 0) {
+    return {nodes, result: buffers[0]};
+  }
   // Step k's offset lives at element k * 64 (256 bytes, so every step binds at element offset 0):
   // all jump-flood steps share one WGSL source (library rule 12).
   const stepWords = createTransientView(

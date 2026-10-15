@@ -593,6 +593,12 @@ function getTerrainHorizonAnisotropicWeightWGSL(directionCount: number): string 
  * invalid; the ray stops when it leaves the grid or `maximumDistance`), and keeps the largest
  * elevation angle `atan((zFactor * (z - z0) - c * d^2) / d)` in degrees. A ray with no valid sample
  * reports 0 (flat horizon). Ground distance uses the center row's cell size.
+ * The final scheduled sample at `maximumRadius` is included. For GRASS `r.horizon` cardinal
+ * comparisons on square cells, use `distance=1`, curvature `1 / (2 * 6371000)`, compare
+ * `max(horizon, 0)`, and set its `maxdistance` to `(maximumRadius - 0.5) * cellSize`:
+ * GRASS tests its cap after evaluating the sample. A nodata computational-region halo also
+ * keeps GRASS's initial southwest-cell sentinel outside the terrain. These adapters do not
+ * imply parity for arbitrary azimuths, where the sampling paths differ.
  *
  * - Sky-view factor (Zaksek et al. 2011): `1 - mean(sin(max(h, 0)))`.
  * - Positive openness (Yokoyama et al. 2002): `mean(90 - h)` degrees.

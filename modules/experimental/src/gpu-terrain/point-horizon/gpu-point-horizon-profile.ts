@@ -99,6 +99,15 @@ export type GPUPointHorizonProfileOutput = {
  * cannot raise the maximum, and is bit-identical to the exhaustive `'march'` traversal (Tevs, Ihrke
  * and Seidel 2008 "Maximum mipmaps"; Dick et al. 2009; the exact-skip proof is in
  * `point-horizon-march.ts`).
+ * The first sample is the first lattice distance at or above `minimumDistance`; the last is
+ * the last at or below `maximumDistance`. Neither endpoint is inserted if it is off lattice.
+ * GRASS `r.horizon` samples a different, cell-based path: even on cardinal rays its maximum
+ * angle and winning distance can differ. For matched cardinal cell-centre samples on a square
+ * grid with power-of-two cell size (at least one metre), set `minimumStep` to that size,
+ * `cellSteps` to 1, `stepFactor` to `cellSize / maximumDistance`, and the distance limits to
+ * cell multiples. General fractional cell sizes require
+ * a reference evaluated on this contributor's lattice. Negative horizons are retained here;
+ * GRASS clips them to zero. Exact tangent ties keep the nearest sample.
  *
  * Precision ladder (from mt-image's GPU horizon, f32 on the GPU against f64 on the CPU): the eye is
  * an integer pixel plus an f32 fraction so sample positions keep sub-milli-pixel precision near the

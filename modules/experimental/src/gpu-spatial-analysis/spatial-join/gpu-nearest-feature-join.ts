@@ -17,7 +17,6 @@ import {
   type GraphDataView,
   type GraphVectorView
 } from '@luma.gl/gpgpu/gpu-core';
-import {GPUPairwisePointSegmentDistance} from '../../geospatial/gpu-pairwise-point-segment-distance';
 import {
   createWGSLActiveCountDispatch,
   createWGSLKernelNode,
@@ -82,7 +81,7 @@ import {
   resolveGPUSecondarySpatialContext,
   type GPUSpatialContext
 } from '../../analysis-core/contracts/spatial-context';
-import {assert, type Device} from '@luma.gl/core';
+import type {Device} from '@luma.gl/core';
 
 /** Planar or great-circle contexts suitable for distance measurements in their length unit. */
 const NEAREST_FEATURE_JOIN_SPATIAL_CONTEXT_SUPPORT = Object.freeze({
@@ -371,7 +370,7 @@ function getNearestFeatureJoinViews(props: GPUNearestFeatureJoinProps): NearestF
  * Joins queries to their nearest features by planar or great-circle distance.
  *
  * Nearest-feature mode: a `GPUBVH` over feature bounds produces candidates inside the radius box,
- * `GPUPairwisePointSegmentDistance` measures them, and deterministic `atomicMin` passes keep the
+ * a squared point-to-segment distance kernel measures them, and deterministic `atomicMin` passes keep the
  * nearest feature (ties go to the smallest feature row).
  *
  * Neighbors mode (`neighborIds` set): every query walks the BVH with a stack, nearer child first,
@@ -935,9 +934,9 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
       'float32x2',
       candidateCapacity
     );
-    const candidateDistances = createTransientView(
+    const candidateSquaredDistances = createTransientView(
       graph,
-      `${id}-candidate-distances`,
+      `${id}-candidate-squared-distances`,
       'float32',
       candidateCapacity
     );
@@ -979,25 +978,19 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
 
     const expandBindings: WGSLKernelBinding[] = [
       {name: 'state', view: state, type: 'u32', access: 'read'},
-      {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'}
-    ];
-    if (features.kind === 'points') {
-      expandBindings.push({
+      {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
+      {
         name: 'featureStarts',
-        view: features.positions,
+        view: features.kind === 'points' ? features.positions : features.starts,
         type: 'f32',
         access: 'read'
-      });
-    } else {
-      expandBindings.push(
-        {name: 'featureStarts', view: features.starts, type: 'f32', access: 'read'},
-        {name: 'featureEnds', view: features.ends, type: 'f32', access: 'read'}
-      );
-    }
-    expandBindings.push(
+      },
       {name: 'candidateStarts', view: candidateStarts, type: 'f32', access: 'read_write'},
       {name: 'candidateEnds', view: candidateEnds, type: 'f32', access: 'read_write'}
-    );
+    ];
+    if (features.kind === 'segments') {
+      expandBindings.push({name: 'featureEnds', view: features.ends, type: 'f32', access: 'read'});
+    }
     const endSource = features.kind === 'points' ? 'featureStarts' : 'featureEnds';
     nodes.push(
       createWGSLKernelNode<Parameters>(graph, {
@@ -1017,20 +1010,48 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
   candidateEnds[candidateEndsOffset + index * 2u + 1u] = ${endSource}[${endSource}Offset + featureRow * 2u + 1u];`
       })
     );
+    // Keep candidate distances squared through radius filtering and both reductions.
+    // A native length/sqrt can round an exact boundary distance upward (75,100 -> 125),
+    // rejecting an inclusive match. Only the published distance needs a square root.
+    const distanceBindings: WGSLKernelBinding[] = [
+      {name: 'state', view: state, type: 'u32', access: 'read'},
+      {name: 'candidatePoints', view: candidatePoints, type: 'f32', access: 'read'},
+      {name: 'candidateStarts', view: candidateStarts, type: 'f32', access: 'read'},
+      {name: 'candidateEnds', view: candidateEnds, type: 'f32', access: 'read'},
+      {
+        name: 'candidateSquaredDistances',
+        view: candidateSquaredDistances,
+        type: 'f32',
+        access: 'read_write'
+      }
+    ];
     nodes.push(
-      ...new GPUPairwisePointSegmentDistance({
+      createWGSLKernelNode<Parameters>(graph, {
         id: `${id}-distance`,
-        positions: candidatePoints,
-        segmentStarts: candidateStarts,
-        segmentEnds: candidateEnds,
-        output: candidateDistances
+        operation: OPERATION,
+        variant: `squared-distance-${features.kind}`,
+        bindings: distanceBindings,
+        invocationCount: candidateCapacity,
+        condition: candidateDispatch.condition,
+        declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;`,
+        body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
+  if (index >= activeCount) { return; }
+  let point = vec2f(candidatePoints[candidatePointsOffset + index * 2u], candidatePoints[candidatePointsOffset + index * 2u + 1u]);
+  let start = vec2f(candidateStarts[candidateStartsOffset + index * 2u], candidateStarts[candidateStartsOffset + index * 2u + 1u]);
+  var offset = point - start;
+  ${
+    features.kind === 'segments'
+      ? `let end = vec2f(candidateEnds[candidateEndsOffset + index * 2u], candidateEnds[candidateEndsOffset + index * 2u + 1u]);
+  let segment = end - start;
+  let squaredLength = dot(segment, segment);
+  if (squaredLength > 0.0) {
+    let fraction = clamp(dot(offset, segment) / squaredLength, 0.0, 1.0);
+    offset -= fraction * segment;
+  }`
+      : ''
+  }
+  candidateSquaredDistances[candidateSquaredDistancesOffset + index] = dot(offset, offset);`
       })
-        .getCommandNodes(graph)
-        .map(node => {
-          // GPUPairwisePointSegmentDistance declares compute passes only.
-          assert(node.type === 'compute');
-          return {...node, condition: candidateDispatch.condition};
-        })
     );
     // Candidates failing `exclusive` or `onAttribute` never compete for the nearest feature.
     const filterBindings: WGSLKernelBinding[] = [];
@@ -1075,8 +1096,8 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
             {name: 'state', view: state, type: 'u32', access: 'read'},
             {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
             {
-              name: 'candidateDistances',
-              view: candidateDistances,
+              name: 'candidateSquaredDistances',
+              view: candidateSquaredDistances,
               type: 'f32',
               access: 'read_write'
             },
@@ -1085,7 +1106,7 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
           invocationCount: candidateCapacity,
           condition: candidateDispatch.condition,
           declarations: `const CANDIDATE_CAPACITY: u32 = ${candidateCapacity}u;
-fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + index] = -1.0; }`,
+fn rejectCandidate(index: u32) { candidateSquaredDistances[candidateSquaredDistancesOffset + index] = -1.0; }`,
           body: `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
@@ -1097,9 +1118,9 @@ fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + i
     const reducePrologue = `let activeCount = min(state[stateOffset], CANDIDATE_CAPACITY);
   if (index >= activeCount) { return; }
   let pointRow = candidatePairs[candidatePairsOffset + index * 2u];
-  let distance = candidateDistances[candidateDistancesOffset + index];
+  let distance = candidateSquaredDistances[candidateSquaredDistancesOffset + index];
   let searchRadius = radius[radiusOffset];
-  if (!(distance >= 0.0 && distance <= searchRadius)) { return; }
+  if (!(searchRadius >= 0.0 && distance >= 0.0 && distance <= searchRadius * searchRadius)) { return; }
   // Fold -0.0 so the bit pattern of non-negative distances is monotone.
   let distanceBits = select(bitcast<u32>(distance), 0u, distance == 0.0);`;
     nodes.push(
@@ -1110,7 +1131,12 @@ fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + i
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-          {name: 'candidateDistances', view: candidateDistances, type: 'f32', access: 'read'},
+          {
+            name: 'candidateSquaredDistances',
+            view: candidateSquaredDistances,
+            type: 'f32',
+            access: 'read'
+          },
           {name: 'radius', view: radius, type: 'f32', access: 'read'},
           {
             name: 'bestDistanceBits',
@@ -1134,7 +1160,12 @@ fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + i
         bindings: [
           {name: 'state', view: state, type: 'u32', access: 'read'},
           {name: 'candidatePairs', view: candidatePairs, type: 'u32', access: 'read'},
-          {name: 'candidateDistances', view: candidateDistances, type: 'f32', access: 'read'},
+          {
+            name: 'candidateSquaredDistances',
+            view: candidateSquaredDistances,
+            type: 'f32',
+            access: 'read'
+          },
           {name: 'radius', view: radius, type: 'f32', access: 'read'},
           {name: 'bestDistanceBits', view: bestDistanceBits, type: 'u32', access: 'read'},
           {name: 'assignment', view: assignment, type: 'atomic<u32>', access: 'read_write'}
@@ -1158,6 +1189,7 @@ fn rejectCandidate(index: u32) { candidateDistances[candidateDistancesOffset + i
         featureIds: views.featureIds,
         featureCounts: views.featureCounts,
         bestDistanceBits,
+        squaredDistances: true,
         distances: views.nearestDistances
       })
     );

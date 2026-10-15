@@ -59,7 +59,7 @@ fn networkSegmentFraction(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) ->
   return geodesicSegmentFraction(point, start, end);
 }
 fn networkInterpolate(start: vec2<f32>, end: vec2<f32>, fraction: f32) -> vec2<f32> {
-  let delta = vec2<f32>(geodesicWrapLongitudeDelta(end.x - start.x), end.y - start.y);
+  let delta = vec2<f32>(geodesicLongitudeDelta(start.x, end.x), end.y - start.y);
   let position = start + fraction * delta;
   return vec2<f32>(geodesicWrapLongitudeDelta(position.x), position.y);
 }

@@ -160,11 +160,20 @@ export type GPUGeomorphonsProps = {
 
 /**
  * Classifies each cell into one of ten landforms with the geomorphon method of Jasiewicz and
- * Stepinski (2013), following the behaviour of GRASS `r.geomorphon`.
+ * Stepinski (2013), using the GRASS `r.geomorphon` angle-comparison variants.
+ * These variants compare absolute extrema; they are not the original paper's signed
+ * zenith/nadir angle-difference test. In particular, `anglev1` calls a constant-slope ray flat
+ * when its absolute extrema tie, even when that slope exceeds the flatness threshold.
  *
  * Eight lines of sight (NE, N, NW, W, SW, S, SE, E) are searched out to `searchRadius` rows of
- * ground distance. Zenith and nadir samples are compared by exact integer cross-multiplication
- * instead of arctangents, so ties on integer terrain are exact. Cells that are invalid, or within
+ * ground distance. Zenith and nadir samples are compared by f32 cross-multiplication
+ * instead of arctangents. A tied extremum keeps the nearest sample. Ties are exact when the
+ * height differences and their products with integer step counts are exactly representable
+ * in f32; arbitrary floating terrain has ordinary f32 rounding. GRASS instead computes
+ * distances from map coordinates and compares double-precision arctangents. Its coordinate
+ * serialization and libm rounding can break mathematical ties, so bitwise GRASS classification
+ * parity requires matching the tie convention as well as the search and skip radii.
+ * Cells that are invalid, or within
  * `skipRadius + 1` cells of the raster border, receive form 0, ternary 0, pattern 0, and
  * validity 0. Invalid samples along a line of sight are ignored; a direction whose first
  * neighbour is invalid, or that has no valid sample, contributes pattern digit 0. GRASS keeps its

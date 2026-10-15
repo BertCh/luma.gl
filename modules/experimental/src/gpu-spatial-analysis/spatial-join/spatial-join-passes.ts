@@ -944,6 +944,8 @@ export function getSpatialJoinAssignNodes<Parameters>(
     featureIds?: GraphDataView<'uint32'>;
     featureCounts?: GraphDataView<'uint32'>;
     bestDistanceBits?: GraphDataView<'uint32'>;
+    /** Apply sqrt only when publishing a squared-distance reduction. */
+    squaredDistances?: boolean;
     distances?: GraphDataView<'float32'> | GraphVectorView<'float32'>;
   }
 ): GPUCommandNode<Parameters>[] {
@@ -992,7 +994,8 @@ const CHUNK_FIRST_ROW: u32 = ${chunkFirstRow}u;`,
   ${props.featureCounts ? 'if (matched) { atomicAdd(&featureCounts[featureCountsOffset + featureRow], 1u); }' : ''}
   ${
     props.bestDistanceBits && distanceChunk
-      ? 'distances[distancesOffset + index] = select(-1.0, bitcast<f32>(bestDistanceBits[bestDistanceBitsOffset + row]), matched);'
+      ? `let bestDistance = bitcast<f32>(bestDistanceBits[bestDistanceBitsOffset + row]);
+  distances[distancesOffset + index] = select(-1.0, ${props.squaredDistances ? 'sqrt(bestDistance)' : 'bestDistance'}, matched);`
       : ''
   }`
         })

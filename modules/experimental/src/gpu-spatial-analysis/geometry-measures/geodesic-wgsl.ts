@@ -222,7 +222,7 @@ fn geodesicHaversineDistance(a: vec2<f32>, b: vec2<f32>, radius: f32) -> f32 {
 // latitude (east offsets scaled by cos(latitude of origin), longitudes wrapped at +-180).
 fn geodesicLocalOffset(origin: vec2<f32>, position: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(
-    geodesicWrapLongitudeDelta(position.x - origin.x) * geodesicCosLatitude(origin.y),
+    geodesicLongitudeDelta(origin.x, position.x) * geodesicCosLatitude(origin.y),
     position.y - origin.y
   );
 }
@@ -230,6 +230,11 @@ fn geodesicLocalOffset(origin: vec2<f32>, position: vec2<f32>) -> vec2<f32> {
 // Fraction in [0, 1] of the point of segment start-end closest to point, in the local
 // equirectangular frame at point: exact to first order for segments of road length.
 fn geodesicSegmentFraction(point: vec2<f32>, start: vec2<f32>, end: vec2<f32>) -> f32 {
+  // Pin coincident endpoints before projection: contracting a scaled offset subtraction
+  // into an FMA can leave a nonzero residual even when both endpoints are identical.
+  if (all(start == end)) {
+    return 0.0;
+  }
   let startOffset = geodesicLocalOffset(point, start);
   let segment = geodesicLocalOffset(point, end) - startOffset;
   let denominator = dot(segment, segment);
@@ -248,8 +253,10 @@ fn geodesicSegmentDistance(
   fraction: f32,
   radius: f32
 ) -> f32 {
-  let startOffset = vec2<f32>(geodesicWrapLongitudeDelta(start.x - point.x), start.y - point.y);
-  let delta = vec2<f32>(geodesicWrapLongitudeDelta(end.x - start.x), end.y - start.y);
+  // Use the same seam-preserving differences as edge lengths and local projection. Mixing
+  // rounded seam offsets with precise edge lengths biases map-matching likelihoods.
+  let startOffset = vec2<f32>(geodesicLongitudeDelta(point.x, start.x), start.y - point.y);
+  let delta = vec2<f32>(geodesicLongitudeDelta(start.x, end.x), end.y - start.y);
   let offset = startOffset + fraction * delta;
   let sinHalfLatitude = sin(0.5 * offset.y * GEODESIC_DEGREES_TO_RADIANS);
   let sinHalfLongitude = sin(0.5 * offset.x * GEODESIC_DEGREES_TO_RADIANS);

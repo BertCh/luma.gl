@@ -506,6 +506,12 @@ fn getVertex(row: u32) -> vec2f {
   return vec2f(polygonPositions[polygonPositionsOffset + 2u * row], polygonPositions[polygonPositionsOffset + 2u * row + 1u]);
 }
 
+var<private> segmentOrigin: vec2f;
+
+fn getRelativeVertex(row: u32) -> vec2f {
+  return getVertex(row) - segmentOrigin;
+}
+
 fn cross2(a: vec2f, b: vec2f) -> f32 { return a.x * b.y - a.y * b.x; }
 
 fn getPieceLength(a: vec2f, b: vec2f, t0: f32, t1: f32) -> f32 {
@@ -516,7 +522,7 @@ fn getPieceLength(a: vec2f, b: vec2f, t0: f32, t1: f32) -> f32 {
   }
 }
 
-${getExactRingWindingWGSL('getRingWinding', 'getVertex')}
+${getExactRingWindingWGSL('getRingWinding', 'getRelativeVertex')}
 // Even/odd fill over every ring of the feature, with the shared exact point-in-ring rule
 // (utils/exact-geometry-wgsl.ts). Called from one site.
 fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
@@ -536,6 +542,7 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
     let a = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment], segmentPositions[segmentPositionsOffset + 4u * segment + 1u]);
     let b = vec2f(segmentPositions[segmentPositionsOffset + 4u * segment + 2u], segmentPositions[segmentPositionsOffset + 4u * segment + 3u]);
     let delta = b - a;
+    segmentOrigin = a;
     let ringStart = featureRings[featureRingsOffset + 2u * feature];
     let ringEnd = featureRings[featureRingsOffset + 2u * feature + 1u];
     if (!isNanBits(a.x) && !isNanBits(a.y) && !isNanBits(b.x) && !isNanBits(b.y) && (delta.x != 0.0 || delta.y != 0.0)) {
@@ -580,7 +587,9 @@ fn isInside(point: vec2f, ringStart: u32, ringEnd: u32) -> bool {
       for (var piece = 0u; piece <= crossingCount; piece++) {
         let end = select(1.0, crossings[min(piece, MAXIMUM_CROSSINGS - 1u)], piece < crossingCount);
         if (end > start) {
-          if (isInside(a + delta * (0.5 * (start + end)), ringStart, ringEnd)) {
+          // Classify in the segment's local frame. Adding the world origin can round a
+          // genuine interior midpoint onto a hole edge, losing a contributing segment.
+          if (isInside(delta * (0.5 * (start + end)), ringStart, ringEnd)) {
             inside += getPieceLength(a, b, start, end);
           }
           start = end;

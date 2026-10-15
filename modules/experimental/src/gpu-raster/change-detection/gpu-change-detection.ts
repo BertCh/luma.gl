@@ -454,6 +454,8 @@ ${NAN_WGSL}`;
   let split = u32(splitSlice);
   var count1 = 0u;
   var count2 = 0u;
+  var origin1 = 0.0;
+  var origin2 = 0.0;
   var sum1 = 0.0;
   var sum2 = 0.0;
   for (var slice = 0u; slice < SLICE_COUNT; slice++) {
@@ -462,16 +464,24 @@ ${NAN_WGSL}`;
       continue;
     }
     if (slice < split) {
+      if (count1 == 0u) {
+        origin1 = value;
+      }
       count1++;
-      sum1 += value;
+      sum1 += value - origin1;
     } else {
+      if (count2 == 0u) {
+        origin2 = value;
+      }
       count2++;
-      sum2 += value;
+      sum2 += value - origin2;
     }
   }
   if (count1 < 2u || count2 < 2u) {
     return;
   }
+  // Center before accumulating: constant groups have exactly zero residuals even
+  // when division by their non-power-of-two sample counts is rounded by the GPU.
   let mean1 = sum1 / f32(count1);
   let mean2 = sum2 / f32(count2);
   var squares1 = 0.0;
@@ -482,9 +492,11 @@ ${NAN_WGSL}`;
       continue;
     }
     if (slice < split) {
-      squares1 += (value - mean1) * (value - mean1);
+      let residual = (value - origin1) - mean1;
+      squares1 += residual * residual;
     } else {
-      squares2 += (value - mean2) * (value - mean2);
+      let residual = (value - origin2) - mean2;
+      squares2 += residual * residual;
     }
   }
   let errorSquared1 = squares1 / f32(count1 - 1u) / f32(count1);
@@ -495,7 +507,7 @@ ${NAN_WGSL}`;
   if (!(errorSquared > 0.0 && denominator > 0.0)) {
     return;
   }
-  let t = (mean2 - mean1) / sqrt(errorSquared);
+  let t = ((origin2 - origin1) + (mean2 - mean1)) / sqrt(errorSquared);
   let degreesOfFreedom = errorSquared * errorSquared / denominator;
   let pValue = studentTTwoSidedP(t, degreesOfFreedom);
   ${compute.join('\n  ')}`
