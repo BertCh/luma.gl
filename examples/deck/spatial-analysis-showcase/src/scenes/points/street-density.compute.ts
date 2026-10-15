@@ -44,7 +44,11 @@ import {
   SpatialAnalysisSegmentLayer
 } from '../../engine/layers';
 import {addKernelPass} from '../../engine/mode-kernels';
-import {createAnalysisFrameProjection, getViewportFrameBounds} from '../../engine/analysis-frame';
+import {
+  createAnalysisFrameProjection,
+  getViewportFrameBounds,
+  projectLngLatToFrame
+} from '../../engine/analysis-frame';
 import {createPolygonMeshBuffers, type PolygonMeshBuffers} from '../../engine/polygon-buffers';
 import {SpatialAnalysisResources} from '../../engine/resources';
 import {SummaryReader} from '../../engine/summary-reader';
@@ -150,6 +154,7 @@ type RoadBuffers = {
   local: Buf;
   localCount: number;
   positionsMeters: Buf;
+  positionsDistanceMeters?: Buf;
   positionsDegrees: Buf;
   pathOffsets: Buf;
   lineWeights: Buf;
@@ -200,7 +205,7 @@ type PolygonState = {
   perResident: Buf;
   meanAttribute: Buf;
   overflow: Buf;
-  polygonPositionsMeters: Buf;
+  polygonPositionsDistanceMeters?: Buf;
   polygonPositionsDegrees: Buf;
   featureOffsets: Buf;
   polygonOffsets: Buf;
@@ -303,6 +308,7 @@ export async function createStreetDensity(
   const tractsData = ctx.datasets.get('chicago-tracts');
   const origin = roads.defaultOrigin;
   const projection = createAnalysisFrameProjection({kind: 'lambert-equal-area', origin});
+  const distanceProjection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
   const resources = new SpatialAnalysisResources(device, 'street-density');
   const coordinateOrigin: [number, number, number] = [origin[0], origin[1], 0];
   const metersPerDegreeLongitude = projection.project(origin[0] + 1, origin[1])[0];
@@ -412,6 +418,15 @@ export async function createStreetDensity(
     };
     roadBuffers.set(roadClass, buffers);
     return buffers;
+  }
+
+  function getRoadDistancePositions(roadClass: RoadClass): Buf {
+    const buffers = getRoadBuffers(roadClass);
+    buffers.positionsDistanceMeters ??= resources.createBuffer(
+      `${roadClass}-positions-distance-m`,
+      projectLngLatToFrame(distanceProjection, getRoadSet(roadClass).positionsDegrees)
+    );
+    return buffers.positionsDistanceMeters;
   }
 
   const allStreets = getRoadSet('all');
@@ -587,7 +602,6 @@ export async function createStreetDensity(
       perResident: resources.createBuffer(`${id}-per-resident`, noData),
       meanAttribute: resources.createBuffer(`${id}-mean-attribute`, noData),
       overflow: resources.createBuffer(`${id}-overflow`, 4),
-      polygonPositionsMeters: resources.createBuffer(`${id}-positions-m`, set.positions),
       polygonPositionsDegrees: resources.createBuffer(`${id}-positions-deg`, set.degrees),
       featureOffsets: resources.createBuffer(`${id}-feature-offsets`, set.featureOffsets),
       polygonOffsets: resources.createBuffer(`${id}-polygon-offsets`, set.polygonOffsets),
@@ -621,6 +635,16 @@ export async function createStreetDensity(
     return next;
   }
 
+  function getPolygonDistancePositions(id: StreetDensityOptions['polygonSet']): Buf {
+    const state = getPolygonState(id);
+    // Preserve the feature/ring ordering and LAEA areas; only the clipping vertices use AEQD.
+    state.polygonPositionsDistanceMeters ??= resources.createBuffer(
+      `${id}-positions-distance-m`,
+      projectLngLatToFrame(distanceProjection, state.set.degrees)
+    );
+    return state.polygonPositionsDistanceMeters;
+  }
+
   async function getPolygonVariant(options: StreetDensityOptions): Promise<PolygonVariant> {
     const key = `${options.polygonSet}|${options.roadClass}|${options.system}`;
     let variant = polygonVariants.get(key);
@@ -644,7 +668,7 @@ export async function createStreetDensity(
         id: `line-length-${key}`,
         positions: view(
           'positions',
-          spherical ? buffers.positionsDegrees : buffers.positionsMeters,
+          spherical ? buffers.positionsDegrees : getRoadDistancePositions(options.roadClass),
           'float32x2',
           road.vertexCount
         ),
@@ -657,12 +681,14 @@ export async function createStreetDensity(
               metric: 'great-circle',
               units: 'meters'
             }
-          : projection.spatialContext,
+          : distanceProjection.spatialContext,
         polygons: {
           kind: 'polygons',
           positions: view(
             'polygon-positions',
-            spherical ? state.polygonPositionsDegrees : state.polygonPositionsMeters,
+            spherical
+              ? state.polygonPositionsDegrees
+              : getPolygonDistancePositions(options.polygonSet),
             'float32x2',
             set.positions.length / 2
           ),

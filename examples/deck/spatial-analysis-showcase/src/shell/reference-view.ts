@@ -11,15 +11,41 @@ import {
   type ReferenceIndex,
   type ReferenceSection
 } from '../docs/reference-index';
+import {activateFramePlayers} from '../docs/lens-frame-player';
+import {setLensCatalogPages} from '../docs/lens-catalog';
+import {activateLensButtons} from '../docs/lens-directive';
 import {getGuides} from '../docs/guides';
 import {findScenesByContributor} from '../scenes/registry';
 import {copyText, h, icon} from './dom';
 import {getReferenceHash, getStoryHash} from './router';
 
+let disposeReferenceLenses: (() => void) | undefined;
+window.addEventListener('hashchange', () => {
+  disposeReferenceLenses?.();
+  disposeReferenceLenses = undefined;
+});
+
 /** Reference index (searchable) and reference pages. */
 export async function renderReference(root: HTMLElement, entry: string | null): Promise<void> {
+  disposeReferenceLenses?.();
+  disposeReferenceLenses = undefined;
   root.replaceChildren(h('div', {class: 'page-loading'}, 'Loading reference…'));
   const index = await loadReferenceIndex();
+  // Reuse reference-index's loaded page markdown; no second raw-doc glob.
+  setLensCatalogPages(
+    index.docs.map(doc => ({path: `api-reference/experimental/${doc.path}`, text: doc.markdown}))
+  );
+  const anchor = readReferenceAnchor();
+  if (entry && anchor) {
+    const doc = index.docs.find(candidate => candidate.id === entry);
+    const section = doc?.apiSections.find(candidate =>
+      candidate.body.split('\n').some(line => {
+        const scenario = /::lens\{[^}]*scenario=(?:"([^"\s]+)"|'([^'\s]+)'|([^\s}]+))/.exec(line);
+        return scenario && anchor.startsWith(`lens-${scenario[1] ?? scenario[2] ?? scenario[3]}-`);
+      })
+    );
+    if (section) entry = section.names[0];
+  }
   if (!entry) return renderIndex(root, index);
   const resolved = resolveEntry(index, entry);
   if (!resolved) {
@@ -243,6 +269,12 @@ async function renderSectionPage(
       )
     )
   );
+  const disposeLiveLenses = activateLensButtons(body);
+  const disposeFrames = activateFramePlayers(body);
+  disposeReferenceLenses = () => {
+    disposeLiveLenses();
+    disposeFrames();
+  };
   enableAnchorScroll(body);
   const scenes = (await Promise.all(section.names.map(findScenesByContributor))).flat();
   const unique = [...new Map(scenes.map(scene => [scene.id, scene])).values()];
@@ -322,6 +354,12 @@ function renderDocPage(root: HTMLElement, index: ReferenceIndex, doc: ReferenceD
         : null
     )
   );
+  const disposeLiveLenses = activateLensButtons(body);
+  const disposeFrames = activateFramePlayers(body);
+  disposeReferenceLenses = () => {
+    disposeLiveLenses();
+    disposeFrames();
+  };
   enableAnchorScroll(body);
   void index;
 }
@@ -346,14 +384,43 @@ export function decorateCode(container: HTMLElement): void {
   }
 }
 
+function readReferenceAnchor(): string {
+  const hash = window.location.hash;
+  if (hash.startsWith('#/'))
+    return new URLSearchParams(hash.split('?')[1] ?? '').get('anchor') ?? '';
+  try {
+    return decodeURIComponent(hash.slice(1));
+  } catch {
+    return '';
+  }
+}
+
+function revealReferenceTarget(container: HTMLElement, identifier: string): void {
+  const target = [...container.querySelectorAll<HTMLElement>('[id]')].find(
+    element => element.id === identifier
+  );
+  let parent = target?.parentElement;
+  while (parent && container.contains(parent)) {
+    if (parent instanceof HTMLDetailsElement && parent.matches('details.lens-how'))
+      parent.open = true;
+    parent = parent.parentElement;
+  }
+  target?.scrollIntoView();
+}
+
 /** In-page `#heading` links scroll instead of changing the route. */
 export function enableAnchorScroll(container: HTMLElement): void {
+  revealReferenceTarget(container, readReferenceAnchor());
   container.addEventListener('click', event => {
     const anchor = (event.target as HTMLElement).closest('a');
     const href = anchor?.getAttribute('href');
     if (href && href.startsWith('#') && !href.startsWith('#/')) {
       event.preventDefault();
-      container.querySelector(`[id="${CSS.escape(href.slice(1))}"]`)?.scrollIntoView();
+      try {
+        revealReferenceTarget(container, decodeURIComponent(href.slice(1)));
+      } catch {
+        /* Ignore malformed anchors. */
+      }
     }
   });
 }

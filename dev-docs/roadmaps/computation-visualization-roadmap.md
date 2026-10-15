@@ -616,6 +616,33 @@ with no headless capture sweeps.
 | V7 Showcase drawer and docs IA | ComputationDrawer with choices strip in every scene that declares a workflow; spatial analysis, network and terrain docs restructured like `gpu-raster/` (Overview, Concepts, Operators, Recipes); the 5,328-line `gpu-spatial-analysis.md` split by family in the same change as the showcase reference glob | `yarn test-website` only when no peer shares the tree; docs and showcase contracts |
 | V8 Breadth | Packs for gpu-graph, gpu-trace and rendering (timing-only first, then `CompositeShaderPass` intent; splat stage prefixes migrated to `namespace`); `scope × reduction` across all operators; network, raster and terrain ontology; space-time cube | Ontology and pack coverage specs |
 
+Status V7 docs IA and V1 hosts (stream D, 2026-10-14): `gpu-spatial-analysis.md` split into
+`gpu-spatial-analysis/` (overview, concepts, operators index, eleven operator families, recipes); network
+and terrain moved to Overview/Concepts/Operators folders; lens slots on every contributor; `::lens` hosts
+(website remark plugin, showcase markdown-it rule) print identical static twins; coverage and twin specs
+in `modules/experimental/test/computation-docs/`.
+
+Status V0 record and seams (stream R, 2026-10-14): schema, validation, builder, metrics and
+captures sidecars, exports (Chrome trace, Model Explorer, DOT, text) and `GPUSnapshotArena` /
+`captureGPUCommandGraph` / `GPUTransferMask` in `modules/gpgpu/src/computation-record/`;
+`GPUCommandGraph` `recording` opt-in with `withRecordScope`, `describe()` (kinded edges, resources,
+allocations), `retain`, `addObservationTap`, namespace debug groups, begin/end ticks, encoded form;
+program-compiler loop provenance and `describeGPUProgramCompilation`; strategy candidate tables;
+`getDeferredSceneSupport`; `createWGSLKernelNode` retention; GPUCrossfilter external masks.
+`CommandEncoder` `{passId, slot}` labels are not done (rendering is timing-only until V8).
+
+Status V1 runtime (stream V, 2026-10-14): `@luma.gl/experimental/computation-views` (ViewRegistry with
+table fallback and disabled-with-reason rungs, axis headers, LadderCoordinator with CPU backend and a
+GPU-backend interface, ScaleRegistry and §E validator over the copied showcase tables/ramps/charts,
+guards and VerdictChip, provenance textures and crispness, FormulaCard, DatumReceipt, BufferStrip,
+DispatchView, SkeletonView, RealizedView, CommandGraphView with DOI folding, TimingView, CompareView,
+ScopeDiagram, a `result` rung (native geometry view, input → output, from captures tagged `role` +
+`geometry`), one description generator, pure static twins with thumbnails, a per-scenario `runExample`
+convention, URL state, rung × entity keyboard graph,
+page scheduler, `webgpu-analysis` device profile, `<ladder-lens>`) and the scenario contract
+`@luma.gl/experimental/computation-lenses`. The GPU selection backend (GPUCrossfilter external masks
+plus `GPUTransferMask`) is an interface only; StabilityMap and the Purpose rung are not built.
+
 ## Decisions taken on open questions
 
 The research streams raised these. Each is decided here, with its trade-off.

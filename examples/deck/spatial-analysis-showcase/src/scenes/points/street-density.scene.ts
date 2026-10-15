@@ -397,12 +397,20 @@ new SpatialAnalysisRasterLayer({${state.system === 'spherical' ? 'coordinateSyst
   valueScale: 1000, classBreaks: [5, 10, 15, 20], classColors, discardAtOrBelow: 0});
 
 // street length clipped into polygons
+${
+  state.system === 'spherical'
+    ? ''
+    : `const distanceProjection = createAnalysisFrameProjection({kind: 'azimuthal-equidistant', origin});
+// Upload distancePositions and polygonPositions in this same AEQD frame.
+// Keep polygon areas in Lambert equal-area when deriving length / area.
+`
+}
 const perPolygon = new GPUCommandGraph(device, {id: 'line-length'});
 perPolygon.add(new GPULineLengthPerPolygon({
-  positions, lineOffsets,
+  positions: ${state.system === 'spherical' ? 'positions' : 'distancePositions'}, lineOffsets,
   lineWeights: ${state.weight},                // optional per-street multiplier
   polygons: {kind: 'polygons', positions: polygonPositions, featureOffsets, polygonOffsets, ringOffsets},
-  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : LAMBERT_CONTEXT_SNIPPET}
+  ${state.system === 'spherical' ? SPHERICAL_CONTEXT_SNIPPET : 'spatialContext: distanceProjection.spatialContext,'}
   output: {lengths, weightedLengths, segmentCounts, status: {overflow}}
 }));`,
 

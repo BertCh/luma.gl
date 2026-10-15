@@ -2,7 +2,7 @@
 
 This maintainer roadmap turns the public ontology in
 `modules/experimental/src/gpu-spatial-analysis/ontology` into an implementation plan. The
-user-facing [GPU Spatial Analysis reference](../../docs/api-reference/experimental/gpu-spatial-analysis.md)
+user-facing [GPU Spatial Analysis reference](../../docs/api-reference/experimental/gpu-spatial-analysis/README.md)
 documents shipped behavior. This file records work that should be implemented, refined or
 redesigned; it is not a release or staffing commitment.
 GPU algorithm choices per contributor are reviewed in the

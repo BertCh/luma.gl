@@ -647,9 +647,9 @@ graph-view inputs and outputs, per-frame parameters in storage views (no recompi
 capacity and overflow reporting. Source lives under `modules/experimental/src/<entry>/<directory>/`;
 the directory names below are relative to the entry that exports them. Shared helpers are in
 `modules/experimental/src/utils/`. User docs:
-[GPU Terrain](../../docs/api-reference/experimental/gpu-terrain.md),
-[GPU Network](../../docs/api-reference/experimental/gpu-network.md),
-[GPU Spatial Analysis](../../docs/api-reference/experimental/gpu-spatial-analysis.md),
+[GPU Terrain](../../docs/api-reference/experimental/gpu-terrain/README.md),
+[GPU Network](../../docs/api-reference/experimental/gpu-network/README.md),
+[GPU Spatial Analysis](../../docs/api-reference/experimental/gpu-spatial-analysis/README.md),
 [GPURaster analysis contributors](../../docs/api-reference/experimental/gpu-raster/operations-analysis.md),
 [GPU Dataframe analysis contributors](../../docs/api-reference/experimental/gpu-dataframe-analysis.md), and
 [GPU residency](../../docs/api-reference/experimental/gpu-tables/gpu-residency.mdx).

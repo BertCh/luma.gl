@@ -3,6 +3,8 @@
 // SPDX-FileCopyrightText: Copyright (c) vis.gl contributors
 
 import MarkdownIt from 'markdown-it';
+import {registerLensDirective, registerLensCollapse} from '../docs/lens-directive';
+import {setLensCatalogResolver} from '../docs/lens-catalog';
 import {highlightCode} from './highlight';
 
 /**
@@ -35,6 +37,13 @@ export function slugify(text: string): string {
 }
 
 const md = new MarkdownIt({html: true, linkify: false, typographer: false});
+
+registerLensDirective(md);
+registerLensCollapse(md);
+setLensCatalogResolver(tile => {
+  const route = resolveKnownDoc(`/docs/${tile.path.replace(/\.md$/, '').replace(/\/README$/, '')}`);
+  return route ? `${route}?anchor=${encodeURIComponent(`lens-${tile.scenario}-result`)}` : null;
+});
 
 const defaultFence = md.renderer.rules['fence'];
 md.renderer.rules['fence'] = (tokens, index, options, env, self) => {
@@ -122,7 +131,7 @@ md.renderer.rules['link_open'] = (tokens, index, options, env, self) => {
       ? defaultLinkOpen(tokens, index, options, env, self)
       : self.renderToken(tokens, index, options);
   }
-  const resolved = resolveLink(href);
+  const resolved = resolveLink(href, (env as {docPath?: string} | undefined)?.docPath);
   if (resolved.kind === 'route') {
     token.attrSet('href', resolved.href);
   } else if (resolved.kind === 'external') {
@@ -147,7 +156,10 @@ function resolveKnownDoc(path: string): string | null {
 }
 
 /** Maps a markdown link target to a showcase route or an external URL. */
-function resolveLink(href: string): {kind: 'route' | 'external' | 'keep'; href: string} {
+function resolveLink(
+  href: string,
+  docPath?: string
+): {kind: 'route' | 'external' | 'keep'; href: string} {
   if (/^(https?:|mailto:)/.test(href)) return {kind: 'external', href};
   if (href.startsWith('#/')) return {kind: 'keep', href};
   if (href.startsWith('/docs/')) {
@@ -164,6 +176,24 @@ function resolveLink(href: string): {kind: 'route' | 'external' | 'keep'; href: 
       : {kind: 'keep', href};
   }
   if (path.endsWith('.md') || path.endsWith('/') || !path.includes('.')) {
+    const name = anchor ? linkIndex.namesBySlug.get(anchor) : undefined;
+    if (name) return {kind: 'route', href: `#/reference/${encodeURIComponent(name)}`};
+    if (docPath && !path.startsWith('/') && !/^[a-z][a-z0-9+.-]*:/i.test(path)) {
+      const segments: string[] = docPath.split('/').slice(0, -1);
+      for (const segment of path.split('/')) {
+        if (!segment || segment === '.') continue;
+        if (segment === '..' && segments.length && segments.at(-1) !== '..') segments.pop();
+        else segments.push(segment);
+      }
+      const normalized = segments
+        .join('/')
+        .replace(/\.md$/, '')
+        .replace(/\/README$/, '');
+      const docId = linkIndex.docIdsByPath.get(normalized.toLowerCase());
+      return docId
+        ? {kind: 'route', href: `#/reference/${encodeURIComponent(docId)}`}
+        : {kind: 'external', href: `${DOCS_SITE}/${normalized}`};
+    }
     const clean = path
       .replace(/^(\.\.?\/)+/, '')
       .replace(/\.md$/, '')
@@ -171,8 +201,6 @@ function resolveLink(href: string): {kind: 'route' | 'external' | 'keep'; href: 
     const tail = clean.split('/').slice(-2).join('/').toLowerCase();
     const docId =
       linkIndex.docIdsByPath.get(tail) ?? linkIndex.docIdsByPath.get(tail.split('/').pop() ?? '');
-    const name = anchor ? linkIndex.namesBySlug.get(anchor) : undefined;
-    if (name) return {kind: 'route', href: `#/reference/${encodeURIComponent(name)}`};
     if (docId) return {kind: 'route', href: `#/reference/${encodeURIComponent(docId)}`};
     return {kind: 'external', href: `${DOCS_SITE}/${clean}`};
   }
@@ -182,7 +210,7 @@ function resolveLink(href: string): {kind: 'route' | 'external' | 'keep'; href: 
 const ADMONITION = /^:::(\w+)[ \t]*(.*)$/;
 
 /** Renders Docusaurus-flavoured markdown (front matter, admonitions, MDX imports removed). */
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, context?: {docPath?: string}): string {
   const cleaned = stripMdx(stripFrontMatter(source));
   const lines = cleaned.split('\n');
   const output: string[] = [];
@@ -190,7 +218,7 @@ export function renderMarkdown(source: string): string {
   let fence = false;
   let admonition: {kind: string; title: string; lines: string[]} | null = null;
   const flush = () => {
-    if (buffer.length) output.push(md.render(buffer.join('\n')));
+    if (buffer.length) output.push(md.render(buffer.join('\n'), context));
     buffer = [];
   };
   for (const line of lines) {
@@ -201,7 +229,7 @@ export function renderMarkdown(source: string): string {
       admonition = {kind: open[1], title: open[2] || open[1], lines: []};
     } else if (admonition && !fence && line.trim() === ':::') {
       output.push(
-        `<aside class="admonition admonition-${md.utils.escapeHtml(admonition.kind)}"><p class="admonition-title">${md.utils.escapeHtml(admonition.title)}</p>${md.render(admonition.lines.join('\n'))}</aside>`
+        `<aside class="admonition admonition-${md.utils.escapeHtml(admonition.kind)}"><p class="admonition-title">${md.utils.escapeHtml(admonition.title)}</p>${md.render(admonition.lines.join('\n'), context)}</aside>`
       );
       admonition = null;
     } else if (admonition) {
@@ -235,16 +263,27 @@ function stripFrontMatter(source: string): string {
   return parseFrontMatter(source).body;
 }
 
-/** Removes MDX `import` lines and self-closing JSX component lines. */
+/** Removes MDX imports, self-closing JSX components and standalone comments outside fences. */
 function stripMdx(source: string): string {
-  let fence = false;
+  let fence: string | null = null;
   return source
     .split('\n')
     .filter(line => {
-      if (/^\s*```/.test(line)) fence = !fence;
-      if (fence) return true;
+      const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+      if (fence) {
+        if (marker?.[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) {
+          fence = null;
+        }
+        return true;
+      }
+      if (marker) {
+        fence = marker;
+        return true;
+      }
       return (
-        !/^import\s.+from\s+['"].+['"];?\s*$/.test(line) && !/^<[A-Z]\w*\b[^>]*\/>\s*$/.test(line)
+        !/^import\s.+from\s+['"].+['"];?\s*$/.test(line) &&
+        !/^<[A-Z]\w*\b[^>]*\/>\s*$/.test(line) &&
+        !/^\s*\{\/\*.*\*\/\}\s*$/.test(line)
       );
     })
     .join('\n');

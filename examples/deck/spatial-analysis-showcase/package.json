@@ -22,6 +22,7 @@
     "@luma.gl/webgpu": "10.0.0-alpha.4",
     "@math.gl/web-mercator": "^4.1.0",
     "earcut": "^3.0.2",
+    "katex": "^0.16.21",
     "maplibre-gl": "^5.20.0",
     "markdown-it": "^14.1.0"
   },

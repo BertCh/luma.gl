@@ -6,7 +6,7 @@ import {groupModesByCategory} from './modes/mode-categories';
 
 /** Documentation page for the spatial-analysis contributors. */
 const DOCS_URL =
-  'https://github.com/BertCh/luma.gl/blob/map-contributors/docs/api-reference/experimental/gpu-spatial-analysis.md';
+  'https://github.com/BertCh/luma.gl/blob/map-contributors/docs/api-reference/experimental/gpu-spatial-analysis/README.md';
 
 type LegendColor = readonly (number | undefined)[];
 
